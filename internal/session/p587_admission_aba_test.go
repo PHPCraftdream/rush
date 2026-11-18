@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -113,7 +114,7 @@ func TestDrainSessionNow_AdmissionRefusal_NeverObservesReplacementEntry(t *testi
 		// channel, without looping back into a second admission attempt
 		// that would hit B regardless of which entry the fix actually
 		// waited on.
-		gateA.release <- session.ErrCallQueuedNotExecuted
+		gateA.release <- core.ErrCallQueuedNotExecuted
 
 		// Wait for A's release (done closed) using entryA's own Done()
 		// channel; the map removal that frees the slot follows it.

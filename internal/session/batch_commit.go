@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
@@ -19,50 +21,19 @@ import (
 // commit is refused before any DB write (documented sentinel).
 var ErrBatchValueOverflow = errors.New("batch commit: uint64 value exceeds sql int64 range")
 
-// BatchCommitIdentity is the Runner identity a commit hook writes under:
-// host identity plus the fresh Runner incarnation UUID, and the owner session
-// whose Submit reservations this Runner creates (one Runner, one owner).
-type BatchCommitIdentity struct {
-	Host, Runner, Owner string
-
-	// R11F (P1-1), minimal additive hunk: optional per-Submit owner
-	// resolver. When non-nil, the Submit reservation is written under the
-	// returned owner — the INVOKING session carried in the one-item spec
-	// payload — instead of the fixed Owner (which remains only a dormant
-	// default). An empty return keeps the fixed Owner. Non-Submit
-	// transitions are unaffected: batchCommitProject already resolves each
-	// root's owner from the row (RootOwner).
-	OwnerFor func(spec jobbatch.Spec) string
-
-	// AuthorityFor resolves the runner-wide finalization authority for one
-	// owner at commit time (the process registry the composition root
-	// installs). The commit hook runs on runner goroutines without the
-	// submitting call's context, so a per-run authority is reachable only
-	// through this lookup. Nil keeps the exact legacy behavior: an owner
-	// with a bound scope but no static authority stays refused.
-	AuthorityFor func(owner string) *AgentFinalizationAuthority
-
-	// AdmitOwners runs after durable tickets and before batch writer I/O. Its
-	// error-returning release is attempted after success or failure.
-	AdmitOwners func(context.Context, jobbatch.Transition, []string) (func() error, error)
-
-	finalizationService     *service
-	finalizationAuthorities []*AgentFinalizationAuthority
-}
-
 // NewBatchCommitHook returns a RunnerConfig.CommitHook adapter. It maps one
 // accepted Transition into one BatchProjection per touched root inside ONE
 // store transaction (Submit: one atomic reservation-plus-view transaction).
 // It reads no unpublished Runner views, dispatches nothing, holds no locks
 // across writer I/O, never retries or reopens a faulted writer, and never
 // synthesizes terminal outcomes. Errors are returned as-is, unwrapped.
-func NewBatchCommitHook(store *BatchStore, id BatchCommitIdentity) func(context.Context, jobbatch.Transition) error {
+func NewBatchCommitHook(store *BatchStore, id session.BatchCommitIdentity) func(context.Context, jobbatch.Transition) error {
 	// Closing stays sticky once a HostClosing transition has committed: later
 	// Settled settlements of interrupted tasks must also wake=0. Commits are
 	// serialized by the Runner, so a plain bool is safe.
 	closing := false
 	return func(ctx context.Context, t jobbatch.Transition) error {
-		activeIdentity, err := batchFinalizationIdentityFromContext(ctx, id)
+		activeIdentity, err := session.BatchFinalizationIdentityFromContext(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -83,7 +54,7 @@ func batchCommitUint64(v uint64) (int64, error) {
 	return int64(v), nil
 }
 
-func batchCommitTransition(ctx context.Context, store *BatchStore, id BatchCommitIdentity, closing bool, t jobbatch.Transition) error {
+func batchCommitTransition(ctx context.Context, store *BatchStore, id session.BatchCommitIdentity, closing bool, t jobbatch.Transition) error {
 	// Sequence 0 is never a real Runner transition; guard it like overflow.
 	if t.Sequence == 0 || t.Sequence >= batchCommitInt63 {
 		return ErrBatchValueOverflow
@@ -105,7 +76,7 @@ func batchCommitTransition(ctx context.Context, store *BatchStore, id BatchCommi
 // keyed by (owner, tool_call_id=e.Ref); the input hash is the canonical hash
 // of the accepted Spec, so concurrent matching retries attach once and
 // mismatched Specs are refused with ErrBatchInputMismatch.
-func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIdentity, t jobbatch.Transition) (retErr error) {
+func batchCommitSubmit(ctx context.Context, store *BatchStore, id session.BatchCommitIdentity, t jobbatch.Transition) (retErr error) {
 	e := t.Event
 	// P1-1: the reservation's owner_session_id REFERENCES sessions(id), so
 	// it must be the invoking session, never the host UUID. The resolver
@@ -135,9 +106,9 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		}
 		notices[i] = p
 	}
-	release, admission, err := admitBatchCommitOwners(store.writer, ctx, id, t, []string{owner})
+	release, admission, err := session.AdmitBatchCommitOwners(store.writer, ctx, id, t, []string{owner})
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return err
@@ -158,7 +129,7 @@ func batchCommitSubmit(ctx context.Context, store *BatchStore, id BatchCommitIde
 		return err
 	}
 	if res.Snapshot.Root.RootID != string(e.Root) {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	return nil
 }
@@ -269,7 +240,7 @@ func batchCommitControlState(c jobbatch.ControlState) string {
 // BatchProjection per root set inside one store transaction. Add appends
 // subtrees at accepted parent ordinals inside Project without a root Reserve;
 // Release and transitions touching other roots group exactly like any event.
-func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitIdentity, closing bool, t jobbatch.Transition) (retErr error) {
+func batchCommitProject(ctx context.Context, store *BatchStore, id session.BatchCommitIdentity, closing bool, t jobbatch.Transition) (retErr error) {
 	e := t.Event
 	groups := make(map[jobbatch.ID]*BatchRootProjection)
 	group := func(root jobbatch.ID) *BatchRootProjection {
@@ -372,9 +343,9 @@ func batchCommitProject(ctx context.Context, store *BatchStore, id BatchCommitId
 		owners = append(owners, owner)
 		p.Roots = append(p.Roots, *g)
 	}
-	release, admission, err := admitBatchCommitOwners(store.writer, ctx, id, t, owners)
+	release, admission, err := session.AdmitBatchCommitOwners(store.writer, ctx, id, t, owners)
 	if release != nil {
-		defer func() { retErr = batchCommitReleaseError(retErr, release()) }()
+		defer func() { retErr = session.BatchCommitReleaseError(retErr, release()) }()
 	}
 	if err != nil {
 		return err

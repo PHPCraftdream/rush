@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // finalizationDescendantTreeSQL walks the owner's hierarchy descendants:
 // every session reachable through sessions.parent_session_id, transitively.
-// The depth cap is baked in from finalizationAncestorLimit, the same bound
+// The depth cap is baked in from session.FinalizationAncestorLimit, the same bound
 // readFinalizationAncestry enforces, and UNION drops repeated (id, depth)
 // pairs, so a corrupt parent cycle terminates instead of recursing forever.
 var finalizationDescendantTreeSQL = fmt.Sprintf(`WITH RECURSIVE descendants(id, depth) AS (
@@ -17,7 +19,7 @@ var finalizationDescendantTreeSQL = fmt.Sprintf(`WITH RECURSIVE descendants(id, 
     UNION
     SELECT s.id, d.depth + 1 FROM sessions s, descendants d
     WHERE s.parent_session_id = d.id AND d.depth < %d
-)`, finalizationAncestorLimit)
+)`, session.FinalizationAncestorLimit)
 
 // finalizationDescendantRecordSQL counts hierarchy descendants holding an
 // active finalization incarnation. The partial unique index
@@ -39,7 +41,7 @@ SELECT EXISTS (
     SELECT 1
     FROM sessions s, descendants d
     WHERE d.depth = %d AND s.parent_session_id = d.id
-)`, finalizationAncestorLimit)
+)`, session.FinalizationAncestorLimit)
 
 // finalizationDescendantNodeSQL counts the owner's live batch nodes, root
 // or task, in any non-terminal state. Same state list as the seal
@@ -84,7 +86,7 @@ func NewFinalizationDescendantsReader() FinalizationDescendantsReader {
 // descendant would seal the owner's answer too early, an extra one only
 // delays the seal. An unknown owner owns nothing and yields 0, not an
 // error; a database failure is an error, and so is a hierarchy deeper
-// than finalizationAncestorLimit, which truncation would undercount.
+// than session.FinalizationAncestorLimit, which truncation would undercount.
 func (FinalizationDescendantsReader) FinalizationActiveDescendantsTx(ctx context.Context, tx *sql.Tx, ownerSessionID string) (int, error) {
 	if tx == nil {
 		return 0, errors.New("finalization descendants facts require a transaction")
@@ -97,7 +99,7 @@ func (FinalizationDescendantsReader) FinalizationActiveDescendantsTx(ctx context
 		return 0, err
 	}
 	if truncated != 0 {
-		return 0, fmt.Errorf("finalization descendant hierarchy deeper than %d", finalizationAncestorLimit)
+		return 0, fmt.Errorf("finalization descendant hierarchy deeper than %d", session.FinalizationAncestorLimit)
 	}
 	recorded, err := finalizationDescendantScalar(ctx, tx, finalizationDescendantRecordSQL, ownerSessionID)
 	if err != nil {

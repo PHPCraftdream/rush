@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -215,7 +218,7 @@ func TestBatchOutboxStaleSnapshotFencesAndMaxAttempts(t *testing.T) {
 			}
 			count, e := s.BatchReactionSettleReactedFailedWithMarker(ctx, "owner", stale, "must not insert")
 			if field == "owner" {
-				require.ErrorIs(t, e, ErrBatchProjectionConflict)
+				require.ErrorIs(t, e, session.ErrBatchProjectionConflict)
 			} else {
 				require.NoError(t, e)
 			}
@@ -334,7 +337,7 @@ func TestBatchOutboxWakeZeroAndNoticeOwnerFence(t *testing.T) {
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, "UPDATE session_notices SET delivery='done',notice_message_id='other-message' WHERE id=?", n.ID)
 	require.NoError(t, err)
-	forged := BatchDebtSnapshot{Owner: "owner", Notices: []DebtNoticeRef{{ID: n.ID, NoticeMessageID: "other-message"}}}
+	forged := BatchDebtSnapshot{Owner: "owner", Notices: []sessionnotice.DebtNoticeRef{{ID: n.ID, NoticeMessageID: "other-message"}}}
 	require.NoError(t, s.BatchReactionIncrementWakeAttempts(ctx, "owner", forged))
 	count, err := s.BatchReactionSettleReactedFailedWithMarker(ctx, "owner", forged, "forged")
 	require.NoError(t, err)

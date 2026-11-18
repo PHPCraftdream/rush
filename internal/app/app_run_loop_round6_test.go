@@ -15,7 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -76,7 +76,7 @@ func TestRunLoop_ReviewerRefusedByLockKeepsAnswer(t *testing.T) {
 			var endedAfterFirst string
 			rh.afterFirstTurn(func() {
 				endedAfterFirst = endedReasonOf(t, rh.app, rh.sessionID)
-				foreign, err := session.TryAcquireSessionLock(rh.dataDir, rh.sessionID)
+				foreign, err := sessionlock.TryAcquireSessionLock(rh.dataDir, rh.sessionID)
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = foreign.Release() })
 			})

@@ -5,30 +5,32 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
-func finalizationCommitService(env *commitHookEnv) AgentFinalizationService {
-	return NewService(db.New(env.conn), env.conn).(AgentFinalizationService)
+func finalizationCommitService(env *commitHookEnv) session.AgentFinalizationService {
+	return session.NewService(db.New(env.conn), env.conn).(session.AgentFinalizationService)
 }
 
-func finalizationCommitAuthority(t *testing.T, service AgentFinalizationService, owner, logical string, generation int64) *AgentFinalizationAuthority {
+func finalizationCommitAuthority(t *testing.T, service session.AgentFinalizationService, owner, logical string, generation int64) *session.AgentFinalizationAuthority {
 	t.Helper()
-	authority, err := service.BindAgentFinalization(t.Context(), AgentFinalizationIdentity{SessionID: owner, LogicalCallID: logical, Generation: generation})
+	authority, err := service.BindAgentFinalization(t.Context(), session.AgentFinalizationIdentity{SessionID: owner, LogicalCallID: logical, Generation: generation})
 	require.NoError(t, err)
 	return authority
 }
 
-func finalizationCommitHook(t *testing.T, env *commitHookEnv, service AgentFinalizationService, authorities ...*AgentFinalizationAuthority) func(context.Context, jobbatch.Transition) error {
+func finalizationCommitHook(t *testing.T, env *commitHookEnv, service session.AgentFinalizationService, authorities ...*session.AgentFinalizationAuthority) func(context.Context, jobbatch.Transition) error {
 	t.Helper()
 	identity, err := service.WithAgentFinalizationAuthorities(env.id, authorities...)
 	require.NoError(t, err)
 	return NewBatchCommitHook(env.store, identity)
 }
 
-func finalizationCommitFailureDiagnostics(t *testing.T, env *commitHookEnv, identities ...AgentFinalizationIdentity) {
+func finalizationCommitFailureDiagnostics(t *testing.T, env *commitHookEnv, identities ...session.AgentFinalizationIdentity) {
 	t.Helper()
 	t.Cleanup(func() {
 		if !t.Failed() {
@@ -37,7 +39,7 @@ func finalizationCommitFailureDiagnostics(t *testing.T, env *commitHookEnv, iden
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
 		defer cancel()
 		for _, identity := range identities {
-			state, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, identity)
+			state, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, identity)
 			t.Logf("finalization diagnostic identity=%+v state=%+v error=%v", identity, state, err)
 		}
 		queries := []string{
@@ -86,7 +88,7 @@ func TestBatchCommitAuthorityRequiresExactBoundIdentity(t *testing.T) {
 			if field == "session" {
 				require.NoError(t, seedSession(env.ctx, db.New(env.conn), "other-owner"))
 			}
-			exact := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1, NodeID: "r.1", NodeToken: 1}
+			exact := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1, NodeID: "r.1", NodeToken: 1}
 			authority, err := service.BindAgentFinalization(t.Context(), exact)
 			require.NoError(t, err)
 			finalizationCommitFailureDiagnostics(t, env, exact)
@@ -130,25 +132,25 @@ func TestBatchCommitAuthorityNeverDowngradesKnownScope(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			env := newCommitHookEnv(t)
 			service := finalizationCommitService(env)
-			identity := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
+			identity := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 1}
 			if state == "stale" {
-				oldIdentity := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "old-call", Generation: 1}
+				oldIdentity := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "old-call", Generation: 1}
 				oldAuthority, err := service.BindAgentFinalization(t.Context(), oldIdentity)
 				require.NoError(t, err)
 				_, err = env.conn.ExecContext(env.ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id=? AND logical_call_id=? AND generation=?`, oldIdentity.SessionID, oldIdentity.LogicalCallID, oldIdentity.Generation)
 				require.NoError(t, err)
-				newIdentity := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 2}
+				newIdentity := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "call", Generation: 2}
 				_, err = service.BindAgentFinalization(t.Context(), newIdentity)
 				require.NoError(t, err)
 				finalizationCommitFailureDiagnostics(t, env, oldIdentity, newIdentity)
 				hook := finalizationCommitHook(t, env, service, oldAuthority)
 				require.Error(t, hook(env.ctx, admissionSubmit("r", "call-r", 1)))
-				record, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, newIdentity)
+				record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, newIdentity)
 				require.NoError(t, err)
 				require.Zero(t, record.Revision)
 				require.Zero(t, record.OpenTickets)
 				require.Equal(t, "executing", record.Phase)
-				oldRecord, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, oldIdentity)
+				oldRecord, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, oldIdentity)
 				require.NoError(t, err)
 				require.Equal(t, "failed", oldRecord.Phase)
 				require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes`))
@@ -160,11 +162,11 @@ func TestBatchCommitAuthorityNeverDowngradesKnownScope(t *testing.T) {
 			finalizationCommitFailureDiagnostics(t, env, identity)
 			switch state {
 			case "accepted":
-				require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, NewAgentFinalizationStore(env.conn), identity, 0))
+				require.NoError(t, sealFinalizationForTest(env.ctx, env.conn, session.NewAgentFinalizationStore(env.conn), identity, 0))
 				_, err = service.BindAgentFinalization(t.Context(), identity)
 				require.Error(t, err, "public binding cannot reuse an accepted identity")
 			case "cancelled":
-				require.NoError(t, NewService(db.New(env.conn), env.conn).RequestCancel(env.ctx, "owner"))
+				require.NoError(t, session.NewService(db.New(env.conn), env.conn).RequestCancel(env.ctx, "owner"))
 			case "unreadable":
 				_, err = env.conn.ExecContext(env.ctx, `ALTER TABLE session_agent_finalizations RENAME TO finalizations_unreadable`)
 				require.NoError(t, err)
@@ -195,17 +197,17 @@ func TestBatchCommitAuthorityRejectsForeignServiceAndMismatchedWriter(t *testing
 	otherStore, otherConn, _ := batchStoreTestDB(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "call", 1)
-	otherService := NewService(db.New(env.conn), env.conn).(AgentFinalizationService)
+	otherService := session.NewService(db.New(env.conn), env.conn).(session.AgentFinalizationService)
 	_, err := otherService.WithAgentFinalizationAuthorities(env.id, authority)
 	require.Error(t, err)
 	require.NoError(t, seedSession(env.ctx, db.New(env.conn), "other-owner"))
-	foreignAuthority, err := otherService.BindAgentFinalization(t.Context(), AgentFinalizationIdentity{SessionID: "other-owner", LogicalCallID: "foreign", Generation: 1})
+	foreignAuthority, err := otherService.BindAgentFinalization(t.Context(), session.AgentFinalizationIdentity{SessionID: "other-owner", LogicalCallID: "foreign", Generation: 1})
 	require.NoError(t, err)
 	_, err = service.WithAgentFinalizationAuthorities(env.id, foreignAuthority)
 	require.Error(t, err)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id, authority)
 	require.NoError(t, err)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	err = NewBatchCommitHook(otherStore, identity)(env.ctx, admissionSubmit("r", "call-r", 1))
 	require.ErrorContains(t, err, "must share the service database")
 	require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes`))
@@ -238,7 +240,7 @@ func TestBatchCommitAuthoritySetIsRunnerWideCeilingAndOrdersOwnerTickets(t *test
 	ownerAuthority := finalizationCommitAuthority(t, service, "owner", "owner-call", 1)
 	zAuthority := finalizationCommitAuthority(t, service, "z-owner", "z-call", 1)
 	untouchedAuthority := finalizationCommitAuthority(t, service, "x-owner", "untouched-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, ownerAuthority.identity, zAuthority.identity, untouchedAuthority.identity)
+	finalizationCommitFailureDiagnostics(t, env, ownerAuthority.Identity, zAuthority.Identity, untouchedAuthority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id, ownerAuthority, zAuthority, untouchedAuthority)
 	require.NoError(t, err)
 	identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, owners []string) (func() error, error) {
@@ -286,14 +288,14 @@ func TestBatchCommitAuthoritySetIsRunnerWideCeilingAndOrdersOwnerTickets(t *test
 		Changed:  changed,
 	})
 	require.NoError(t, err)
-	for _, authority := range []*AgentFinalizationAuthority{ownerAuthority, zAuthority} {
-		record, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.identity)
+	for _, authority := range []*session.AgentFinalizationAuthority{ownerAuthority, zAuthority} {
+		record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 		require.NoError(t, err)
 		require.Zero(t, record.OpenTickets, "all tickets are released after the callback")
 	}
 	require.EqualValues(t, 0, commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='untouched-call'`),
 		"an unaffected runner capability receives no ticket")
-	untouched, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, untouchedAuthority.identity)
+	untouched, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, untouchedAuthority.Identity)
 	require.NoError(t, err)
 	require.Zero(t, untouched.Revision)
 	require.Zero(t, untouched.OpenTickets)
@@ -304,7 +306,7 @@ func TestBatchCommitAuthorityCancellationReleasesAdmittedTicket(t *testing.T) {
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "cancel-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id, authority)
 	require.NoError(t, err)
 	ctx, timeoutCancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -313,13 +315,13 @@ func TestBatchCommitAuthorityCancellationReleasesAdmittedTicket(t *testing.T) {
 	defer cancel()
 	identity.AdmitOwners = func(ctx context.Context, _ jobbatch.Transition, owners []string) (func() error, error) {
 		require.Equal(t, []string{"owner"}, owners)
-		require.NoError(t, NewService(db.New(env.conn), env.conn).RequestCancel(env.ctx, "owner"))
+		require.NoError(t, session.NewService(db.New(env.conn), env.conn).RequestCancel(env.ctx, "owner"))
 		cancel()
 		return func() error { return nil }, nil
 	}
 	err = NewBatchCommitHook(env.store, identity)(ctx, admissionSubmit("r", "call-r", 1))
 	require.ErrorIs(t, err, context.Canceled)
-	record, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.identity)
+	record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, record.Revision)
 	require.Zero(t, record.OpenTickets, "detached cleanup releases after request cancellation")
@@ -332,7 +334,7 @@ func TestBatchCommitAuthorityWriterRollbackReleasesTicket(t *testing.T) {
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "rollback-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id, authority)
 	require.NoError(t, err)
 	_, err = env.conn.ExecContext(env.ctx, `CREATE TRIGGER finalization_writer_abort
@@ -342,7 +344,7 @@ func TestBatchCommitAuthorityWriterRollbackReleasesTicket(t *testing.T) {
 	defer cancel()
 	err = NewBatchCommitHook(env.store, identity)(ctx, admissionSubmit("r", "call-r", 1))
 	require.ErrorContains(t, err, "finalization writer rollback")
-	record, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.identity)
+	record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, record.Revision)
 	require.Zero(t, record.OpenTickets)
@@ -355,7 +357,7 @@ func TestBatchCommitAuthorityReleaseFailureLeavesCommittedProjectionHeld(t *test
 	env := newCommitHookEnv(t)
 	service := finalizationCommitService(env)
 	authority := finalizationCommitAuthority(t, service, "owner", "release-fail-call", 1)
-	finalizationCommitFailureDiagnostics(t, env, authority.identity)
+	finalizationCommitFailureDiagnostics(t, env, authority.Identity)
 	identity, err := service.WithAgentFinalizationAuthorities(env.id, authority)
 	require.NoError(t, err)
 	_, err = env.conn.ExecContext(env.ctx, `CREATE TRIGGER finalization_release_abort
@@ -366,14 +368,14 @@ func TestBatchCommitAuthorityReleaseFailureLeavesCommittedProjectionHeld(t *test
 	defer cancel()
 	err = NewBatchCommitHook(env.store, identity)(ctx, admissionSubmit("r", "call-r", 1))
 	require.ErrorContains(t, err, "finalization ticket release failure")
-	record, err := NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.identity)
+	record, err := session.NewAgentFinalizationStore(env.conn).Snapshot(ctx, authority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, record.Revision)
 	require.EqualValues(t, 1, record.OpenTickets)
 	require.EqualValues(t, 1, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE node_id=root_id`), "one root node is committed")
 	require.EqualValues(t, 2, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes`), "OneItem reserves root and leaf")
 	require.EqualValues(t, 1, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_runner_checkpoints`))
-	require.ErrorIs(t, sealFinalizationForTest(ctx, env.conn, NewAgentFinalizationStore(env.conn), authority.identity, record.Revision), ErrAgentFinalizationChanged,
+	require.ErrorIs(t, sealFinalizationForTest(ctx, env.conn, session.NewAgentFinalizationStore(env.conn), authority.Identity, record.Revision), session.ErrAgentFinalizationChanged,
 		"a committed projection cannot seal while its ticket remains open")
 }
 
@@ -408,11 +410,11 @@ func TestBatchCommitAuthorityPartialAdmissionFailureSurfacesCleanupFailure(t *te
 	})
 	require.ErrorContains(t, err, "second owner admission failed")
 	require.ErrorContains(t, err, "partial ticket release failed")
-	ownerState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, ownerAuthority.identity)
+	ownerState, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, ownerAuthority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, ownerState.Revision)
 	require.EqualValues(t, 1, ownerState.OpenTickets)
-	zState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, zAuthority.identity)
+	zState, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, zAuthority.Identity)
 	require.NoError(t, err)
 	require.Zero(t, zState.Revision)
 	require.Zero(t, commitHookCount(t, env.conn, `SELECT count(*) FROM batch_nodes WHERE state='running'`))
@@ -444,13 +446,13 @@ func TestBatchCommitAuthorityPartialAdmissionCleanupSucceeds(t *testing.T) {
 		Changed:  changed,
 	})
 	require.ErrorContains(t, err, "second owner admission failed")
-	ownerState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, ownerAuthority.identity)
+	ownerState, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, ownerAuthority.Identity)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, ownerState.Revision)
 	require.Zero(t, ownerState.OpenTickets)
 	require.Equal(t, int64(1), commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='owner-call' AND released=1`),
 		"the first owner's released receipt remains durable")
-	zState, err := NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, zAuthority.identity)
+	zState, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, zAuthority.Identity)
 	require.NoError(t, err)
 	require.Zero(t, zState.Revision)
 	require.Equal(t, int64(1), commitHookCount(t, env.conn, `SELECT count(*) FROM session_agent_finalization_tickets WHERE logical_call_id='owner-call' AND released=1`))

@@ -10,6 +10,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,7 @@ func controlClient(hub *Hub) *Client {
 	return c
 }
 
-func controlFixture(t *testing.T) (*app.App, session.Session, string, string) {
+func controlFixture(t *testing.T) (*app.App, coresession.Session, string, string) {
 	t.Helper()
 	a := newAttachmentsTestApp(t, t.TempDir(), t.TempDir())
 	owner, err := a.Sessions.Create(t.Context(), "control owner")

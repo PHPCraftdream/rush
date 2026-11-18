@@ -13,6 +13,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // ErrForeignWorkspace is the WS-1 refusal (#1142 step C,
@@ -73,7 +76,7 @@ const (
 // committed (deleted). Nothing else may return nil.
 //
 // On failure, returns the underlying error (including the
-// ErrCallQueuedNotExecuted sentinel, or an error matching
+// session.ErrCallQueuedNotExecuted sentinel, or an error matching
 // AlreadyAttempted/*SessionLockBusyError) after already performing the
 // matching Ack/Nack/TerminalFail write — callers never need to interpret
 // the error to decide what to persist for the row, only what to do next on
@@ -91,7 +94,7 @@ const (
 //     2026-08-18 release-readiness review), which made `rush run` tell the
 //     operator a durable continuation had completed when nothing had been
 //     committed at all.
-func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEntry, admission *admissionEntry) (map[string]struct{}, string, error) {
+func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *session.RunQueueEntry, admission *admissionEntry) (map[string]struct{}, string, error) {
 	// newDBCtx creates a fresh, short-lived (30s) context for a single DB
 	// write, deliberately rooted in context.Background() rather than p.ctx or
 	// execCtx: it must outlive both the pump's own lifecycle (Ack/Nack/
@@ -195,8 +198,8 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	var cancelCauseAtomic atomic.Int32
 
 	// Parse the call data from JSON
-	var callData SessionAgentCallData
-	if IsSessionExecutionRequirementCallData(leased.CallData) || IsSessionCredentialRequirementCallData(leased.CallData) {
+	var callData session.SessionAgentCallData
+	if session.IsSessionExecutionRequirementCallData(leased.CallData) || session.IsSessionCredentialRequirementCallData(leased.CallData) {
 		slog.Error("run_queue_pump: refusing to execute session metadata row as a call", "id", leased.ID, "session_id", leased.SessionID, "instance_id", p.cfg.PumpInstanceID)
 		fenceDBCtx, fenceDBCancel := newDBCtx()
 		defer fenceDBCancel()
@@ -339,7 +342,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// The INITIAL seed uses leased.LeaseExpiresAt — the value
 	// LeaseRunQueueEntry actually wrote to the DB. This is safe/precise
 	// because LeaseRunQueueEntry rounds UP (ceiling) to the next whole Unix
-	// second rather than flooring (see session.go's ceilUnixSeconds and its
+	// second rather than flooring (see session.go's session.CeilUnixSeconds and its
 	// use in LeaseRunQueueEntry): the persisted deadline can only be later
 	// than the true, sub-second-precision intended deadline, by less than
 	// 1s, never earlier. A plain floor here (or in LeaseRunQueueEntry) would
@@ -349,7 +352,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// seeding the watchdog with a deadline that has already passed. The
 	// initial seed therefore still carries up to ~1s of the same one-time
 	// rounding slack described below — unavoidable without also threading
-	// LeaseRunQueueEntry's pre-rounding value back through RunQueueEntry,
+	// LeaseRunQueueEntry's pre-rounding value back through session.RunQueueEntry,
 	// which is out of scope here (this is a one-time cost paid once per
 	// execution, not the per-renewal, potentially-repeated cost the fix
 	// below targets).
@@ -358,13 +361,13 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// decision and the renewal loop's DB-timeout budget are measured
 	// against. After the first successful renewal (see below), this holds
 	// the TRUE, sub-second-precision intended deadline
-	// (time.Now().Add(TTL), computed BEFORE ceilUnixSeconds rounds it up
+	// (time.Now().Add(TTL), computed BEFORE session.CeilUnixSeconds rounds it up
 	// for the whole-Unix-seconds DB column) — NOT the DB-persisted,
 	// ceiling-rounded value that column actually holds.
 	//
-	// Found by direct measurement (task #604): ceilUnixSeconds's up-to-1s
+	// Found by direct measurement (task #604): session.CeilUnixSeconds's up-to-1s
 	// rounding — deliberately one-directional (only ever later than the
-	// true deadline, see ceilUnixSeconds's own doc, and REQUIRED to stay
+	// true deadline, see session.CeilUnixSeconds's own doc, and REQUIRED to stay
 	// that way so CleanupExpiredLeases never reclaims a row before the
 	// watchdog would have cancelled it) — was silently consumed FROM the
 	// watchdog's own safety margin every time this atomic was previously
@@ -487,14 +490,14 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				// trueNewExpiresAt is what seeds watchdogDeadlineAtomic
 				// (task #604): using the unrounded value for the watchdog's
 				// OWN firing decision closes an up-to-1s gap that was
-				// silently eaten out of the safety margin by ceilUnixSeconds
+				// silently eaten out of the safety margin by session.CeilUnixSeconds
 				// every time a renewal succeeded — see watchdogDeadlineAtomic's
 				// doc for the measured magnitude (97ms-930ms observed on a
 				// real Linux box, up to 37% of a 2.5s test margin) and why
 				// using the true, always-earlier-or-equal deadline here is
 				// strictly safer than the rounded one, never weaker.
 				//
-				// ceilUnixSeconds (not a plain .Unix() floor) for newExpiresAt:
+				// session.CeilUnixSeconds (not a plain .Unix() floor) for newExpiresAt:
 				// lease_expires_at is a whole-Unix-seconds column, and a plain
 				// floor can lose up to ~1s depending purely on the arbitrary
 				// sub-second wall-clock phase a renewal happens to land on —
@@ -505,13 +508,13 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 				// the instant it's renewed. Rounding UP instead is the safe
 				// direction for the DB column: it can only make the persisted
 				// deadline later than the true deadline, by less than 1s,
-				// never earlier — see ceilUnixSeconds's doc and the P0-3 fix
+				// never earlier — see session.CeilUnixSeconds's doc and the P0-3 fix
 				// note on LeaseRunQueueEntry for the matching initial-lease
 				// case. That same up-to-1s-later property is exactly why the
 				// DB column's value is no longer also used for the watchdog's
 				// own timing above.
 				trueNewExpiresAt := p.now().Add(p.leaseTTL())
-				newExpiresAt := ceilUnixSeconds(trueNewExpiresAt)
+				newExpiresAt := session.CeilUnixSeconds(trueNewExpiresAt)
 				renewDBCtx, renewDBCancel := context.WithTimeout(context.Background(), timeUntilWatchdog)
 				ok, err := p.cfg.Sessions.RenewRunQueueLease(renewDBCtx, leased.ID, p.cfg.PumpInstanceID, newExpiresAt)
 				renewDBCancel()
@@ -584,7 +587,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// Attempt to execute via coordinator.Run. The leased row's durable id
 	// rides the context (R12-H2b §2.4): the coordinator's rebuild releases
 	// this row's Continuation holder in both outcomes.
-	_, err := p.cfg.Coordinator.Run(WithRunQueueRowID(withFinalizationQueueLease(execCtx, leased), leased.ID), callData)
+	_, err := p.cfg.Coordinator.Run(WithRunQueueRowID(session.WithFinalizationQueueLease(execCtx, leased), leased.ID), callData)
 	sealAssistantIdentities()
 
 	// Stop renewing IMMEDIATELY once Run returns, synchronously, before any
@@ -593,7 +596,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// deferred stop would only run at function exit, leaving a window
 	// where the renewal goroutine is still alive (and can still fire one
 	// more tick) WHILE this function is already deciding the row's fate.
-	// Observed directly: with a defer, the ErrCallQueuedNotExecuted branch
+	// Observed directly: with a defer, the session.ErrCallQueuedNotExecuted branch
 	// below could Nack the row back to pending, and the still-live renewal
 	// goroutine could then fire and find `status != leased`, logging a
 	// spurious "lost lease ownership" — misleading, since nothing else
@@ -632,7 +635,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// entire Run() call was the bug.
 	dbCtx, dbCancel := newDBCtx()
 	defer dbCancel()
-	if recordErr := recordFinalizationQueueFailure(dbCtx, leased, err); recordErr != nil {
+	if recordErr := session.RecordFinalizationQueueFailure(dbCtx, leased, err); recordErr != nil {
 		ids, terminalID := resultIdentity()
 		return ids, terminalID, errors.Join(ErrTurnCommitFailed, err, recordErr)
 	}
@@ -681,7 +684,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 		return ids, terminalID, nil
 	}
 
-	// ErrCallQueuedNotExecuted means the call was appended to a genuinely
+	// session.ErrCallQueuedNotExecuted means the call was appended to a genuinely
 	// external live owner's mailbox (inFlight already rules out this being
 	// the pump's own doing) rather than executed by this attempt — see that
 	// error's doc for why it must be treated as neither success nor an
@@ -714,7 +717,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// lease_expires_at beyond what leasing already set, and
 	// CleanupExpiredLeases still reaped the row — and charged an attempt
 	// — after essentially one ordinary TTL window, same as doing nothing.
-	if errors.Is(err, ErrCallQueuedNotExecuted) {
+	if errors.Is(err, session.ErrCallQueuedNotExecuted) {
 		if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(dbCtx, leased.ID, p.cfg.PumpInstanceID, "queued into an externally-owned in-process session, not executed"); nackErr != nil {
 			slog.Error("run_queue_pump: no-penalty release after queued-not-executed failed", "id", leased.ID, "session_id", leased.SessionID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)
 		}
@@ -766,7 +769,7 @@ func (p *RunQueuePump) executeEntrySync(ctx context.Context, leased *RunQueueEnt
 	// counting it would let a few turns' worth of routine contention
 	// silently delete accepted user work once attempts exhausts (found in
 	// the final @oh review of tasks #337-349 — P0-2).
-	var busyErr *SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	if errors.As(err, &busyErr) {
 		if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(dbCtx, leased.ID, p.cfg.PumpInstanceID, err.Error()); nackErr != nil {
 			slog.Error("run_queue_pump: no-penalty nack failed", "id", leased.ID, "err", nackErr, "instance_id", p.cfg.PumpInstanceID)

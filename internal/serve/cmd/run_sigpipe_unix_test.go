@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +29,7 @@ func TestBrokenPipeHelperProcess(t *testing.T) {
 		t.Skip("helper of TestKeepBrokenPipeAsError")
 	}
 	if mode == "guard" {
-		defer keepBrokenPipeAsError()()
+		defer cliproc.KeepBrokenPipeAsError()()
 	}
 	_, err := os.Stdout.WriteString(`{"exit_reason":"end_turn"}` + "\n")
 	if !errors.Is(err, syscall.EPIPE) {

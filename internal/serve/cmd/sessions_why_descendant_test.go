@@ -27,6 +27,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -49,7 +51,7 @@ func writeLockFileAt(t *testing.T, dataDir, sessionID string, pid int) string {
 // abandoned rather than merely quiet.
 func backDateLock(t *testing.T, path string) {
 	t.Helper()
-	stale := time.Now().Add(-(session.LockStaleDuration + 5*time.Second))
+	stale := time.Now().Add(-(sessionlock.LockStaleDuration + 5*time.Second))
 	require.NoError(t, os.Chtimes(path, stale, stale))
 }
 
@@ -71,7 +73,7 @@ func addFinishedAssistant(t *testing.T, m message.Service, sessionID string, rea
 // services over a REAL, fully migrated sqlite DB -- db.Connect, not a
 // hand-rolled schema, since the batch readers need batch_nodes and
 // session_notices to exist -- no full agent coordinator).
-func newWhyDescendantTestApp(t *testing.T) (a *app.App, s session.Service, m message.Service, store *session.SessionNoticeStore, dataDir string) {
+func newWhyDescendantTestApp(t *testing.T) (a *app.App, s coresession.Service, m message.Service, store *session.SessionNoticeStore, dataDir string) {
 	t.Helper()
 	dataDir = t.TempDir()
 	ctx := context.Background()
@@ -79,7 +81,7 @@ func newWhyDescendantTestApp(t *testing.T) (a *app.App, s session.Service, m mes
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 	q := db.New(conn)
-	s = session.NewService(q, conn)
+	s = coresession.NewService(q, conn)
 	m = message.NewService(q)
 	a = &app.App{Messages: m, Sessions: s, DB: func() *sql.DB { return conn }}
 	a.SetDataDirForTest(dataDir)
@@ -271,7 +273,7 @@ func TestExplainSessionStatus_DeadHolderWithLiveChildIsDelegating(t *testing.T) 
 	// The child's OWN status still comes from its OWN session lock -- that
 	// mechanism is unrelated to (and unchanged by) the batch-root liveness
 	// walk above.
-	childLock, err := session.TryAcquireSessionLock(dataDir, child.ID)
+	childLock, err := sessionlock.TryAcquireSessionLock(dataDir, child.ID)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, childLock.Release()) }()
 

@@ -87,13 +87,6 @@ rush logs summary --file a.log --file b.log --gap 30m
 	RunE: logsSummaryCmdRun,
 }
 
-func init() {
-	logsSummaryCmd.Flags().String("since", "", "Only count lines newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days")
-	logsSummaryCmd.Flags().StringSlice("file", nil, "Log file to summarize (repeatable). Defaults to <data-dir>/logs/rush.log")
-	logsSummaryCmd.Flags().Duration("gap", defaultSilenceGap, "How much time with no timestamped line counts as a silence gap")
-	logsSummaryCmd.Flags().Bool("json", false, "Emit one JSON object instead of text")
-}
-
 // logEntry is one parsed log line. Fields holds every JSON field other than
 // time/level/msg/source, rendered as "key=value" and sorted, so two lines
 // that differ only in a field value are told apart reliably.

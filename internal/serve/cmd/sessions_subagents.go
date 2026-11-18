@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // printSubAgentTranscripts renders the messages of every direct sub-agent

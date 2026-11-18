@@ -9,6 +9,9 @@ package session
 import (
 	"errors"
 	"fmt"
+
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // isOrdinaryRetryableOutcome reports whether execErr is the kind of failure
@@ -28,7 +31,7 @@ func isOrdinaryRetryableOutcome(execErr error) bool {
 	if errors.Is(execErr, errLeaseLost) || errors.Is(execErr, ErrTurnCommitFailed) {
 		return false
 	}
-	if errors.Is(execErr, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(execErr) {
+	if errors.Is(execErr, session.ErrCallQueuedNotExecuted) || isSessionLockBusyErr(execErr) {
 		return false
 	}
 	var alreadyAttempted AlreadyAttempted
@@ -155,7 +158,7 @@ func classifyBackgroundOutcome(outcome admissionOutcome) (drained bool, rowID st
 		return true, outcome.rowID, termErr, false
 
 	default: // outcomeExecuted
-		// executeEntrySync itself can ALSO return ErrCallQueuedNotExecuted
+		// executeEntrySync itself can ALSO return session.ErrCallQueuedNotExecuted
 		// or a *SessionLockBusyError as its own return value: the row was
 		// genuinely leased by the admission holder, but Coordinator.Run
 		// found the session already owned by a DIFFERENT, live process/turn
@@ -169,7 +172,7 @@ func classifyBackgroundOutcome(outcome admissionOutcome) (drained bool, rowID st
 		// This check must run BEFORE the generic "an execution happened"
 		// fallthrough below, exactly as it did when this function switched
 		// on a bare error via errors.Is instead of outcome.kind.
-		if errors.Is(outcome.err, ErrCallQueuedNotExecuted) || isSessionLockBusyErr(outcome.err) {
+		if errors.Is(outcome.err, session.ErrCallQueuedNotExecuted) || isSessionLockBusyErr(outcome.err) {
 			return false, "", nil, true
 		}
 
@@ -194,6 +197,6 @@ func classifyBackgroundOutcome(outcome admissionOutcome) (drained bool, rowID st
 // factored out so DrainSessionNow can use it without duplicating the
 // errors.As boilerplate.
 func isSessionLockBusyErr(err error) bool {
-	var busyErr *SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	return errors.As(err, &busyErr)
 }

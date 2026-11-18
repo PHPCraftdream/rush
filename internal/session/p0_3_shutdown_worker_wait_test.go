@@ -35,6 +35,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,7 +57,7 @@ func newBlockingCoordinator() *blockingCoordinator {
 }
 
 // Run blocks until the coordinator's blockCh is closed, then returns success.
-func (c *blockingCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *blockingCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.entryCount.Add(1)
 	c.mu.Lock()
 	ch := c.blockCh

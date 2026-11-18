@@ -22,6 +22,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -55,7 +57,7 @@ type coordinatorAdapterImpl struct {
 	app *App
 }
 
-func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	coord := a.app.AgentCoordinator
 	if coord == nil {
 		return nil, fmt.Errorf("app: coordinator not ready yet")
@@ -64,7 +66,7 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 		return result, err
 	}
 
-	// Convert session.SessionAgentCallData to agent.SessionAgentCall
+	// Convert coresession.SessionAgentCallData to agent.SessionAgentCall
 	// This requires rebuilding the full Model from the serialized ModelCfg,
 	// which only the coordinator can do (it has access to provider configs
 	// and catwalk registry). Delegate to coordinator.RebuildSessionAgentCall.
@@ -84,9 +86,9 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 		// for this case — see tryReserveSession). Report this distinctly
 		// so the pump does not treat it as an ordinary success (which
 		// would Ack/delete a durable row for work that has not actually
-		// run) — see session.ErrCallQueuedNotExecuted's doc for the full
+		// run) — see coresession.ErrCallQueuedNotExecuted's doc for the full
 		// rationale, found by the third @oh review pass over #337-349.
-		return nil, session.ErrCallQueuedNotExecuted
+		return nil, coresession.ErrCallQueuedNotExecuted
 	}
 	// Return as any - we only care about error handling, not the result
 	var anyResult any
@@ -97,7 +99,7 @@ func (a *coordinatorAdapterImpl) Run(ctx context.Context, callData session.Sessi
 }
 
 type App struct {
-	Sessions               session.Service
+	Sessions               coresession.Service
 	Messages               message.Service
 	History                history.Service
 	Permissions            permission.Service
@@ -110,7 +112,7 @@ type App struct {
 	// (internal/agent/wake_scheduler.go is the worker over it), built below
 	// and handed to the coordinator in InitCoderAgent. Nil under
 	// SkipAgentSetup or when dataDir=="".
-	wakeScheduleStore *session.WakeScheduleStore
+	wakeScheduleStore *sessionwake.WakeScheduleStore
 
 	// batchRuntime is the R11F app-owned batch runtime owner. Nil unless
 	// the App installed the batch runtime at New (SkipAgentSetup and
@@ -392,7 +394,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		}
 	}
 
-	sessions := session.NewServiceWithWorkspace(q, conn, qRead, readConn, workspaceRoot, workingDir, home)
+	sessions := coresession.NewServiceWithWorkspace(q, conn, qRead, readConn, workspaceRoot, workingDir, home)
 	messages := message.NewServiceWithReader(q, qRead)
 	files := history.NewService(q, conn)
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
@@ -441,7 +443,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	// started by InitCoderAgent's SetWakeScheduleStore (a config-only App
 	// never needs the timer).
 	if !o.skipAgentSetup && dataDir != "" {
-		app.wakeScheduleStore = session.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
+		app.wakeScheduleStore = sessionwake.NewWakeScheduleStoreWithWorkspace(conn, workspaceRoot, workingDir, home)
 	} else if !o.skipAgentSetup && dataDir == "" {
 		// Ephemeral library-mode App (sdk.ModeLibrary with no WorkingDir):
 		// no persisted batch install runs here, hence no

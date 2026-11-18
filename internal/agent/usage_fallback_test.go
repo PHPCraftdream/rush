@@ -8,7 +8,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
-	"github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -212,7 +212,7 @@ func TestUpdateSessionUsageKeepsCountersForZeroUsage(t *testing.T) {
 	t.Parallel()
 
 	agent := &sessionAgent{}
-	currentSession := &session.Session{
+	currentSession := &core.Session{
 		ID:               "session-id",
 		PromptTokens:     123,
 		CompletionTokens: 456,
@@ -231,7 +231,7 @@ func TestUpdateSessionUsagePreservesOmittedCountersForPartialUsage(t *testing.T)
 	t.Parallel()
 
 	agent := &sessionAgent{}
-	currentSession := &session.Session{
+	currentSession := &core.Session{
 		ID:               "session-id",
 		PromptTokens:     123,
 		CompletionTokens: 456,
@@ -249,7 +249,7 @@ func TestUpdateSessionUsagePreservesCountersForTotalOnlyUsage(t *testing.T) {
 	t.Parallel()
 
 	agent := &sessionAgent{}
-	currentSession := &session.Session{
+	currentSession := &core.Session{
 		ID:               "session-id",
 		PromptTokens:     123,
 		CompletionTokens: 456,
@@ -267,7 +267,7 @@ func TestUpdateSessionUsagePreservesPromptForOutputOnlyUsage(t *testing.T) {
 	t.Parallel()
 
 	agent := &sessionAgent{}
-	currentSession := &session.Session{
+	currentSession := &core.Session{
 		ID:               "session-id",
 		PromptTokens:     123,
 		CompletionTokens: 456,
@@ -285,7 +285,7 @@ func TestUpdateSessionUsageKeepsCountersForEstimatedZeroUsage(t *testing.T) {
 	t.Parallel()
 
 	agent := &sessionAgent{}
-	currentSession := &session.Session{
+	currentSession := &core.Session{
 		ID:               "session-id",
 		PromptTokens:     123,
 		CompletionTokens: 456,
@@ -319,7 +319,7 @@ func TestUpdateSessionUsageAddsProviderCost(t *testing.T) {
 	t.Parallel()
 
 	agent := &sessionAgent{}
-	currentSession := &session.Session{ID: "session-id", OwnCost: 1.25}
+	currentSession := &core.Session{ID: "session-id", OwnCost: 1.25}
 	model := Model{CatwalkCfg: catwalk.Model{CostPer1MIn: 10, CostPer1MOut: 20}}
 	usage := fantasy.Usage{InputTokens: 1000, OutputTokens: 2000}
 

@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -19,7 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	sessionpkg "github.com/PHPCraftdream/rush/internal/session"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // subAgentParams holds the parameters for running a sub-agent.
@@ -48,8 +50,8 @@ type subAgentParams struct {
 	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
 }
 
-func loadChildRoleContract(ctx context.Context, sessions sessionpkg.Service, childID string) (*sessionpkg.RoleContract, error) {
-	store, ok := sessions.(sessionpkg.SessionRoleContractStore)
+func loadChildRoleContract(ctx context.Context, sessions core.Service, childID string) (*core.RoleContract, error) {
+	store, ok := sessions.(core.SessionRoleContractStore)
 	if !ok {
 		return nil, fmt.Errorf("%w: child role contract store unavailable", ErrAgentRoleUnconfigured)
 	}
@@ -115,15 +117,15 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if params.ResumeSessionID == "" {
 		childRemaining--
 	}
-	depthStore, depthStoreOK := c.sessions.(sessionpkg.AgentDepthStore)
+	depthStore, depthStoreOK := c.sessions.(core.AgentDepthStore)
 	if !depthStoreOK {
 		return fantasy.ToolResponse{}, errors.New("agent depth persistence unavailable")
 	}
 	cfg, _ := c.cfg.Snapshot()
 	requestedRole := params.RequestedModelRole
 	var explicitRoleModel *delegationRoleModel
-	var childRoleContract *sessionpkg.RoleContract
-	var session sessionpkg.Session
+	var childRoleContract *core.RoleContract
+	var session core.Session
 	resolveRole := func(childID string) error {
 		var err error
 		requestedRole, err = resolveDelegationRequestedRole(ctx, c.sessions, childID, requestedRole)
@@ -322,7 +324,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// per-call credentials exist to prevent. A build failure is a hard
 	// error for the same reason: falling through to `model` would run
 	// tenant work on the shared config.
-	hbSource := hbSourceSlotStart
+	hbSource := callbeat.HbSourceSlotStart
 	var credProviderCfg *config.ProviderConfig
 	var callCreds *CredentialSet
 	if explicitRoleModel != nil {
@@ -347,7 +349,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			}
 			model = credModel
 			credProviderCfg = &provCfg
-			hbSource = hbSourcePerCall
+			hbSource = callbeat.HbSourcePerCall
 		}
 	}
 
@@ -368,14 +370,14 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			slog.Error("runSubAgent: failed to resolve session worker override, falling back to default", "sessionID", params.SessionID, "err", err)
 		} else if override != nil {
 			model = *override
-			hbSource = hbSourceSessionOverride
+			hbSource = callbeat.HbSourceSessionOverride
 		}
 	}
 	// The refresh is best-effort; preserve the selected role for future turns.
 	var dispatchSlotRole config.SelectedModelType
 	if requestedRole != "" && !requestedRole.Builtin() {
 		dispatchSlotRole = ""
-	} else if requestedRole == "" && params.slotModel && callCreds == nil && hbSource != hbSourceSessionOverride {
+	} else if requestedRole == "" && params.slotModel && callCreds == nil && hbSource != callbeat.HbSourceSessionOverride {
 		dispatchSlotRole = config.SelectedModelTypeSmart
 		if role := callModelRole(ctx); role == "" || role == config.SelectedModelTypeSmart {
 			if c.workerSubAgentActiveForCall(ctx, cfg) {
@@ -384,7 +386,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		}
 		if refreshed, ok := c.refreshSubAgentSlotModel(ctx, cfg, dispatchSlotRole, model); ok {
 			model = refreshed
-			hbSource = hbSourceSlotLive
+			hbSource = callbeat.HbSourceSlotLive
 		}
 	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -432,7 +434,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return nil
 	}
 
-	if callCreds == nil && explicitRoleModel == nil && childRoleContract == nil && hbSource != hbSourceSessionOverride {
+	if callCreds == nil && explicitRoleModel == nil && childRoleContract == nil && hbSource != callbeat.HbSourceSessionOverride {
 		if err := c.refreshOAuth2Token(ctx, providerCfg); err != nil {
 			slog.Error("Failed to refresh OAuth2 token before sub-agent run. Proceeding with existing token.", "error", err)
 		} else if err := rebuildCall(); err != nil {
@@ -525,7 +527,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		callTemplate.Tools = batchChildTools
 		callTemplate.BatchQuestion = batchQuestionState
 	}
-	delegatedFinalization := sessionpkg.CaptureAgentFinalizationContext(ctx)
+	delegatedFinalization := core.CaptureAgentFinalizationContext(ctx)
 	callTemplate.LogicalCallID, err = finalizationLogicalIdentity(delegatedFinalization, session.ID, callTemplate.LogicalCallID)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
@@ -575,7 +577,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	// that gap; every remaining line of this function is unchanged.
 	// Heartbeat attribution: delegation boundary re-parents onto the child
 	// session; root inherited from the dispatching turn (design pt. 2).
-	ctx = inheritHeartbeat(ctx, session.ID, "worker", hbSource)
+	ctx = callbeat.InheritHeartbeat(ctx, session.ID, "worker", hbSource)
 	run := func() (*fantasy.AgentResult, error) {
 		runOptions := *childCallOptions
 		runOptions.MaxAgentDepth = childRemaining

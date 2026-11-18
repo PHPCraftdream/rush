@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // rootFinalizationGeneration is the durable generation of a root run's

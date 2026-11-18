@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -131,8 +132,12 @@ func writeNativeMarkdownCommand(dir, name, desc, body string) error {
 	return writeSentinelledFile(filepath.Join(dir, name), claudeSlashCommandSentinel, content)
 }
 
-func init() {
-	opencodeInitCmd.Flags().Bool("global", false, "Install globally (default).")
-	opencodeInitCmd.Flags().Bool("local", false, "Install into the current project's .opencode/commands/.")
-	rootCmd.AddCommand(opencodeInitCmd)
+var newOpencodeInitCmdOnce sync.Once
+
+func NewOpencodeInitCmd() *cobra.Command {
+	newOpencodeInitCmdOnce.Do(func() {
+		opencodeInitCmd.Flags().Bool("global", false, "Install globally (default).")
+		opencodeInitCmd.Flags().Bool("local", false, "Install into the current project's .opencode/commands/.")
+	})
+	return deepFreshCmd(opencodeInitCmd)
 }

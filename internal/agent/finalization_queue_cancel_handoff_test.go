@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -20,12 +21,12 @@ import (
 
 func TestFinalizationReservationOldCancelHandleCancelsNewRun(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
-	sessions := fixture.api.(session.Service)
+	sessions := fixture.api.(coresession.Service)
 	parent, err := fixture.api.BindAgentFinalization(fixture.ctx, fixture.parent)
 	require.NoError(t, err)
-	trusted, err := session.WithAgentFinalizationContext(context.Background(), parent)
+	trusted, err := coresession.WithAgentFinalizationContext(context.Background(), parent)
 	require.NoError(t, err)
-	data := reservationQueueCall(t, fixture, fixture.parent, session.CaptureAgentFinalizationContext(trusted))
+	data := reservationQueueCall(t, fixture, fixture.parent, coresession.CaptureAgentFinalizationContext(trusted))
 	started, cancelled := make(chan struct{}), make(chan struct{})
 	handlerRelease := make(chan struct{})
 	var handlerReleaseOnce sync.Once

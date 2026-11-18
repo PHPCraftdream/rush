@@ -8,7 +8,11 @@
 #
 # When you split a directory: delete its line here. An element count
 # may never go up.
-internal/agent 251
+# 251 -> 252: +1 EX-0A adds wake_component.go (wakeComponent retarget, D1 §3.5).
+# 252 -> 253: +1 providers_component.go (EX-0B pass B1, providerComponent retarget, D1 §3.5).
+# 253 -> 255: +2 EX-0B pass B2 adds models_component.go, tools_component.go (models/tools retarget).
+# The count falls when the DM coordination phase consolidates (D1 §2.4, entries deleted at consolidation). Only down from here.
+internal/agent 245
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
@@ -21,7 +25,8 @@ internal/agent/tools/mcp 19
 internal/app 52
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
-internal/serve/cmd 167
+# 136 guard-verified rc0 on 2026-11-17 (M1 scan pass; value unchanged).
+internal/serve/cmd 121
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).
@@ -39,10 +44,11 @@ internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/serve/server 58
-# 125 -> 126: +1 internal/session/run (run/sessiontest: shared test fixtures, lane SM4 of the session design, S8);
-# run/ holds the run components after lane EX7, the row falls with the session cut (FIN).
-internal/session 126
+internal/serve/server 46
+internal/session 64
+# MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
+# per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
+internal/session/service 40
 internal/kit/sys/shell 17
 # internal/config/domains/datadir 9: born with 9 elements (lane D2-4 cluster 1: datadir, global_dir, global_testguard,
 # globalpaths, worktreehome, load_skills, systemconfig_unix/windows (an OS pair) and export); falls to <= 7 when the

@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,8 +86,8 @@ func TestDrainSessionNow_ExecutesPendingEntry(t *testing.T) {
 func TestDrainSessionNow_WaitsForConcurrentBackgroundTick(t *testing.T) {
 	tl := sessiontest.NewTestTimeline()
 	sessiontest.ReportPumpSetupOnFailure(t, tl)
-	var sess *session.Session
-	var svc session.Service
+	var sess *core.Session
+	var svc core.Service
 	tl.Stepf(func() { sess, svc = setupTestSession(t, "drain-now-race") }, "fixture setup")
 	registerPumpQueueReport(t, tl, svc, "drain-now-race-idem-1")
 	coord := &slowCoordinatorForDrain{
@@ -160,7 +161,7 @@ type countingCoordinatorForDrain struct {
 	calls atomic.Int64
 }
 
-func (c *countingCoordinatorForDrain) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *countingCoordinatorForDrain) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	return nil, nil
 }
@@ -171,7 +172,7 @@ type slowCoordinatorForDrain struct {
 	release chan struct{}
 }
 
-func (c *slowCoordinatorForDrain) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *slowCoordinatorForDrain) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	select {
 	case c.started <- struct{}{}:

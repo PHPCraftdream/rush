@@ -45,10 +45,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -118,7 +120,7 @@ func TestRoleSlotOverride_SessionPinThenConfigSlot(t *testing.T) {
 	}
 	ovr, src, ok := roleSlotOverride(cfg, workerPin, config.SelectedModelTypeWorker, "")
 	require.True(t, ok)
-	require.Equal(t, hbSourceSessionOverride, src)
+	require.Equal(t, callbeat.HbSourceSessionOverride, src)
 	require.Equal(t, "pin-worker", ovr.Model)
 	require.Equal(t, "high", ovr.ReasoningEffort)
 
@@ -129,17 +131,17 @@ func TestRoleSlotOverride_SessionPinThenConfigSlot(t *testing.T) {
 	}
 	ovr, src, ok = roleSlotOverride(cfg, reviewerPin, config.SelectedModelTypeReviewer, "")
 	require.True(t, ok)
-	require.Equal(t, hbSourceSessionOverride, src)
+	require.Equal(t, callbeat.HbSourceSessionOverride, src)
 	require.Equal(t, "pin-reviewer", ovr.Model)
 
 	ovr, src, ok = roleSlotOverride(cfg, session.Session{}, config.SelectedModelTypeWorker, "")
 	require.True(t, ok)
-	require.Equal(t, hbSourceSlotStart, src)
+	require.Equal(t, callbeat.HbSourceSlotStart, src)
 	require.Equal(t, "w-model", ovr.Model)
 
 	ovr, src, ok = roleSlotOverride(cfg, session.Session{}, config.SelectedModelTypeFast, "")
 	require.True(t, ok)
-	require.Equal(t, hbSourceSlotStart, src)
+	require.Equal(t, callbeat.HbSourceSlotStart, src)
 	require.Equal(t, "f-model", ovr.Model)
 
 	_, _, ok = roleSlotOverride(cfg, session.Session{}, config.SelectedModelTypeSmart, "")
@@ -180,7 +182,7 @@ func TestResolveSessionModelsInternal_RoleSlotCascade(t *testing.T) {
 	resolved, err := coord.resolveSessionModelsInternal(roleCtx, sess.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, "m-worker", resolved.smart.ModelCfg.Model)
-	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, resolved.smartSource)
 	require.Equal(t, "m-smart", resolved.fast.ModelCfg.Model, "fast is untouched by the role resolution")
 
 	// On a web turn a session worker pin beats the config slot and is
@@ -193,17 +195,17 @@ func TestResolveSessionModelsInternal_RoleSlotCascade(t *testing.T) {
 	resolved, err = coord.resolveSessionModelsInternal(webRoleCtx, pinned.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, "m-worker", resolved.smart.ModelCfg.Model)
-	require.Equal(t, hbSourceSessionOverride, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourceSessionOverride, resolved.smartSource)
 	resolved, err = coord.resolveSessionModelsInternal(roleCtx, pinned.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, "m-worker", resolved.smart.ModelCfg.Model)
-	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, resolved.smartSource)
 
 	// No role in the context: smart stays the smart slot (unchanged behavior).
 	resolved, err = coord.resolveSessionModelsInternal(context.Background(), sess.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, "m-smart", resolved.smart.ModelCfg.Model)
-	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, resolved.smartSource)
 }
 
 // TestApplyModelOverridesResolvesRoleSlot is D2 for explicit-override
@@ -236,7 +238,7 @@ func TestApplyModelOverridesResolvesRoleSlot(t *testing.T) {
 	resolved, err := coord.applyModelOverrides(ctx, "", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "m-reviewer", resolved.smart.ModelCfg.Model)
-	require.Equal(t, hbSourceSlotStart, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourceSlotStart, resolved.smartSource)
 }
 
 // TestApplyModelOverrides_PinWinsWithFastOverridePresent is P1-2: on a web
@@ -278,7 +280,7 @@ func TestApplyModelOverrides_PinWinsWithFastOverridePresent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "w-pin", resolved.smart.ModelCfg.Model, "on a web turn the session pin beats the config slot")
 	require.Equal(t, "f-m", resolved.fast.ModelCfg.Model)
-	require.Equal(t, hbSourceSessionOverride, resolved.smartSource)
+	require.Equal(t, callbeat.HbSourceSessionOverride, resolved.smartSource)
 
 	// Outside a web turn the same pin is ignored: settings decide.
 	resolved, err = coord.applyModelOverrides(ctx, pinned.ID, nil, &ModelOverride{Provider: prov, Model: "f-m"})

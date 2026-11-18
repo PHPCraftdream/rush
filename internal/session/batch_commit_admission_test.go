@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -145,7 +147,7 @@ func TestBatchCommitAdmissionReleaseErrorSurfacesWithoutChangingPrimaryError(t *
 	primary := errors.New("writer error")
 	releaseErr := errors.New("release error")
 	releases := 0
-	err := batchCommitReleaseError(primary, func() error { releases++; return releaseErr }())
+	err := session.BatchCommitReleaseError(primary, func() error { releases++; return releaseErr }())
 	require.ErrorIs(t, err, primary)
 	require.ErrorIs(t, err, releaseErr)
 	require.Equal(t, 1, releases)

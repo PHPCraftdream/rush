@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func TestRebuildSessionAgentCall_RealSymlinkedDenyCarveOutUnderBroaderGrantStillDenies(t *testing.T) {

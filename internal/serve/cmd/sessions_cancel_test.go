@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +25,7 @@ func runCancel(t *testing.T, dataDir string, all bool, args ...string) (stderr s
 	require.NoError(t, sessionsCancelCmd.Flags().Set("cwd", ""))
 	require.NoError(t, sessionsCancelCmd.Flags().Set("all", boolFlag(all)))
 	sessionsCancelCmd.SetContext(context.Background())
-	stderr = captureStderr(t, func() { err = sessionsCancelCmd.RunE(sessionsCancelCmd, args) })
+	stderr = cmdtest.CaptureStderr(t, func() { err = sessionsCancelCmd.RunE(sessionsCancelCmd, args) })
 	return stderr, err
 }
 
@@ -45,7 +47,7 @@ func TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork(t *testing.T) {
 	require.NoError(t, err)
 	writeLockFileAt(t, dataDir, locked, os.Getpid())
 
-	driverHost := session.NewHostStore(a.DB(), dataDir, os.Getpid(), "cancel-driver-fixture")
+	driverHost := sessionhosts.NewHostStore(a.DB(), dataDir, os.Getpid(), "cancel-driver-fixture")
 	driverHostID, err := driverHost.EnsureHost(ctx)
 	require.NoError(t, err)
 	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven))
@@ -53,7 +55,7 @@ func TestSessionsCancelAll_FlagsOnlySessionsWithLiveWork(t *testing.T) {
 	// lock file stays open for the process lifetime; release it at test end
 	// so the data dir can be removed on Windows.
 	driverHost.CloseKeepLock()
-	t.Cleanup(func() { session.ReleaseRetainedHostLocksForTest(driverHostID) })
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(driverHostID) })
 	claimOwnJob(t, a, owner, "bash-1")
 	claimDelegation(t, a, parent, "delegate-1", child.ID)
 	a.Shutdown()

@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 

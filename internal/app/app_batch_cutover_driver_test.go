@@ -1,5 +1,5 @@
 // H4 batch-only: the CLI loop's durable driver claim must go through the
-// job-independent session.HostStore (released by the shutdown drain gate)
+// job-independent sessionhosts.HostStore (released by the shutdown drain gate)
 // and no legacy AsyncJobStore exists to ensure a host -- before this fix the
 // coordinator's driver claim registered a legacy hosts/<id>.lock that the
 // shutdown never released (the CI Windows unlinkat failure).
@@ -18,7 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -95,7 +95,7 @@ func TestFlagOnDriverClaimUsesHostStore_NoLegacyLock(t *testing.T) {
 	// All-OS proof the OS host lock was released by the shutdown drain gate:
 	// an exclusively re-acquirable lock (on Windows an open handle fails
 	// with a sharing violation) means no host lock leaked.
-	lock, err := filelock.TryAcquireFileLock(session.HostLockPath(dataDir, hostID))
+	lock, err := filelock.TryAcquireFileLock(sessionhosts.HostLockPath(dataDir, hostID))
 	require.NoError(t, err, "the HostStore OS lock was released by shutdown; a failure here means a host lock leaked")
 	if lock != nil {
 		t.Cleanup(func() { _ = lock.Release() })

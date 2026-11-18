@@ -16,7 +16,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/proctrack"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessioncgroup "github.com/PHPCraftdream/rush/internal/session/proc/sessioncgroup"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,11 +36,11 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 	dataDir := t.TempDir()
 	sessionID := "cliprovider-trackchildtree-reaped-leader"
 
-	lk, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	require.NoError(t, err)
 	defer lk.Release()
 
-	generation := session.ReadLockGeneration(session.SessionLockPath(dataDir, sessionID))
+	generation := sessionlock.ReadLockGeneration(sessionlock.SessionLockPath(dataDir, sessionID))
 	require.NotEmpty(t, generation)
 
 	reader, writer, err := os.Pipe()
@@ -75,7 +76,7 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 			_ = cmd.Wait()
 		}
 		proctrack.UntrackProcessTree(cmd.Process.Pid)
-		session.UnregisterChildGroup(dataDir, sessionID, cmd.Process.Pid)
+		sessioncgroup.UnregisterChildGroup(dataDir, sessionID, cmd.Process.Pid)
 		_ = writer.Close()
 		_ = reader.Close()
 	})
@@ -123,7 +124,7 @@ func TestTrackChildTree_RegistersGroupWithReapedLeaderAndLivingGrandchild(t *tes
 
 	// Drive the REAL cross-path consumer: the same sweep "rush sessions
 	// kill" runs in another process.
-	result := session.KillRegisteredChildGroups(dataDir, sessionID, generation)
+	result := sessioncgroup.KillRegisteredChildGroups(dataDir, sessionID, generation)
 	if result.Killed == 0 && result.Retained == 1 && runtime.GOOS != "linux" {
 		// The leader-gone branch now requires a registration-time member
 		// witness; on platforms with no member-enumeration facility the

@@ -33,7 +33,7 @@ package session_test
 // `session_id ... REFERENCES sessions (id) ON DELETE CASCADE` constraint
 // (20260812000001_add_orphan_call_outbox.sql), so WriteToOrphanOutbox
 // itself already rejects a bogus session_id with the same FK violation
-// (confirmed directly: session.Service.WriteToOrphanOutbox against a real
+// (confirmed directly: core.Service.WriteToOrphanOutbox against a real
 // db.Connect()-opened database, foreign_keys=ON as connect.go's own pragma
 // map sets it, returns "constraint failed: FOREIGN KEY constraint failed"
 // for a nonexistent session_id) -- and a session that legitimately existed
@@ -61,6 +61,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -88,7 +89,7 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)) })
 
 	q := db.New(conn)
-	svc := session.NewService(q, conn)
+	svc := core.NewService(q, conn)
 
 	_, err = svc.Create(ctx, "orphan-poison")
 	require.NoError(t, err)
@@ -161,7 +162,7 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 	require.True(t, after.AlreadyTerminal, "a terminal row must not be re-counted")
 }
 
-// transientBusySessions wraps a real session.Service and makes
+// transientBusySessions wraps a real core.Service and makes
 // DrainOrphanOutboxEntry return a GENUINE, driver-issued SQLITE_BUSY error
 // (not a synthetic one -- see TestIsTransientOrphanOutboxDrainError_SQLiteBusyIsTransient's
 // own doc for why a real one is used everywhere in this round) for the
@@ -170,7 +171,7 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 // failures across drain ticks must NOT count against max_attempts, unlike
 // the permanent FK-violation case covered above.
 type transientBusySessions struct {
-	session.Service
+	core.Service
 	busyErr error
 
 	// failuresLeft is written by the pump's background goroutine, read by

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // resolveDelegationRequestedRole is called only after resume ownership is checked.

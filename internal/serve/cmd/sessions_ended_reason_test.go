@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +44,7 @@ func runSessionsCmd(t *testing.T, cmd *cobra.Command, dataDir string, boolFlags 
 		require.NoError(t, cmd.Flags().Set(name, boolFlag(val)))
 	}
 	cmd.SetContext(context.Background())
-	stdout, _ := captureStdoutAndStderr(t, func() { require.NoError(t, cmd.RunE(cmd, args)) })
+	stdout, _ := cmdtest.CaptureStdoutAndStderr(t, func() { require.NoError(t, cmd.RunE(cmd, args)) })
 	return stdout
 }
 

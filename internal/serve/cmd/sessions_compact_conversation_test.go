@@ -17,7 +17,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -224,7 +225,7 @@ func TestSessionsCompactConversation_DispatchesHashPrefixWithDefaultWorker(t *te
 	diag := newCompactFailureDiagnostics(t)
 	require.Equal(t, "worker", sessionsCompactCmd.Flags().Lookup("role").DefValue)
 	cmd, seed, _, requests, sess := seedSessionsCompactConversation(t, diag, true)
-	prefix := session.HashID(sess.ID)[:12]
+	prefix := coresession.HashID(sess.ID)[:12]
 	diag.setStage("executing session compaction by hash prefix")
 	err := invokeSessionsCompactConversation(t, diag, cmd, prefix)
 	captureCompactSessionFacts(t, diag, seed, sess, false)
@@ -298,7 +299,7 @@ func TestSessionsCompactConversation_LiveSessionPreservesHistory(t *testing.T) {
 	diag := newCompactFailureDiagnostics(t)
 	cmd, seed, server, requests, sess := seedSessionsCompactConversation(t, diag, true)
 	dataDir := seed.Config().Options.DataDirectory
-	lock, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
 	defer lock.Release()
 	captureCompactSessionFacts(t, diag, seed, sess, true)
@@ -316,7 +317,7 @@ func TestSessionsCompactConversation_LiveSessionPreservesHistory(t *testing.T) {
 	server.Close()
 }
 
-func seedSessionsCompactConversation(t *testing.T, diag *compactFailureDiagnostics, worker bool) (*cobra.Command, *app.App, *httptest.Server, *compactRequestCapture, session.Session) {
+func seedSessionsCompactConversation(t *testing.T, diag *compactFailureDiagnostics, worker bool) (*cobra.Command, *app.App, *httptest.Server, *compactRequestCapture, coresession.Session) {
 	t.Helper()
 	diag.setStage("isolating global configuration and data roots")
 	tmp := t.TempDir()
@@ -413,7 +414,7 @@ func (d *compactFailureDiagnostics) requestsRecord(r *http.Request, model string
 	d.setStage("fake provider observed request")
 }
 
-func captureCompactSessionFacts(t *testing.T, diag *compactFailureDiagnostics, a *app.App, sess session.Session, lockHeld bool) {
+func captureCompactSessionFacts(t *testing.T, diag *compactFailureDiagnostics, a *app.App, sess coresession.Session, lockHeld bool) {
 	t.Helper()
 	activity, activityErr := a.SessionActivity(t.Context(), sess.ID)
 	rows, rowsErr := a.Messages.List(t.Context(), sess.ID)

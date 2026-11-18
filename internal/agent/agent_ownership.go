@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 )
 
 // getMailbox returns the per-session mailbox for sessionID, creating it
@@ -242,7 +242,7 @@ func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64)
 // from there could reclaim the legacy queue into a brand new turn that
 // then never runs, AND would release lk from the wrong place (Run's own
 // deferred lk.Release() already owns that responsibility on that path).
-func (a *sessionAgent) drainOrReleaseMerged(sessionID string, epoch uint64, lk *session.SessionLock, runCancel context.CancelFunc) (SessionAgentCall, bool) {
+func (a *sessionAgent) drainOrReleaseMerged(sessionID string, epoch uint64, lk *sessionlock.SessionLock, runCancel context.CancelFunc) (SessionAgentCall, bool) {
 	var release func() error
 	if lk != nil {
 		release = lk.Release
@@ -735,7 +735,7 @@ type watchdogBumpContextKey struct{}
 // purely from a delegated sub-agent's progress while the parent itself is
 // blocked inside the "agent"/agentic_fetch tool call, producing no stream
 // callbacks of its own.
-func withActivityNotify(ctx context.Context, lk *session.SessionLock) context.Context {
+func withActivityNotify(ctx context.Context, lk *sessionlock.SessionLock) context.Context {
 	ancestor, _ := ctx.Value(activityNotifyContextKey{}).(func())
 	self := func() {
 		lk.RecordActivity() // nil-receiver-safe: no-op when lk is nil (a.dataDir == "")

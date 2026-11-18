@@ -78,6 +78,12 @@ func (s *Store) PersistMCPConfigResultWithAuthority(scope Scope, name string, va
 	return s.mutateMCPWithMode("add", scope, name, name, value, nil, false, authority)
 }
 
+// PersistMCPConfigExactResult adds the literal entry in the selected scope like
+// PersistMCPConfigExact and returns the mutation result.
+func (s *Store) PersistMCPConfigExactResult(scope Scope, name string, value MCPConfig) (MCPMutationResult, error) {
+	return s.mutateMCPExact("add", scope, name, name, value, nil)
+}
+
 // PersistMCPConfigExact adds a literal server entry to the selected scope.
 // Unlike the runtime lifecycle API, it deliberately ignores higher-priority
 // definitions in other files; this is the API used by exact-scope CLI edits.
@@ -403,12 +409,10 @@ func (s *Store) publishMCPValueAndStalenessLocked(scope MutationScope, name stri
 		}
 		for path, fingerprint := range committed {
 			key := docread.NormalizeDiscoveryPath(path)
-			snapshot, ok := next.Snapshots[key]
-			if !ok {
+			if _, ok := next.Snapshots[key]; !ok {
 				continue
 			}
-			snapshot = docread.NewFileSnapshot(key, fingerprint)
-			next.Snapshots[key] = snapshot
+			next.Snapshots[key] = docread.NewFileSnapshot(key, fingerprint)
 		}
 	}
 	scope.Publish(next)

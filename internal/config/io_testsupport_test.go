@@ -157,8 +157,6 @@ func writeStableConfigFile(path string, data []byte) error {
 	return fileid.WriteStableConfigFile(path, data)
 }
 
-// io layer: slots. (SetKtavAutoMigrateForTest: exported facade in io_forwarders.go.)
-
 // io layer: slots.
 func newConfigFileIsKtav() bool { return slots.NewConfigFileIsKtav() }
 

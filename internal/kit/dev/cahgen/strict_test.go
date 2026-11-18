@@ -94,7 +94,13 @@ func TestRequiredDiagnostics(t *testing.T) {
 	}
 	contains(out.Warnings, "default spec (unmeasured): claude-fable-5-1")
 	contains(out.Warnings, "skipped ul1: effort above measured cap")
-	contains(out.Info, "codex context fallback 272000 (cah has no contextWindow)")
+	raised := false
+	for _, s := range out.Info {
+		raised = raised || strings.HasPrefix(s, "codex context raised to 922000 for ")
+	}
+	if !raised {
+		t.Fatalf("no codex context raise in %v", out.Info)
+	}
 	if out.Names["ls"].Slug != "cli-codex-gpt-6-1-sol" {
 		t.Fatal(out.Names["ls"])
 	}

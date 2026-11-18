@@ -19,7 +19,7 @@ package session_test
 // row was durable, outstanding, and its outcome completely unknown to this
 // call.
 //
-// These tests drive the real production path: a real session.Service
+// These tests drive the real production path: a real core.Service
 // backed by a real SQLite DB (setupTestSession), a real
 // RunQueuePump.DrainSessionNow call, and a foreign lease taken via the SAME
 // real service's own LeaseRunQueueEntry under a DIFFERENT leasedBy --
@@ -35,6 +35,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,7 +106,7 @@ func TestDrainSessionNow_ForeignLeasedRow_NeverReportsComplete(t *testing.T) {
 	current, err := svc.GetRunQueueEntry(ctx, "p610-live-row-B")
 	require.NoError(t, err)
 	require.NotNil(t, current)
-	require.Equal(t, session.RunQueueStatusLeased, current.Status)
+	require.Equal(t, core.RunQueueStatusLeased, current.Status)
 }
 
 // TestDrainSessionNow_ForeignLeasedRow_ExpiredButNotYetCleaned pins the
@@ -162,17 +163,17 @@ func TestDrainSessionNow_ForeignLeasedRow_ExpiredButNotYetCleaned(t *testing.T) 
 	current, err := svc.GetRunQueueEntry(ctx, "p610-expired-row-B")
 	require.NoError(t, err)
 	require.NotNil(t, current, "the row must still exist -- this test never calls CleanupExpiredLeases")
-	require.Equal(t, session.RunQueueStatusLeased, current.Status, "still leased in the DB -- only CleanupExpiredLeases (not DrainSessionNow) recovers an expired lease back to pending")
+	require.Equal(t, core.RunQueueStatusLeased, current.Status, "still leased in the DB -- only CleanupExpiredLeases (not DrainSessionNow) recovers an expired lease back to pending")
 }
 
-// outstandingCheckFailingService wraps a real session.Service and fails
+// outstandingCheckFailingService wraps a real core.Service and fails
 // HasOutstandingRunQueueEntriesForSession specifically -- everything else
 // (leasing, executing, acking) goes to the real implementation, so a row
 // genuinely executes and commits before the outstanding check is ever
 // reached, exactly like the coordinator's SQLITE_BUSY scenario: the
 // confirmation query itself fails, not any row this call touched.
 type outstandingCheckFailingService struct {
-	session.Service
+	core.Service
 	err   error
 	calls int
 }

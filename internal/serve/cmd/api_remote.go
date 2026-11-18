@@ -12,6 +12,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/serve/client/apiclient"
 	"github.com/spf13/cobra"
@@ -240,11 +242,11 @@ func newAPIRemoteTestCmd() *cobra.Command {
 			return err
 		}
 		if err = client.Health(ctx); err != nil {
-			return &exitCodeError{code: apiclient.ExitCodeFor(err), err: err}
+			return cliout.NewExitCodeError(apiclient.ExitCodeFor(err), err)
 		}
 		version, err := client.Version(ctx)
 		if err != nil {
-			return &exitCodeError{code: apiclient.ExitCodeFor(err), err: err}
+			return cliout.NewExitCodeError(apiclient.ExitCodeFor(err), err)
 		}
 		name, remote, err := config.ResolveAPIRemote(apiFlagString(cmd, "remote"), os.Getenv)
 		if err != nil {
@@ -300,7 +302,7 @@ func pinFact(pin string) string {
 
 func apiRemoteConfigError(err error) error {
 	if strings.Contains(err.Error(), "not found") {
-		return &exitCodeError{code: 4, err: err}
+		return cliout.NewExitCodeError(4, err)
 	}
 	return apiConfigurationError(err)
 }

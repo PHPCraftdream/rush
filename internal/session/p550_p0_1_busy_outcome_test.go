@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,9 +33,9 @@ type busyCoordinatorForDrain struct {
 	calls atomic.Int64
 }
 
-func (c *busyCoordinatorForDrain) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *busyCoordinatorForDrain) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
-	return nil, session.ErrCallQueuedNotExecuted
+	return nil, core.ErrCallQueuedNotExecuted
 }
 
 // lockBusyCoordinatorForDrain is the other half: a genuinely different
@@ -42,9 +44,9 @@ type lockBusyCoordinatorForDrain struct {
 	calls atomic.Int64
 }
 
-func (c *lockBusyCoordinatorForDrain) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *lockBusyCoordinatorForDrain) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
-	return nil, &session.SessionLockBusyError{Path: "/tmp/probe.lock", HolderPID: 4242}
+	return nil, &sessionlock.SessionLockBusyError{Path: "/tmp/probe.lock", HolderPID: 4242}
 }
 
 // TestDrainSessionNow_QueuedNotExecutedIsNotDrained proves the core P0-1

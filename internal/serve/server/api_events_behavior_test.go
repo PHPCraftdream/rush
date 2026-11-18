@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func apiEventsRequest(ctx context.Context, lastID string) (*http.Request, *apiEventsFlushRecorder) {

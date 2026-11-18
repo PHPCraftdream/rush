@@ -90,3 +90,9 @@ func dirLabel(i int) string {
 		return "Project"
 	}
 }
+
+// NewDirsCmd returns the rush dirsCmd command (former root.go registration; lane K2 of
+// the sprint0 cmd split replaced rootCmd.AddCommand with constructors).
+func NewDirsCmd() *cobra.Command {
+	return deepFreshCmd(dirsCmd)
+}

@@ -16,6 +16,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -58,7 +60,7 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 
 // Thin same-name private wrappers over the Sh2 run-cluster free functions,
 // kept so cliLoop/executeRunLoop call sites and tests stay unchanged.
-func (app *App) resolveSession(ctx context.Context, continueSessionID string, useLast bool) (session.Session, error) {
+func (app *App) resolveSession(ctx context.Context, continueSessionID string, useLast bool) (coresession.Session, error) {
 	return resolveSession(app.runEnv(), ctx, continueSessionID, useLast)
 }
 
@@ -250,7 +252,7 @@ func (app *App) DataDirectory() string {
 	return appbatch.DataDirectory(app.batchCLIParams())
 }
 
-func (app *App) BatchCLISession(ctx context.Context, id string) (session.Session, error) {
+func (app *App) BatchCLISession(ctx context.Context, id string) (coresession.Session, error) {
 	return appbatch.BatchCLISession(app.batchCLIParams(), ctx, id)
 }
 
@@ -362,7 +364,7 @@ func (app *App) batchFinishedWork(ctx context.Context, sessionID string) ([]appb
 	return appbatch.BatchFinishedWork(app.batchCLIParams(), ctx, sessionID)
 }
 
-func (app *App) batchHostStore() *session.HostStore {
+func (app *App) batchHostStore() *sessionhosts.HostStore {
 	return appbatch.BatchHostStore(app.batchCLIParams())
 }
 
@@ -386,7 +388,7 @@ func (app *App) batchCutoverStoresForget() {
 	appbatch.BatchCutoverStoresForget(app.batchCLIParams())
 }
 
-func (app *App) batchCutoverHostLiveness() func(string) session.HostLockStatus {
+func (app *App) batchCutoverHostLiveness() func(string) sessionhosts.HostLockStatus {
 	return appbatch.BatchCutoverHostLiveness(app.batchCLIParams())
 }
 

@@ -9,6 +9,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +19,7 @@ func TestSessionsInject_Success(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "inject target")
@@ -77,7 +79,7 @@ func TestSessionsInject_SessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	_, _, err := doInject(context.Background(), s, m, "does-not-exist", "hi", false)
@@ -89,7 +91,7 @@ func TestSessionsInject_InterruptFlag(t *testing.T) {
 	t.Parallel()
 
 	conn, q := newTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 
 	sess, err := s.Create(context.Background(), "interrupt target")
@@ -129,7 +131,7 @@ func TestSessionLockFact_FreshEmptyRecordIsReleased(t *testing.T) {
 	lockPath := filepath.Join(locksDir, "session-running.lock")
 	require.NoError(t, os.WriteFile(lockPath, []byte(""), 0o644))
 
-	require.Equal(t, session.LockReleased, session.InspectSessionLockFact(dataDir, "running").Kind,
+	require.Equal(t, session.LockReleased, sessionfacts.InspectSessionLockFact(dataDir, "running").Kind,
 		"D10: a readable empty record is a clean release, not a live holder")
 }
 
@@ -149,7 +151,7 @@ func TestSessionLockFact_LivePIDIsHeld(t *testing.T) {
 
 	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must still be alive for this test to be meaningful")
 
-	require.Equal(t, session.LockHeld, session.InspectSessionLockFact(dataDir, "inject-stale-live").Kind,
+	require.Equal(t, session.LockHeld, sessionfacts.InspectSessionLockFact(dataDir, "inject-stale-live").Kind,
 		"an alive recorded PID is held, whatever the mtime")
 }
 
@@ -167,5 +169,5 @@ func TestSessionLockFact_DeadPIDIsDead(t *testing.T) {
 	staleTime := time.Now().Add(-time.Hour)
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime))
 
-	require.Equal(t, session.LockDead, session.InspectSessionLockFact(dataDir, "inject-stale-dead").Kind)
+	require.Equal(t, session.LockDead, sessionfacts.InspectSessionLockFact(dataDir, "inject-stale-dead").Kind)
 }

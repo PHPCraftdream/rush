@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -609,7 +609,7 @@ func (l *cliLoop) firstTurnPhase() cliStepResult {
 	// Doc sec.3.8: a "session lock busy" refusal of the user's own turn fails
 	// fast (pre-phase-4 contract, sessionBusyGuidance): the envelope is still
 	// flushed and --on-finish still runs (R2C-2).
-	var lockBusy *session.SessionLockBusyError
+	var lockBusy *sessionlock.SessionLockBusyError
 	if errors.As(err, &lockBusy) {
 		// Another process owns the session: this run ran nothing, so it records
 		// no ended_reason and honours no cancel request on it (R8A-1/R8A-2).

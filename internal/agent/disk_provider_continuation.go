@@ -17,7 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // preparedContinuation is one resolved continuation capability (R12-H2b

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/queue"
 	_ "github.com/ncruces/go-sqlite3/driver"
 	"github.com/spf13/cobra"
@@ -102,7 +104,7 @@ func TestQueueRunCmdRun_FailedEnvelopeStillPersistsSessionAndUsage(t *testing.T)
 	for name, value := range map[string]string{"cwd": projectDir, "concurrent": "1", "stop-on-fail": "false", "max-tasks": "0"} {
 		require.NoError(t, queueRunCmd.Flags().Set(name, value))
 	}
-	stderr := captureStderr(t, func() { require.NoError(t, queueRunCmd.RunE(queueRunCmd, nil)) })
+	stderr := cmdtest.CaptureStderr(t, func() { require.NoError(t, queueRunCmd.RunE(queueRunCmd, nil)) })
 	require.Contains(t, stderr, "processed 1 task(s)")
 	ensureRootFlagStandIns(queueListCmd, dataDir)
 	if queueListCmd.Flags().Lookup("cwd") == nil {

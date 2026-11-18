@@ -5,36 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
-
-// BatchDeliveryEnvelope is the persisted settled envelope of one node: the
-// jobbatch envelope (state, code, summary, details) stored by the R11B commit
-// hook in batch_nodes.response_envelope, loaded for sync consumption.
-type BatchDeliveryEnvelope struct {
-	State   string          `json:"state"`
-	Code    string          `json:"code"`
-	Summary string          `json:"summary"`
-	Details json.RawMessage `json:"details,omitempty"`
-	// Ref is the response_envelope_ref identity (node#sequence).
-	Ref string `json:"ref"`
-}
 
 // BatchDeliveryRootEnvelope loads the persisted settled envelope of the root
 // node, or ok=false when the root has not settled yet (or settled without an
 // envelope). Read-only: no writer, no election, no projection.
-func (s *BatchStore) BatchDeliveryRootEnvelope(ctx context.Context, owner, root string) (BatchDeliveryEnvelope, bool, error) {
+func (s *BatchStore) BatchDeliveryRootEnvelope(ctx context.Context, owner, root string) (session.BatchDeliveryEnvelope, bool, error) {
 	snap, err := s.Read(ctx, owner, root)
 	if err != nil {
-		return BatchDeliveryEnvelope{}, false, err
+		return session.BatchDeliveryEnvelope{}, false, err
 	}
 	n := snap.Root
 	if !n.ResponseEnvelope.Valid || n.ResponseEnvelope.String == "" {
-		return BatchDeliveryEnvelope{}, false, nil
+		return session.BatchDeliveryEnvelope{}, false, nil
 	}
-	var e BatchDeliveryEnvelope
+	var e session.BatchDeliveryEnvelope
 	if err := json.Unmarshal([]byte(n.ResponseEnvelope.String), &e); err != nil {
-		return BatchDeliveryEnvelope{}, false, err
+		return session.BatchDeliveryEnvelope{}, false, err
 	}
 	e.Ref = n.ResponseEnvelopeRef.String
 	return e, true, nil

@@ -11,8 +11,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // batchAgentRunRequest identifies one incarnation attempt of the leaf.
@@ -28,7 +28,7 @@ type batchAgentRunRequest struct {
 	MessageID            string
 	DiskBindingID        string
 	Policy               *batchLeafPolicyContext
-	SelectedRoleContract *session.RoleContract
+	SelectedRoleContract *core.RoleContract
 	pctHandoff           *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
 	CallCredentials      bool
 	// QuestionRoute is carried verbatim from the durable payload; false

@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
 
@@ -246,8 +246,4 @@ func (m *pickerModel) View() tea.View {
 	}
 
 	return tea.NewView(b.String())
-}
-
-func init() {
-	sessionsPickCmd.Flags().Bool("tail", false, "Tail --follow the selected session instead of showing last N messages")
 }

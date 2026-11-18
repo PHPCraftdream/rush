@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -23,8 +24,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	modeluse "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/use"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	openaisdk "github.com/charmbracelet/openai-go/option"
 	"github.com/spf13/cobra"
@@ -458,7 +461,7 @@ func buildPingProvider(ctx context.Context, store *config.ConfigStore, providerC
 	if err != nil {
 		return nil, err
 	}
-	return rushagent.NewHeartbeatProvider(p), nil
+	return callbeat.NewHeartbeatProvider(p), nil
 }
 
 // buildPingProviderRaw constructs a provider for the ping request.
@@ -707,35 +710,11 @@ func resolvePingRole(role string) (config.SelectedModelType, error) {
 	return resolveModelRole(role)
 }
 
-// resolveModelRole maps a --role value (as accepted by `rush run` and
-// `rush ping`) to the model slot it selects. The empty string is rejected
-// here; callers that want to default it (e.g. `rush ping`) must handle ""
-// before calling. Keeping the vocabulary and error text in one place stops
-// the two commands' role parsing from drifting apart.
-//
-// This used to translate: "smart"/"fast" were friendly CLI aliases for the
-// slots, which were really called smart/fast everywhere below this line.
-// The slots are now named smart/fast themselves, so there is nothing left
-// to translate and the function is a plain validating parse. That collapse
-// was the point of the rename — one name per slot, not two.
-//
-// "reviewer" is the strongest model slot and is never selected
-// automatically — it must be requested explicitly via --role reviewer by
-// an operator or a senior agent. "worker" is a cheap slot intended for
-// manual sub-task delegation.
+// resolveModelRole is a thin bridge to the modeluse seam (lane M2); the
+// ping tests and pingResolveRole keep calling it in package cmd until the
+// M3 band moves them.
 func resolveModelRole(role string) (config.SelectedModelType, error) {
-	switch role {
-	case string(config.SelectedModelTypeSmart):
-		return config.SelectedModelTypeSmart, nil
-	case string(config.SelectedModelTypeFast):
-		return config.SelectedModelTypeFast, nil
-	case string(config.SelectedModelTypeWorker):
-		return config.SelectedModelTypeWorker, nil
-	case string(config.SelectedModelTypeReviewer):
-		return config.SelectedModelTypeReviewer, nil
-	default:
-		return "", fmt.Errorf("--role: invalid value %q (allowed: smart, fast, worker, reviewer)", role)
-	}
+	return modeluse.ResolveModelRole(role)
 }
 
 const pingSystemPrompt = "You are a network liveness probe. Reply with exactly the word OK and nothing else."
@@ -752,17 +731,26 @@ func pingUserPrompt(custom string) string {
 	return pingDefaultPrompt
 }
 
-func init() {
-	pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
-	pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
-	pingCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
-	pingCmd.Flags().String("role", "", "Which model slot to ping: smart (default) | fast | worker | reviewer (worker/reviewer are optional, set via `rush models use --worker/--reviewer`)")
-	pingCmd.Flags().String("model", "", "Ping an ad-hoc model directly (atom short code or provider/model[@effort]) instead of a persisted slot — nothing is written to config. Mutually exclusive with --role.")
+// NewPingCmd returns a fresh ping command from the registered template.
+var newPingCmdOnce sync.Once
 
-	pingFastCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
-	pingFastCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
-	pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
+func NewPingCmd() *cobra.Command {
+	newPingCmdOnce.Do(func() {
+		pingCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
+		pingCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
+		pingCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
+		pingCmd.Flags().String("role", "", "Which model slot to ping: smart (default) | fast | worker | reviewer (worker/reviewer are optional, set via `rush models use --worker/--reviewer`)")
+		pingCmd.Flags().String("model", "", "Ping an ad-hoc model directly (atom short code or provider/model[@effort]) instead of a persisted slot — nothing is written to config. Mutually exclusive with --role.")
 
-	rootCmd.AddCommand(pingCmd)
-	rootCmd.AddCommand(pingFastCmd)
+		pingFastCmd.Flags().Bool("json", false, "Emit JSON output instead of human-readable text")
+		pingFastCmd.Flags().Duration("timeout", time.Minute, "Request timeout")
+		pingFastCmd.Flags().String("prompt", "", "Custom user prompt (default: an instruction to reply OK)")
+	})
+	return deepFreshCmd(pingCmd)
+}
+
+// NewPingFastCmd returns a fresh ping-fast command from the registered template.
+func NewPingFastCmd() *cobra.Command {
+	NewPingCmd()
+	return deepFreshCmd(pingFastCmd)
 }

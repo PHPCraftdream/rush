@@ -113,14 +113,14 @@ internal/session/                    7: service, proc, run, batch, state, jobbat
 ├── proc/                            2: sessionlock 7 файлов, sessioncgroup 5
 ├── run/                             3: sessionrun 3, sessiontest 3, components 3
 │   └── components/                  3: runadmission 1 (admission.go), runexec 1 (entry_exec.go), rundrain 5 (drain_session.go, drain_ledger.go, row_context.go, orphan_drain.go, drain_classify.go)
-├── batch/                           7: sessionbatch 7, components 3, finstore 1, finfacts 5, finholds 5, findebt 3, finterm 5
+├── batch/                           7: sessionbatch 7, components 3, sessionbatchread 7, finfacts 5, finholds 5, findebt 3, finterm 6   # поправка SG0 (§7, D1/G1): finstore растворён в finterm (agent_finalization.go переезжает), его место в дереве занимает sessionbatchread (исправление пропуска рев. 1)
 │   └── components/                  3: batchreaction 1 (reaction.go), batchdeliver 5 (delivery.go, pull.go, history.go, consumers.go, adapters.go), batchrecover 5 (recovery.go, recovery_candidates.go, recovery_doc.go, retention.go, retention_purge.go)
 ├── state/                           5: sessionnotice 5, sessionhosts 6, sessionwake 3, mcpoutput 1, sessionfacts 2
 ├── jobbatch/                        приезд C; 20 нетестовых файлов + lab/24 — сплит MV7 (обязателен по решению Г1: 3 подпакета ≤7)
 └── heartbeat/                       приезд C; 10 нетестовых файлов — сплит MV8 (обязателен: 2 подпакета по 5)
 ```
 
-Сводка элементов: корень 7; service 4 (3 файла + каталог); service/components 7; листья сервиса 5/3/4/7/7/2/5; proc 2 (7, 5); run 3 (3, 3, 3); run/components 3 (1, 1, 5); batch 7 (7, 3, 1, 5, 5, 3, 5); batch/components 3 (1, 5, 5); state 5 (5, 6, 3, 1, 2). Всё ≤7. Каталогов с кодом >7 внутри `internal/session` нет.
+Сводка элементов: корень 7; service 4 (3 файла + каталог); service/components 7; листья сервиса 5/3/4/7/7/2/5; proc 2 (7, 5); run 3 (3, 3, 3); run/components 3 (1, 1, 5); batch 7 (7, 3, 7, 5, 5, 3, 6); batch/components 3 (1, 5, 5); state 5 (5, 6, 3, 1, 2) [поправка SG0 §7: finstore исчез, sessionbatchread вошёл в перечень, finterm 6 после D1]. Всё ≤7. Каталогов с кодом >7 внутри `internal/session` нет.
 
 Временные строки храповика (решение Г1: только падающие, с расписанием; после каждой EX-полосы FIN правит файл):
 ```
@@ -128,7 +128,7 @@ internal/session/                    7: service, proc, run, batch, state, jobbat
 # (нетестовые файлы + подкаталоги с кодом); создание components/ добавляет +1 (правило 11). Число только падает.
 internal/session/service 34              # 34 (MV1) → 34 (EX1: −role_contract.go, +components/) → 21 (EX4: −14 guard/finqueue, +session_delegates.go) → 15 (EX2: −6) → 8 (EX3: −7) → 6 (EX5: −2) → 4 (EX6: −batch_commit/-doc; строку удалить)
 # ВРЕМЕННО: компонентная экстракция BatchStore (D1-session §5, EX6). Элементы = файлы (подкаталогов внутри sessionbatch нет).
-internal/session/batch/sessionbatch 26   # 26 (MV3) → 24 (cli/api −2) → 23 (reaction −1) → 18 (recover −5) → 21 (+batch_commit/+doc/+delegates приходят ДО deliver) → 8 (deliver −13) → 7 (вклейка stop+control; строку удалить; пик 21 < 26, ниже 7 не опускается)
+internal/session/batch/sessionbatch 28   # 28 (MV3, поправка SG0 §7/D6: batch_commit.go и batch_commit_doc.go приезжают РАНЬШЕ, уже в MV3; потому счёт стартует с 28, а не 26) → 24 (cli/api −2) → 23 (reaction −1) → 18 (recover −5) → 21 (+delegates) → 8 (deliver −13) → 7 (вклейка stop+control; строку удалить; пик 21 < 28; КОНЕЧНЫЕ 7 без изменений — ранний приезд commit/doc уже учтён в арифметике)
 ```
 Пик `service/components` — ровно 7 детей (новый компонент требует переработки дерева). `procinfo` остаётся с 7 файлами, реестры tracked уходят в `proctrack` (5 файлов): решение В12 плана, строки храповика нет.
 
@@ -195,7 +195,7 @@ internal/session/batch/sessionbatch 26   # 26 (MV3) → 24 (cli/api −2) → 23
 **state/mcpoutput (1):** `mcp_output.go`.
 **state/sessionfacts (2):** `session_activity.go`, `session_lock_fact.go`.
 
-Счёт исходных 130: service-исход 34 (2 остаются + 32 расходятся) + lock 8 + cgroup 4 + proctrack 5 + sessionbatch-исход 26 + run 12 + state 17 + finstore 1 + finfacts 5 + finholds 5 + findebt 3 + finterm 5 = 130. Все назначены, включая `run_queue_orphan_drain.go` (пропуск рев. 1 исправлен).
+Счёт исходных 130: service-исход 34 (2 остаются + 32 расходятся) + lock 8 + cgroup 4 + proctrack 5 + sessionbatch-исход 26 + run 12 + state 17 + finstore 0 (растворён в finterm — поправка SG0 §7/D1: agent_finalization.go уезжает в finterm) + finfacts 5 + finholds 5 + findebt 3 + finterm 6 = 130 (состав слагаемых пересчитан, сумма прежняя). Все назначены, включая `run_queue_orphan_drain.go` (пропуск рев. 1 исправлен).
 
 ### 2.5. Тесты — назначение (едут с компонентом)
 
@@ -233,7 +233,7 @@ batchreaction/batchdeliver/batchrecover → sessionbatch-порты (Reader/Guar
 jobbatch ← sessionbatch, ядро(batch_commit), [внешние]
 ```
 
-Ключевое правило ацикличности: пакет, типы которого ядро реэкспортирует alias-ом, НЕ импортирует ядро (проверяется grep-приёмкой каждой EX-полосы). Единственное перекрёстное ребро контейнеров — «run/components → service/components» (`rundrain → finqueue` ради `RecordFinalizationQueueFailure`): направление вниз по группе, легально. Ребра state→batch НЕ существует: `BatchPendingDebt` лежит в sesstypes (types_batch, EX1), а `BatchPendingInclusiveDebtRows` — собственный метод `SessionNoticeStore` (`session_notice_store.go:381`, использует только тип из sesstypes).
+Ключевое правило ацикличности: пакет, типы которого ядро реэкспортирует alias-ом, НЕ импортирует ядро (проверяется grep-приёмкой каждой EX-полосы). Единственное перекрёстное ребро контейнеров — «run/components → service/components» (`rundrain → finqueue` ради `RecordFinalizationQueueFailure`): направление вниз по группе, легально. Исправлено (поправка SG0 §7, G13): ребро state→batch ВРЕМЕННО существует и измерено — `sessionnotice → sessionbatch`: `session_notice_store.go:385` вызывает `batchOutboxDebtNodesVoidAware` (`batch_reaction.go`), `:395` читает приватное `batchDebtNodeRow.ref`. Это легальное ВРЕМЕННОЕ ребро до EX6: EX6 переносит реализацию `BatchPendingInclusiveDebtRows` в batchreaction и ребро исчезает. Легальные ОДНОНАПРАВЛЕННЫЕ рёбра к finterm (поправка SG0 §7/D5, G12): `sessionnotice → finterm` (`ErrAgentFinalizationChanged`, `session_notice_store.go:153`) и `sessionbatch → finterm` (`batch_pull.go:174`) — неизменяемые ошибки, finterm ничего не импортирует из этих пакетов (проверено измерением SG0-2).
 
 ## 3. Швы
 
@@ -423,3 +423,30 @@ jobbatch ← sessionbatch, ядро(batch_commit), [внешние]
 - **В7.** Смоук: связки «метод↔receiver» и граф импортов проверены переписью исходников, не компилятором; первый шаг каждой полосы — `go build`/`go vet` через `golock.sh` (§4.4.5).
 - **В8.** `legacy_import_drain_external_test.go` — назначить по поведению при MV1 (itest либо ядро).
 - **В9.** Остаток непроверенного (сужён по ревью): состав `RunQueuePumpConfig` (скрытые типы ядра → sesstypes при EX7); `AgentDepthStore`/`AgentModelRoleStore` — интерфейс или структура (влияет на EX3-делегаты). Разрешено по ревью: `DrainSessionNow` = метод в `run_queue_drain_session.go:13`; `processTreesStopping` = `track_stop.go:8`; `StartProcessUnlessStopping` = `track_stop.go:11`; `MaxPidFallbackAge` = `lock.go:110` → sessionlock; `BatchCommitIdentity` извне собирается только экспортируемыми полями.
+
+## 7. Поправки SG0 (2026-11-16)
+
+Источник: отчёт `docs/plans/2026-11-16-sprint0-session-sg0.md` (раздел «Amended design (2026-11-16)») и измеренный layout `docs/plans/2026-11-16-sprint0-session-layout-amended.tsv` (284 строки; SHA-256 `933ea73b899b954399cf595d87698de318fde6e40468b7a9f2215d0501b9b34b`; измерение: SCC = {service, run/sessionrun, batch/sessionbatch}, 4 внутренних ребра, 0 нарушений колокации receiver, оба GOOS). Каждая поправка: решение, свидетели (файл:строка), полоса-исполнитель, staged vs final.
+
+**D1 (G1 — finstore↔finterm).** `agent_finalization.go` + `agent_finalization_test.go`: finstore → `batch/finterm`; владелец finstore исчезает. Свидетели: `AgentFinalizationStore` decl `agent_finalization.go:44`, 5 методов с этим receiver в `finalization_candidate.go:64,128`, `finalization_retire.go:16,41`, `finalization_seal.go:126` — теперь в одном пакете с типом. Staged: `finalization_notify.go`/`finalization_notify_gate.go` (+тест) остаются в service — ранний переезд создаёт цикл service↔finterm через `Session` (`finalization_notify.go:48`, decl `session.go:48`). EX1 (Session → sesstypes) отпирает их переезд в finterm (конечных 6 файлов).
+
+**D2 (G11 — очередь финализации).** Попытка staged-переезда `finalization_queue_failure.go`/`finalization_queue_lease.go` → `run/runadmission` ИЗМЕРЕНА и отклонена: даёт SCC из 6 владельцев и нарушение колокации (`service.bindFinalizationQueueLeaseTx`, `finalization_queue_lease.go:28`, receiver decl `session.go:417`). Staged: оба файла остаются в service. Named-решения: (а) EX1 переносит сентинел `ErrCallQueuedNotExecuted` (`run_queue_pump.go:124`, использ. `finalization_queue_failure.go:21`) в sesstypes/types_runcall с alias в sessionrun — снимает ребро service→sessionrun; (б) EX4 конвертирует receiver lease-метода (Guard/db) и только потом файл уезжает в finqueue.
+
+**D3 (G6/G7 — sessiondrain).** Временный владелец `run/sessiondrain` УДАЛЁН: все 12 run нетестовых файлов и 13 бывших drain-тестов → `run/sessionrun`. Основание: 133 использования приватных pump-символов и receiver `*RunQueuePump` (`DrainSessionNow` `run_queue_drain_session.go:13`; 3 orphan-метода `run_queue_orphan_drain.go:19,49,175`; `executeEntrySync` `run_queue_entry_exec.go:94`; admission-методы) делают любой более ранний сплит цикличным и незаконным по receiver. Порядок полос: SM3 обязан предшествовать ЛЮБОМУ run-сплиту; EX7 выполняет компонентную экстракцию после появления портов.
+
+**D4 (G5 — type-carrier → sesstypes).** Проверено grep + исходным JSON (receiver-данные): `session_child_question.go`, `child_question_format.go`, `notice_pull.go`, `notice_row_ids.go` — без `^func (`; `role_contract.go` несёт методы `*RoleContract`, но тип объявлен в том же файле (`role_contract.go:19`) — колокация сохраняется. Staged: 4 notice/type-файла → `internal/session/sesstypes` (ранний приезд EX1 types_notice); `role_contract.go` ОСТАЁТСЯ в service: использует `ModelCfg` (`session_runqueue.go:43`, 12 свидетелей) — при переезде сейчас возникает sesstypes→service. Named-решение: EX1 переносит `ModelCfg` в sesstypes (types_runcall), тогда `role_contract.go` занимает конечный дом sesstypes. Тесты: `child_question_format_test.go` → sesstypes (только литералы фрейминга); `session_child_question_test.go` остаётся в sessionnotice (`NewService`, `NewSessionNoticeStore`); `role_contract_test.go` остаётся в service (`NewService`, `BindSessionRoleContract`).
+
+**D5 (G12/G13 — ошибки и interim-ребро).** `ErrAgentFinalizationChanged`/`ErrAgentFinalizationAccepted` остаются в finterm (`agent_finalization.go:10`); §2.6 дополнен легальными однонаправленными рёбрами `sessionnotice→finterm` и `sessionbatch→finterm` (оба измерены, обратных рёбер нет). Interim-ребро `sessionnotice→sessionbatch` (`session_notice_store.go:385` → `batchOutboxDebtNodesVoidAware`, `batch_reaction.go`; `:395` → `batchDebtNodeRow.ref`) задокументировано как легальное временное; EX6 переносит реализацию в batchreaction.
+
+**D6 (G4/G10 — ранний приезд MV3).** `batch_commit.go` и `batch_commit_doc.go`: service → `batch/sessionbatch` уже в MV3 (оба файла без `^func (` — проверено). Храповик MV3: 28 (см. §2.2), конечные 7 без изменений. Альтернатива «commit/doc остаются в service» ИЗМЕРЕНА (`layout-alt-commit-in-service.tsv`): SCC идентична (1 SCC, те же 3 владельца, 28 рёбер) — выбор D6 SCC-нейтрален и принят, т.к. соответствует направлению EX6. Остаток service↔sessionbatch держат НЕ commit-файлы, а guard/admission-имена: `admitFinalizationMutation` (`finalization_mutation.go:13`), `batchCommitReleaseError`/`batchFinalizationAdmission` (`batch_commit_admission.go:169,21`), `validateBatchFinalizationTx` (`batch_finalization_tx.go:12`), `finalizationFenceError`/`finalizationScoped` (`finalization_ingress_helpers.go:268,277`), `batchFinalizationIdentityFromContext` (`finalization_context.go:104`), `AgentFinalizationAuthority` (`finalization_authority.go:18`), тип `service` (`session.go:417`); в обратную сторону — `BatchCommitIdentity` (`batch_commit.go:25`), `BatchDeliveryEnvelope` (`batch_delivery_store.go:14`), `batchRequireRow` (`batch_store.go:244`). Named-решения, снимающие SCC: S2 (сигнатуры принимают writer/identity параметрами), EX1 (batch wire-типы → sesstypes), EX4 (guard-файлы → sessguard, после чего перечисленные файлы вклеиваются в sessionbatch/sessguard по MV3-расписанию).
+
+**D7 (прочее).** Все остальные строки исходного TSV сохраняют владельца. service удерживает `finalization_authority.go` — receiver `hasFinalizationScope *service` (`finalization_authority.go:18`, поле `a.service.db` :39,42,54) pins его до EX4; EX4 конвертирует в Guard и переносит в sessguard.
+
+**G8** — `ceilUnixSeconds` (`session_runqueue.go:335`): named-решение — уезжает вместе с типовым блоком `session_runqueue.go` в sesstypes (EX1) либо с sessqueue (EX3); не экспортировать.
+**G14** — `sessionnotice→service` (9/5: `admitFinalizationMutation`, `batchCommitReleaseError`, `batchFinalizationAdmission`, `finalizationScoped`, `validateBatchFinalizationTx`): named — consumer-defined порт/конструктор S7 + EX4; приватные имена не экспортировать.
+**G15** — `finfacts→service`: `finalizationAncestorLimit` (`finalization_ancestors.go:12`): EX4 переносит файл в sessguard; ребро finfacts→sessguard добавить в §2.6/§3.
+**G16** — `sessionfacts→sessionlock`: `pidSidecarPath` (`lock_inspect.go`), `sanitiseSessionID`: named — расширение API sessionlock (экспорт или перенос вызовов), полоса MV2/EX2-соседняя.
+**G17** — `sessionhosts→sessionlock`: `classifyAndLock`, `isContentionError`, `isLockContentionError`, `openLockFile`, `tryLockFile` (`file_lock_bridge.go` и др.): named — тот же шов sessionlock-API.
+**G18** — `sessionwake→service`: `homeFlag` (`session_workspace.go:114`, использ. `wake_schedule_store.go:98`): named — EX1 переносит `homeFlag` в sesstypes (folder-хелперы).
+
+**Статус MV1:** может стартовать в amended-раскладке; порядок: SM3 ≤ любой run-сплит; EX1 раньше EX4-переездов файлов и раньше MV3-финала (ModelCfg, сентинел, wire-типы); S2 раньше финала MV3, если остаточная service↔sessionbatch SCC должна раствориться до EX6.

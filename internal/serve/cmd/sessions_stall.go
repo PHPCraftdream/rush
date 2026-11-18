@@ -13,15 +13,20 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // stallPulseThreshold is the heartbeat age past which a live-holder session
 // is reported as STALLED (task context: a turn hung with tools in flight
-// while `sessions why` kept saying "running").
-const stallPulseThreshold = 10 * time.Minute
+// while `sessions why` kept saying "running"). The constant now lives in
+// sesskit (shared with the moved sesslocks locks view); this alias keeps the
+// root stall code unchanged.
+const stallPulseThreshold = sesskit.StallPulseThreshold
 
 // readOnlyToolNames is the local allowlist of clearly read-only tools whose
 // arguments may be printed verbatim in stall output; every other tool
@@ -39,7 +44,7 @@ var readOnlyToolNames = map[string]bool{
 // lockPulseAge returns the age of the session lock heartbeat file's mtime,
 // the same PULSE_AGE signal `sessions locks` computes.
 func lockPulseAge(dataDir, sessionID string, now time.Time) (time.Duration, bool) {
-	st, err := os.Stat(session.SessionLockPath(dataDir, sessionID))
+	st, err := os.Stat(sessionlock.SessionLockPath(dataDir, sessionID))
 	if err != nil {
 		return 0, false
 	}
@@ -119,7 +124,7 @@ func lastMessageAgeForWhy(ctx context.Context, a *app.App, sessionID string, now
 // is stale past stallPulseThreshold while the holder PID is alive -- a
 // STALLED header line replacing the plain `status: running` line. Returns
 // true when the STALLED line replaced the status line.
-func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, status string, lock session.LockFact, out io.Writer) bool {
+func printStallHeader(ctx context.Context, a *app.App, dataDir, sessionID, status string, lock sessionfacts.LockFact, out io.Writer) bool {
 	now := time.Now()
 	defer func() {
 		if line := rateLimitLineForWhy(sessionID, now); line != "" {

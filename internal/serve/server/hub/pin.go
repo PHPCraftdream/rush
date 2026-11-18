@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 type eventClass uint8

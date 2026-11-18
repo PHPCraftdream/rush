@@ -3,8 +3,10 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +22,7 @@ func TestRequestedRoleSlotSelectsOnlyTheRequestedProfile(t *testing.T) {
 		selected, source, err := requestedRoleSlot(cfg, session.Session{}, role)
 		require.NoError(t, err)
 		require.Equal(t, cfg.Models[config.SelectedModelType(role)], selected)
-		require.Equal(t, hbSourceSlotLive, source)
+		require.Equal(t, callbeat.HbSourceSlotLive, source)
 	}
 	smart, _, err := requestedRoleSlot(cfg, session.Session{WorkerModelProvider: "parent-worker", WorkerModelID: "parent-worker-model"}, "smart")
 	require.NoError(t, err)
@@ -39,7 +41,7 @@ func TestRequestedRoleSessionOverrideKeepsTheSameProfilesInferenceSettings(t *te
 	require.Equal(t, "parent-model", selected.Model)
 	require.Equal(t, "high", selected.ReasoningEffort)
 	require.EqualValues(t, 321, selected.MaxTokens)
-	require.Equal(t, hbSourceSessionOverride, source)
+	require.Equal(t, callbeat.HbSourceSessionOverride, source)
 	require.Equal(t, "configured-model", cfg.Models[config.SelectedModelTypeWorker].Model, "selection cannot mutate the published snapshot")
 }
 

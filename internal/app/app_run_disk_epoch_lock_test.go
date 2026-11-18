@@ -14,7 +14,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +28,7 @@ func TestFenceLockHolderHelper(t *testing.T) {
 		t.Skip("helper process only")
 	}
 	dataDir, sessionID := os.Getenv("RUSH_FENCE_LOCK_DATA"), os.Getenv("RUSH_FENCE_LOCK_SESSION")
-	lock, err := session.TryAcquireSessionLock(dataDir, sessionID)
+	lock, err := sessionlock.TryAcquireSessionLock(dataDir, sessionID)
 	if err != nil {
 		t.Fatalf("acquire helper session lock: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestFenceAdmissionLockLoserLeavesPersistentFenceUntouched(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, before)
 	var beforeJSON string
-	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT call_data FROM session_run_queue WHERE id = ?`, session.SessionExecutionRequirementRowID(sessionID)).Scan(&beforeJSON))
+	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT call_data FROM session_run_queue WHERE id = ?`, coresession.SessionExecutionRequirementRowID(sessionID)).Scan(&beforeJSON))
 	fenceBytes := []byte(beforeJSON)
 	customDiskWrites := disk.writes.Load()
 	requestsBefore := fenceLockProviderRequests.Load()
@@ -128,12 +129,12 @@ func TestFenceAdmissionLockLoserLeavesPersistentFenceUntouched(t *testing.T) {
 		return runErr
 	}
 	stop := startFenceLockHolder(t, dataDir, sessionID)
-	var busyErr *session.SessionLockBusyError
+	var busyErr *sessionlock.SessionLockBusyError
 	err = request(disk)
 	require.Error(t, err)
 	require.ErrorAs(t, err, &busyErr)
 	var afterJSON string
-	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT call_data FROM session_run_queue WHERE id = ?`, session.SessionExecutionRequirementRowID(sessionID)).Scan(&afterJSON))
+	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT call_data FROM session_run_queue WHERE id = ?`, coresession.SessionExecutionRequirementRowID(sessionID)).Scan(&afterJSON))
 	require.Equal(t, fenceBytes, []byte(afterJSON), "the custom lock loser must preserve the fence bytes")
 	require.Equal(t, requestsBefore, fenceLockProviderRequests.Load(), "the custom lock loser must not reach the model provider")
 	require.Equal(t, customDiskWrites, disk.writes.Load(), "the custom lock loser must not reach disk tools")
@@ -141,7 +142,7 @@ func TestFenceAdmissionLockLoserLeavesPersistentFenceUntouched(t *testing.T) {
 	err = request(tools.OSDisk())
 	require.Error(t, err)
 	require.ErrorAs(t, err, &busyErr)
-	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT call_data FROM session_run_queue WHERE id = ?`, session.SessionExecutionRequirementRowID(sessionID)).Scan(&afterJSON))
+	require.NoError(t, application.DB().QueryRowContext(context.Background(), `SELECT call_data FROM session_run_queue WHERE id = ?`, coresession.SessionExecutionRequirementRowID(sessionID)).Scan(&afterJSON))
 	require.Equal(t, fenceBytes, []byte(afterJSON), "the explicit-OS lock loser must preserve the fence bytes")
 	require.Equal(t, requestsBefore, fenceLockProviderRequests.Load(), "the explicit-OS lock loser must not reach the model provider")
 	require.Equal(t, customDiskWrites, disk.writes.Load(), "neither lock loser may reach disk tools")

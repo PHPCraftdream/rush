@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/dbtest"
 	"github.com/stretchr/testify/require"
@@ -61,8 +63,8 @@ var (
 type finalizationSeamEnv struct {
 	conn  *sql.DB
 	ctx   context.Context
-	store *AgentFinalizationStore
-	svc   *service
+	store *session.AgentFinalizationStore
+	svc   session.Service
 }
 
 // newFinalizationSeamEnv builds finalizationSeamEnv on batchStoreTestDB and
@@ -75,27 +77,27 @@ func newFinalizationSeamEnv(t *testing.T) *finalizationSeamEnv {
 	return &finalizationSeamEnv{
 		conn:  conn,
 		ctx:   ctx,
-		store: NewAgentFinalizationStore(conn),
-		svc:   NewService(db.New(conn), conn).(*service),
+		store: session.NewAgentFinalizationStore(conn),
+		svc:   session.NewService(db.New(conn), conn),
 	}
 }
 
 // finalizationSeamBindOwner binds an active finalization record for sessionID
 // through the real BindAgentFinalization producer and returns the authority.
-func finalizationSeamBindOwner(t *testing.T, env *finalizationSeamEnv, sessionID, logicalCallID string) *AgentFinalizationAuthority {
+func finalizationSeamBindOwner(t *testing.T, env *finalizationSeamEnv, sessionID, logicalCallID string) *session.AgentFinalizationAuthority {
 	t.Helper()
-	authority, err := env.svc.BindAgentFinalization(env.ctx, AgentFinalizationIdentity{SessionID: sessionID, LogicalCallID: logicalCallID, Generation: 1})
+	authority, err := env.svc.BindAgentFinalization(env.ctx, session.AgentFinalizationIdentity{SessionID: sessionID, LogicalCallID: logicalCallID, Generation: 1})
 	require.NoError(t, err)
 	return authority
 }
 
 // finalizationSeamLiveChild creates a live child session under parentID via
 // CreateTaskSession and binds its active record, returning the child session.
-func finalizationSeamLiveChild(t *testing.T, env *finalizationSeamEnv, parentID, toolCallID string) Session {
+func finalizationSeamLiveChild(t *testing.T, env *finalizationSeamEnv, parentID, toolCallID string) session.Session {
 	t.Helper()
 	child, err := env.svc.CreateTaskSession(env.ctx, toolCallID, parentID, "child")
 	require.NoError(t, err)
-	_, err = env.svc.BindAgentFinalization(env.ctx, AgentFinalizationIdentity{SessionID: child.ID, LogicalCallID: toolCallID + "-call", Generation: 1})
+	_, err = env.svc.BindAgentFinalization(env.ctx, session.AgentFinalizationIdentity{SessionID: child.ID, LogicalCallID: toolCallID + "-call", Generation: 1})
 	require.NoError(t, err)
 	return child
 }
@@ -158,7 +160,7 @@ func TestFinalizationScopeReaderFoldsCompleteFactsInTransaction(t *testing.T) {
 func TestFinalizationScopeReaderNilMemberIsIncomplete(t *testing.T) {
 	env := newFinalizationSeamEnv(t)
 	stub := &finalizationSeamScopeStub{descendants: 1, queued: 2, holds: 3, debt: 4}
-	for name, reader := range map[string]AgentFinalizationScopeReader{
+	for name, reader := range map[string]session.AgentFinalizationScopeReader{
 		"no descendants": NewAgentFinalizationScopeReader("owner", nil, stub, stub, stub),
 		"no queued":      NewAgentFinalizationScopeReader("owner", stub, nil, stub, stub),
 		"no holds":       NewAgentFinalizationScopeReader("owner", stub, stub, nil, stub),
@@ -203,7 +205,7 @@ func TestFinalizationScopeReaderMemberErrorPropagates(t *testing.T) {
 }
 
 func TestDefaultFinalizationTerminalGateAllowsEverything(t *testing.T) {
-	gate := DefaultFinalizationTerminalGate()
+	gate := session.DefaultFinalizationTerminalGate()
 	require.True(t, gate.AllowTerminal(t.Context(), "owner"))
 	require.True(t, gate.AllowTerminal(t.Context(), ""))
 	canceled, cancel := context.WithCancel(t.Context())
@@ -213,7 +215,7 @@ func TestDefaultFinalizationTerminalGateAllowsEverything(t *testing.T) {
 
 func TestPollingFinalizationTerminalGateAllowsWithoutActiveRecord(t *testing.T) {
 	env := newFinalizationSeamEnv(t)
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
 	require.True(t, gate.AllowTerminal(t.Context(), "owner"))
 	require.True(t, gate.AllowTerminal(t.Context(), ""))
 	require.NoError(t, gate.AwaitSealed(t.Context(), "owner"))
@@ -222,7 +224,7 @@ func TestPollingFinalizationTerminalGateAllowsWithoutActiveRecord(t *testing.T) 
 func TestPollingFinalizationTerminalGateRefusesActiveRecord(t *testing.T) {
 	env := newFinalizationSeamEnv(t)
 	finalizationSeamBindOwner(t, env, "owner", "logical")
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
 	require.False(t, gate.AllowTerminal(t.Context(), "owner"))
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -232,7 +234,7 @@ func TestPollingFinalizationTerminalGateRefusesActiveRecord(t *testing.T) {
 func TestPollingFinalizationTerminalGateTerminalPhasesAllowDelivery(t *testing.T) {
 	env := newFinalizationSeamEnv(t)
 	finalizationSeamBindOwner(t, env, "owner", "logical")
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
 	for _, phase := range []string{"accepted", "failed", "cancelled", "interrupted"} {
 		finalizationSeamSetPhase(t, env, "owner", phase)
 		require.True(t, gate.AllowTerminal(t.Context(), "owner"), phase)
@@ -242,7 +244,7 @@ func TestPollingFinalizationTerminalGateTerminalPhasesAllowDelivery(t *testing.T
 func TestPollingFinalizationTerminalGateAwaitSealedReturnsWhenRecordLeavesActive(t *testing.T) {
 	env := newFinalizationSeamEnv(t)
 	finalizationSeamBindOwner(t, env, "owner", "logical")
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
 	ctx, cancel := context.WithTimeout(env.ctx, 10*time.Second)
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -259,7 +261,7 @@ func TestPollingFinalizationTerminalGateAwaitSealedReturnsWhenRecordLeavesActive
 func TestPollingFinalizationTerminalGateAwaitSealedStopsOnCanceledContext(t *testing.T) {
 	env := newFinalizationSeamEnv(t)
 	finalizationSeamBindOwner(t, env, "owner", "logical")
-	gate := NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
+	gate := session.NewPollingFinalizationTerminalGate(env.store, time.Millisecond)
 	ctx, cancel := context.WithCancel(env.ctx)
 	cancel()
 	require.ErrorIs(t, gate.AwaitSealed(ctx, "owner"), context.Canceled)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -179,7 +180,7 @@ func TestOrphanOutbox_ConcurrentDrainProtection(t *testing.T) {
 // second flaky race on top of the one just found and fixed in P1-3's tests
 // this same round. Deleted rather than kept as a disguised coin flip.
 
-// transientDrainFailSessions wraps a real session.Service and fails the
+// transientDrainFailSessions wraps a real core.Service and fails the
 // first N calls to DrainOrphanOutboxEntry, then passes through. Used to
 // prove a transient (non-exhausted) drain failure doesn't strand the
 // outbox entry.
@@ -189,14 +190,14 @@ func TestOrphanOutbox_ConcurrentDrainProtection(t *testing.T) {
 // task #426) — not the old EnqueueRunQueueEntry/ClaimOrphanOutboxEntry
 // pair the pre-P0-4 claim-based model used. A prior version of this mock
 // wrapped EnqueueRunQueueEntry instead; that call is still on
-// session.Service but DrainOrphanOutboxEntry's own transaction uses the
+// core.Service but DrainOrphanOutboxEntry's own transaction uses the
 // DB-query-layer qtx.EnqueueRunQueueEntry internally, never the
 // service-level method, so wrapping the service method silently stopped
 // intercepting anything the moment #426 landed — found by independent
 // review (docs/reviews/2026-08-13-release-readiness-static-audit.md
 // review pass), not by this round's own verification.
 type transientDrainFailSessions struct {
-	session.Service
+	core.Service
 	failuresLeft int
 }
 
@@ -402,7 +403,7 @@ type countingCoordinator struct {
 	calls atomic.Int64
 }
 
-func (c *countingCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *countingCoordinator) Run(ctx context.Context, callData core.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	return nil, nil
 }

@@ -8,7 +8,7 @@ import (
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 

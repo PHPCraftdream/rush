@@ -209,15 +209,20 @@ func claudeSpec(modelID, modelName, modelArg string, ctxWindow int64) CLISpec {
 	}
 }
 
+// CodexContextWindow is the measured context window of every Codex model
+// (operator measurement 2026-11-17); it equals cahgen.CodexContextFloor.
+const CodexContextWindow int64 = 922_000
+
 // codexSpec builds a CLI spec. Codex has no proven per-invocation native
 // tool restriction in this adapter, so constrained role calls are refused.
-// ContextWindow is fixed at 272_000 because Codex reports that for all models.
-// Effort levels remain model-specific and are validated before dispatch.
+// ContextWindow is the measured window of every Codex model, not the 272_000
+// the CLI's own registry reports. Effort levels remain model-specific and are
+// validated before dispatch.
 func codexSpec(modelID, modelName, modelArg string, effortLevels []string) CLISpec {
 	return CLISpec{
 		ModelID:             modelID,
 		ModelName:           modelName,
-		ContextWindow:       272_000,
+		ContextWindow:       CodexContextWindow,
 		Binary:              "codex",
 		BuildArgs:           codexArgs(modelArg),
 		NewPartParser:       codexPartParser,
@@ -322,9 +327,9 @@ var All = append([]CLISpec{
 	// model registry embedded in codex.exe itself (codex-cli 0.147.0), which
 	// is authoritative - it is what the binary consults at runtime.
 	//
-	// All codex models are 272_000, NOT the 400_000 these entries used to
-	// claim. ContextWindow drives the auto-summarization threshold, so a 48%
-	// overstatement let conversations run well past the real limit.
+	// Every codex model gets CodexContextWindow (measured). ContextWindow
+	// drives the auto-summarization threshold: an overstated window lets
+	// conversations run past the real limit, an understated one compacts early.
 
 	// gpt-5.5 stops at xhigh. Note the ceiling below only clamps efforts RUSH
 	// sends; it says nothing about codex's own default. If the operator's

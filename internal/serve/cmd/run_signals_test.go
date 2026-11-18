@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +30,7 @@ func TestCancelSignals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			found := false
-			for _, sig := range cancelSignals {
+			for _, sig := range cliproc.CancelSignals() {
 				if sig == tt.sig {
 					found = true
 					break
@@ -49,7 +51,7 @@ func TestCancelSignalsCatchSIGTERM(t *testing.T) {
 	signal.Notify(guard, syscall.SIGTERM)
 	defer signal.Stop(guard)
 
-	ctx, stop := signal.NotifyContext(context.Background(), cancelSignals...)
+	ctx, stop := signal.NotifyContext(context.Background(), cliproc.CancelSignals()...)
 	defer stop()
 	proc, err := os.FindProcess(os.Getpid())
 	require.NoError(t, err)
@@ -64,7 +66,7 @@ func TestCancelSignalsCatchSIGTERM(t *testing.T) {
 
 func TestRunAndLoginSignalCallsExcludeSIGKILL(t *testing.T) {
 	callWithKill := regexp.MustCompile(`(?s)signal\.Notify(?:Context)?\s*\((?:[^()]|\([^()]*\))*os\.Kill`)
-	for _, name := range []string{"run.go", "login.go"} {
+	for _, name := range []string{"run/run.go", "login.go"} {
 		t.Run(name, func(t *testing.T) {
 			contents, err := os.ReadFile(filepath.Clean(name))
 			require.NoError(t, err)

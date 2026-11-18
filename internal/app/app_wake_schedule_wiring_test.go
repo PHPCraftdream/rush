@@ -21,6 +21,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -80,17 +82,17 @@ func TestWakeScheduleWorker_WiredByInitCoderAgentAndStoppedOnRelease(t *testing.
 	// observable fire happens within seconds without any Notify hook.
 	var owner, rowID string
 	application := newWakeWiringApp(t, func(q *db.Queries, conn *sql.DB) error {
-		sessions := session.NewService(q, conn)
+		sessions := coresession.NewService(q, conn)
 		sess, err := sessions.Create(context.Background(), "wake-wiring-owner")
 		if err != nil {
 			return err
 		}
 		owner = sess.ID
-		wake := session.NewWakeScheduleStore(conn)
+		wake := sessionwake.NewWakeScheduleStore(conn)
 		now := time.Now()
-		row, err := wake.CreateSchedule(context.Background(), session.CreateWakeScheduleParams{
-			Owner: owner, Kind: session.WakeKindOnce, Message: "wiring probe",
-			RunAt: now.Add(session.MinWakeOnceDelay),
+		row, err := wake.CreateSchedule(context.Background(), sessionwake.CreateWakeScheduleParams{
+			Owner: owner, Kind: sessionwake.WakeKindOnce, Message: "wiring probe",
+			RunAt: now.Add(sessionwake.MinWakeOnceDelay),
 		}, now)
 		if err != nil {
 			return err
@@ -103,7 +105,7 @@ func TestWakeScheduleWorker_WiredByInitCoderAgentAndStoppedOnRelease(t *testing.
 
 	ctx := context.Background()
 	q := db.New(application.DB())
-	wake := session.NewWakeScheduleStore(application.DB())
+	wake := sessionwake.NewWakeScheduleStore(application.DB())
 
 	ctrl, ok := application.AgentCoordinator.(agent.WakeScheduleController)
 	require.True(t, ok, "the coordinator must implement WakeScheduleController so releaseResources can stop the worker")
@@ -133,9 +135,9 @@ func TestWakeScheduleWorker_WiredByInitCoderAgentAndStoppedOnRelease(t *testing.
 	// unfired).
 	ctrl.StopWakeScheduler()
 	lateNow := time.Now()
-	late, err := wake.CreateSchedule(ctx, session.CreateWakeScheduleParams{
-		Owner: owner, Kind: session.WakeKindOnce, Message: "after stop",
-		RunAt: lateNow.Add(session.MinWakeOnceDelay),
+	late, err := wake.CreateSchedule(ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: owner, Kind: sessionwake.WakeKindOnce, Message: "after stop",
+		RunAt: lateNow.Add(sessionwake.MinWakeOnceDelay),
 	}, lateNow)
 	require.NoError(t, err)
 	got, err := q.GetWakeSchedule(ctx, late.ID)

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // parentCostFailureSessions keeps lineage real while refusing parent charges.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 // batchAwaitPollInterval is the batch worker await's fallback re-read cadence;
@@ -363,7 +364,7 @@ type BatchArbiterDeps struct {
 	// (BatchStore.BatchReactionPendingInclusiveDebtRows).
 	Debt func(context.Context) (session.BatchPendingDebt, error)
 	// NoticeQuestion classifies a notice row as question-class.
-	NoticeQuestion func(session.PendingNoticeDebt) bool
+	NoticeQuestion func(sessionnotice.PendingNoticeDebt) bool
 }
 
 // BatchArbiterFacts are the batch replacements of turn_arbiter's rule 1 and
@@ -429,7 +430,7 @@ func ReadBatchArbiterFacts(ctx context.Context, deps BatchArbiterDeps) (BatchArb
 		}
 	} else {
 		f.DebtPendingIncl = len(debt.Nodes) > 0 || len(debt.Notices) > 0
-		question := func(n session.PendingNoticeDebt) bool {
+		question := func(n sessionnotice.PendingNoticeDebt) bool {
 			if deps.NoticeQuestion != nil {
 				return deps.NoticeQuestion(n)
 			}

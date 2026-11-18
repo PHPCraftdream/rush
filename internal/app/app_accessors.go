@@ -19,6 +19,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -49,11 +52,11 @@ func (app *App) AgentNotifications() *pubsub.Broker[notify.Notification] {
 }
 
 // BatchHostStore returns the App host store
-// (session.HostStore): the job-independent host identity the batch
+// (sessionhosts.HostStore): the job-independent host identity the batch
 // runtime install registers and releases. Nil without a database writer
 // or without a data dir; callers treat nil as "no batch host identity",
 // never panic.
-func (app *App) BatchHostStore() *session.HostStore {
+func (app *App) BatchHostStore() *sessionhosts.HostStore {
 	return app.batchHostStore()
 }
 
@@ -67,13 +70,13 @@ func (app *App) BatchNoticeStore() *session.SessionNoticeStore {
 // WakeScheduleStore returns the stage-4b durable wake-schedule store
 // (same construction rules: nil under SkipAgentSetup or without a data
 // dir; readers treat nil as "no schedule data available").
-func (app *App) WakeScheduleStore() *session.WakeScheduleStore {
+func (app *App) WakeScheduleStore() *sessionwake.WakeScheduleStore {
 	return app.wakeScheduleStore
 }
 
 // SetWakeScheduleStoreForTest wires a WakeScheduleStore into an App built
 // WITHOUT InitCoderAgent (the &App{...} literal pattern); test-only.
-func (app *App) SetWakeScheduleStoreForTest(s *session.WakeScheduleStore) {
+func (app *App) SetWakeScheduleStoreForTest(s *sessionwake.WakeScheduleStore) {
 	app.wakeScheduleStore = s
 }
 
@@ -99,12 +102,12 @@ func (app *App) runEnv() RunEnv {
 	return RunEnv{
 		WorkspaceRoot:         app.workspaceRoot,
 		Config:                app.config,
-		Sessions:              func() session.Service { return app.Sessions },
+		Sessions:              func() coresession.Service { return app.Sessions },
 		Messages:              func() message.Service { return app.Messages },
 		Coord:                 func() agent.Coordinator { return app.AgentCoordinator },
 		Perms:                 func() permission.Service { return app.Permissions },
 		Pump:                  func() *session.RunQueuePump { return app.RunQueuePump },
-		WakeStore:             func() *session.WakeScheduleStore { return app.wakeScheduleStore },
+		WakeStore:             func() *sessionwake.WakeScheduleStore { return app.wakeScheduleStore },
 		DB:                    db,
 		DataDir:               func() string { return app.dataDir },
 		MCPOwner:              func() *mcp.Owner { return app.mcpOwner },

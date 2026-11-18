@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func pumpQueueSnapshot(svc session.Service, id string) string {

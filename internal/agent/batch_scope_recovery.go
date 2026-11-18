@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // Scope-time batch recovery budgets (H4 W2, review item 1c): ONE total
@@ -49,7 +50,7 @@ func batchScopeRecoverySourceOf(c *coordinator) batchScopeRecoverySource {
 	return batchScopeRecoverySource{
 		facts: facts,
 		store: nf.store,
-		probe: func(host string) (session.HostLockStatus, error) {
+		probe: func(host string) (sessionhosts.HostLockStatus, error) {
 			return probeHost(dataDir, host)
 		},
 	}

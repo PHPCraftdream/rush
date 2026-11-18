@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // RunQueuePump is a background goroutine that scans the durable run queue
@@ -81,13 +83,13 @@ const LeaseWatchdogSafetyMargin = 5 * time.Second
 type Coordinator interface {
 	// Run executes a call for the given session using the full call data.
 	// Returns the result or an error. Implementations MUST return
-	// ErrCallQueuedNotExecuted (not a nil error) if the call was merely
+	// session.ErrCallQueuedNotExecuted (not a nil error) if the call was merely
 	// appended to an already-owned session's in-process queue rather than
 	// actually executed by this call — see that error's doc.
-	Run(ctx context.Context, call SessionAgentCallData) (*any, error)
+	Run(ctx context.Context, call session.SessionAgentCallData) (*any, error)
 }
 
-// ErrCallQueuedNotExecuted is returned by Coordinator.Run when the target
+// session.ErrCallQueuedNotExecuted is returned by Coordinator.Run when the target
 // session was already owned by a live, in-process turn at the moment of the
 // call: the call was appended to that owner's own mailbox queue to be run
 // as a later turn, not executed by this call. This is NOT a failure of the
@@ -121,7 +123,6 @@ type Coordinator interface {
 // window has passed — see that field's doc for the full rationale,
 // including why a naive lease-renewal-based backoff was tried first and
 // found not to work.
-var ErrCallQueuedNotExecuted = errors.New("run_queue_pump: call was queued into an already-owned session, not executed")
 
 // ErrTurnCommitFailed is returned by executeEntrySync when the turn itself
 // succeeded but its terminal commit — the Ack that deletes the row — did
@@ -186,7 +187,7 @@ var errLeaseLost = errors.New("run_queue_pump: lost lease ownership mid-executio
 //
 // DrainSessionNow's OWN shutdown-in-progress path is NOT one of these
 // cases: when p.stopping is observed true after a successful lease (see
-// that branch below), it releases with ErrCallQueuedNotExecuted, not this
+// that branch below), it releases with session.ErrCallQueuedNotExecuted, not this
 // sentinel — matching processEntry's own stopping-gate behavior, which
 // also never reaches this file's early-return paths for that case.
 //
@@ -323,7 +324,7 @@ var ErrOutstandingCheckUnconfirmed = errors.New("run_queue_pump: could not confi
 // RunQueuePumpConfig configures a RunQueuePump instance.
 type RunQueuePumpConfig struct {
 	// Sessions is the session service for enqueue/lease/ack operations.
-	Sessions Service
+	Sessions session.Service
 
 	// Coordinator is the agent coordinator that will execute leased calls.
 	// Set to nil for pump instances that only scan/cleanup (no execution).
@@ -423,7 +424,7 @@ type RunQueuePumpConfig struct {
 	//   - trueDeadline: the sub-second-precision intended deadline computed
 	//     from time.Now().Add(TTL) BEFORE the DB round-trip — the value the
 	//     watchdog SHOULD be anchored to.
-	//   - roundedDeadline: ceilUnixSeconds(trueDeadline) — the whole-second,
+	//   - roundedDeadline: session.CeilUnixSeconds(trueDeadline) — the whole-second,
 	//     ceiling-rounded value actually persisted to the DB column. This is
 	//     the value task #604 found being mistakenly re-used to seed the
 	//     watchdog atomic, silently donating up to ~1s of the safety margin
@@ -609,7 +610,7 @@ type RunQueuePump struct {
 	// busyBackoffUntil tracks, per session ID, a local deadline before
 	// which this pump instance will not attempt to lease a pending entry
 	// for that session again — guarded by busyBackoffMu. Used exclusively
-	// for the ErrCallQueuedNotExecuted outcome (see executeEntry): an
+	// for the session.ErrCallQueuedNotExecuted outcome (see executeEntry): an
 	// EARLIER fix tried achieving backoff purely via RenewRunQueueLease,
 	// but that call happens almost instantly after the original lease was
 	// taken (Coordinator.Run returns near-immediately for this outcome),
@@ -621,7 +622,7 @@ type RunQueuePump struct {
 	// expected ~10 TTL windows, not the "far more than 10" the fix was
 	// supposed to guarantee.
 	//
-	// This map is the actual fix: on ErrCallQueuedNotExecuted, the entry
+	// This map is the actual fix: on session.ErrCallQueuedNotExecuted, the entry
 	// is immediately released via NackRunQueueEntryNoAttemptPenalty
 	// (status flips straight to 'pending', attempts untouched — cleanup
 	// never even sees a 'leased' row to charge an attempt against), and

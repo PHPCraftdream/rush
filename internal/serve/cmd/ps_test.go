@@ -200,6 +200,7 @@ func resetPsFlags(t *testing.T) {
 // runPsCmd drives `rush ps` through the real root command with stdout
 // captured, resetting flags around the run.
 func runPsCmd(t *testing.T, args ...string) (string, error) {
+	root := NewPsCmd()
 	t.Helper()
 	resetPsFlags(t)
 	var buf bytes.Buffer
@@ -210,11 +211,11 @@ func runPsCmd(t *testing.T, args ...string) (string, error) {
 	done := make(chan struct{})
 	go func() { _, _ = io.Copy(&buf, r); close(done) }()
 	t.Cleanup(func() {
-		rootCmd.SetArgs(nil)
+		root.SetArgs(nil)
 		resetPsFlags(t)
 	})
-	rootCmd.SetArgs(append([]string{"ps"}, args...))
-	runErr := rootCmd.Execute()
+	root.SetArgs(args)
+	runErr := root.Execute()
 	_ = w.Close()
 	os.Stdout = oldOut
 	<-done

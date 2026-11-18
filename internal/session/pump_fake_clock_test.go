@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -111,7 +112,7 @@ func (tk *fakePumpTicker) Stop() {
 // fakeClockService stamps every fresh lease on the fake clock (the real
 // service uses time.Now()) and counts the pump's lease-related calls.
 type fakeClockService struct {
-	session.Service
+	core.Service
 	clk *fakePumpClock
 
 	seen              sync.Map     // entry ids the pump leased
@@ -123,7 +124,7 @@ type fakeClockService struct {
 
 // newFakeClockService also registers a state describer for t: on an awaitPump
 // timeout the probe counters and the rows of every leased entry are printed.
-func newFakeClockService(t *testing.T, svc session.Service, clk *fakePumpClock) *fakeClockService {
+func newFakeClockService(t *testing.T, svc core.Service, clk *fakePumpClock) *fakeClockService {
 	s := &fakeClockService{Service: svc, clk: clk}
 	sessiontest.RegisterPumpDiag(t, s.describe)
 	return s
@@ -158,7 +159,7 @@ func (s *fakeClockService) describe() string {
 	return b.String()
 }
 
-func (s *fakeClockService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, ttl time.Duration) (*session.RunQueueEntry, error) {
+func (s *fakeClockService) LeaseRunQueueEntry(ctx context.Context, sessionID, leasedBy string, ttl time.Duration) (*core.RunQueueEntry, error) {
 	e, err := s.Service.LeaseRunQueueEntry(ctx, sessionID, leasedBy, ttl)
 	if err != nil || e == nil {
 		return e, err

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -66,7 +68,7 @@ type commitHookEnv struct {
 	store *BatchStore
 	conn  *sql.DB
 	ctx   context.Context
-	id    BatchCommitIdentity
+	id    session.BatchCommitIdentity
 }
 
 func newCommitHookEnv(t *testing.T) *commitHookEnv {
@@ -74,7 +76,7 @@ func newCommitHookEnv(t *testing.T) *commitHookEnv {
 	store, conn, ctx := batchStoreTestDB(t)
 	return &commitHookEnv{
 		t: t, store: store, conn: conn, ctx: ctx,
-		id: BatchCommitIdentity{Host: "h1", Runner: "runner-a", Owner: "owner"},
+		id: session.BatchCommitIdentity{Host: "h1", Runner: "runner-a", Owner: "owner"},
 	}
 }
 
@@ -303,7 +305,7 @@ func TestBatchCommitSubmitAtomicReservation(t *testing.T) {
 	late.Sequence = 3
 	late.Updates = []db.ProjectBatchNodeParams{{NodeID: "missing", State: "running", ControlState: "none"}}
 	_, err = env.store.ReserveIdentity(env.ctx, late)
-	require.ErrorIs(t, err, ErrBatchProjectionConflict)
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict)
 	require.Equal(t, before, commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes"),
 		"tree insert rolled back when the initial-view projection fails")
 }
@@ -345,7 +347,7 @@ func TestBatchCommitAddAppendsInsideProject(t *testing.T) {
 	require.Equal(t, int64(2), added.Ordinal, "appended at the accepted parent ordinal")
 	require.Equal(t, env.id.Runner, added.RunnerID)
 	require.Equal(t, int64(1), commitHookCount(t, env.conn, "SELECT count(*) FROM batch_nodes WHERE node_id = root_id"),
-		"Add must not create a second root")
+		"Add must not sessionwake.create a second root")
 	require.Equal(t, int64(1), commitHookCount(t, env.conn,
 		"SELECT count(*) FROM batch_nodes WHERE node_id = 'r.2' AND parent_id = 'r' AND root_id = 'r'"))
 }
@@ -406,7 +408,7 @@ func TestBatchCommitEnvelopeDurabilityAndRollback(t *testing.T) {
 	// Project transaction rolls back both. The notice targets q.1, a still
 	// RUNNING (nonterminal) node on a second live root "q": the terminal-state
 	// predicate in SelectBatchNodeNotice matches 0 rows, so Project fails with
-	// ErrBatchProjectionConflict instead of inserting a notice row.
+	// session.ErrBatchProjectionConflict instead of inserting a notice row.
 	commitHookSubmit(t, ctx, r, "q", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "controlled"}), "call-q")
 	commitHookAccept(t, ctx, r, e, nil)
 	before := commitHookReadNode(t, env.conn, "q.1")
@@ -428,7 +430,7 @@ func TestBatchCommitEnvelopeDurabilityAndRollback(t *testing.T) {
 		}},
 	}
 	err := env.store.Project(env.ctx, p)
-	require.ErrorIs(t, err, ErrBatchProjectionConflict)
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict)
 	after := commitHookReadNode(t, env.conn, "q.1")
 	require.Equal(t, before, after, "node view and envelope both rolled back")
 }
@@ -512,7 +514,7 @@ func TestBatchCommitIncarnationFencing(t *testing.T) {
 			Updates: []db.ProjectBatchNodeParams{{NodeID: "r", State: "failed", ControlState: "none"}},
 		}},
 	})
-	require.ErrorIs(t, err, ErrBatchProjectionConflict)
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict)
 	require.Equal(t, before, commitHookReadNode(t, env.conn, "r"))
 	// Stale same-sequence replay through the reservation path (no root
 	// advance): the projection_sequence fence must refuse it.
@@ -521,7 +523,7 @@ func TestBatchCommitIncarnationFencing(t *testing.T) {
 		RootID: "r", ToolCallID: "call-r", InputHash: batchCommitSpecHash(spec), Sequence: 2,
 		Updates: []db.ProjectBatchNodeParams{{NodeID: "r.1", State: "running", ControlState: "none"}},
 	})
-	require.ErrorIs(t, err, ErrBatchProjectionConflict, "stale same-sequence projection refused")
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict, "stale same-sequence projection refused")
 	leaf := commitHookReadNode(t, env.conn, "r.1")
 	require.Equal(t, int64(2), leaf.ProjectionSequence, "projection_sequence not inflated")
 }

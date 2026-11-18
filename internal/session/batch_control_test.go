@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +32,7 @@ func TestR9ControlNestedLifecycleTwoStores(t *testing.T) {
 			before, err := a.Read(ctx, "owner", root)
 			require.NoError(t, err)
 			target := BatchControlTarget{"owner", "host", root, node}
-			alive := func(string) (HostLockStatus, error) { return HostStatusAlive, nil }
+			alive := func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil }
 			request, err := b.BatchRequestStop(ctx, target, alive)
 			require.NoError(t, err)
 			calls := 0
@@ -90,7 +93,7 @@ func TestR9ControlRejectionsNoPersistence(t *testing.T) {
 	a, _, conn, dir, ctx := r9Stores(t)
 	snap := batchStoreTestReserve(t, a, ctx)
 	target := BatchControlTarget{"owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID}
-	alive := func(string) (HostLockStatus, error) { return HostStatusAlive, nil }
+	alive := func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil }
 	for _, tc := range []struct {
 		name   string
 		target BatchControlTarget
@@ -106,7 +109,7 @@ func TestR9ControlRejectionsNoPersistence(t *testing.T) {
 			require.Empty(t, r.RequestID)
 		})
 	}
-	_, err := a.BatchRequestStop(ctx, target, func(string) (HostLockStatus, error) { return HostStatusUnknown, nil })
+	_, err := a.BatchRequestStop(ctx, target, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusUnknown, nil })
 	require.ErrorIs(t, err, ErrBatchControlUnknownHost)
 	_, err = a.BatchRequestStop(ctx, target, BatchSharedHostProbe(dir))
 	require.ErrorIs(t, err, ErrBatchControlStale)
@@ -134,7 +137,7 @@ func TestR9ControlWaitTimeoutAndCommitProof(t *testing.T) {
 	a, b, _, _, ctx := r9Stores(t)
 	snap := batchStoreTestReserve(t, a, ctx)
 	target := BatchControlTarget{"owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID}
-	r, err := b.BatchRequestStop(ctx, target, func(string) (HostLockStatus, error) { return HostStatusAlive, nil })
+	r, err := b.BatchRequestStop(ctx, target, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusAlive, nil })
 	require.NoError(t, err)
 	wait, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
@@ -144,7 +147,7 @@ func TestR9ControlWaitTimeoutAndCommitProof(t *testing.T) {
 		return BatchControlAccepted{Code: "accepted"}, nil
 	})
 	_, err = pump.Pump(ctx, "owner", target.Root)
-	require.ErrorIs(t, err, ErrBatchProjectionConflict)
+	require.ErrorIs(t, err, session.ErrBatchProjectionConflict)
 	got, err := a.BatchReadControl(ctx, target, r.RequestID)
 	require.NoError(t, err)
 	require.Equal(t, r, got)

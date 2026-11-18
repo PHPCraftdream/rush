@@ -15,12 +15,12 @@ import (
 
 	_ "github.com/PHPCraftdream/rush/internal/kit/sys/dns"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/serve/cmd"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli"
 	_ "github.com/joho/godotenv/autoload"
 )
 
 func main() {
-	stopSignals := cmd.InstallProcessStop()
+	stopSignals := cli.InstallProcessStop()
 	defer stopSignals()
 	// Guard against running from inside the source tree. Package init()
 	// functions (godotenv autoload, internal/dns) necessarily run before
@@ -46,5 +46,5 @@ func main() {
 		}()
 	}
 
-	cmd.Execute()
+	cli.Execute()
 }

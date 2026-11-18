@@ -12,7 +12,8 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -419,7 +420,7 @@ func (a *sessionAgent) refuseForeignSession(ctx context.Context, sessionID strin
 		return nil
 	}
 	root, home := a.processWorkspace()
-	if session.Owns(sess.WorkspaceRoot, root, home) {
+	if coresession.Owns(sess.WorkspaceRoot, root, home) {
 		return nil
 	}
 	return ForeignWorkspaceError(sess)
@@ -502,12 +503,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	// its own, which is what made the old recursive-Run() shape deadlock.
 	// The lock is released by the defer above (abandonOwnershipWithHandoff)
 	// before Run returns to avoid the HIGH-1 window.
-	var lk *session.SessionLock
+	var lk *sessionlock.SessionLock
 	if a.dataDir != "" {
 		var lockErr error
-		lk, lockErr = session.TryAcquireSessionLockWithOptions(a.dataDir, call.SessionID, a.lockOptions...)
+		lk, lockErr = sessionlock.TryAcquireSessionLockWithOptions(a.dataDir, call.SessionID, a.lockOptions...)
 		if lockErr != nil {
-			var busyErr *session.SessionLockBusyError
+			var busyErr *sessionlock.SessionLockBusyError
 			if errors.As(lockErr, &busyErr) {
 				slog.Warn(
 					"agent.Run: rejected — session locked by another process",
@@ -728,7 +729,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 					err = fmt.Errorf("%w; failed to durably recover the admitted call: %v", err, durableErr)
 				}
 				if replacedDurableCallID != "" {
-					return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
+					return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", coresession.ErrCallQueuedNotExecuted, replacedDurableCallID, err)
 				}
 				return nil, notAttempted(call, err)
 			}
@@ -836,7 +837,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				if replacementError == "" {
 					replacementError = "replacement exited without an error"
 				}
-				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", session.ErrCallQueuedNotExecuted, replacedDurableCallID, replacementError)
+				return nil, fmt.Errorf("%w: durable call %q was replaced but never executed; replacement failed: %s", coresession.ErrCallQueuedNotExecuted, replacedDurableCallID, replacementError)
 			}
 			return finalTurnOutcome(result, err, carriedResult, carriedErr)
 		}

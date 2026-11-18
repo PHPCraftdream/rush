@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -19,7 +22,7 @@ type (
 	BatchDebtSnapshot struct {
 		Owner   string
 		Nodes   []BatchDebtNodeRef
-		Notices []DebtNoticeRef
+		Notices []sessionnotice.DebtNoticeRef
 	}
 )
 
@@ -28,7 +31,7 @@ func (d BatchDebtSnapshot) Empty() bool { return len(d.Nodes) == 0 && len(d.Noti
 // BatchPendingDebt names pending-inclusive selected-node and retained debt.
 type BatchPendingDebt struct {
 	Nodes   []BatchDebtNodeRef
-	Notices []PendingNoticeDebt
+	Notices []sessionnotice.PendingNoticeDebt
 }
 
 // batchOutboxDebtNodesVoidAware mirrors the canonical BatchOutboxDebtNodes
@@ -166,7 +169,7 @@ func batchDebtSnapshot(ctx context.Context, dbtx db.DBTX, owner string, visible 
 	}
 	for _, n := range notices {
 		if !visible || n.Delivery == "done" {
-			snap.Notices = append(snap.Notices, DebtNoticeRef{ID: n.ID, NoticeMessageID: n.NoticeMessageID.String})
+			snap.Notices = append(snap.Notices, sessionnotice.DebtNoticeRef{ID: n.ID, NoticeMessageID: n.NoticeMessageID.String})
 		}
 	}
 	return snap, nil
@@ -239,7 +242,7 @@ func batchReactionPendingInclusiveDebtRows(ctx context.Context, dbtx db.DBTX, ow
 		out.Nodes = append(out.Nodes, n.ref)
 	}
 	for _, n := range notices {
-		out.Notices = append(out.Notices, PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
+		out.Notices = append(out.Notices, sessionnotice.PendingNoticeDebt{ID: n.ID, Kind: n.Kind})
 	}
 	return out, nil
 }
@@ -277,7 +280,7 @@ func (s *BatchStore) BatchReactionDebtOwners(ctx context.Context, owners []strin
 // It updates history and both debt tables atomically, publishing after commit.
 func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Context, messages message.Service, owner string, msg message.Message) error {
 	if msg.SessionID != owner {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	// See batch_tool_result.go: prepare before the tx holds the pool's only
 	// connection.
@@ -303,7 +306,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 		return err
 	}
 	if persisted.SessionID != owner {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	publish, err := pdcUpdateTx(ctx, q, tx, messages, msg)
 	if err != nil {
@@ -329,7 +332,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 
 func batchReactionAccountSnapshot(ctx context.Context, q *db.Queries, owner string, snap BatchDebtSnapshot, increment, failed int64) (int64, error) {
 	if snap.Owner != owner {
-		return 0, ErrBatchProjectionConflict
+		return 0, session.ErrBatchProjectionConflict
 	}
 	var total int64
 	now := time.Now().Unix()
@@ -366,7 +369,7 @@ func (s *BatchStore) batchReactionAccount(ctx context.Context, owner string, sna
 	}
 	if count > 0 && marker != nil {
 		now := time.Now().Unix()
-		_, err = q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: owner, Kind: NoticeKindWakeFailed, Text: *marker, CreatedAt: now, UpdatedAt: now})
+		_, err = q.InsertSessionNotice(ctx, db.InsertSessionNoticeParams{Owner: owner, Kind: sessionnotice.NoticeKindWakeFailed, Text: *marker, CreatedAt: now, UpdatedAt: now})
 		if err != nil {
 			return 0, err
 		}
@@ -394,7 +397,7 @@ func (s *BatchStore) BatchReactionMaxWakeAttempts(ctx context.Context, owner str
 		return 0, nil
 	}
 	if snap.Owner != owner {
-		return 0, ErrBatchProjectionConflict
+		return 0, session.ErrBatchProjectionConflict
 	}
 	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -411,7 +414,7 @@ func (s *BatchStore) BatchReactionMaxWakeAttempts(ctx context.Context, owner str
 	for _, n := range current.Nodes {
 		liveNodes[n] = true
 	}
-	liveNotices := make(map[DebtNoticeRef]bool)
+	liveNotices := make(map[sessionnotice.DebtNoticeRef]bool)
 	for _, n := range current.Notices {
 		liveNotices[n] = true
 	}

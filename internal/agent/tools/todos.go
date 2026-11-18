@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 //go:embed todos.md

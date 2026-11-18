@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/spf13/cobra"
 )
@@ -98,10 +99,6 @@ func sessionsWatchCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return liveTailSession(ctx, a, sessionID, interval)
-}
-
-func init() {
-	sessionsWatchCmd.Flags().Duration("interval", time.Second, "Poll interval for new messages (e.g. 1s, 500ms, 2s)")
 }
 
 // liveTailSession prints every existing message in a session and then
@@ -342,7 +339,7 @@ func printNewMessagesSince(w io.Writer, ctx context.Context, a *app.App, session
 // "[tool: bash] …" output would be visually indistinguishable from the
 // top-level session's own tool calls in the same stream.
 func subAgentWriter(w io.Writer, childSessionID string) io.Writer {
-	return &prefixWriter{w: w, prefix: "  [sub-agent " + short(session.HashID(childSessionID)) + "] "}
+	return &prefixWriter{w: w, prefix: "  [sub-agent " + short(coresession.HashID(childSessionID)) + "] "}
 }
 
 // prefixWriter prepends prefix to every line written through it. Used to
@@ -599,7 +596,7 @@ func decideWatchExit(st watchState, sawLiveLock bool, sinceWatchStart, lastActiv
 // errors on the message lookup as "no signal (b)/(c)" — neither is
 // treated as termination, so a transient DB hiccup does not end the tail.
 func isSessionFinishedFromState(
-	sess session.Session,
+	sess coresession.Session,
 	sessErr error,
 	msgs []message.Message,
 	msgsErr error,
@@ -682,7 +679,7 @@ func printWatchSummary(w io.Writer, ctx context.Context, a *app.App, sessionID, 
 //	duration: <X>h<Y>m / <Y>m<Z>s / <Z>s  (compact form)
 //	tokens:   <total> (prompt <p> + completion <c>)
 //	cost:     $0.0000 [ / $X.XXXX budget ]
-func formatWatchSummary(sess session.Session, costUSD float64, reason string, now time.Time) string {
+func formatWatchSummary(sess coresession.Session, costUSD float64, reason string, now time.Time) string {
 	duration := time.Duration(0)
 	if sess.CreatedAt > 0 {
 		duration = now.Sub(time.Unix(sess.CreatedAt, 0))
@@ -732,7 +729,7 @@ func pickSessionForWatch(ctx context.Context, a *app.App) (string, error) {
 	for i, s := range visible {
 		items[i] = sessionItem{
 			id:      s.ID,
-			hash:    short(session.HashID(s.ID)),
+			hash:    short(coresession.HashID(s.ID)),
 			title:   truncate(s.Title, 40),
 			updated: time.Unix(s.UpdatedAt, 0).Format("2006-01-02 15:04"),
 			cost:    sessionBudget(ctx, a.Sessions, s),

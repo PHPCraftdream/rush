@@ -8,7 +8,11 @@ import (
 	"sync"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -52,7 +56,7 @@ func TestR9RecoveryConcurrentAllStates(t *testing.T) {
 	r9Announce(t, conn, ctx, snap.Root.RootID)
 	c, err := a.CreateControl(ctx, "owner", "host", snap.Root.RootID, snap.Nodes[1].NodeID)
 	require.NoError(t, err)
-	lock, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 	const n = 8
@@ -125,14 +129,14 @@ func TestR9RecoveryUnknownAliveOwnNoChanges(t *testing.T) {
 			require.NoError(t, err)
 			switch status {
 			case "unknown":
-				require.NoError(t, os.MkdirAll(HostLockPath(dir, "host"), 0o755))
+				require.NoError(t, os.MkdirAll(sessionhosts.HostLockPath(dir, "host"), 0o755))
 			case "alive":
-				lock, e := TryAcquireFileLock(HostLockPath(dir, "host"))
+				lock, e := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 				require.NoError(t, e)
 				defer lock.Release()
 			case "own":
-				markOwnHostID("host")
-				defer unmarkOwnHostID("host")
+				sessionhosts.MarkOwnHostIDForTest("host")
+				defer sessionhosts.UnmarkOwnHostIDForTest("host")
 			}
 			out, err := a.BatchRecoverDeadHost(ctx, "host", BatchSharedHostProbe(dir))
 			if status == "unknown" {
@@ -158,7 +162,7 @@ func TestR9RecoveryPreservesUnannouncedCLIUntilRetention(t *testing.T) {
 	a, _, conn, dir, ctx := r9Stores(t)
 	// A terminal CLI root remains available to its caller until result delivery;
 	// once delivered, recovery is inert and retention can remove the entire tree.
-	hook := NewBatchCommitHook(a, BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})
+	hook := NewBatchCommitHook(a, session.BatchCommitIdentity{Host: "host", Runner: "runner", Owner: "owner"})
 	runner, executor, runCtx := commitHookRunner(t, hook)
 	batch := commitHookSubmit(t, runCtx, runner, "cli-root", jobbatch.OneItem(jobbatch.TaskSpec{Kind: "retention"}), "batch-cli:retention")
 	attempt := commitHookAccept(t, runCtx, runner, executor, nil)
@@ -168,7 +172,7 @@ func TestR9RecoveryPreservesUnannouncedCLIUntilRetention(t *testing.T) {
 	var pending int
 	require.NoError(t, conn.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes WHERE root_id=? AND notice_selected=1 AND delivery='pending'`, root).Scan(&pending))
 	require.Equal(t, 1, pending)
-	lock, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 
@@ -200,7 +204,7 @@ func TestR9RecoveryInterruptsLiveUnannouncedCLI(t *testing.T) {
 	// A live root carries no notice yet: notice_state admits only terminal states.
 	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET state='running' WHERE root_id=?`, root)
 	require.NoError(t, err)
-	lock, err := TryAcquireFileLock(HostLockPath(dir, "host"))
+	lock, err := sessionlock.TryAcquireFileLock(sessionhosts.HostLockPath(dir, "host"))
 	require.NoError(t, err)
 	require.NoError(t, lock.Release())
 

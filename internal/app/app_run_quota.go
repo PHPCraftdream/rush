@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 )
 
 type cliQuotaStop struct {
@@ -130,7 +131,7 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 		childIDs = append(childIDs, child)
 	}
 	slices.Sort(childIDs)
-	questions := make(map[string]session.ChildQuestion)
+	questions := make(map[string]sessionnotice.ChildQuestion)
 	writer := l.host.batchCutoverWriter()
 	facts := agent.NewBatchCutoverNodeFacts(session.NewBatchStoreWithReader(writer, l.host.batchCutoverReader(writer)), nil, writer)
 	owners := make(map[string]bool)
@@ -155,7 +156,7 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 				final, exitErr := l.exitWait(err)
 				return cliStepResult{ev: evScopeWaitErr, final: final, err: exitErr}
 			}
-			question, ok := session.ParseBatchChildQuestionNotice(noticeText)
+			question, ok := sessionnotice.ParseBatchChildQuestionNotice(noticeText)
 			if ok && question.NodeID == heldRow.NodeID && question.ChildSessionID == heldRow.ChildSessionID {
 				question.Question = quotaQuestionText(noticeText)
 				questions[question.ChildSessionID] = question

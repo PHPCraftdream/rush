@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,8 +44,8 @@ func TestRunLoop_TodoNudgeFailureKeepsTheAnswer(t *testing.T) {
 		h.t.Errorf("unexpected provider request #%d: the failed reminder must not be retried", n)
 		loopText(w, "x", "unexpected", 1, 1)
 	})
-	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []session.Todo{
-		{Content: "deploy after the answer", Status: session.TodoStatusPending},
+	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []coresession.Todo{
+		{Content: "deploy after the answer", Status: coresession.TodoStatusPending},
 	}, nil))
 
 	res, _, err := h.run(loopCtx(t), RunOverrides{})
@@ -93,11 +94,11 @@ func TestRunLoop_TodoNudgeRefusedByLockKeepsTheAnswer(t *testing.T) {
 		}
 		loopText(w, "a", "first answer", 11, 3)
 	})
-	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []session.Todo{
-		{Content: "deploy after the answer", Status: session.TodoStatusPending},
+	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []coresession.Todo{
+		{Content: "deploy after the answer", Status: coresession.TodoStatusPending},
 	}, nil))
 	h.afterFirstTurn(func() {
-		foreign, err := session.TryAcquireSessionLock(h.dataDir, h.sessionID)
+		foreign, err := sessionlock.TryAcquireSessionLock(h.dataDir, h.sessionID)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = foreign.Release() })
 	})
@@ -144,8 +145,8 @@ func TestRunLoop_TodoNudgeCanceledStillExitsCanceled(t *testing.T) {
 		}
 		loopText(w, "x", "unexpected", 1, 1)
 	})
-	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []session.Todo{
-		{Content: "deploy after the answer", Status: session.TodoStatusPending},
+	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []coresession.Todo{
+		{Content: "deploy after the answer", Status: coresession.TodoStatusPending},
 	}, nil))
 
 	res, _, err := h.run(ctx, RunOverrides{})
@@ -177,8 +178,8 @@ func TestRunLoop_TodoNudgeQuestionIsNotAFailedReminder(t *testing.T) {
 			loopText(w, "x", "unexpected", 1, 1)
 		}
 	})
-	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []session.Todo{
-		{Content: "deploy after the answer", Status: session.TodoStatusPending},
+	require.NoError(t, h.app.Sessions.SetTodos(context.Background(), h.sessionID, []coresession.Todo{
+		{Content: "deploy after the answer", Status: coresession.TodoStatusPending},
 	}, nil))
 
 	res, _, err := h.run(loopCtx(t), RunOverrides{})

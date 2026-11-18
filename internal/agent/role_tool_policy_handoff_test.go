@@ -9,8 +9,9 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -107,7 +108,7 @@ func TestRunTurnAttachesRoleToolPolicyToEveryConstrainedTurn(t *testing.T) {
 			}
 			model := &rolePolicyCaptureModel{provider: "capture", model: "capture-model"}
 			wrappedModel := &peakHoursRequestModel{
-				LanguageModel: &hbLanguageModel{inner: model},
+				LanguageModel: callbeat.WrapLanguageModelForTest(model),
 				check:         func(context.Context) error { return nil },
 			}
 			modelCfg := config.SelectedModel{Provider: tc.providerID, Model: "chosen-model", ReasoningEffort: "max"}

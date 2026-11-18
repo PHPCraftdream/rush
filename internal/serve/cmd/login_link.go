@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/term"
@@ -38,7 +40,7 @@ func (m *oauthLinkModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	// In raw mode Ctrl-C arrives as a key press, not SIGINT: abort, never copy.
 	if key.Mod.Contains(tea.ModCtrl) && (code == 'c' || code == 'C') {
-		if requestProcessInterrupt() {
+		if cliproc.RequestProcessInterrupt() {
 			return m, nil
 		}
 		if m.interrupt != nil {

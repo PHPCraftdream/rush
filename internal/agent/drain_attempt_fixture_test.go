@@ -21,6 +21,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -118,7 +120,7 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	// fire. An unclaimed store over an empty session_drivers table answers
 	// not-foreign, so only tests that seed a foreign marker see it.
 	require.NoError(t, SetBatchDriverClaimer(f.coord,
-		session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "fixture-host")))
+		sessionhosts.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid(), "fixture-host")))
 	t.Cleanup(func() {
 		f.coord.waitRecheckWakes()
 		f.waitReleases()
@@ -228,7 +230,7 @@ func (s attemptStore) MaxWakeAttempts(ctx context.Context, owner string, snap se
 // PendingInclusiveDebtRows is the legacy 4-value readback over
 // BatchReactionPendingInclusiveDebtRows: hasJobDebt reports the selected-node
 // half, notices the retained-notice half.
-func (s attemptStore) PendingInclusiveDebtRows(ctx context.Context, owner string) (bool, []session.BatchDebtNodeRef, []session.PendingNoticeDebt, error) {
+func (s attemptStore) PendingInclusiveDebtRows(ctx context.Context, owner string) (bool, []session.BatchDebtNodeRef, []sessionnotice.PendingNoticeDebt, error) {
 	out, err := s.batch.BatchReactionPendingInclusiveDebtRows(ctx, owner)
 	return len(out.Nodes) > 0, out.Nodes, out.Notices, err
 }
@@ -241,7 +243,7 @@ func (s attemptStore) InsertSessionNoticeReturningID(ctx context.Context, owner,
 	return s.notices.InsertSessionNoticeReturningID(ctx, owner, kind, text, wake, jobToolCallID)
 }
 
-func (s attemptStore) ListSessionNotices(ctx context.Context, owner string) ([]session.SessionNoticeRow, error) {
+func (s attemptStore) ListSessionNotices(ctx context.Context, owner string) ([]sessionnotice.SessionNoticeRow, error) {
 	return s.notices.ListSessionNotices(ctx, owner)
 }
 

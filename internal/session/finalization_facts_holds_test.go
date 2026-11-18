@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,10 +41,10 @@ func TestTrySealPhysicalHoldsFactRefusals(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealPhysicalHolds, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealPhysicalHolds, outcome.Reason)
 
 	broken := NewAgentFinalizationScopeReader("owner", &finalizationSeamScopeStub{}, NewFinalizationQueuedCallsFacts(), NewFinalizationPhysicalHoldsFacts(), &finalizationSeamScopeStub{})
 	outcome, err = e.store.TrySeal(t.Context(), e.id, presented, e.sealWriter(t), broken)
 	require.ErrorIs(t, err, ErrFinalizationPhysicalHoldsUnreadable)
-	require.Equal(t, AgentFinalizationSealOutcome{}, outcome)
+	require.Equal(t, session.AgentFinalizationSealOutcome{}, outcome)
 }

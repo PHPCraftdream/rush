@@ -3,13 +3,14 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -341,6 +342,33 @@ func (m *mockSessionService) GetOrphanOutboxEntry(context.Context, string) (*db.
 
 func (m *mockSessionService) DrainOrphanOutboxEntry(context.Context, string) (bool, error) {
 	return false, nil
+}
+
+// --- MV1 temporary surface stubs (see session MV1 lane report): the
+// session.Service interface temporarily carries finalization methods used by
+// root-side integration tests; mocks stub them as refused.
+func (m *mockSessionService) BindAgentFinalization(context.Context, session.AgentFinalizationIdentity) (*session.AgentFinalizationAuthority, error) {
+	return nil, errors.New("not implemented in mock")
+}
+
+func (m *mockSessionService) RestoreAgentFinalizationQueue(context.Context, string, session.SessionAgentCallData) (session.AgentFinalizationContext, error) {
+	return session.AgentFinalizationContext{}, errors.New("not implemented in mock")
+}
+
+func (m *mockSessionService) StoreSessionCredentialRequirement(context.Context, string) error {
+	return nil
+}
+
+func (m *mockSessionService) HasSessionCredentialRequirement(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockSessionService) PrepareAgentFinalizationQueue(context.Context, string, session.SessionAgentCallData) (*session.AgentFinalizationQueuePreparation, error) {
+	return nil, errors.New("not implemented in mock")
+}
+
+func (m *mockSessionService) WithAgentFinalizationAuthorities(session.BatchCommitIdentity, ...*session.AgentFinalizationAuthority) (session.BatchCommitIdentity, error) {
+	return session.BatchCommitIdentity{}, nil
 }
 
 func (m *mockSessionService) RecordOrphanOutboxFailure(context.Context, string, string) (session.OrphanOutboxFailureOutcome, error) {

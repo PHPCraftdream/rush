@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -38,6 +39,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -51,50 +53,10 @@ var (
 	errFastModelNotSelected            = errors.New("fast model not selected")
 	errSmartModelProviderNotConfigured = errors.New("smart model provider not configured")
 	errFastModelProviderNotConfigured  = errors.New("fast model provider not configured")
-	// errProviderPeakHours is returned when a provider's peak_hours
-	// window refuses the request. It is operator-actionable (the user
-	// configured the window on purpose) and MUST NOT be retried: the
-	// condition only clears when the wall clock leaves the window,
-	// which the backoff loop cannot accelerate. classifyProviderError
-	// pins it to classTerminal as defense-in-depth.
-	errProviderPeakHours = errors.New("provider is inside its configured peak-hours window")
+	errProviderPeakHours               = usage.PeakHoursSentinel()
 )
 
-// PeakHoursError is the concrete error checkPeakHours returns while a
-// provider is inside its configured peak_hours window (and not paused).
-// It carries
-// the exact reopen time as a time.Time (not just formatted into the error
-// string) so callers that need to act on it precisely — e.g. an
-// orchestrating agent scheduling a resume — don't have to parse Error()'s
-// text.
-type PeakHoursError struct {
-	ProviderID string
-	Start, End string // HH:MM, as configured
-	ReopensAt  time.Time
-	// Message is the operator-authored config.PeakHoursWindow.Message, if
-	// any — appended to PeakHoursGuidance's output.
-	Message string
-	// Timezone is the configured peak-hours timezone string ("" = machine
-	// local), carried through so guidance can name it.
-	Timezone string
-}
-
-func (e *PeakHoursError) Error() string {
-	if e.ReopensAt.IsZero() {
-		return fmt.Sprintf(
-			"provider %s is in peak hours (%s–%s), refusing with no scheduled reopen (blocked around the clock)",
-			e.ProviderID, e.Start, e.End,
-		)
-	}
-	return fmt.Sprintf(
-		"provider %s is in peak hours (%s–%s), refusing until %s",
-		e.ProviderID, e.Start, e.End, e.ReopensAt.Format("15:04"),
-	)
-}
-
-// Unwrap lets errors.Is(err, errProviderPeakHours) keep working for callers
-// that only care about the error class, not the structured detail.
-func (e *PeakHoursError) Unwrap() error { return errProviderPeakHours }
+type PeakHoursError = usage.PeakHoursError
 
 // maxConsecutiveAutoResumes bounds Phase 4 autonomous idle-resumes per session
 // without human involvement (reset by any human message). Anti-runaway: an
@@ -103,7 +65,7 @@ const maxConsecutiveAutoResumes = 5
 
 type coordinator struct {
 	cfg         *config.ConfigStore
-	sessions    session.Service
+	sessions    coresession.Service
 	messages    message.Service
 	permissions permission.Service
 	history     history.Service
@@ -150,7 +112,7 @@ type coordinator struct {
 	subAgentDrivers *subAgentDriverRegistry
 
 	// batchDriverClaimer is the durable session-driver-marker store
-	// (session.HostStore): claim/release AND the foreign-driver read go
+	// (sessionhosts.HostStore): claim/release AND the foreign-driver read go
 	// through it. See batch_cutover_driver.go / batch_rehome_coord_runtime.go.
 	batchDriverClaimer BatchDriverClaimer
 
@@ -162,10 +124,10 @@ type coordinator struct {
 	// execReqs is the durable session-execution-fence store (R12-H2b);
 	// nil means no fence can exist (bare fixtures), which reads as "no
 	// requirement" in PrepareContinuation.
-	execReqs session.SessionExecutionRequirementStore
+	execReqs coresession.SessionExecutionRequirementStore
 	// credentialReqs durably records the secret-free credential boundary;
 	// nil retains the in-process marker only.
-	credentialReqs session.SessionCredentialRequirementStore
+	credentialReqs coresession.SessionCredentialRequirementStore
 
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via
@@ -332,8 +294,8 @@ type BatchRuntimeCapabilities struct {
 
 // SessionExecutionCapabilities carries the optional durable execution/credential requirement stores (same bundle rules).
 type SessionExecutionCapabilities struct {
-	ExecReqs session.SessionExecutionRequirementStore
-	CredReqs session.SessionCredentialRequirementStore
+	ExecReqs coresession.SessionExecutionRequirementStore
+	CredReqs coresession.SessionCredentialRequirementStore
 }
 
 // NewCoordinator wires the agent coordinator. Async work is batch-only: the
@@ -346,7 +308,7 @@ type SessionExecutionCapabilities struct {
 func NewCoordinator(
 	ctx context.Context,
 	cfg *config.ConfigStore,
-	sessions session.Service,
+	sessions coresession.Service,
 	messages message.Service,
 	permissions permission.Service,
 	history history.Service,

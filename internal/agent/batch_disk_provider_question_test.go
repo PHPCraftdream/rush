@@ -77,6 +77,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -102,7 +104,7 @@ type questionProviderLeaf struct {
 	// sessions/messages are the REAL session and message services over the
 	// SAME SQLite store the batch rows live in; the child session is a real
 	// row created through the service.
-	sessions session.Service
+	sessions coresession.Service
 	messages message.Service
 
 	// workDir and the REAL fs_write service triple (permission/history/
@@ -132,7 +134,7 @@ type questionProviderLeaf struct {
 
 var _ fantasy.AgentTool = (*questionProviderLeaf)(nil)
 
-func newQuestionProviderLeaf(t *testing.T, bindingID, childSession, path1, path2, workDir string, sessions session.Service, messages message.Service, q *db.Queries, conn *sql.DB) *questionProviderLeaf {
+func newQuestionProviderLeaf(t *testing.T, bindingID, childSession, path1, path2, workDir string, sessions coresession.Service, messages message.Service, q *db.Queries, conn *sql.DB) *questionProviderLeaf {
 	return &questionProviderLeaf{
 		t: t, expectedBinding: bindingID, childSession: childSession,
 		path1: path1, path2: path2, workDir: workDir,
@@ -482,7 +484,7 @@ type questionInstall struct {
 	t           *testing.T
 	store       *session.BatchStore
 	conn        *sql.DB
-	sessions    session.Service
+	sessions    coresession.Service
 	messages    message.Service
 	install     *BatchInstall
 	leaf        *questionProviderLeaf
@@ -514,7 +516,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	bindingID, err := bindings.RegisterProvider(fake)
 	require.NoError(t, err)
 	q := db.New(conn)
-	sessions := session.NewService(q, conn)
+	sessions := coresession.NewService(q, conn)
 	messages := message.NewService(q)
 	ownerSession := "sess-owner-q8-" + uuid.NewString()[:8]
 	ensureFixtureSession(t, conn, ownerSession)
@@ -557,7 +559,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	// overridden because a unit test holds no real cross-process host lock.
 	live := session.NewBatchLiveReader(db.New(conn), t.TempDir())
 	live.IsOwnHost = func(string) bool { return false }
-	live.ProbeHost = func(string, string) (session.HostLockStatus, error) {
+	live.ProbeHost = func(string, string) (sessionhosts.HostLockStatus, error) {
 		return session.HostStatusAlive, nil
 	}
 	deps := installTestDeps(t, store, conn, "unused")

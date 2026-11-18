@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (DrainResult, error) {
@@ -333,7 +335,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 			p.admitMu.Unlock()
 
 			if stopping {
-				releaseSession(busyOutcome(ErrCallQueuedNotExecuted))
+				releaseSession(busyOutcome(session.ErrCallQueuedNotExecuted))
 				<-p.execSem
 				nackCtx, nackCancel := context.WithTimeout(context.Background(), p.dbWriteTimeout())
 				if nackErr := p.cfg.Sessions.NackRunQueueEntryNoAttemptPenalty(nackCtx, leased.ID, p.cfg.PumpInstanceID, "run_queue_pump: DrainSessionNow declined to start because the pump is stopping"); nackErr != nil {
@@ -342,9 +344,9 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 				nackCancel()
 				result, _ := ledger.verdict(false)
 				if result == DrainNoWork {
-					return DrainNoWork, ErrCallQueuedNotExecuted
+					return DrainNoWork, session.ErrCallQueuedNotExecuted
 				}
-				ledger.recordUnattributed(ErrCallQueuedNotExecuted)
+				ledger.recordUnattributed(session.ErrCallQueuedNotExecuted)
 				return ledger.verdict(false)
 			}
 
@@ -513,7 +515,7 @@ func (p *RunQueuePump) DrainSessionNow(ctx context.Context, sessionID string) (D
 		// left behind to distinguish them by (the terminal_failure COLUMN
 		// exists in the schema, but no query ever sets it to 1 on a
 		// surviving row; TerminalFailRunQueueEntry deletes outright, exactly
-		// like Ack, so RunQueueEntry.TerminalFailure is always false in
+		// like Ack, so .TerminalFailure is always false in
 		// practice -- confirmed by reading every query in that file, not
 		// assumed). A row gone after a DIFFERENT process touched it is
 		// therefore EXACTLY as ambiguous as one still leased by a different

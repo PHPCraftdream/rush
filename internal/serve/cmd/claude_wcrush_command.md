@@ -38,7 +38,7 @@ Context is preserved. Run only checks authorized by the caller's policy; never p
 
 ## Inherited rules that phase split changes
 
-- **Delegation stays enabled:** task text may constrain the deliverable, but must not prohibit smart's internal delegation. Nested executors starting is expected, not a reason to stop or ask the operator: launch and wait for the run to finish.
+- **Delegation stays enabled:** task text may constrain the deliverable, but must not prohibit smart's internal delegation. Nested executors starting is expected, not a reason to stop or ask the operator: launch and wait for the run to finish. Its internal workers, batch nodes and retries are Rush's to run, not yours: never demand it work "itself", and never inspect, steer, inject into, or kill its children (see the `/rush` section "The run's internals are not yours to manage").
 - **Verification follows caller policy** — CI-only requests remain CI-only; `/wcrush` does not require local build, vet, formatting, or test commands.
 - **Phase-2 verification follows caller policy** — run long phase-2 tests only when explicitly authorized; a CI-only request means do not run them locally. When execution is authorized, honor project memory and concurrency limits and wait for every started process to finish; never detach a child with `&`.
 - **Zero trust:** handover reports are claims, not receipts. The parent personally reviews the diff and tests against the caller's verification policy, one at a time, inside the worktree using wrush.md's checklist.

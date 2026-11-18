@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -131,7 +133,7 @@ func TestOMPInitRefreshOwnership(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "after")
 	require.NoError(t, os.WriteFile(path, []byte("foreign"), 0o644))
-	_ = captureStderr(t, func() { require.NoError(t, writeNativeMarkdownCommand(dir, "rush.md", "changed", "body")) })
+	_ = cmdtest.CaptureStderr(t, func() { require.NoError(t, writeNativeMarkdownCommand(dir, "rush.md", "changed", "body")) })
 	data, err = os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, "foreign", string(data))

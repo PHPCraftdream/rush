@@ -12,6 +12,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -151,10 +153,10 @@ func TestSessionLockFact_AgedLockWithLivePIDIsHeld(t *testing.T) {
 	require.True(t, procinfo.IsProcessAlive(holder.pid), "helper process must be alive for this test to be meaningful")
 
 	lockPath := filepath.Join(dataDir, "locks", "session-"+sanitiseSessionIDForFilename(sess.ID)+".lock")
-	staleTime := time.Now().Add(-(session.MaxPidFallbackAge + 5*time.Second))
+	staleTime := time.Now().Add(-(sessionlock.MaxPidFallbackAge + 5*time.Second))
 	require.NoError(t, os.Chtimes(lockPath, staleTime, staleTime))
 
-	require.Equal(t, session.LockHeld, session.InspectSessionLockFact(dataDir, sess.ID).Kind,
+	require.Equal(t, session.LockHeld, sessionfacts.InspectSessionLockFact(dataDir, sess.ID).Kind,
 		"an alive recorded PID is held regardless of the lock's age (D10)")
 }
 
@@ -192,7 +194,7 @@ func TestSessionsListCmdRun_LiveDescendantIsDelegatingNotDone(t *testing.T) {
 	require.NoError(t, os.MkdirAll(lockDir, 0o755))
 	parentLock := filepath.Join(lockDir, "session-"+sanitiseSessionIDForFilename(parent.ID)+".lock")
 	require.NoError(t, os.WriteFile(parentLock, []byte("999999\n"), 0o644))
-	stale := time.Now().Add(-(session.LockStaleDuration + 5*time.Second))
+	stale := time.Now().Add(-(sessionlock.LockStaleDuration + 5*time.Second))
 	require.NoError(t, os.Chtimes(parentLock, stale, stale))
 
 	assistant, err := a.Messages.Create(ctx, parent.ID, message.CreateMessageParams{

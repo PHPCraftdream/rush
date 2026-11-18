@@ -148,7 +148,7 @@ func (p mcpPort) ViewSnap(fn func(mcpstore.MCPView) error) error {
 func (p mcpPort) PublishMutation(fn func(mcpstore.MutationScope) error) error {
 	p.store.publishMu.Lock()
 	defer p.store.publishMu.Unlock()
-	return fn(mcpMutationScope{store: p.store})
+	return fn(mcpMutationScope(p))
 }
 
 type mcpMutationScope struct{ store *ConfigStore }
@@ -210,7 +210,7 @@ func (p mcpPort) WorkingDirOwner() (owner int, hasWorkingDir bool, err error) {
 func (p mcpPort) DiskWrite(fn func(mcpstore.DiskWriter) error) error {
 	p.store.diskWriteMu.Lock()
 	defer p.store.diskWriteMu.Unlock()
-	return fn(mcpDiskWriter{store: p.store})
+	return fn(mcpDiskWriter(p))
 }
 
 // mcpDiskWriter converts between the root configWriteTarget and the

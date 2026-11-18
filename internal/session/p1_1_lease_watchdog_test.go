@@ -39,14 +39,15 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
 
-// hangingRenewalsService wraps session.Service and can hang RenewRunQueueLease calls
+// hangingRenewalsService wraps core.Service and can hang RenewRunQueueLease calls
 // to simulate DB stalls.
 type hangingRenewalsService struct {
-	session.Service
+	core.Service
 	mu                  sync.Mutex
 	hangAfterAttemptNum int64 // Hang starting from this renewal attempt (0 = never hang)
 	hangDuration        time.Duration

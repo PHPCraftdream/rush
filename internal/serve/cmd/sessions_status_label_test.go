@@ -19,6 +19,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -69,10 +71,10 @@ func TestEndedStatusLabel_KnownReasonsDone(t *testing.T) {
 // fails the second.
 func TestSessionStatusLabel_LiveWorkAnnotatesRecordedEnd(t *testing.T) {
 	t.Parallel()
-	v := session.ActivityVerdict{Kind: session.ActivityBetweenTurns}
+	v := sessionfacts.ActivityVerdict{Kind: session.ActivityBetweenTurns}
 	require.Equal(t, "running (exit timeout)", sessionStatusLabel(v, "timeout"))
 	require.Equal(t, "running", sessionStatusLabel(v, ""))
-	require.Equal(t, "delegating (exit peak_hours)", sessionStatusLabel(session.ActivityVerdict{Kind: session.ActivityDelegating}, "peak_hours"))
+	require.Equal(t, "delegating (exit peak_hours)", sessionStatusLabel(sessionfacts.ActivityVerdict{Kind: session.ActivityDelegating}, "peak_hours"))
 }
 
 // TestSessionStatusLabel_EndedRendersThroughTheSharedLabel: the Ended
@@ -82,9 +84,9 @@ func TestSessionStatusLabel_LiveWorkAnnotatesRecordedEnd(t *testing.T) {
 // or in the peak-hours assertion.
 func TestSessionStatusLabel_EndedRendersThroughTheSharedLabel(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, "done", sessionStatusLabel(session.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "end_turn"}, ""))
-	require.Equal(t, "paused: provider peak hours", sessionStatusLabel(session.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "peak_hours"}, "peak_hours"))
-	require.Equal(t, "", sessionStatusLabel(session.ActivityVerdict{Kind: session.ActivityIdle}, ""))
+	require.Equal(t, "done", sessionStatusLabel(sessionfacts.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "end_turn"}, ""))
+	require.Equal(t, "paused: provider peak hours", sessionStatusLabel(sessionfacts.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "peak_hours"}, "peak_hours"))
+	require.Equal(t, "", sessionStatusLabel(sessionfacts.ActivityVerdict{Kind: session.ActivityIdle}, ""))
 }
 
 // TestSessionsStatusPhase_PeakHoursIsPaused: only the peak-hours pause
@@ -95,11 +97,11 @@ func TestSessionStatusLabel_EndedRendersThroughTheSharedLabel(t *testing.T) {
 // first assertion; moving unknown reasons off "finished" fails the third.
 func TestSessionsStatusPhase_PeakHoursIsPaused(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, "paused", sessionsStatusPhase(session.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "peak_hours"}))
-	require.Equal(t, "finished", sessionsStatusPhase(session.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "end_turn"}))
-	require.Equal(t, "finished", sessionsStatusPhase(session.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "provider_maintenance"}))
-	require.Equal(t, "idle", sessionsStatusPhase(session.ActivityVerdict{Kind: session.ActivityIdle}))
-	require.Equal(t, "between_turns", sessionsStatusPhase(session.ActivityVerdict{Kind: session.ActivityBetweenTurns}))
+	require.Equal(t, "paused", sessionsStatusPhase(sessionfacts.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "peak_hours"}))
+	require.Equal(t, "finished", sessionsStatusPhase(sessionfacts.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "end_turn"}))
+	require.Equal(t, "finished", sessionsStatusPhase(sessionfacts.ActivityVerdict{Kind: session.ActivityEnded, EndedReason: "provider_maintenance"}))
+	require.Equal(t, "idle", sessionsStatusPhase(sessionfacts.ActivityVerdict{Kind: session.ActivityIdle}))
+	require.Equal(t, "between_turns", sessionsStatusPhase(sessionfacts.ActivityVerdict{Kind: session.ActivityBetweenTurns}))
 }
 
 // TestSessionsStatus_SnapshotRendersPeakHoursPaused: the snapshot reports
@@ -160,7 +162,7 @@ func TestSessionsStatus_UnknownEndedReasonVerbatim(t *testing.T) {
 func TestExplainWhy_EndedPeakHoursRendersPaused(t *testing.T) {
 	t.Parallel()
 	conn, q := newSessionFactsTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	sess, err := s.Create(context.Background(), "peak pause")
 	require.NoError(t, err)
@@ -183,7 +185,7 @@ func TestExplainWhy_EndedPeakHoursRendersPaused(t *testing.T) {
 func TestExplainWhy_AtRestWithFinishedTurnExplainsMissingEnd(t *testing.T) {
 	t.Parallel()
 	conn, q := newSessionFactsTestDB(t)
-	s := session.NewService(q, conn)
+	s := coresession.NewService(q, conn)
 	m := message.NewService(q)
 	sess, err := s.Create(context.Background(), "idle but finished")
 	require.NoError(t, err)

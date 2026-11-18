@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 func TestBatchCLIFindExactRootWinsOverChildPrefix(t *testing.T) {
@@ -40,7 +42,7 @@ func TestBatchCLIUnknownHostStopRequestWritesNothing(t *testing.T) {
 	store, _, ctx := batchStoreTestDB(t)
 	snap := batchStoreTestReserve(t, store, ctx)
 	target := BatchControlTarget{Owner: "owner", Host: "host", Root: snap.Root.RootID, Node: snap.Root.RootID}
-	_, err := store.BatchRequestStop(ctx, target, func(string) (HostLockStatus, error) { return HostStatusUnknown, nil })
+	_, err := store.BatchRequestStop(ctx, target, func(string) (sessionhosts.HostLockStatus, error) { return HostStatusUnknown, nil })
 	require.ErrorIs(t, err, ErrBatchControlUnknownHost)
 	var count int
 	require.NoError(t, store.writer.QueryRowContext(ctx, `SELECT count(*) FROM batch_control_requests`).Scan(&count))

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/spf13/cobra"
@@ -172,13 +173,6 @@ rush cli-refresh --recursive --dry-run /path/to/workspace
 	RunE: runCLIRefresh,
 }
 
-func init() {
-	cliRefreshCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree, refreshing only directories that already have a tool-integration directory present")
-	cliRefreshCmd.Flags().Bool("global", false, "Refresh each tool's global scope instead of a project directory")
-	cliRefreshCmd.Flags().Bool("dry-run", false, "Report what would happen without making any changes")
-	rootCmd.AddCommand(cliRefreshCmd)
-}
-
 func runCLIRefresh(cmd *cobra.Command, args []string) error {
 	recursive, _ := cmd.Flags().GetBool("recursive")
 	global, _ := cmd.Flags().GetBool("global")
@@ -304,4 +298,19 @@ func refreshOneDir(cmd *cobra.Command, tool cliRefreshTool, dir, scope string, d
 		return
 	}
 	cmd.Printf("[%s] refreshed %s (%s)\n", tool.name, dir, scope)
+}
+
+// NewCliRefreshCmd returns the rush cliRefreshCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newCliRefreshCmdOnce sync.Once
+
+func NewCliRefreshCmd() *cobra.Command {
+	newCliRefreshCmdOnce.Do(func() {
+		cliRefreshCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree, refreshing only directories that already have a tool-integration directory present")
+		cliRefreshCmd.Flags().Bool("global", false, "Refresh each tool's global scope instead of a project directory")
+		cliRefreshCmd.Flags().Bool("dry-run", false, "Report what would happen without making any changes")
+	})
+	return deepFreshCmd(cliRefreshCmd)
 }

@@ -264,11 +264,17 @@ func setFlushForTest(f func()) {
 	flushFuncMu.Unlock()
 }
 
+// requestFlush runs the current flush entry point while holding the read lock,
+// so setFlushForTest (the only writer of flushNow) returns only after every
+// flush that read the old entry point has finished. Releasing the lock between
+// reading flushNow and calling it let a goroutine left by an earlier test
+// (a Shutdown that timed out, the worker start-up flush) run the default flush
+// after the next test had swapped in its own write hook, so that test counted
+// a write it never made.
 func requestFlush(force bool) {
 	flushFuncMu.RLock()
-	f := flushNow
-	flushFuncMu.RUnlock()
-	f(force)
+	defer flushFuncMu.RUnlock()
+	flushNow(force)
 }
 
 func flushDefault(force bool) { flush(force) }

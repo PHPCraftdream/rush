@@ -4,21 +4,23 @@ import (
 	"context"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/stretchr/testify/require"
 )
 
 type finalizationQueuePumpProbe struct {
-	service *service
+	service session.Service
 	calls   int
 }
 
-func (p *finalizationQueuePumpProbe) Run(ctx context.Context, data SessionAgentCallData) (*any, error) {
+func (p *finalizationQueuePumpProbe) Run(ctx context.Context, data session.SessionAgentCallData) (*any, error) {
 	snapshot, err := p.service.RestoreAgentFinalizationQueue(ctx, RunQueueRowIDFrom(ctx), data)
 	if err != nil {
 		return nil, err
 	}
 	if snapshot.Requirement() == nil {
-		return nil, ErrAgentFinalizationChanged
+		return nil, session.ErrAgentFinalizationChanged
 	}
 	p.calls++
 	return nil, nil

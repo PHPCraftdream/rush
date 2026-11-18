@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -276,7 +276,7 @@ func TestRunLoop_DrivenSession_FailsBeforeTurnOrMutation(t *testing.T) {
 		Origin: message.OriginCLI, SystemPrompt: "a different system prompt",
 	}, true, RunModeJSON, sessionID, false)
 
-	var elsewhere *session.ErrSessionDrivenElsewhere
+	var elsewhere *sessionhosts.ErrSessionDrivenElsewhere
 	require.ErrorAs(t, err, &elsewhere, "the second loop must be refused with the typed error")
 	// The host id the refusal names is the DRIVER's registered host id.
 	require.Equal(t, pp4DriverHostID(t, appDriver), elsewhere.HostID)

@@ -13,7 +13,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +53,7 @@ const testHeartbeatInterval = 1 * time.Second
 // cleanly with a clear message (task #226). Callers on any goroutine must
 // assert on the returned error themselves, on the goroutine that actually
 // owns *testing.T assertions (the main test goroutine).
-func heartbeatMtimeAdvances(lk *session.SessionLock, before time.Time) (bool, error) {
+func heartbeatMtimeAdvances(lk *sessionlock.SessionLock, before time.Time) (bool, error) {
 	time.Sleep(testHeartbeatInterval + 3*time.Second)
 	info, err := os.Stat(lk.Path)
 	if err != nil {
@@ -62,9 +62,9 @@ func heartbeatMtimeAdvances(lk *session.SessionLock, before time.Time) (bool, er
 	return info.ModTime().After(before), nil
 }
 
-func mustAcquireLock(t *testing.T, id string) *session.SessionLock {
+func mustAcquireLock(t *testing.T, id string) *sessionlock.SessionLock {
 	t.Helper()
-	lk, err := session.TryAcquireSessionLockWithOptions(t.TempDir(), id, session.WithHeartbeatInterval(testHeartbeatInterval))
+	lk, err := sessionlock.TryAcquireSessionLockWithOptions(t.TempDir(), id, sessionlock.WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lk.Release() })
 	return lk
@@ -320,7 +320,7 @@ func TestParentHeartbeat_StaysAliveFromSubAgentActivity(t *testing.T) {
 	parentSession, err := env.sessions.Create(t.Context(), "parent session")
 	require.NoError(t, err)
 
-	parentLk, err := session.TryAcquireSessionLockWithOptions(parentDataDir, parentSession.ID, session.WithHeartbeatInterval(testHeartbeatInterval))
+	parentLk, err := sessionlock.TryAcquireSessionLockWithOptions(parentDataDir, parentSession.ID, sessionlock.WithHeartbeatInterval(testHeartbeatInterval))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = parentLk.Release() })
 

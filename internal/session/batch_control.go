@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/google/uuid"
 )
@@ -60,10 +63,10 @@ func (s *BatchStore) BatchRequestStop(ctx context.Context, t BatchControlTarget,
 		return empty, errors.Join(ErrBatchControlUnknownHost, err)
 	}
 	switch status {
-	case HostStatusDead:
+	case sessionhosts.HostStatusDead:
 		_, err = s.BatchRecoverDeadHost(ctx, t.Host, probe)
 		return empty, errors.Join(ErrBatchControlStale, err)
-	case HostStatusAlive:
+	case sessionhosts.HostStatusAlive:
 	default:
 		return empty, ErrBatchControlUnknownHost
 	}
@@ -183,7 +186,7 @@ func (p *BatchControlPump) Pump(ctx context.Context, owner, root string) (int, e
 			return count, e
 		}
 		if accepted.Sequence <= 0 || accepted.Code == "" {
-			return count, ErrBatchProjectionConflict
+			return count, session.ErrBatchProjectionConflict
 		}
 		// Exact identity CAS; answered controls are never redelivered by this pump.
 		e = p.store.AnswerControl(ctx, db.AnswerBatchControlRequestParams{RequestID: current.RequestID, OwnerSessionID: owner, HostID: p.host, RootID: root, NodeID: current.NodeID, RunnerID: current.RunnerID, AnswerCode: accepted.Code, AnswerSequence: sql.NullInt64{Int64: accepted.Sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}})
@@ -218,22 +221,22 @@ func (p *BatchControlPump) answerClosed(ctx context.Context, t BatchControlTarge
 		return ErrBatchControlHostMismatch
 	}
 	if node.RunnerID != root.RunnerID {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	code := "terminal"
 	if !batchStateLive(root.State) {
 		code = "stale"
 	} else if batchStateLive(node.State) {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
 	sequence := root.RootSequence
 	if node.ProjectionSequence > sequence {
 		sequence = node.ProjectionSequence
 	}
 	if sequence <= 0 {
-		return ErrBatchProjectionConflict
+		return session.ErrBatchProjectionConflict
 	}
-	err = batchRequireRow(q.AnswerBatchControlRequest(ctx, db.AnswerBatchControlRequestParams{RequestID: id, OwnerSessionID: t.Owner, RootID: t.Root, NodeID: t.Node, HostID: p.host, RunnerID: node.RunnerID, AnswerCode: code, AnswerSequence: sql.NullInt64{Int64: sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}}))
+	err = session.BatchRequireRow(q.AnswerBatchControlRequest(ctx, db.AnswerBatchControlRequestParams{RequestID: id, OwnerSessionID: t.Owner, RootID: t.Root, NodeID: t.Node, HostID: p.host, RunnerID: node.RunnerID, AnswerCode: code, AnswerSequence: sql.NullInt64{Int64: sequence, Valid: true}, AnsweredAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true}}))
 	if err != nil {
 		return err
 	}

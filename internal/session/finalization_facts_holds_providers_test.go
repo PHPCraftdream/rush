@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -156,7 +158,7 @@ func TestTrySealPhysicalHoldsProviderCompositeRefusalAndSeal(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealPhysicalHolds, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealPhysicalHolds, outcome.Reason)
 
 	// Leg 2: seal with the provider reporting zero holds, in a fresh env.
 	e2 := newCandidateEnv(t)
@@ -167,7 +169,7 @@ func TestTrySealPhysicalHoldsProviderCompositeRefusalAndSeal(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealNone, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealNone, outcome.Reason)
 	require.Equal(t, "accepted", outcome.Record.Phase)
 	require.True(t, outcome.Message.IsFinished())
 }

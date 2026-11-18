@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -38,10 +39,10 @@ func newHostTestDB(t *testing.T) (*sql.DB, *db.Queries, string, context.Context)
 }
 
 // newHostTestStore builds a HostStore over newHostTestDB's connection.
-func newHostTestStore(t *testing.T) (*HostStore, *sql.DB, *db.Queries, string, context.Context) {
+func newHostTestStore(t *testing.T) (*sessionhosts.HostStore, *sql.DB, *db.Queries, string, context.Context) {
 	t.Helper()
 	conn, q, dataDir, ctx := newHostTestDB(t)
-	store := NewHostStore(conn, dataDir, 999, "test")
+	store := sessionhosts.NewHostStore(conn, dataDir, 999, "test")
 	// Release the host's OS lock file (if still held) before t.TempDir()'s
 	// cleanup -- Windows refuses to delete a file this process holds open.
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
@@ -56,7 +57,7 @@ func TestHostStore_EnsureHostMemoizedWithoutAsyncJobs(t *testing.T) {
 	t.Parallel()
 	store, _, q, _, ctx := newHostTestStore(t)
 
-	require.Empty(t, store.HostID(), "HostID must be empty before the first EnsureHost")
+	require.Empty(t, store.HostID(), "sessionhosts.HostID must be empty before the first sessionhosts.EnsureHost")
 
 	id1, err := store.EnsureHost(ctx)
 	require.NoError(t, err)
@@ -65,7 +66,7 @@ func TestHostStore_EnsureHostMemoizedWithoutAsyncJobs(t *testing.T) {
 
 	id2, err := store.EnsureHost(ctx)
 	require.NoError(t, err)
-	require.Equal(t, id1, id2, "EnsureHost must be memoized: same host id on every call")
+	require.Equal(t, id1, id2, "sessionhosts.EnsureHost must be memoized: same host id on every call")
 
 	// Exactly ONE async_hosts row, readable via the NEW job-independent query.
 	row, err := q.GetAsyncHostRow(ctx, id1)
@@ -137,7 +138,7 @@ func TestHostStore_CloseKeepsHostRowWhenNodesExist(t *testing.T) {
 		"terminal node history alone must NOT keep the host row (live-set rule)")
 
 	// A live node MUST keep the host row: register a fresh host and retry.
-	store2 := NewHostStore(conn, t.TempDir(), 998, "test-live")
+	store2 := sessionhosts.NewHostStore(conn, t.TempDir(), 998, "test-live")
 	t.Cleanup(func() { _ = store2.Close(context.Background()) })
 	id2, err := store2.EnsureHost(ctx)
 	require.NoError(t, err)
@@ -203,17 +204,17 @@ func TestHostStore_CloseKeepLockKeepsRowAndFile(t *testing.T) {
 	// release it and drop the own-id marking so t.TempDir()'s cleanup can
 	// delete the directory (Windows refuses to delete open files).
 	t.Cleanup(func() {
-		releaseRetainedHostLocksForTest()
-		unmarkOwnHostID(id)
+		sessionhosts.ReleaseRetainedHostLocksForTest()
+		sessionhosts.UnmarkOwnHostIDForTest(id)
 	})
 
 	require.Empty(t, store.HostID(),
-		"CloseKeepLock takes the host handle: HostID is empty afterwards (same as AsyncJobStore.CloseKeepLock)")
+		"sessionhosts.CloseKeepLock takes the host handle: sessionhosts.HostID is empty afterwards (same as AsyncJobStore.CloseKeepLock)")
 	_, err = q.GetAsyncHostRow(ctx, id)
-	require.NoError(t, err, "the async_hosts row must survive CloseKeepLock")
-	lockPath := HostLockPath(dataDir, id)
+	require.NoError(t, err, "the async_hosts row must survive sessionhosts.CloseKeepLock")
+	lockPath := sessionhosts.HostLockPath(dataDir, id)
 	require.FileExists(t, lockPath)
-	require.True(t, IsOwnHostID(id), "the own-host-id marking must survive CloseKeepLock")
+	require.True(t, sessionhosts.IsOwnHostID(id), "the own-host-id marking must survive sessionhosts.CloseKeepLock")
 
 	// Kernel-attested proof the lock is actually still held. No test-side
 	// reference to the lock is kept: without the package-level pin the
@@ -229,7 +230,7 @@ func TestHostStore_CloseKeepLockKeepsRowAndFile(t *testing.T) {
 		runtime.GC()
 		time.Sleep(30 * time.Millisecond)
 	}
-	status, err := ProbeHostLockShared(lockPath)
+	status, err := sessionhosts.ProbeHostLockShared(lockPath)
 	require.NoError(t, err)
 	require.Equal(t, HostStatusAlive, status, "the OS lock must stay pinned until process exit")
 }
@@ -246,11 +247,11 @@ func TestHostStore_SimulateCrashForTest(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.SimulateCrashForTest())
 
-	require.False(t, IsOwnHostID(id))
+	require.False(t, sessionhosts.IsOwnHostID(id))
 	_, err = q.GetAsyncHostRow(ctx, id)
 	require.NoError(t, err, "the async_hosts row must survive a simulated crash")
 
-	status, err := ProbeHostShared(dataDir, id)
+	status, err := sessionhosts.ProbeHostShared(dataDir, id)
 	require.NoError(t, err)
 	require.Equal(t, HostStatusDead, status, "with the lock released, another process would see this host as dead")
 }

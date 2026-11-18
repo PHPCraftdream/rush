@@ -31,13 +31,14 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
 
-// blockingRenewalsService wraps session.Service and can block/cause errors on RenewRunQueueLease
+// blockingRenewalsService wraps core.Service and can block/cause errors on RenewRunQueueLease
 type blockingRenewalsService struct {
-	session.Service
+	core.Service
 	mu                sync.Mutex
 	renewalErrorCount int          // Number of consecutive renewals to return errors
 	renewalsAttempted atomic.Int64 // Counter for renewal attempts

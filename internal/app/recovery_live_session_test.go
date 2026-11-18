@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -30,7 +31,7 @@ func newRecoveryTestAppWithDataDir(t *testing.T, dataDir string) *App {
 	q := db.New(conn)
 	zero := time.Duration(0)
 	return &App{
-		Sessions:          session.NewService(q, conn),
+		Sessions:          coresession.NewService(q, conn),
 		Messages:          message.NewService(q),
 		recoveryOrphanAge: &zero,
 		recoveryDataDir:   &dataDir,
@@ -81,11 +82,11 @@ func TestRecoverInterruptedTurns_LiveLockHolder_LeavesSessionAlone(t *testing.T)
 	orphan := newOrphanAssistant(t, app, sess.ID)
 
 	// Hold the session lock for real, exactly as a live owner would.
-	lk, err := session.TryAcquireSessionLock(dataDir, sess.ID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err, "precondition: the test must be able to hold the session lock")
 	t.Cleanup(func() { _ = lk.Release() })
 
-	require.True(t, session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration).Live,
+	require.True(t, sessionlock.InspectSessionLock(dataDir, sess.ID, sessionlock.LockStaleDuration).Live,
 		"precondition: the lock we just acquired must read as live")
 
 	app.recoverInterruptedTurns(ctx)
@@ -125,8 +126,8 @@ func TestRecoverInterruptedTurns_NoLiveHolder_StillRecovers(t *testing.T) {
 	// startup safety net rather than a time-critical operation. Back-dating
 	// past that window is what makes this session unambiguously ownerless.
 	cleanupDone := make(chan struct{})
-	lk, err := session.TryAcquireSessionLockWithOptions(dataDir, sess.ID,
-		session.WithCleanupDone(cleanupDone))
+	lk, err := sessionlock.TryAcquireSessionLockWithOptions(dataDir, sess.ID,
+		sessionlock.WithCleanupDone(cleanupDone))
 	require.NoError(t, err)
 	require.NoError(t, lk.Release())
 
@@ -140,9 +141,9 @@ func TestRecoverInterruptedTurns_NoLiveHolder_StillRecovers(t *testing.T) {
 		t.Fatal("Release metadata cleanup did not complete before back-dating")
 	}
 
-	stale := time.Now().Add(-(session.LockStaleDuration + time.Minute))
+	stale := time.Now().Add(-(sessionlock.LockStaleDuration + time.Minute))
 	require.NoError(t, os.Chtimes(lockPath, stale, stale))
-	require.False(t, session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration).Live,
+	require.False(t, sessionlock.InspectSessionLock(dataDir, sess.ID, sessionlock.LockStaleDuration).Live,
 		"precondition: a released, back-dated lock must read as not-live (Release clears the holder PID, so no PID fallback applies)")
 
 	app.recoverInterruptedTurns(ctx)
@@ -170,7 +171,7 @@ func TestRecoverInterruptedTurns_NoLockFileAtAll_StillRecovers(t *testing.T) {
 	require.NoError(t, err)
 	orphan := newOrphanAssistant(t, app, sess.ID)
 
-	require.False(t, session.InspectSessionLock(dataDir, sess.ID, session.LockStaleDuration).Exists,
+	require.False(t, sessionlock.InspectSessionLock(dataDir, sess.ID, sessionlock.LockStaleDuration).Exists,
 		"precondition: no lock file must exist for this session")
 
 	app.recoverInterruptedTurns(ctx)
@@ -199,7 +200,7 @@ func TestRecoverInterruptedTurns_LiveAndDeadSessions_OnlyDeadRecovered(t *testin
 	require.NoError(t, err)
 	deadOrphan := newOrphanAssistant(t, app, deadSess.ID)
 
-	lk, err := session.TryAcquireSessionLock(dataDir, liveSess.ID)
+	lk, err := sessionlock.TryAcquireSessionLock(dataDir, liveSess.ID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lk.Release() })
 
@@ -236,7 +237,7 @@ func TestRecoverInterruptedTurns_StatError_FailsClosed(t *testing.T) {
 	dataDir := t.TempDir() + string([]byte{0}) + "bad"
 
 	// Verify the forgery through the exact production entry point.
-	st := session.InspectSessionLock(dataDir, "any-session", session.LockStaleDuration)
+	st := sessionlock.InspectSessionLock(dataDir, "any-session", sessionlock.LockStaleDuration)
 	require.Error(t, st.StatErr,
 		"stat of a NUL-containing path must fail")
 	require.False(t, os.IsNotExist(st.StatErr),
@@ -292,11 +293,11 @@ func TestRecoverInterruptedTurns_LiveChildLockHolder_LeavesChildAlone(t *testing
 	liveOrphan := newOrphanAssistant(t, app, liveChild.ID)
 
 	// Acquire the LIVE child's session lock for real.
-	liveLock, err := session.TryAcquireSessionLock(dataDir, liveChild.ID)
+	liveLock, err := sessionlock.TryAcquireSessionLock(dataDir, liveChild.ID)
 	require.NoError(t, err, "precondition: the test must be able to hold the child's lock")
 	t.Cleanup(func() { _ = liveLock.Release() })
 
-	require.True(t, session.InspectSessionLock(dataDir, liveChild.ID, session.LockStaleDuration).Live,
+	require.True(t, sessionlock.InspectSessionLock(dataDir, liveChild.ID, sessionlock.LockStaleDuration).Live,
 		"precondition: the live child's lock must read as live")
 
 	// Create a DEAD child session (no lock at all) with an orphan assistant.
@@ -305,7 +306,7 @@ func TestRecoverInterruptedTurns_LiveChildLockHolder_LeavesChildAlone(t *testing
 	deadOrphan := newOrphanAssistant(t, app, deadChild.ID)
 
 	// Verify the dead child has no lock at all.
-	deadLockState := session.InspectSessionLock(dataDir, deadChild.ID, session.LockStaleDuration)
+	deadLockState := sessionlock.InspectSessionLock(dataDir, deadChild.ID, sessionlock.LockStaleDuration)
 	require.False(t, deadLockState.Exists,
 		"precondition: the dead child must have no lock file")
 	require.False(t, deadLockState.Live,

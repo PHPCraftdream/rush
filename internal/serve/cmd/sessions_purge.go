@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/spf13/cobra"
 )
 
@@ -173,10 +173,4 @@ func parseAge(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration must be positive, got %q", s)
 	}
 	return d, nil
-}
-
-func init() {
-	sessionsPurgeCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
-	sessionsPurgeCmd.Flags().Bool("yes", false, "Skip the confirmation prompt")
-	sessionsPurgeCmd.Flags().String("matching", "", "Only delete sessions whose ID matches this glob (e.g. 'garnet-sql-*')")
 }

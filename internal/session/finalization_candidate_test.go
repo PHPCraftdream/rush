@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -12,19 +14,19 @@ import (
 
 type candidateEnv struct {
 	conn     *sql.DB
-	store    *AgentFinalizationStore
+	store    *session.AgentFinalizationStore
 	messages message.Service
 	writer   message.FinalizationWriter
 	reader   message.FinalizationReader
-	id       AgentFinalizationIdentity
+	id       session.AgentFinalizationIdentity
 }
 
 func newCandidateEnv(t *testing.T) candidateEnv {
 	t.Helper()
 	_, conn, ctx := batchStoreTestDB(t)
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
 	require.True(t, ok)
@@ -95,7 +97,7 @@ func TestStoreCandidateTxPersistsMessageAndIdentityInOneTransaction(t *testing.T
 
 	_, err = e.storeCandidate(t, m, e.step(0, 1))
 	require.NoError(t, err)
-	restarted, err := NewAgentFinalizationStore(e.conn).Snapshot(t.Context(), e.id)
+	restarted, err := session.NewAgentFinalizationStore(e.conn).Snapshot(t.Context(), e.id)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, restarted.CandidateMessageID)
 	require.Equal(t, hash, restarted.CandidateHash)
@@ -112,7 +114,7 @@ func TestStoreCandidateTxRejectsStaleGeneration(t *testing.T) {
 	other := e.step(0, 1)
 	other.Generation = 2
 	_, err := e.storeCandidate(t, m, other)
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 
 	// The old incarnation stops being active when the next generation binds.
 	_, err = e.conn.ExecContext(t.Context(), `UPDATE session_agent_finalizations SET phase='interrupted' WHERE session_id='owner'`)
@@ -121,10 +123,10 @@ func TestStoreCandidateTxRejectsStaleGeneration(t *testing.T) {
 	next.Generation = 2
 	require.NoError(t, e.store.Bind(t.Context(), next))
 	_, err = e.storeCandidate(t, m, e.step(0, 1))
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged, "an older generation cannot write a candidate")
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged, "an older generation cannot write a candidate")
 
 	require.Equal(t, before, e.rowParts(t, m.ID))
-	for _, id := range []AgentFinalizationIdentity{e.id, next} {
+	for _, id := range []session.AgentFinalizationIdentity{e.id, next} {
 		record, err := e.store.Snapshot(t.Context(), id)
 		require.NoError(t, err)
 		require.Empty(t, record.CandidateMessageID)
@@ -143,7 +145,7 @@ func TestStoreCandidateTxRejectsOlderStepAfterNewer(t *testing.T) {
 
 	before := e.rowParts(t, older.ID)
 	_, err = e.storeCandidate(t, older, e.step(0, 1))
-	require.ErrorIs(t, err, ErrAgentFinalizationCandidateStale)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationCandidateStale)
 	require.Equal(t, before, e.rowParts(t, older.ID))
 	record, err := e.store.Snapshot(t.Context(), e.id)
 	require.NoError(t, err)
@@ -152,7 +154,7 @@ func TestStoreCandidateTxRejectsOlderStepAfterNewer(t *testing.T) {
 	require.EqualValues(t, 2, record.CandidateSerial)
 
 	_, err = e.storeCandidate(t, newer, e.step(0, 2))
-	require.ErrorIs(t, err, ErrAgentFinalizationCandidateStale, "a step is recorded once; a replay is refused and the owner composes again")
+	require.ErrorIs(t, err, session.ErrAgentFinalizationCandidateStale, "a step is recorded once; a replay is refused and the owner composes again")
 }
 
 func TestStoreCandidateTxRejectsStaleRevision(t *testing.T) {
@@ -163,7 +165,7 @@ func TestStoreCandidateTxRejectsStaleRevision(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = e.storeCandidate(t, m, e.step(0, 1))
-	require.ErrorIs(t, err, ErrAgentFinalizationCandidateStale)
+	require.ErrorIs(t, err, session.ErrAgentFinalizationCandidateStale)
 	require.Equal(t, before, e.rowParts(t, m.ID), "a stale candidate must not reach the message row")
 	record, err := e.store.Snapshot(t.Context(), e.id)
 	require.NoError(t, err)
@@ -193,18 +195,18 @@ func TestStoreCandidateTxRefusesCancelledAndForeignMessage(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, foreign.MarkFinalizationCandidate(e.step(0, 1)))
 	_, err = e.storeCandidate(t, foreign, e.step(0, 1))
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged, "a candidate must belong to the owner session")
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged, "a candidate must belong to the owner session")
 
 	m := e.candidate(t, "answer", e.step(0, 1), 1)
-	require.NoError(t, NewService(db.New(e.conn), e.conn).RequestCancel(t.Context(), "owner"))
+	require.NoError(t, session.NewService(db.New(e.conn), e.conn).RequestCancel(t.Context(), "owner"))
 	_, err = e.storeCandidate(t, m, e.step(0, 1))
 	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestRecoverCandidateAdoptsIntactAndFailsOutdated(t *testing.T) {
-	adopt := func(t *testing.T, e candidateEnv) (AgentFinalizationRecovery, AgentFinalizationRecord) {
+	adopt := func(t *testing.T, e candidateEnv) (session.AgentFinalizationRecovery, session.AgentFinalizationRecord) {
 		t.Helper()
-		verdict, record, err := NewAgentFinalizationStore(e.conn).RecoverCandidate(t.Context(), e.id, e.reader)
+		verdict, record, err := session.NewAgentFinalizationStore(e.conn).RecoverCandidate(t.Context(), e.id, e.reader)
 		require.NoError(t, err)
 		return verdict, record
 	}
@@ -219,12 +221,12 @@ func TestRecoverCandidateAdoptsIntactAndFailsOutdated(t *testing.T) {
 	t.Run("no candidate", func(t *testing.T) {
 		e := newCandidateEnv(t)
 		verdict, _ := adopt(t, e)
-		require.Equal(t, AgentFinalizationNoCandidate, verdict)
+		require.Equal(t, session.AgentFinalizationNoCandidate, verdict)
 	})
 	t.Run("intact candidate is adopted and stays sealable", func(t *testing.T) {
 		e, m := setup(t)
 		verdict, record := adopt(t, e)
-		require.Equal(t, AgentFinalizationCandidateAdopted, verdict)
+		require.Equal(t, session.AgentFinalizationCandidateAdopted, verdict)
 		require.Equal(t, m.ID, record.CandidateMessageID)
 		require.EqualValues(t, 3, record.CandidateSerial)
 		again, err := e.store.Snapshot(t.Context(), e.id)
@@ -255,7 +257,7 @@ func TestRecoverCandidateAdoptsIntactAndFailsOutdated(t *testing.T) {
 			e, m := setup(t)
 			damage(t, e, m)
 			verdict, record := adopt(t, e)
-			require.Equal(t, AgentFinalizationCandidateFailed, verdict)
+			require.Equal(t, session.AgentFinalizationCandidateFailed, verdict)
 			require.Empty(t, record.CandidateMessageID)
 			persisted, err := e.store.Snapshot(t.Context(), e.id)
 			require.NoError(t, err)
@@ -263,11 +265,11 @@ func TestRecoverCandidateAdoptsIntactAndFailsOutdated(t *testing.T) {
 			require.Empty(t, persisted.CandidateHash)
 			require.EqualValues(t, 3, persisted.CandidateSerial, "the high-water mark survives a failed candidate")
 			verdict, _ = adopt(t, e)
-			require.Equal(t, AgentFinalizationNoCandidate, verdict, "recovery is deterministic and repeatable")
+			require.Equal(t, session.AgentFinalizationNoCandidate, verdict, "recovery is deterministic and repeatable")
 
 			stale := e.candidate(t, "late", e.step(uint64(persisted.Revision), 2), 1)
 			_, err = e.storeCandidate(t, stale, e.step(uint64(persisted.Revision), 2))
-			require.ErrorIs(t, err, ErrAgentFinalizationCandidateStale, "a failed candidate cannot be resurrected by an older step")
+			require.ErrorIs(t, err, session.ErrAgentFinalizationCandidateStale, "a failed candidate cannot be resurrected by an older step")
 		})
 	}
 	t.Run("non-active record is refused", func(t *testing.T) {
@@ -275,7 +277,7 @@ func TestRecoverCandidateAdoptsIntactAndFailsOutdated(t *testing.T) {
 		_, err := e.conn.ExecContext(t.Context(), `UPDATE session_agent_finalizations SET phase='failed'`)
 		require.NoError(t, err)
 		_, _, err = e.store.RecoverCandidate(t.Context(), e.id, e.reader)
-		require.ErrorIs(t, err, ErrAgentFinalizationChanged)
+		require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 	})
 }
 
@@ -286,8 +288,8 @@ func TestSealTxRefusesCandidateIdentityOrHashMismatch(t *testing.T) {
 	require.NoError(t, err)
 	hash, err := stored.FinalizationContentHash()
 	require.NoError(t, err)
-	good := AgentFinalizationCandidate{MessageID: m.ID, Hash: hash, Revision: 0, Serial: 4}
-	seal := func(c AgentFinalizationCandidate) error {
+	good := session.AgentFinalizationCandidate{MessageID: m.ID, Hash: hash, Revision: 0, Serial: 4}
+	seal := func(c session.AgentFinalizationCandidate) error {
 		tx, err := e.conn.BeginTx(t.Context(), nil)
 		require.NoError(t, err)
 		defer tx.Rollback()
@@ -296,21 +298,21 @@ func TestSealTxRefusesCandidateIdentityOrHashMismatch(t *testing.T) {
 		}
 		return tx.Commit()
 	}
-	for name, mutate := range map[string]func(*AgentFinalizationCandidate){
-		"hash":    func(c *AgentFinalizationCandidate) { c.Hash = "other" },
-		"message": func(c *AgentFinalizationCandidate) { c.MessageID = "other" },
-		"serial":  func(c *AgentFinalizationCandidate) { c.Serial = 3 },
-		"newer":   func(c *AgentFinalizationCandidate) { c.Serial = 5 },
+	for name, mutate := range map[string]func(*session.AgentFinalizationCandidate){
+		"hash":    func(c *session.AgentFinalizationCandidate) { c.Hash = "other" },
+		"message": func(c *session.AgentFinalizationCandidate) { c.MessageID = "other" },
+		"serial":  func(c *session.AgentFinalizationCandidate) { c.Serial = 3 },
+		"newer":   func(c *session.AgentFinalizationCandidate) { c.Serial = 5 },
 	} {
 		bad := good
 		mutate(&bad)
-		require.ErrorIs(t, seal(bad), ErrAgentFinalizationChanged, name)
+		require.ErrorIs(t, seal(bad), session.ErrAgentFinalizationChanged, name)
 		record, err := e.store.Snapshot(t.Context(), e.id)
 		require.NoError(t, err)
 		require.Equal(t, "executing", record.Phase, name)
 	}
 	require.NoError(t, seal(good))
-	require.ErrorIs(t, seal(good), ErrAgentFinalizationAccepted)
+	require.ErrorIs(t, seal(good), session.ErrAgentFinalizationAccepted)
 }
 
 func TestSealTxRefusesWhenNoCandidateWasRecorded(t *testing.T) {
@@ -318,6 +320,6 @@ func TestSealTxRefusesWhenNoCandidateWasRecorded(t *testing.T) {
 	tx, err := e.conn.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	defer tx.Rollback()
-	err = e.store.SealTx(t.Context(), tx, e.id, AgentFinalizationCandidate{MessageID: "m", Hash: "h", Serial: 1})
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged, "publication needs a previously committed candidate")
+	err = e.store.SealTx(t.Context(), tx, e.id, session.AgentFinalizationCandidate{MessageID: "m", Hash: "h", Serial: 1})
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged, "publication needs a previously committed candidate")
 }

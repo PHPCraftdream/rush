@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"charm.land/log/v2"
@@ -78,12 +79,6 @@ var logsCmd = &cobra.Command{
 
 		return showLogs(logsFile, tailLines)
 	},
-}
-
-func init() {
-	logsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
-	logsCmd.Flags().IntP("tail", "t", defaultTailLines, "Show only the last N lines default: 1000 for performance")
-	logsCmd.AddCommand(logsPathCmd, logsPruneCmd, logsSummaryCmd)
 }
 
 func followLogs(ctx context.Context, logsFile string, tailLines int) error {
@@ -224,4 +219,25 @@ func printLogLine(lineText string) {
 	default:
 		log.Info(msg, otherData...)
 	}
+}
+
+// NewLogsCmd returns a fresh logs command tree from the registered template.
+var newLogsCmdOnce sync.Once
+
+func NewLogsCmd() *cobra.Command {
+	newLogsCmdOnce.Do(func() {
+		logsCmd.Flags().BoolP("follow", "f", false, "Follow log output")
+		logsCmd.Flags().IntP("tail", "t", defaultTailLines, "Show only the last N lines default: 1000 for performance")
+		logsCmd.AddCommand(logsPathCmd, logsPruneCmd, logsSummaryCmd)
+
+		logsPruneCmd.Flags().Int("audit-days", defaultAuditRetentionDays, "Delete audit journal files older than N days (0 = all; default 30)")
+		logsPruneCmd.Flags().Int("heartbeat-days", defaultHeartbeatRetentionDays, "Delete heartbeat snapshots older than N days (0 = disable; default 7)")
+		logsPruneCmd.Flags().Bool("json", false, "Emit one JSON object with the prune counts")
+
+		logsSummaryCmd.Flags().String("since", "", "Only count lines newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days")
+		logsSummaryCmd.Flags().StringSlice("file", nil, "Log file to summarize (repeatable). Defaults to <data-dir>/logs/rush.log")
+		logsSummaryCmd.Flags().Duration("gap", defaultSilenceGap, "How much time with no timestamped line counts as a silence gap")
+		logsSummaryCmd.Flags().Bool("json", false, "Emit one JSON object instead of text")
+	})
+	return deepFreshCmd(logsCmd)
 }

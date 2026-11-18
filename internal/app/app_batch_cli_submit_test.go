@@ -12,6 +12,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +23,7 @@ func TestBatchCLISessionValidatesExistingIDs(t *testing.T) {
 	a := newFullNewApp(t)
 
 	foreignRoot := wsGitRepo(t)
-	foreignSvc := session.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
+	foreignSvc := coresession.NewServiceWithWorkspace(db.New(a.DB()), a.DB(), nil, nil, foreignRoot, foreignRoot, false)
 	foreign, err := foreignSvc.Create(ctx, "foreign")
 	require.NoError(t, err)
 	_, err = a.BatchCLISession(ctx, foreign.ID)
@@ -62,7 +64,7 @@ func TestBatchCLISessionRespectsOSSessionLock(t *testing.T) {
 	sess, err := a.Sessions.Create(ctx, "locked")
 	require.NoError(t, err)
 
-	lock, err := session.TryAcquireSessionLock(a.dataDir, sess.ID)
+	lock, err := sessionlock.TryAcquireSessionLock(a.dataDir, sess.ID)
 	require.NoError(t, err)
 	_, err = a.BatchCLISession(ctx, sess.ID)
 	require.ErrorIs(t, err, agent.ErrSessionBusy)
@@ -72,7 +74,7 @@ func TestBatchCLISessionRespectsOSSessionLock(t *testing.T) {
 	_, err = a.BatchCLISession(ctx, sess.ID)
 	require.NoError(t, err)
 	// Successful validation probes and immediately releases its own lock.
-	reacquired, err := session.TryAcquireSessionLock(a.dataDir, sess.ID)
+	reacquired, err := sessionlock.TryAcquireSessionLock(a.dataDir, sess.ID)
 	require.NoError(t, err)
 	require.NoError(t, reacquired.Release())
 }

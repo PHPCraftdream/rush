@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -78,7 +80,7 @@ func seedProxiedProvider(t *testing.T, globalPath string, globalNetwork, provide
 func useFastModel(t *testing.T) (stderr string, err error) {
 	t.Helper()
 	resetModelsUseFlags(t)
-	stderr = captureStderr(t, func() { _, err = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
+	stderr = cmdtest.CaptureStderr(t, func() { _, err = runModelsCmd(t, modelsUseCmd, "--fast", "custom/model-x") })
 	return stderr, err
 }
 

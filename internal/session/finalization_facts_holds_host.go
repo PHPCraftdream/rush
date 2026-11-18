@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
 // finalizationHostDriverHoldsFacts counts the durable external-driver
@@ -62,18 +64,18 @@ func (f finalizationHostDriverHoldsFacts) FinalizationPhysicalHoldsTx(ctx contex
 	if err != nil {
 		return 0, fmt.Errorf("read finalization host driver holds: %w", err)
 	}
-	if IsOwnHostID(hostID) {
+	if sessionhosts.IsOwnHostID(hostID) {
 		return 0, nil
 	}
-	status, probeErr := ProbeHostShared(f.dataDir, hostID)
+	status, probeErr := sessionhosts.ProbeHostShared(f.dataDir, hostID)
 	if probeErr != nil {
 		return 0, fmt.Errorf("%w: host %s liveness probe: %v",
 			ErrFinalizationPhysicalHoldsUnreadable, hostID, probeErr)
 	}
 	switch status {
-	case HostStatusDead:
+	case sessionhosts.HostStatusDead:
 		return 0, nil
-	case HostStatusAlive:
+	case sessionhosts.HostStatusAlive:
 		return 1, nil
 	default:
 		return 0, fmt.Errorf("%w: host %s liveness is undecidable",

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 type delegationRoleModel struct {
@@ -32,13 +34,13 @@ func requestedRoleSlot(cfg *config.Config, parent session.Session, role Requeste
 	case config.SelectedModelTypeReviewer:
 		provider, model, effort = parent.ReviewerModelProvider, parent.ReviewerModelID, parent.ReviewerModelReasoningEffort
 	}
-	source := hbSourceSlotLive
+	source := callbeat.HbSourceSlotLive
 	if provider != "" || model != "" {
 		if provider == "" || model == "" {
 			return config.SelectedModel{}, "", fmt.Errorf("%w: incomplete session slot for %s", ErrAgentRoleUnconfigured, role)
 		}
 		selected.Provider, selected.Model, selected.ReasoningEffort = provider, model, effort
-		source = hbSourceSessionOverride
+		source = callbeat.HbSourceSessionOverride
 	}
 	if selected.Provider == "" || selected.Model == "" {
 		return config.SelectedModel{}, "", fmt.Errorf("%w: %s", ErrAgentRoleUnconfigured, role)
@@ -77,7 +79,7 @@ func (c *coordinator) resolveRequestedDelegationModel(ctx context.Context, cfg *
 			if err != nil {
 				return delegationRoleModel{}, fmt.Errorf("%w: tenant %s slot: %w", ErrAgentRoleUnconfigured, role, err)
 			}
-			return delegationRoleModel{Model: model, Provider: provider, Source: hbSourcePerCall, Credentials: creds}, nil
+			return delegationRoleModel{Model: model, Provider: provider, Source: callbeat.HbSourcePerCall, Credentials: creds}, nil
 		}
 		if !creds.AllowConfiguredRoleFallback {
 			return delegationRoleModel{}, fmt.Errorf("%w: tenant does not cover %s", ErrAgentRoleUnconfigured, role)
@@ -119,7 +121,7 @@ func (c *coordinator) resolveRoleContractModel(ctx context.Context, cfg *config.
 			if buildErr != nil {
 				return delegationRoleModel{}, fmt.Errorf("%w: tenant %s slot: %w", ErrAgentRoleUnconfigured, contract.Name, buildErr)
 			}
-			return delegationRoleModel{Model: model, Provider: provider, Source: hbSourcePerCall, Credentials: creds}, nil
+			return delegationRoleModel{Model: model, Provider: provider, Source: callbeat.HbSourcePerCall, Credentials: creds}, nil
 		}
 		if !creds.AllowConfiguredRoleFallback {
 			return delegationRoleModel{}, fmt.Errorf("%w: tenant does not cover %s", ErrAgentRoleUnconfigured, contract.Name)

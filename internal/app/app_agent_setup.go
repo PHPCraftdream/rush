@@ -14,6 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -183,10 +184,10 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	// R12-H2b §2.3: wire the durable session-execution-fence store so
 	// continuations resolve the fence through the same session service; a
 	// service that does not implement the store simply means no fence.
-	if reqStore, ok := app.Sessions.(session.SessionExecutionRequirementStore); ok {
+	if reqStore, ok := app.Sessions.(coresession.SessionExecutionRequirementStore); ok {
 		execCaps.ExecReqs = reqStore
 	}
-	if reqStore, ok := app.Sessions.(session.SessionCredentialRequirementStore); ok {
+	if reqStore, ok := app.Sessions.(coresession.SessionCredentialRequirementStore); ok {
 		execCaps.CredReqs = reqStore
 	}
 	app.AgentCoordinator, err = agent.NewCoordinator(

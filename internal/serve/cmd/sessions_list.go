@@ -15,7 +15,10 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/spf13/cobra"
 )
 
@@ -81,7 +84,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		ids := idsOf(sessions)
 		batchFacts := batchRuntimeFacts(cmd.Context(), a, a.Config().Options.DataDirectory, ids)
 		var statusByID map[string]string
-		var awaitingByID map[string]session.ChildQuestion
+		var awaitingByID map[string]sessionnotice.ChildQuestion
 		activities, actErr := a.SessionActivityBatch(cmd.Context(), ids)
 		if actErr != nil {
 			return fmt.Errorf("failed to classify sessions: %w", actErr)
@@ -126,7 +129,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 					// must still surface, so the answer flag sits outside the
 					// roots/unknown guard (false in the common no-question
 					// case, so the omitempty wire shape is unchanged).
-					item.BatchAwaitingAnswer = bf.awaitingAnswer()
+					item.BatchAwaitingAnswer = bf.AwaitingAnswer()
 					if len(bf.Roots) > 0 || bf.Unknown {
 						item.BatchRoots = len(bf.Roots)
 						item.BatchDebt = bf.Debt
@@ -149,7 +152,7 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 		for _, s := range sessions {
 			fmt.Fprintf(
 				tw, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t$%.4f\n",
-				short(session.HashID(s.ID)),
+				short(coresession.HashID(s.ID)),
 				s.ID,
 				truncate(s.Title, 40),
 				s.MessageCount,
@@ -165,60 +168,19 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 	},
 }
 
-type pendingChildQuestionReader interface {
-	PendingChildQuestions(context.Context, string) ([]session.ChildQuestion, error)
-}
+type pendingChildQuestionReader = sesskit.PendingChildQuestionReader
 
 func sessionQuestionReaderForApp(a *app.App) pendingChildQuestionReader {
-	if a == nil {
-		return nil
-	}
-	if a.DB == nil {
-		return nil
-	}
-	conn := a.DB()
-	if conn == nil {
-		return nil
-	}
-	return session.NewSessionNoticeStore(conn)
+	return sesskit.SessionQuestionReaderForApp(a)
 }
 
-// listStatusesWithAwaiting maps the classifier's verdicts to the STATUS
-// column, adding the awaiting-answer substate (#1158): each listed root's
-// pending child_question notices re-classify its verdict (read-only; a
-// failed notice read leaves the plain verdict) and become the
-// "(awaiting answer)" annotation plus the JSON wire fields.
-func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]session.ChildQuestion) {
-	questionsByRoot := map[string][]session.ChildQuestion{}
-	if store != nil {
-		for _, id := range ids {
-			if qs, err := store.PendingChildQuestions(ctx, id); err == nil && len(qs) > 0 {
-				questionsByRoot[id] = qs
-			}
-		}
-	}
-	statusByID := make(map[string]string, len(ids))
-	awaitingByID := make(map[string]session.ChildQuestion, len(questionsByRoot))
-	for id, act := range activities.ByID {
-		v := act.Verdict
-		if qs := questionsByRoot[id]; len(qs) > 0 {
-			f := act.Facts
-			f.ChildQuestions = qs
-			v = session.ClassifySessionActivity(f)
-			awaitingByID[id] = qs[0]
-		}
-		st := sessionStatusLabel(v, act.Facts.EndedReason)
-		if _, ok := questionsByRoot[id]; ok && st != "" {
-			st += " (awaiting answer)"
-		}
-		statusByID[id] = st
-	}
-	return statusByID, awaitingByID
+func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionReader, activities app.SessionActivityBatchResult, ids []string) (map[string]string, map[string]sessionnotice.ChildQuestion) {
+	return sesskit.ListStatusesWithAwaiting(ctx, store, activities, ids)
 }
 
 // idsOf projects the session list to the id slice the batched
 // classifier takes.
-func idsOf(sessions []session.Session) []string {
+func idsOf(sessions []coresession.Session) []string {
 	ids := make([]string, len(sessions))
 	for i, s := range sessions {
 		ids[i] = s.ID
@@ -232,7 +194,7 @@ func idsOf(sessions []session.Session) []string {
 // from. The verdict-only shape carries no recorded end: callers holding the
 // facts call sessionStatusLabel directly, so a live session's recorded exit
 // is annotated instead of hidden (FIX-STATUS (a)).
-func listStatus(v session.ActivityVerdict) string {
+func listStatus(v sessionfacts.ActivityVerdict) string {
 	return sessionStatusLabel(v, "")
 }
 
@@ -244,8 +206,8 @@ func statusOrDash(s string) string {
 }
 
 // sessionListItem is the JSON shape of `rush sessions list --json`. Held
-// as a separate struct (rather than just marshalling session.Session
-// directly) so the wire-stable field names don't drift if session.Session
+// as a separate struct (rather than just marshalling coresession.Session
+// directly) so the wire-stable field names don't drift if coresession.Session
 // gains internal fields we don't want to publish.
 type sessionListItem struct {
 	ID           string  `json:"id"`
@@ -291,12 +253,12 @@ type sessionListItem struct {
 	BatchAwaitingAnswer bool `json:"batch_awaiting_answer,omitempty"`
 }
 
-// makeSessionListItem projects a session.Session into the wire-stable
+// makeSessionListItem projects a coresession.Session into the wire-stable
 // sessionListItem shape used by `rush sessions list --json`.
-func makeSessionListItem(s session.Session, costUSD float64) sessionListItem {
+func makeSessionListItem(s coresession.Session, costUSD float64) sessionListItem {
 	return sessionListItem{
 		ID:           s.ID,
-		Hash:         session.HashID(s.ID),
+		Hash:         coresession.HashID(s.ID),
 		Title:        s.Title,
 		MessageCount: s.MessageCount,
 		CreatedAt:    s.CreatedAt,

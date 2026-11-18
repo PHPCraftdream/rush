@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
@@ -19,8 +22,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -46,7 +49,7 @@ var runTurnToolsSnapshotSeam func()
 // — this function builds it, calls Stream, and dispatches on the result;
 // the preamble above and the tail below are deliberately NOT moved there,
 // since neither is fantasy callback state.
-func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *session.SessionLock, epoch uint64, runCancel context.CancelFunc, att *drainAttempt) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
+func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *sessionlock.SessionLock, epoch uint64, runCancel context.CancelFunc, att *drainAttempt) (res *fantasy.AgentResult, next SessionAgentCall, hasNext bool, resErr error) {
 	restoredCtx, authorityErr := a.restoreFinalizationCallContext(ctx, &call)
 	if authorityErr != nil {
 		return nil, SessionAgentCall{}, false, authorityErr
@@ -128,7 +131,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	slog.Info("SessionAgent.Run: starting", "sessionID", call.SessionID, "model", smartModel.ModelCfg.Model, "promptLen", len(systemPrompt))
 
-	systemPrompt = withTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
+	systemPrompt = promptcache.WithTurnMCPInstructions(systemPrompt, call.RecoveryContinuation, a.config, maps.All(mcp.GetStates()))
 	// Add Anthropic caching to the last tool. Via a per-turn wrapper, NOT
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
 	// set of pointers shared by every concurrent turn on this agent, and two
@@ -363,7 +366,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(smartModel))
 	// Heartbeat attribution: root run entry or inherited sub-agent root (design pt. 1/2).
 	hb := heartbeat.FromContext(ctx)
-	ctx = withHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, hbTurnRole(call, hb), hbTurnSource(ctx, hb))
+	ctx = callbeat.WithHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, callbeat.HbTurnRole(call, hb), callbeat.HbTurnSource(ctx, hb))
 	// Compose this turn's activity-notify callback with any ancestor's (see
 	// withActivityNotify) BEFORE deriving genCtx, so every fantasy stream
 	// callback below — via bumpActivity -> notifyActivity(genCtx) — records

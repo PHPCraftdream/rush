@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -49,16 +52,16 @@ func newWsFx(t *testing.T) *wsFx {
 // home=true -- today's git-checkout process: it owns its own data directory
 // (config.WorkspaceHome() is true until SD-D #1143), so legacy ” rows are
 // its to drive even though its root is non-empty.
-func (f *wsFx) service(workspaceRoot, workDir string) Service {
-	return NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, true)
+func (f *wsFx) service(workspaceRoot, workDir string) session.Service {
+	return session.NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, true)
 }
 
 // serviceLinked is service with home=false: the shared-from-linked process
 // SD-D (#1143) will introduce -- a workspace of its own, but NOT the owner
 // of the data directory, so legacy ” rows are not its to drive. The
-// ownership-filter tests use it to keep exercising that half of Owns.
-func (f *wsFx) serviceLinked(workspaceRoot, workDir string) Service {
-	return NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, false)
+// ownership-filter tests use it to keep exercising that half of session.Owns.
+func (f *wsFx) serviceLinked(workspaceRoot, workDir string) session.Service {
+	return session.NewServiceWithWorkspace(f.q, f.conn, f.q, f.conn, workspaceRoot, workDir, false)
 }
 
 // seedSession inserts a top-level session bound to workspaceRoot with an
@@ -113,7 +116,7 @@ func TestOwns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, Owns(tc.sess, tc.proc, tc.home))
+			require.Equal(t, tc.want, session.Owns(tc.sess, tc.proc, tc.home))
 		})
 	}
 }
@@ -134,9 +137,9 @@ func TestWorkspaceBinding_AllCreationPaths(t *testing.T) {
 	require.NoError(t, err)
 	withID, err := svc.CreateWithID(f.ctx, "run-cli-id", "cli id")
 	require.NoError(t, err)
-	withOrigin, err := svc.(OriginCreator).CreateWithOrigin(f.ctx, "web", message.OriginWeb)
+	withOrigin, err := svc.(session.OriginCreator).CreateWithOrigin(f.ctx, "web", message.OriginWeb)
 	require.NoError(t, err)
-	withIDOrigin, err := svc.(OriginCreator).CreateWithIDAndOrigin(f.ctx, "web-id", "web id", message.OriginWeb)
+	withIDOrigin, err := svc.(session.OriginCreator).CreateWithIDAndOrigin(f.ctx, "web-id", "web id", message.OriginWeb)
 	require.NoError(t, err)
 	title, err := svc.CreateTitleSession(f.ctx, created.ID)
 	require.NoError(t, err)
@@ -176,7 +179,7 @@ func TestWorkspaceBinding_AllCreationPaths(t *testing.T) {
 	// source belongs to a different (foreign) one -- `sessions fork` is the
 	// only supported way to continue a history in another checkout.
 	f.seedSession("src-foreign", wsForeign, 100)
-	fork, copied, err := svc.ForkSessionTx(f.ctx, "src-foreign", ForkOptions{NewID: "fork-mine", Title: "forked"})
+	fork, copied, err := svc.ForkSessionTx(f.ctx, "src-foreign", session.ForkOptions{NewID: "fork-mine", Title: "forked"})
 	require.NoError(t, err)
 	require.Equal(t, 0, copied, "the seeded foreign source has no messages")
 	require.Equal(t, wsOwn, fork.WorkspaceRoot, "fork must take the forking service's workspace, not the source's")
@@ -269,36 +272,36 @@ func TestWakeScheduleOwnershipFilter(t *testing.T) {
 	f.seedSession("wake-foreign", wsForeign, 0)
 	f.seedSession("wake-legacy", "", 0)
 
-	seed := NewWakeScheduleStore(f.conn)
+	seed := sessionwake.NewWakeScheduleStore(f.conn)
 	// RunAt values are all at least MinWakeOnceDelay past the creation clock
 	// (base); the foreign one is the EARLIEST, so an unfiltered NextDue points
 	// every other process at a moment only its owner may claim.
 	foreignDue := base.Add(5 * time.Second)
 	ownDue := base.Add(time.Hour)
 	legacyDue := base.Add(30 * time.Minute)
-	foreignRow, err := seed.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: "wake-foreign", Kind: WakeKindOnce, Message: "foreign", RunAt: foreignDue,
+	foreignRow, err := seed.CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "wake-foreign", Kind: sessionwake.WakeKindOnce, Message: "foreign", RunAt: foreignDue,
 	}, base)
 	require.NoError(t, err)
-	ownRow, err := seed.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: "wake-own", Kind: WakeKindOnce, Message: "own", RunAt: ownDue,
+	ownRow, err := seed.CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "wake-own", Kind: sessionwake.WakeKindOnce, Message: "own", RunAt: ownDue,
 	}, base)
 	require.NoError(t, err)
-	legacyRow, err := seed.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: "wake-legacy", Kind: WakeKindOnce, Message: "legacy", RunAt: legacyDue,
+	legacyRow, err := seed.CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "wake-legacy", Kind: sessionwake.WakeKindOnce, Message: "legacy", RunAt: legacyDue,
 	}, base)
 	require.NoError(t, err)
 
-	own := NewWakeScheduleStoreWithWorkspace(f.conn, wsOwn, "", false)
-	foreign := NewWakeScheduleStoreWithWorkspace(f.conn, wsForeign, "", false)
-	home := NewWakeScheduleStore(f.conn)
+	own := sessionwake.NewWakeScheduleStoreWithWorkspace(f.conn, wsOwn, "", false)
+	foreign := sessionwake.NewWakeScheduleStoreWithWorkspace(f.conn, wsForeign, "", false)
+	home := sessionwake.NewWakeScheduleStore(f.conn)
 
 	// NextDue: the owning process sleeps until its OWN due moment, never
 	// until the earlier foreign moment.
 	next, err := own.NextDue(f.ctx)
 	require.NoError(t, err)
 	require.NotNil(t, next)
-	require.True(t, next.Equal(ownDue), "NextDue must be the own due time, got %v", next)
+	require.True(t, next.Equal(ownDue), "sessionwake.NextDue must be the own due time, got %v", next)
 
 	// The foreign store does see its own row -- the positive control proving
 	// the filter is ownership, not a blanket exclusion.
@@ -311,7 +314,7 @@ func TestWakeScheduleOwnershipFilter(t *testing.T) {
 	nextHome, err := home.NextDue(f.ctx)
 	require.NoError(t, err)
 	require.NotNil(t, nextHome)
-	require.True(t, nextHome.Equal(legacyDue), "home NextDue must be the legacy due time, got %v", nextHome)
+	require.True(t, nextHome.Equal(legacyDue), "home sessionwake.NextDue must be the legacy due time, got %v", nextHome)
 
 	// ClaimDue at a moment past every due time: the owning process claims
 	// exactly its own row; the already-due foreign row is left alone.
@@ -350,7 +353,7 @@ func TestWakeScheduleOwnershipFilter(t *testing.T) {
 // history: --continue found nothing and the pump skipped legacy rows.
 //
 // Revert-check (mutant A, service half): in session_workspace.go's ownsArgs
-// restore `homeFlag(s.workspaceRoot == "")` (the service ignores its home
+// restore `session.HomeFlag(s.workspaceRoot == "")` (the service ignores its home
 // field) and regenerate nothing -- both sub-tests fail: GetLast errors with
 // "no sessions found" (the legacy row is the only one seeded) and the pump
 // scan comes back empty.
@@ -383,7 +386,7 @@ func TestP1142_LegacyDrivenByGitCheckoutProcess(t *testing.T) {
 // while NextDue kept reporting the moment -- the P0 spin, one checkout wide.
 //
 // Revert-check (mutant A, store half): in wake_schedule_store.go's ownsArgs
-// restore `homeFlag(s.workspaceRoot == "")` -- NextDue reports the due time
+// restore `session.HomeFlag(s.workspaceRoot == "")` -- NextDue reports the due time
 // but ClaimDue returns zero rows (the assertion below at require.Len fails
 // first with "0 rows claimed").
 func TestP1142_LegacyWakeClaimedByGitCheckoutProcess(t *testing.T) {
@@ -392,19 +395,19 @@ func TestP1142_LegacyWakeClaimedByGitCheckoutProcess(t *testing.T) {
 	f.seedSession("legacy-wake", "", 0)
 
 	due := base.Add(time.Hour)
-	seed := NewWakeScheduleStore(f.conn)
-	row, err := seed.CreateSchedule(f.ctx, CreateWakeScheduleParams{
-		Owner: "legacy-wake", Kind: WakeKindOnce, Message: "legacy", RunAt: due,
+	seed := sessionwake.NewWakeScheduleStore(f.conn)
+	row, err := seed.CreateSchedule(f.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "legacy-wake", Kind: sessionwake.WakeKindOnce, Message: "legacy", RunAt: due,
 	}, base)
 	require.NoError(t, err)
 
 	// The git-checkout process's scheduler: non-empty root, home.
-	store := NewWakeScheduleStoreWithWorkspace(f.conn, wsOwn, "", true)
+	store := sessionwake.NewWakeScheduleStoreWithWorkspace(f.conn, wsOwn, "", true)
 
 	next, err := store.NextDue(f.ctx)
 	require.NoError(t, err)
 	require.NotNil(t, next, "the legacy schedule is this process's timer input")
-	require.True(t, next.Equal(due), "NextDue must be the legacy row's due time, got %v", next)
+	require.True(t, next.Equal(due), "sessionwake.NextDue must be the legacy row's due time, got %v", next)
 
 	claimed, err := store.ClaimDue(f.ctx, "pump-git-checkout", base.Add(2*time.Hour), 10, WakeLeaseTTL)
 	require.NoError(t, err)

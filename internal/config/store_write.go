@@ -26,7 +26,7 @@ import (
 // componentSettingsEvent converts the root audit event to the settings
 // component's event type; the two structs carry identical fields.
 func componentSettingsEvent(ev SettingsEvent) settings.SettingsEvent {
-	return settings.SettingsEvent{Scope: ev.Scope, Path: ev.Path, Keys: ev.Keys, Models: ev.Models, Outcome: ev.Outcome, Reason: ev.Reason, Source: ev.Source}
+	return settings.SettingsEvent(ev)
 }
 
 // settingsFinalizeEvent routes event finalization through the settings

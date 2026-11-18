@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
@@ -152,7 +154,7 @@ func TestSessionsReset_ForceDoesNotKillStalePID(t *testing.T) {
 	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
 		require.NoError(t, err)
 	})
@@ -180,7 +182,7 @@ func resetSessionCmdFlags() *cobra.Command {
 	return sessionsResetCmd
 }
 
-// captureStderr (used above) is defined in claude_init_test.go — it captures
+// cmdtest.CaptureStderr (used above) is defined in cmd/cli/cmdtest/helpers.go — it captures
 // os.Stderr output for the duration of a closure, which is exactly what
 // sessionsResetCmd.RunE's --force block writes to via fmt.Fprint(os.Stderr,
 // ...), mirroring sessions_kill.go's own reporting.
@@ -258,7 +260,7 @@ func TestSessionsReset_ForceHonorsConfiguredDataDir(t *testing.T) {
 	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
 		require.NoError(t, err)
 	})
@@ -310,7 +312,7 @@ func TestSessionsReset_ForceStillKillsLiveHolder(t *testing.T) {
 	a.Shutdown()
 
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
 		require.NoError(t, err)
 	})
@@ -370,7 +372,7 @@ func TestSessionsReset_ForceClearsUnfinishedAssistantMessages(t *testing.T) {
 
 	// Run reset --force with the real command.
 	require.NoError(t, resetSessionCmdFlags().Flags().Set("force", "true"))
-	stderr := captureStderr(t, func() {
+	stderr := cmdtest.CaptureStderr(t, func() {
 		err := sessionsResetCmd.RunE(sessionsResetCmd, []string{sess.ID})
 		require.NoError(t, err, "reset --force must succeed even with an unfinished assistant message")
 	})

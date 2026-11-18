@@ -18,15 +18,16 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
-// ackFailingService wraps a real session.Service and fails AckRunQueueEntry.
+// ackFailingService wraps a real core.Service and fails AckRunQueueEntry.
 // Everything else — leasing, renewal, listing, nacking — goes to the real
 // implementation, so the entry genuinely reaches the ack path rather than
 // falling over somewhere earlier and passing this test for the wrong reason.
 type ackFailingService struct {
-	session.Service
+	core.Service
 	ackCalls atomic.Int64
 	ackErr   error
 }

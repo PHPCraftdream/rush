@@ -26,6 +26,10 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -43,12 +47,12 @@ func dbConnectForTest(t *testing.T, dataDir string) (*sql.DB, error) {
 	return conn, err
 }
 
-func newDeadHostStore(t *testing.T, dataDir string, pid int, label string) *session.HostStore {
+func newDeadHostStore(t *testing.T, dataDir string, pid int, label string) *sessionhosts.HostStore {
 	t.Helper()
 	conn, err := db.Connect(context.Background(), dataDir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Release(dataDir) })
-	st := session.NewHostStore(conn, dataDir, pid, label)
+	st := sessionhosts.NewHostStore(conn, dataDir, pid, label)
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	return st
 }
@@ -77,21 +81,21 @@ func tailDone(ctx context.Context, a *app.App, sessionID string) bool {
 // newActivityCmdApp builds a lightweight App with the real SQLite stores on
 // a temp data dir -- the shape every sessions_* command test drives. The
 // returned store is the host store the driver markers are claimed through.
-func newActivityCmdApp(t *testing.T) (*app.App, string, *session.HostStore) {
+func newActivityCmdApp(t *testing.T) (*app.App, string, *sessionhosts.HostStore) {
 	t.Helper()
 	dataDir := t.TempDir()
 	conn, err := dbConnectForTest(t, dataDir)
 	require.NoError(t, err)
 	q := db.New(conn)
 	a := &app.App{
-		Sessions: session.NewService(q, conn),
+		Sessions: coresession.NewService(q, conn),
 		Messages: message.NewService(q),
 		DB:       func() *sql.DB { return conn },
 	}
 	a.SetDataDirForTest(dataDir)
-	store := session.NewHostStore(conn, dataDir, os.Getpid(), "activity-cmd-test")
+	store := sessionhosts.NewHostStore(conn, dataDir, os.Getpid(), "activity-cmd-test")
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	a.SetWakeScheduleStoreForTest(session.NewWakeScheduleStore(conn))
+	a.SetWakeScheduleStoreForTest(sessionwake.NewWakeScheduleStore(conn))
 	return a, dataDir, store
 }
 
@@ -100,7 +104,7 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 	ctx := context.Background()
 	a, dataDir, store := newActivityCmdApp(t)
 
-	mk := func(name string) session.Session {
+	mk := func(name string) coresession.Session {
 		sess, err := a.Sessions.Create(ctx, name)
 		require.NoError(t, err)
 		return sess
@@ -111,7 +115,7 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 	// in turn: the lock record names this (alive) process.
 	inTurn := mk("in-turn")
 	require.NoError(t, os.MkdirAll(filepath.Join(dataDir, "locks"), 0o755))
-	heldPath := filepath.Join(dataDir, "locks", "session-"+session.SessionLockStem(inTurn.ID)+".lock")
+	heldPath := filepath.Join(dataDir, "locks", "session-"+sessionfacts.SessionLockStem(inTurn.ID)+".lock")
 	require.NoError(t, os.WriteFile(heldPath, []byte(itoaCmd(os.Getpid())+"\n"), 0o644))
 
 	// between turns (R6C-1/R5C-5): released lock, live driver, debt pending.
@@ -132,7 +136,7 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 	// crashed (D3): a dead foreign PID and NO live work, whatever the finish.
 	crashed := mk("crashed")
 	require.NoError(t, a.Sessions.SetEndedReason(ctx, crashed.ID, "end_turn"))
-	crashedPath := filepath.Join(dataDir, "locks", "session-"+session.SessionLockStem(crashed.ID)+".lock")
+	crashedPath := filepath.Join(dataDir, "locks", "session-"+sessionfacts.SessionLockStem(crashed.ID)+".lock")
 	require.NoError(t, os.WriteFile(crashedPath, []byte("2147483646\n"), 0o644))
 
 	// ended (D4): the recorded reason is the only end signal.
@@ -180,7 +184,7 @@ func TestSessionsActivity_OneTableEveryCommand(t *testing.T) {
 		// watch/tail follow predicate: finished <=> no live verdict
 		require.Equal(t, !want.live, tailDone(ctx, a, id), id)
 		// locks stem map (D11): the real id is reachable from its stem
-		stem := session.SessionLockStem(id)
+		stem := sessionfacts.SessionLockStem(id)
 		require.Contains(t, acts.LockStems[stem], id, id)
 	}
 

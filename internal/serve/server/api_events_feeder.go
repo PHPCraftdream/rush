@@ -8,7 +8,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/PHPCraftdream/rush/internal/serve/server/wire/finalgate"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 type apiEventFeeder struct {

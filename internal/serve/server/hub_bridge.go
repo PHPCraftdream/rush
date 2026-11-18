@@ -26,7 +26,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 type (

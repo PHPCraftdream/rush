@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
 
@@ -27,7 +28,7 @@ type BatchHistorySnapshot struct {
 	Nodes         []BatchHistoryNodeView
 	Counts        BatchLiveCounts
 	Debt          int64
-	Host          HostLockStatus
+	Host          sessionhosts.HostLockStatus
 	Disappeared   bool
 	Complete      bool
 }

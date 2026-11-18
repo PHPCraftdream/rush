@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,7 @@ func baseFacts() TurnFacts {
 		Now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
 		Debt: DebtFacts{
 			PendingIncl: true,
-			Visible:     session.BatchDebtSnapshot{Notices: []session.DebtNoticeRef{{ID: 1}}},
+			Visible:     session.BatchDebtSnapshot{Notices: []sessionnotice.DebtNoticeRef{{ID: 1}}},
 		},
 		Session: SessionFacts{AutonomyEnabled: true},
 	}
@@ -334,7 +335,7 @@ func TestDecideAccount_RowsA1toA7(t *testing.T) {
 	// A5: every visible row reacted.
 	require.Equal(t, VNone, decide(at(AttemptFacts{MaxWakeAttempts: 0})).Kind)
 	// A6: a row reached K (or a terminal failure closes the rows).
-	a := at(AttemptFacts{MaxWakeAttempts: turnFailureSettleThreshold, AtK: session.BatchDebtSnapshot{Notices: []session.DebtNoticeRef{{ID: 7}}}})
+	a := at(AttemptFacts{MaxWakeAttempts: turnFailureSettleThreshold, AtK: session.BatchDebtSnapshot{Notices: []sessionnotice.DebtNoticeRef{{ID: 7}}}})
 	v = decide(a)
 	require.Equal(t, VClose, v.Kind)
 	require.Equal(t, a.Attempt.AtK, v.Rows)
@@ -353,7 +354,7 @@ func TestDecide_AccountSideNeverIssuesCloseOnLaunchSites(t *testing.T) {
 		f.Site = site
 		f.Attempt = AttemptFacts{
 			MaxWakeAttempts: turnFailureSettleThreshold,
-			AtK:             session.BatchDebtSnapshot{Notices: []session.DebtNoticeRef{{ID: 1}}},
+			AtK:             session.BatchDebtSnapshot{Notices: []sessionnotice.DebtNoticeRef{{ID: 1}}},
 		}
 		require.NotEqual(t, VClose, decide(f).Kind, "site %d", site)
 	}

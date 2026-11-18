@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +30,7 @@ func TestForcedShutdown_PinsHostLockAndRowsStayRunning(t *testing.T) {
 	hostID := h.app.BatchHostStore().HostID()
 	require.NotEmpty(t, hostID)
 	t.Cleanup(func() {
-		session.ReleaseRetainedHostLocksForTest(hostID)
+		sessionhosts.ReleaseRetainedHostLocksForTest(hostID)
 		_ = db.ReleaseAll(h.dataDir)
 	})
 
@@ -37,8 +38,8 @@ func TestForcedShutdown_PinsHostLockAndRowsStayRunning(t *testing.T) {
 	res := h.app.ShutdownWithResult()
 	require.True(t, res.Forced)
 
-	require.True(t, session.IsOwnHostID(hostID), "the own-host id stays marked after a forced shutdown")
-	status, lock, probeErr := session.ProbeHostLock(session.HostLockPath(h.dataDir, hostID))
+	require.True(t, sessionhosts.IsOwnHostID(hostID), "the own-host id stays marked after a forced shutdown")
+	status, lock, probeErr := sessionhosts.ProbeHostLock(sessionhosts.HostLockPath(h.dataDir, hostID))
 	if lock != nil {
 		_ = lock.Release()
 	}
@@ -47,8 +48,8 @@ func TestForcedShutdown_PinsHostLockAndRowsStayRunning(t *testing.T) {
 
 	// A new host identity in the same process cannot take the lock: the host
 	// is still alive as far as it can tell.
-	_, _, err := session.ProbeHost(h.dataDir, hostID)
-	require.ErrorIs(t, err, session.ErrProbeOwnHost, "the forced-shutdown host id is still this process's own")
+	_, _, err := sessionhosts.ProbeHost(h.dataDir, hostID)
+	require.ErrorIs(t, err, sessionhosts.ErrProbeOwnHost, "the forced-shutdown host id is still this process's own")
 
 	// The live rows of a forced-shutdown host stay running until the process
 	// exits: no recovery may interrupt them through the still-alive lock.

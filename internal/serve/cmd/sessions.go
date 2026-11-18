@@ -6,7 +6,14 @@ package cmd
 // files in this package.
 
 import (
-	"github.com/PHPCraftdream/rush/internal/kit/text/ansiext"
+	"sync"
+	"time"
+
+	sesslive "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/live"
+	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/locks"
+	sessaudit "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/report/audit"
+	sesscost "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/report/cost"
+	sessscan "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/view/scan"
 	"github.com/spf13/cobra"
 )
 
@@ -35,51 +42,91 @@ Cleanup:     purge <age> [--matching <glob>], kill <id> (force-unlock),
              compact (rebuild the session store: VACUUM the freelist #1161)`,
 }
 
-func init() {
-	sessionsListCmd.Flags().Bool("json", false, "Emit one JSON object per line instead of a table")
+// NewSessionsCmd returns the rush sessionsCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var sessionsCostCmd = sesscost.NewSessionsCostCmd(setupApp)
 
-	sessionsResetCmd.Flags().Bool("force", false, "Also kill any process holding the session lock (the lock file stays); reset still refuses while the session has live work")
+var sessionsDiffCmd = sessscan.NewSessionsDiffCmd(setupApp)
 
-	sessionsShowCmd.Flags().Bool("json", false, "Emit structured JSON instead of text")
-	sessionsShowCmd.Flags().Bool("with-messages", false, "Include all messages in the output")
-	sessionsShowCmd.Flags().Bool("full", false, "Show full message content (implies --with-messages)")
-	sessionsShowCmd.Flags().Bool("with-subagents", false, "Also render each sub-agent delegation's transcript as a demarcated block (implies --with-messages; text output)")
+var sessionsGrepCmd = sessscan.NewSessionsGrepCmd(setupApp)
 
-	sessionsLocksCmd.Flags().Bool("json", false, "Emit NDJSON (one JSON object per line)")
-	sessionsLocksCmd.Flags().Bool("stale-only", false, "Filter to locks older than 10 minutes or for dead processes")
-	sessionsLocksCmd.Flags().Bool("prune", false, "Remove lock files proven (via a real OS-level lock probe) to have no live holder. Off by default: `sessions locks` is read-only unless this is set.")
-	sessionsLocksCmd.Flags().Bool("all", false, "Include idle lock files (no holder PID recorded, offline pulse, no live-driver evidence) that the default view collapses into a one-line summary")
+// Factory wiring for the moved-out audit and locks families (sessaudit /
+// sesslocks). purgeQueuedWorkAfterStop matches the
+// func(*cobra.Command, string) purge hook, and batchKillLiveNote — retyped
+// to return sesslocks.BatchKillScopeState — matches the BatchKillNoteReader
+// provider (ctx, dataDir, sessionID), so both pass through directly.
+var sessionsAuditCmd = sessaudit.NewSessionsAuditCmd()
 
-	sessionsTailCmd.Flags().Bool("follow", false, "Keep polling for new messages until session finishes")
-	sessionsTailCmd.Flags().String("from-message", "", "Resume from this message ID (skip earlier)")
-	sessionsTailCmd.Flags().String("format", "text", "Output format: text or ndjson")
-	sessionsTailCmd.Flags().Bool("with-subagents", false, "After the parent stream, render each sub-agent delegation's transcript as a demarcated block (snapshot; not re-emitted while --follow)")
+var sessionsLocksCmd = sesslocks.NewSessionsLocksCmd(setupApp)
 
-	sessionsLastCmd.Flags().IntP("n", "n", 10, "Number of messages to show")
-	sessionsLastCmd.Flags().String("format", "text", "Output format: text or ndjson")
-	sessionsLastCmd.Flags().Bool("with-subagents", false, "After the parent messages, render each sub-agent delegation's transcript as a demarcated block")
+var sessionsKillCmd = sesslocks.NewSessionsKillCmd(setupApp, purgeQueuedWorkAfterStop, batchKillLiveNote)
 
-	sessionsStatusCmd.Flags().Bool("json", false, "Emit a single JSON object instead of text")
+var sessionsReapCmd = sesslocks.NewSessionsReapCmd(setupApp)
 
-	sessionsCacheCmd.Flags().Bool("json", false, "Emit JSON instead of a table")
-	sessionsCacheCmd.Flags().String("since", "", "Only count messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days. Aggregates across all sessions; omit the session argument.")
-	sessionsCacheCmd.Flags().String("by", "", "Grouping for the cross-session view: model (default) or day")
+var sessionsForkCmd = sesslive.NewSessionsForkCmd(setupApp)
 
-	sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsStatusCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd, sessionsCompactCmd)
-	rootCmd.AddCommand(sessionsCmd)
-}
+var newSessionsCmdOnce sync.Once
 
-func short(hash string) string {
-	if len(hash) <= 8 {
-		return hash
-	}
-	return hash[:8]
-}
+func NewSessionsCmd() *cobra.Command {
+	newSessionsCmdOnce.Do(func() {
+		sessionsListCmd.Flags().Bool("json", false, "Emit one JSON object per line instead of a table")
 
-// truncate shortens s so its display width in terminal cells is at most n,
-// appending an ellipsis when truncation happens. It is rune- and
-// display-width-aware (Cyrillic, CJK wide runes, emoji), so multibyte text is
-// never cut mid-rune and column widths still hold.
-func truncate(s string, n int) string {
-	return ansiext.TruncateDisplay(s, n)
+		sessionsResetCmd.Flags().Bool("force", false, "Also kill any process holding the session lock (the lock file stays); reset still refuses while the session has live work")
+
+		sessionsShowCmd.Flags().Bool("json", false, "Emit structured JSON instead of text")
+		sessionsShowCmd.Flags().Bool("with-messages", false, "Include all messages in the output")
+		sessionsShowCmd.Flags().Bool("full", false, "Show full message content (implies --with-messages)")
+		sessionsShowCmd.Flags().Bool("with-subagents", false, "Also render each sub-agent delegation's transcript as a demarcated block (implies --with-messages; text output)")
+
+		sessionsTailCmd.Flags().Bool("follow", false, "Keep polling for new messages until session finishes")
+		sessionsTailCmd.Flags().String("from-message", "", "Resume from this message ID (skip earlier)")
+		sessionsTailCmd.Flags().String("format", "text", "Output format: text or ndjson")
+		sessionsTailCmd.Flags().Bool("with-subagents", false, "After the parent stream, render each sub-agent delegation's transcript as a demarcated block (snapshot; not re-emitted while --follow)")
+
+		sessionsLastCmd.Flags().IntP("n", "n", 10, "Number of messages to show")
+		sessionsLastCmd.Flags().String("format", "text", "Output format: text or ndjson")
+		sessionsLastCmd.Flags().Bool("with-subagents", false, "After the parent messages, render each sub-agent delegation's transcript as a demarcated block")
+
+		sessionsStatusCmd.Flags().Bool("json", false, "Emit a single JSON object instead of text")
+
+		sessionsCacheCmd.Flags().Bool("json", false, "Emit JSON instead of a table")
+		sessionsCacheCmd.Flags().String("since", "", "Only count messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days. Aggregates across all sessions; omit the session argument.")
+		sessionsCacheCmd.Flags().String("by", "", "Grouping for the cross-session view: model (default) or day")
+
+		sessionsCmd.AddCommand(sessionsListCmd, sessionsDeleteCmd, sessionsResetCmd, sessionsShowCmd, sessionsLocksCmd, sessionsTailCmd, sessionsLastCmd, sessionsStatusCmd, sessionsWhyCmd, sessionsGcCmd, sessionsPurgeCmd, sessionsKillCmd, sessionsReapCmd, sessionsWatchCmd, sessionsPickCmd, sessionsGrepCmd, sessionsCostCmd, sessionsCacheCmd, sessionsDiffCmd, sessionsCancelCmd, sessionsForkCmd, sessionsTreeCmd, sessionsAuditCmd, sessionsCompactCmd)
+
+		sessionsCancelCmd.Flags().Bool("all", false, "Cancel every top-level session that has live work (idle sessions are skipped)")
+
+		sessionsCompactCmd.Flags().Bool("dry-run", false, "Print size, freelist, estimate and gate verdicts without compacting")
+		sessionsCompactCmd.Flags().Bool("force", false, "Compact despite live rush hosts or live session locks (their writers may fail with SQLITE_BUSY); never bypasses migrate.lock or a busy WAL checkpoint")
+		sessionsCompactCmd.Flags().Bool("json", false, "Emit a single JSON summary object instead of text")
+		sessionsCompactCmd.Flags().String("role", "worker", "Model role used for session-history compaction (smart, fast, worker, or reviewer)")
+
+		sessionsGcCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
+		sessionsGcCmd.Flags().String("older-than", "7d", "Delete empty sessions older than this (e.g. 7d, 24h, 30m)")
+		sessionsGcCmd.Flags().String("jobs-older-than", "", "Also purge finished, debt-free batch work older than this (e.g. 3d, 12h); empty = only the fixed 7-day retention (web server every 60s, each rush run at start and every 60s while it runs)")
+		sessionsGcCmd.Flags().Int("max-sessions", 0, "Maximum number of sessions to delete (0 = unlimited)")
+		sessionsGcCmd.Flags().Bool("json", false, "Emit one JSON object per deleted session (plus a job-count summary line with --jobs-older-than)")
+
+		sessionsInjectCmd.Flags().StringP("message", "m", "", "Message text to inject (mutually exclusive with --file)")
+		sessionsInjectCmd.Flags().StringP("file", "f", "", "Read message text from this file (mutually exclusive with --message)")
+		sessionsInjectCmd.Flags().Bool("interrupt", false, "Cancel the current turn and restart it with this message")
+		sessionsInjectCmd.Flags().Bool("json", false, "Emit a structured JSON result")
+
+		sessionsCmd.AddCommand(sessionsInjectCmd)
+
+		sessionsJobsCmd.Flags().Bool("json", false, "Emit one JSON object per job")
+		sessionsCmd.AddCommand(sessionsJobsCmd)
+
+		sessionsPickCmd.Flags().Bool("tail", false, "Tail --follow the selected session instead of showing last N messages")
+
+		sessionsPurgeCmd.Flags().Bool("dry-run", false, "Print what would be deleted without deleting")
+		sessionsPurgeCmd.Flags().Bool("yes", false, "Skip the confirmation prompt")
+		sessionsPurgeCmd.Flags().String("matching", "", "Only delete sessions whose ID matches this glob (e.g. 'garnet-sql-*')")
+
+		sessionsWatchCmd.Flags().Duration("interval", time.Second, "Poll interval for new messages (e.g. 1s, 500ms, 2s)")
+	})
+	return deepFreshCmd(sessionsCmd)
 }

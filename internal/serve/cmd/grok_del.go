@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -134,8 +135,16 @@ func removeGrokSkillDirWithEitherSentinel(skillsDir, name string) error {
 	return nil
 }
 
-func init() {
-	grokDelCmd.Flags().Bool("global", false, "Remove from ~/.grok/skills/. Default when neither --global nor --local is given.")
-	grokDelCmd.Flags().Bool("local", false, "Remove from the current project's .grok/skills/ instead of ~/.grok/skills/.")
-	rootCmd.AddCommand(grokDelCmd)
+// NewGrokDelCmd returns the rush grokDelCmd command tree, registering its flags and children
+// exactly once (former package init body; lane K2 of the sprint0 cmd split
+// removed package init registration). The command object itself is a package
+// var that only this constructor mutates.
+var newGrokDelCmdOnce sync.Once
+
+func NewGrokDelCmd() *cobra.Command {
+	newGrokDelCmdOnce.Do(func() {
+		grokDelCmd.Flags().Bool("global", false, "Remove from ~/.grok/skills/. Default when neither --global nor --local is given.")
+		grokDelCmd.Flags().Bool("local", false, "Remove from the current project's .grok/skills/ instead of ~/.grok/skills/.")
+	})
+	return deepFreshCmd(grokDelCmd)
 }

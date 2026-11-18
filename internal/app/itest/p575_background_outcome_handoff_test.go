@@ -30,6 +30,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,7 +54,7 @@ func newGatedCoordinator() *gatedCoordinator {
 	}
 }
 
-func (c *gatedCoordinator) Run(ctx context.Context, callData session.SessionAgentCallData) (*any, error) {
+func (c *gatedCoordinator) Run(ctx context.Context, callData coresession.SessionAgentCallData) (*any, error) {
 	c.calls.Add(1)
 	session.RecordExecutionAssistantIdentity(ctx, c.identity)
 	for _, id := range c.identities {
@@ -122,7 +123,7 @@ type sequentialIdentityCoordinator struct {
 	calls atomic.Int64
 }
 
-func (c *sequentialIdentityCoordinator) Run(ctx context.Context, _ session.SessionAgentCallData) (*any, error) {
+func (c *sequentialIdentityCoordinator) Run(ctx context.Context, _ coresession.SessionAgentCallData) (*any, error) {
 	call := c.calls.Add(1)
 	session.RecordExecutionAssistantIdentity(ctx, fmt.Sprintf("assistant-row-%d", call))
 	return nil, nil
@@ -290,7 +291,7 @@ func TestDrainSessionNow_WaitedExecution_BusyIsNotDrained(t *testing.T) {
 	// Give DrainSessionNow time to lose the admission race and enter the
 	// wait branch before resolving the background execution.
 	time.Sleep(150 * time.Millisecond)
-	gate.release <- session.ErrCallQueuedNotExecuted
+	gate.release <- coresession.ErrCallQueuedNotExecuted
 
 	select {
 	case <-drainDone:
@@ -397,13 +398,13 @@ func TestDrainSessionNow_WaitedExecution_AckFailureIsSurfaced(t *testing.T) {
 	require.Equal(t, session.DrainFailed, result, "the turn DID execute in this process; it is only the commit that failed")
 }
 
-// ackFailingServiceP575 wraps a real session.Service and fails
+// ackFailingServiceP575 wraps a real coresession.Service and fails
 // AckRunQueueEntry exactly like p552's ackFailingService — duplicated here
 // (rather than reused) to keep this file's regression self-contained and
 // because Go test files in the same package cannot forward-reference a
 // helper defined for an unrelated task's file without coupling the two.
 type ackFailingServiceP575 struct {
-	session.Service
+	coresession.Service
 	ackErr error
 }
 
@@ -411,13 +412,13 @@ func (s *ackFailingServiceP575) AckRunQueueEntry(ctx context.Context, id, leased
 	return "", s.ackErr
 }
 
-// leaseStealingService wraps a real session.Service and makes every
+// leaseStealingService wraps a real coresession.Service and makes every
 // RenewRunQueueLease call report that the lease was reassigned to a
 // different owner (ok=false, err=nil) — forcing executeEntrySync's renewal
 // loop down its errLeaseLost path deterministically, without needing to
 // wait out a real TTL window or coordinate a second live pump instance.
 type leaseStealingService struct {
-	session.Service
+	coresession.Service
 }
 
 func (s *leaseStealingService) RenewRunQueueLease(ctx context.Context, id, leasedBy string, newExpiresAt int64) (bool, error) {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -309,7 +310,7 @@ func TestShadow_ForeignLiveDriver(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-foreign")
 	f.seedDebt(ctx, "shadow-foreign-1", true)
-	other := session.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+7777, "shadow-other-host")
+	other := sessionhosts.NewHostStore(f.env.conn, f.env.workingDir, os.Getpid()+7777, "shadow-other-host")
 	require.NoError(t, other.ClaimSessionDriver(ctx, f.sessID))
 	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "foreign live driver", false)
 	require.Contains(t, rep.code, "another process drives")

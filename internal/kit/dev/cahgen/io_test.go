@@ -106,6 +106,17 @@ func TestModuleGuard(t *testing.T) {
 	if e := ValidateModule([]byte("// skills require runtime\nexport const x=['require'];")); e != nil {
 		t.Fatal(e)
 	}
+	// Template text is prose; only substitutions are code, nested ones included.
+	for _, s := range []string{"const x = `skill '${a}' (required by: ${b})`", "const x = `a ${ {k: `in ${v}`}.k } b`", "const x = `import require \\${no}`"} {
+		if e := ValidateModule([]byte(s)); e != nil {
+			t.Fatal(s, e)
+		}
+	}
+	for _, s := range []string{"const x = `${ `${require('x')}` }`", "const x = `${ {a: import('x')} }`", "const x = `unterminated", "const x = `${a`"} {
+		if e := ValidateModule([]byte(s)); e == nil {
+			t.Fatal(s)
+		}
+	}
 }
 
 type fakeSource struct {

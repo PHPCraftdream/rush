@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -17,11 +19,11 @@ import (
 
 // sealScopeReader is a stub scope reader returning fixed facts.
 type sealScopeReader struct {
-	facts AgentFinalizationScopeFacts
+	facts session.AgentFinalizationScopeFacts
 	err   error
 }
 
-func (r *sealScopeReader) FinalizationSealScopeFacts(context.Context, *sql.Tx) (AgentFinalizationScopeFacts, error) {
+func (r *sealScopeReader) FinalizationSealScopeFacts(context.Context, *sql.Tx) (session.AgentFinalizationScopeFacts, error) {
 	return r.facts, r.err
 }
 
@@ -51,9 +53,9 @@ func (p *sealWriteProbe) UpdateTx(ctx context.Context, tx *sql.Tx, m message.Mes
 }
 
 // sealWriter surfaces the capability TrySeal needs from the env's messages.
-func (e candidateEnv) sealWriter(t *testing.T) FinalizationSealWriter {
+func (e candidateEnv) sealWriter(t *testing.T) session.FinalizationSealWriter {
 	t.Helper()
-	writer, ok := e.messages.(FinalizationSealWriter)
+	writer, ok := e.messages.(session.FinalizationSealWriter)
 	require.True(t, ok)
 	return writer
 }
@@ -101,14 +103,14 @@ func sealStateDump(t *testing.T, conn *sql.DB) string {
 
 // sealStoredCandidate stores a candidate message at the given step and returns
 // the presented candidate exactly as the record holds it.
-func sealStoredCandidate(t *testing.T, e candidateEnv, revision, serial uint64) (message.Message, AgentFinalizationCandidate) {
+func sealStoredCandidate(t *testing.T, e candidateEnv, revision, serial uint64) (message.Message, session.AgentFinalizationCandidate) {
 	t.Helper()
 	m := e.candidate(t, "answer", e.step(revision, serial), 1)
 	stored, err := e.storeCandidate(t, m, e.step(revision, serial))
 	require.NoError(t, err)
 	hash, err := stored.FinalizationContentHash()
 	require.NoError(t, err)
-	presented := AgentFinalizationCandidate{MessageID: stored.ID, Hash: hash, Revision: int64(revision), Serial: int64(serial)}
+	presented := session.AgentFinalizationCandidate{MessageID: stored.ID, Hash: hash, Revision: int64(revision), Serial: int64(serial)}
 	return stored, presented
 }
 
@@ -121,11 +123,11 @@ func TestTrySealSealsRecordedCandidateAtomically(t *testing.T) {
 	hash, err := stored.FinalizationContentHash()
 	require.NoError(t, err)
 	probe := &sealWriteProbe{Service: e.messages, FinalizationReader: e.reader}
-	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, probe, &sealScopeReader{facts: AgentFinalizationScopeFacts{Complete: true}})
+	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, probe, &sealScopeReader{facts: session.AgentFinalizationScopeFacts{Complete: true}})
 	require.NoError(t, err)
 	require.True(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealNone, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealNone, outcome.Reason)
 	require.Equal(t, "accepted", outcome.Record.Phase)
 	require.Zero(t, outcome.Record.OpenTickets)
 	require.True(t, outcome.Message.IsFinished())
@@ -138,7 +140,7 @@ func TestTrySealSealsRecordedCandidateAtomically(t *testing.T) {
 	require.EqualValues(t, 1, probe.updates.Load(), "the accepted receipt is written exactly once")
 	require.EqualValues(t, 1, probe.publications.Load(), "one terminal event, published only after commit")
 	require.True(t, probe.sawCommitted.Load(), "terminal publication must observe the accepted row after commit")
-	restarted := NewAgentFinalizationStore(e.conn)
+	restarted := session.NewAgentFinalizationStore(e.conn)
 	record, err := restarted.Snapshot(t.Context(), e.id)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
@@ -159,7 +161,7 @@ func TestTrySealIdempotentRepeatIsDeterministic(t *testing.T) {
 	e := newCandidateEnv(t)
 	_, presented := sealStoredCandidate(t, e, 0, 1)
 	probe := &sealWriteProbe{Service: e.messages, FinalizationReader: e.reader}
-	reader := &sealScopeReader{facts: AgentFinalizationScopeFacts{Complete: true}}
+	reader := &sealScopeReader{facts: session.AgentFinalizationScopeFacts{Complete: true}}
 	first, err := e.store.TrySeal(t.Context(), e.id, presented, probe, reader)
 	require.NoError(t, err)
 	require.True(t, first.Sealed)
@@ -167,10 +169,10 @@ func TestTrySealIdempotentRepeatIsDeterministic(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, repeat.Accepted)
 	require.False(t, repeat.Sealed)
-	require.Equal(t, AgentFinalizationSealNone, repeat.Reason)
+	require.Equal(t, session.AgentFinalizationSealNone, repeat.Reason)
 	require.Equal(t, first.Record, repeat.Record)
 	requireSameSealedMessage(t, first.Message, repeat.Message)
-	again, err := NewAgentFinalizationStore(e.conn).TrySeal(t.Context(), e.id, presented, probe, reader)
+	again, err := session.NewAgentFinalizationStore(e.conn).TrySeal(t.Context(), e.id, presented, probe, reader)
 	require.NoError(t, err)
 	require.True(t, again.Accepted)
 	require.Equal(t, first.Record, again.Record)
@@ -190,14 +192,14 @@ func TestTrySealIdempotentRepeatIsDeterministic(t *testing.T) {
 func TestTrySealRefusalsLeaveDatabaseByteIdentical(t *testing.T) {
 	type refusalCase struct {
 		name    string
-		setup   func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader)
-		reason  AgentFinalizationSealReason
+		setup   func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader)
+		reason  session.AgentFinalizationSealReason
 		wantErr error
 	}
-	complete := func() AgentFinalizationScopeReader {
-		return &sealScopeReader{facts: AgentFinalizationScopeFacts{Complete: true}}
+	complete := func() session.AgentFinalizationScopeReader {
+		return &sealScopeReader{facts: session.AgentFinalizationScopeFacts{Complete: true}}
 	}
-	env := func(t *testing.T, revision, serial uint64) (candidateEnv, AgentFinalizationCandidate) {
+	env := func(t *testing.T, revision, serial uint64) (candidateEnv, session.AgentFinalizationCandidate) {
 		t.Helper()
 		e := newCandidateEnv(t)
 		_, presented := sealStoredCandidate(t, e, revision, serial)
@@ -206,16 +208,16 @@ func TestTrySealRefusalsLeaveDatabaseByteIdentical(t *testing.T) {
 	var cases []refusalCase
 	cases = append(cases, refusalCase{
 		name: "open ticket",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e, presented := env(t, 0, 1)
 			_, err := e.store.Admit(t.Context(), e.id, "work")
 			require.NoError(t, err)
 			return e, presented, complete()
 		},
-		reason: AgentFinalizationSealOpenTickets,
+		reason: session.AgentFinalizationSealOpenTickets,
 	}, refusalCase{
 		name: "revision moved",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e := newCandidateEnv(t)
 			_, err := e.store.Admit(t.Context(), e.id, "before")
 			require.NoError(t, err)
@@ -227,98 +229,98 @@ func TestTrySealRefusalsLeaveDatabaseByteIdentical(t *testing.T) {
 			require.NoError(t, e.store.Release(t.Context(), e.id, "after"))
 			return e, presented, complete()
 		},
-		reason: AgentFinalizationSealRevisionChanged,
+		reason: session.AgentFinalizationSealRevisionChanged,
 	}, refusalCase{
 		name: "no candidate",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e := newCandidateEnv(t)
-			return e, AgentFinalizationCandidate{MessageID: "fabricated", Hash: "hash", Revision: 0, Serial: 1}, complete()
+			return e, session.AgentFinalizationCandidate{MessageID: "fabricated", Hash: "hash", Revision: 0, Serial: 1}, complete()
 		},
-		reason: AgentFinalizationSealNoCandidate,
+		reason: session.AgentFinalizationSealNoCandidate,
 	})
-	addStale := func(name string, mutate func(*AgentFinalizationCandidate)) {
+	addStale := func(name string, mutate func(*session.AgentFinalizationCandidate)) {
 		cases = append(cases, refusalCase{
 			name: name,
-			setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+			setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 				e, presented := env(t, 0, 2)
 				mutate(&presented)
 				return e, presented, complete()
 			},
-			reason: AgentFinalizationSealStaleCandidate,
+			reason: session.AgentFinalizationSealStaleCandidate,
 		})
 	}
-	addStale("stale serial", func(c *AgentFinalizationCandidate) { c.Serial = 1 })
-	addStale("stale message id", func(c *AgentFinalizationCandidate) { c.MessageID = "other" })
-	addStale("stale hash", func(c *AgentFinalizationCandidate) { c.Hash = "other" })
+	addStale("stale serial", func(c *session.AgentFinalizationCandidate) { c.Serial = 1 })
+	addStale("stale message id", func(c *session.AgentFinalizationCandidate) { c.MessageID = "other" })
+	addStale("stale hash", func(c *session.AgentFinalizationCandidate) { c.Hash = "other" })
 	for _, phase := range []string{"failed", "cancelled", "interrupted"} {
 		target := phase
 		cases = append(cases, refusalCase{
 			name: "wrong phase " + target,
-			setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+			setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 				e, presented := env(t, 0, 1)
 				_, err := e.conn.ExecContext(t.Context(),
 					`UPDATE session_agent_finalizations SET phase=? WHERE session_id=?`, target, e.id.SessionID)
 				require.NoError(t, err)
 				return e, presented, complete()
 			},
-			reason: AgentFinalizationSealWrongPhase,
+			reason: session.AgentFinalizationSealWrongPhase,
 		})
 	}
 	cases = append(cases, refusalCase{
 		name: "cancel requested",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e, presented := env(t, 0, 1)
-			require.NoError(t, NewService(db.New(e.conn), e.conn).RequestCancel(t.Context(), e.id.SessionID))
+			require.NoError(t, session.NewService(db.New(e.conn), e.conn).RequestCancel(t.Context(), e.id.SessionID))
 			return e, presented, complete()
 		},
-		reason: AgentFinalizationSealCancelled,
+		reason: session.AgentFinalizationSealCancelled,
 	}, refusalCase{
 		name: "scope nil",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e, presented := env(t, 0, 1)
 			return e, presented, nil
 		},
-		reason: AgentFinalizationSealScopeIncomplete,
+		reason: session.AgentFinalizationSealScopeIncomplete,
 	}, refusalCase{
 		name: "scope incomplete",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e, presented := env(t, 0, 1)
 			return e, presented, &sealScopeReader{}
 		},
-		reason: AgentFinalizationSealScopeIncomplete,
+		reason: session.AgentFinalizationSealScopeIncomplete,
 	}, refusalCase{
 		name: "scope reader fails",
-		setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+		setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 			e, presented := env(t, 0, 1)
 			return e, presented, &sealScopeReader{err: sql.ErrConnDone}
 		},
 		wantErr: sql.ErrConnDone,
 	})
-	addBusy := func(name string, reason AgentFinalizationSealReason, facts AgentFinalizationScopeFacts) {
+	addBusy := func(name string, reason session.AgentFinalizationSealReason, facts session.AgentFinalizationScopeFacts) {
 		facts.Complete = true
 		cases = append(cases, refusalCase{
 			name: name,
-			setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+			setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 				e, presented := env(t, 0, 1)
 				return e, presented, &sealScopeReader{facts: facts}
 			},
 			reason: reason,
 		})
 	}
-	addBusy("descendants active", AgentFinalizationSealDescendantsActive, AgentFinalizationScopeFacts{ActiveDescendants: 1})
-	addBusy("reaction debt", AgentFinalizationSealReactionDebt, AgentFinalizationScopeFacts{ReactionDebt: 1})
-	addBusy("physical holds", AgentFinalizationSealPhysicalHolds, AgentFinalizationScopeFacts{PhysicalHolds: 1})
-	addBusy("queued calls", AgentFinalizationSealQueuedCalls, AgentFinalizationScopeFacts{QueuedCalls: 1})
+	addBusy("descendants active", session.AgentFinalizationSealDescendantsActive, session.AgentFinalizationScopeFacts{ActiveDescendants: 1})
+	addBusy("reaction debt", session.AgentFinalizationSealReactionDebt, session.AgentFinalizationScopeFacts{ReactionDebt: 1})
+	addBusy("physical holds", session.AgentFinalizationSealPhysicalHolds, session.AgentFinalizationScopeFacts{PhysicalHolds: 1})
+	addBusy("queued calls", session.AgentFinalizationSealQueuedCalls, session.AgentFinalizationScopeFacts{QueuedCalls: 1})
 	addDamaged := func(name string, damage func(t *testing.T, e candidateEnv, stored message.Message)) {
 		cases = append(cases, refusalCase{
 			name: name,
-			setup: func(t *testing.T) (candidateEnv, AgentFinalizationCandidate, AgentFinalizationScopeReader) {
+			setup: func(t *testing.T) (candidateEnv, session.AgentFinalizationCandidate, session.AgentFinalizationScopeReader) {
 				e := newCandidateEnv(t)
 				stored, presented := sealStoredCandidate(t, e, 0, 1)
 				damage(t, e, stored)
 				return e, presented, complete()
 			},
-			reason: AgentFinalizationSealCandidateDamaged,
+			reason: session.AgentFinalizationSealCandidateDamaged,
 		})
 	}
 	addDamaged("stored parts mutated", func(t *testing.T, e candidateEnv, stored message.Message) {
@@ -349,7 +351,7 @@ func TestTrySealRefusalsLeaveDatabaseByteIdentical(t *testing.T) {
 			if tc.wantErr != nil {
 				require.Error(t, err)
 				require.ErrorIs(t, err, tc.wantErr)
-				require.Equal(t, AgentFinalizationSealOutcome{}, outcome)
+				require.Equal(t, session.AgentFinalizationSealOutcome{}, outcome)
 			} else {
 				require.NoError(t, err)
 				require.False(t, outcome.Sealed)
@@ -371,11 +373,11 @@ func TestTrySealSealAndStoreRaceKeepsFencing(t *testing.T) {
 	require.NoError(t, err)
 	ctx := t.Context()
 	writer := e.sealWriter(t)
-	reader := &sealScopeReader{facts: AgentFinalizationScopeFacts{Complete: true}}
+	reader := &sealScopeReader{facts: session.AgentFinalizationScopeFacts{Complete: true}}
 	start := make(chan struct{})
 	var sealers sync.WaitGroup
 	sealers.Add(3)
-	outcomes := make(chan AgentFinalizationSealOutcome, 3)
+	outcomes := make(chan session.AgentFinalizationSealOutcome, 3)
 	failures := make(chan error, 3)
 	for i := 0; i < 3; i++ {
 		go func() {
@@ -404,16 +406,16 @@ func TestTrySealSealAndStoreRaceKeepsFencing(t *testing.T) {
 		late <- errors.New("admission after the seal never refused")
 	}()
 	close(start)
-	var collected []AgentFinalizationSealOutcome
+	var collected []session.AgentFinalizationSealOutcome
 	for i := 0; i < 3; i++ {
 		require.NoError(t, <-failures)
 		collected = append(collected, <-outcomes)
 	}
-	require.ErrorIs(t, <-late, ErrAgentFinalizationChanged)
+	require.ErrorIs(t, <-late, session.ErrAgentFinalizationChanged)
 	sealed := 0
 	for _, outcome := range collected {
 		if !outcome.Sealed && !outcome.Accepted {
-			require.NotEqual(t, AgentFinalizationSealNone, outcome.Reason, "a race loser cannot claim a bare success")
+			require.NotEqual(t, session.AgentFinalizationSealNone, outcome.Reason, "a race loser cannot claim a bare success")
 		}
 		switch {
 		case outcome.Sealed:
@@ -446,13 +448,13 @@ func TestTrySealSealAndStoreRaceKeepsFencing(t *testing.T) {
 // the transaction TrySeal is holding.
 type sealBatchRootReader struct{ owner string }
 
-func (r sealBatchRootReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (AgentFinalizationScopeFacts, error) {
+func (r sealBatchRootReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (session.AgentFinalizationScopeFacts, error) {
 	var live int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM batch_nodes
 		WHERE owner_session_id=? AND state IN ('pending','starting','running','cancelling')`, r.owner).Scan(&live); err != nil {
-		return AgentFinalizationScopeFacts{}, err
+		return session.AgentFinalizationScopeFacts{}, err
 	}
-	return AgentFinalizationScopeFacts{Complete: true, ActiveDescendants: live}, nil
+	return session.AgentFinalizationScopeFacts{Complete: true, ActiveDescendants: live}, nil
 }
 
 // newReservedScopeEnv binds the scope after one admitted live-root
@@ -462,8 +464,8 @@ func newReservedScopeEnv(t *testing.T) candidateEnv {
 	t.Helper()
 	_, conn, ctx := batchStoreTestDB(t)
 	messages := message.NewService(db.New(conn))
-	store := NewAgentFinalizationStore(conn)
-	id := AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
+	store := session.NewAgentFinalizationStore(conn)
+	id := session.AgentFinalizationIdentity{SessionID: "owner", LogicalCallID: "logical", Generation: 1}
 	batchStoreTestReserve(t, NewBatchStore(conn), ctx)
 	require.NoError(t, store.Bind(ctx, id))
 	writer, ok := messages.(message.FinalizationWriter)
@@ -490,7 +492,7 @@ func TestTrySealScopeReaderReadsInsideTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outcome.Sealed)
 	require.False(t, outcome.Accepted)
-	require.Equal(t, AgentFinalizationSealDescendantsActive, outcome.Reason)
+	require.Equal(t, session.AgentFinalizationSealDescendantsActive, outcome.Reason)
 	require.Equal(t, before, sealStateDump(t, busy.conn))
 }
 
@@ -501,9 +503,9 @@ func TestTrySealRequiresWriterCapability(t *testing.T) {
 	e := newCandidateEnv(t)
 	_, presented := sealStoredCandidate(t, e, 0, 1)
 	before := sealStateDump(t, e.conn)
-	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, nil, &sealScopeReader{facts: AgentFinalizationScopeFacts{Complete: true}})
-	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
-	require.Equal(t, AgentFinalizationSealOutcome{}, outcome)
+	outcome, err := e.store.TrySeal(t.Context(), e.id, presented, nil, &sealScopeReader{facts: session.AgentFinalizationScopeFacts{Complete: true}})
+	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
+	require.Equal(t, session.AgentFinalizationSealOutcome{}, outcome)
 	require.Equal(t, before, sealStateDump(t, e.conn))
 }
 

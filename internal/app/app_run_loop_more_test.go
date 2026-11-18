@@ -18,14 +18,16 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
 // cancelFlagSessions answers IsCancelRequested from a fixed value; every
-// other session.Service method is unset (nextStep reads only the flag).
+// other coresession.Service method is unset (nextStep reads only the flag).
 type cancelFlagSessions struct {
-	session.Service
+	coresession.Service
 	canceled bool
 }
 
@@ -142,7 +144,7 @@ func TestRunNonInteractive_BusyFirstTurnJSONEnvelopeAndHook(t *testing.T) {
 	h := newLoopHarness(t, func(_ *loopHarness, _ http.ResponseWriter, _ []byte, _ bool, _ int) {
 		t.Error("provider must never be called: the lock refusal is caught before any turn runs")
 	})
-	foreignLock, err := session.TryAcquireSessionLock(h.dataDir, h.sessionID)
+	foreignLock, err := sessionlock.TryAcquireSessionLock(h.dataDir, h.sessionID)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = foreignLock.Release() })
 	marker := filepath.Join(t.TempDir(), "hook.txt")
@@ -153,7 +155,7 @@ func TestRunNonInteractive_BusyFirstTurnJSONEnvelopeAndHook(t *testing.T) {
 
 	res, out, runErr := h.run(loopCtx(t), RunOverrides{OnFinishHook: hook})
 
-	var lockBusy *session.SessionLockBusyError
+	var lockBusy *sessionlock.SessionLockBusyError
 	require.ErrorAs(t, runErr, &lockBusy)
 	require.NotNil(t, res, "the busy refusal still yields an envelope")
 	require.Contains(t, out, `"session_id"`, "the JSON envelope is printed")

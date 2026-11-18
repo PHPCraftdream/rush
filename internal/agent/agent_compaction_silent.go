@@ -8,14 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -47,8 +49,8 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		}
 	}
 	// Heartbeat attribution: same summary purpose, silent path (design pt. 1).
-	role, source := hbInherited(ctx)
-	ctx = withHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
+	role, source := callbeat.HbInherited(ctx)
+	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
 	currentSession, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
@@ -382,11 +384,11 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 				return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, err)
 			}
 		}
-		addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), recoveryUsage, recoveryCostDelta)
+		callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), recoveryUsage, recoveryCostDelta)
 		a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, recoveryUsage, recoveryCostDelta, false)
 		recoveryAccounted = true
 	} else {
-		addHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
+		callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
 		if costDelta != 0 {
 			if _, err := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); err != nil {
 				return err

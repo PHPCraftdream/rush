@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"github.com/PHPCraftdream/rush/internal/session"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // finalizationLogicalIdentity reads an already trusted capability, never a

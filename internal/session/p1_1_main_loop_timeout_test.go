@@ -31,13 +31,14 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
-// blockingReadsService wraps a session.Service and can block on DB reads
+// blockingReadsService wraps a core.Service and can block on DB reads
 // to simulate a hung disk/filesystem scenario.
 type blockingReadsService struct {
-	session.Service
+	core.Service
 	mu       sync.Mutex
 	blockCh  chan struct{} // when non-nil, ListPendingRunQueueEntries blocks until closed
 	blockNow bool          // whether the next ListPendingRunQueueEntries call should block
@@ -52,7 +53,7 @@ type blockingReadsService struct {
 }
 
 // ListPendingRunQueueEntries blocks if blockNow is true, otherwise delegates.
-func (s *blockingReadsService) ListPendingRunQueueEntries(ctx context.Context) ([]session.RunQueueEntry, error) {
+func (s *blockingReadsService) ListPendingRunQueueEntries(ctx context.Context) ([]core.RunQueueEntry, error) {
 	s.mu.Lock()
 	shouldBlock := s.blockNow
 	ch := s.blockCh

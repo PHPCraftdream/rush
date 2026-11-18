@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	session "github.com/PHPCraftdream/rush/internal/session/service"
+
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -25,10 +27,10 @@ func TestPeekInterruptInjectDoesNotQueueBehindWriter(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, writer, reader := batchReaderTestDBs(t)
 			require.NotSame(t, writer, reader, "the regression fixture requires a separate WAL reader")
-			svc := NewServiceWithReader(db.New(writer), writer, db.New(reader), reader)
+			svc := session.NewServiceWithReader(db.New(writer), writer, db.New(reader), reader)
 			if withPending {
 				seedInterruptReaderMessage(t, ctx, writer, "message")
-				for _, row := range []PendingInject{
+				for _, row := range []session.PendingInject{
 					{ID: "old", SessionID: "owner", MessageID: "message", Interrupt: true, CreatedAt: 2},
 					{ID: "merge", SessionID: "owner", MessageID: "message", Interrupt: false, CreatedAt: 1},
 					{ID: "new", SessionID: "owner", MessageID: "message", Interrupt: true, CreatedAt: 3},
@@ -52,7 +54,7 @@ func TestPeekInterruptInjectDoesNotQueueBehindWriter(t *testing.T) {
 			require.Equal(t, 1, before.InUse, "writer must remain checked out throughout peek")
 			readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			var result *PendingInject
+			var result *session.PendingInject
 			var peekErr error
 			t.Cleanup(func() {
 				if t.Failed() {
@@ -86,11 +88,11 @@ func TestPeekInterruptInjectDoesNotQueueBehindWriter(t *testing.T) {
 func TestPeekInterruptInjectRetainsSinglePoolFallback(t *testing.T) {
 	ctx, writer, _ := batchReaderTestDBs(t)
 	seedInterruptReaderMessage(t, ctx, writer, "message")
-	for _, svc := range []Service{
-		NewService(db.New(writer), writer),
-		NewServiceWithReader(db.New(writer), writer, nil, nil),
+	for _, svc := range []session.Service{
+		session.NewService(db.New(writer), writer),
+		session.NewServiceWithReader(db.New(writer), writer, nil, nil),
 	} {
-		row := PendingInject{ID: "fallback", SessionID: "owner", MessageID: "message", Interrupt: true, CreatedAt: 1}
+		row := session.PendingInject{ID: "fallback", SessionID: "owner", MessageID: "message", Interrupt: true, CreatedAt: 1}
 		if exists, err := svc.PeekInterruptInject(ctx, "owner"); err != nil || exists == nil {
 			require.NoError(t, err)
 			require.NoError(t, svc.CreatePendingInject(ctx, row))
@@ -105,7 +107,7 @@ func TestPeekInterruptInjectRetainsSinglePoolFallback(t *testing.T) {
 func TestPeekInterruptInjectPropagatesReaderFailure(t *testing.T) {
 	ctx, writer, reader := batchReaderTestDBs(t)
 	require.NotSame(t, writer, reader)
-	svc := NewServiceWithReader(db.New(writer), writer, db.New(reader), reader)
+	svc := session.NewServiceWithReader(db.New(writer), writer, db.New(reader), reader)
 	require.NoError(t, reader.Close())
 	_, err := svc.PeekInterruptInject(ctx, "owner")
 	require.ErrorContains(t, err, "database is closed", "do not silently reroute failed reads back through the writer")

@@ -65,6 +65,12 @@ type Manifest struct {
 	Codex           []Entry             `json:"codex"`
 	AcceptedEfforts map[string][]string `json:"acceptedEfforts,omitempty"`
 }
+
+// CodexContextFloor is the measured context window of every Codex model
+// (operator measurement 2026-11-17: all gpt-6.x and gpt-5.6.x). Generated
+// specs are never lower, so a stale or missing cah window cannot shrink it.
+const CodexContextFloor int64 = 922000
+
 type Override struct {
 	Slug, Arg  string
 	Context    int64
@@ -218,6 +224,7 @@ func Transform(m Manifest, overrides map[string]Override) (Output, error) {
 		return out, err
 	}
 	models := map[string]Spec{}
+	rawCtx := map[string]int64{} // contextWindow as cah carries it, before the Codex floor
 	used := map[string]bool{}
 	slugs := map[string]string{}
 	for family, entries := range [][]Entry{m.Claude, m.Codex} {
@@ -261,6 +268,7 @@ func Transform(m Manifest, overrides map[string]Override) (Output, error) {
 			}
 			slugs[slug] = e.Model
 			ctx := e.ContextWindow
+			raisedFrom := ctx
 			var display string
 			if family == 0 {
 				match := displayRE.FindStringSubmatch(e.Display)
@@ -286,8 +294,11 @@ func Transform(m Manifest, overrides map[string]Override) (Output, error) {
 				if ctx == 0 {
 					ctx = o.Context
 				}
-				if ctx == 0 {
-					ctx = 272000
+				// A Codex model never gets less than the measured window: a spec
+				// that is missing or lower (cah lags the real limit) is raised.
+				raisedFrom = ctx
+				if o.Context == 0 && ctx < CodexContextFloor {
+					ctx = CodexContextFloor
 				}
 				// Codex display suffixes include "Extra High"; model identity is stable.
 				display = strings.Split(e.Display, " - ")[0]
@@ -295,11 +306,12 @@ func Transform(m Manifest, overrides map[string]Override) (Output, error) {
 			s, exists := models[e.Model]
 			if !exists {
 				s = Spec{Family: fam, Slug: slug, Model: e.Model, Arg: arg, Display: display, Context: ctx}
+				rawCtx[e.Model] = raisedFrom
+				if family == 1 && ctx != raisedFrom {
+					out.Info = append(out.Info, fmt.Sprintf("codex context raised to %d for %s (cah has %d)", ctx, e.Model, raisedFrom))
+				}
 				if !o.Measured {
 					out.Warnings = append(out.Warnings, "default spec (unmeasured): "+e.Model)
-				}
-				if family == 1 && e.ContextWindow == 0 && o.Context == 0 {
-					out.Info = append(out.Info, "codex context fallback 272000 (cah has no contextWindow)")
 				}
 				for i, l := range o.EffortCaps {
 					if rank(l) < 0 || i > 0 && rank(o.EffortCaps[i-1]) >= rank(l) {
@@ -310,7 +322,7 @@ func Transform(m Manifest, overrides map[string]Override) (Output, error) {
 				if efforts, ok := m.AcceptedEfforts[e.Model]; ok {
 					s.Efforts = append([]string(nil), efforts...)
 				}
-			} else if s.Context != ctx || s.Display != display {
+			} else if rawCtx[e.Model] != raisedFrom || s.Context != ctx || s.Display != display {
 				return out, fmt.Errorf("inconsistent model metadata %s", e.Model)
 			}
 			allowed := len(o.EffortCaps) == 0
