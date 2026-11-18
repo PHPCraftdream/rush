@@ -1,4 +1,4 @@
-package session
+package finterm
 
 import (
 	"context"
@@ -47,7 +47,7 @@ func fenceCandidate(r AgentFinalizationRecord, revision, serial int64) error {
 	if r.Cancelled {
 		return context.Canceled
 	}
-	if !r.active() {
+	if !r.Active() {
 		return ErrAgentFinalizationChanged
 	}
 	if r.Revision != revision || serial <= r.CandidateSerial {
@@ -69,7 +69,7 @@ func (s *AgentFinalizationStore) StoreCandidateTx(ctx context.Context, tx *sql.T
 	if !ok {
 		return message.Message{}, nil, ErrAgentFinalizationChanged
 	}
-	r, err := readAgentFinalization(ctx, tx, id)
+	r, err := ReadAgentFinalization(ctx, tx, id)
 	if err != nil {
 		return message.Message{}, nil, err
 	}
@@ -134,14 +134,14 @@ func (s *AgentFinalizationStore) RecoverCandidate(ctx context.Context, id AgentF
 		return AgentFinalizationNoCandidate, AgentFinalizationRecord{}, err
 	}
 	defer tx.Rollback()
-	r, err := readAgentFinalization(ctx, tx, id)
+	r, err := ReadAgentFinalization(ctx, tx, id)
 	if err != nil {
 		return AgentFinalizationNoCandidate, AgentFinalizationRecord{}, err
 	}
 	if r.Cancelled {
 		return AgentFinalizationNoCandidate, AgentFinalizationRecord{}, context.Canceled
 	}
-	if !r.active() {
+	if !r.Active() {
 		return AgentFinalizationNoCandidate, AgentFinalizationRecord{}, ErrAgentFinalizationChanged
 	}
 	if r.CandidateMessageID == "" && r.CandidateHash == "" {

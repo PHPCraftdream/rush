@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	sessionbatchread "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
 	"github.com/stretchr/testify/require"
@@ -279,8 +280,7 @@ func TestBatchTimeoutCheckinBudgetProgressesThroughBacklog(t *testing.T) {
 	batchTimeoutCheckinReservePayload(t, s, ctx, "call-bad", sql.NullString{String: `{"tool":"bash"`, Valid: true})
 
 	svc := NewBatchTimeoutCheckin(conn)
-	svc.pageSize = 2
-	svc.scanBudget = 2
+	sessionbatchread.SetBatchTimeoutCheckinBudgetForTest(t, svc, 2, 2)
 	svc.SetClock(func() time.Time { return time.Now().Add(time.Minute) })
 
 	// Scan 1: only 2 candidates are processed (the two due tasks the query
@@ -338,12 +338,13 @@ func TestBatchTimeoutCheckinStartStopLifecycle(t *testing.T) {
 func TestBatchTimeoutCheckinSelectUsesLiveTaskIndex(t *testing.T) {
 	_, conn, ctx := batchTimeoutCheckinStores(t)
 	var plan string
+	sel := sessionbatchread.BatchTimeoutCheckinSelectForTest(t)
 	t.Cleanup(func() {
 		if t.Failed() {
-			t.Logf("query:\n%s\nplan:\n%s", batchTimeoutCheckinSelect, plan)
+			t.Logf("query:\n%s\nplan:\n%s", sel, plan)
 		}
 	})
-	rows, err := conn.QueryContext(ctx, "EXPLAIN QUERY PLAN "+batchTimeoutCheckinSelect, time.Now().Unix(), int64(0), "", 200)
+	rows, err := conn.QueryContext(ctx, "EXPLAIN QUERY PLAN "+sel, time.Now().Unix(), int64(0), "", 200)
 	require.NoError(t, err)
 	defer rows.Close()
 	for rows.Next() {

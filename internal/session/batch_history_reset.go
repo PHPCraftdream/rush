@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	sessionbatchread "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -54,7 +55,7 @@ type BatchResetOutcome struct {
 // owner, "stopped but awaiting termination" included: a cancelling
 // projection stays nonterminal until the confirmed report (I8).
 func batchResetRefusalState(n db.BatchNode) (string, bool) {
-	if batchReadTerminal(n.State) {
+	if sessionbatchread.BatchReadTerminal(n.State) {
 		return "", false
 	}
 	return n.State, true

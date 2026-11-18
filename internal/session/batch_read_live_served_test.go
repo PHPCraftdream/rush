@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionbatchread "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
@@ -107,7 +108,7 @@ func TestBatchLiveNodesForOwnersServedMatchesJoin(t *testing.T) {
 	}
 
 	// Reversed input: the global sort must not depend on the owners' order.
-	served, err := batchLiveNodesForOwnersServed(ctx, db.New(conn), []string{"owner2", "owner"})
+	served, err := sessionbatchread.BatchLiveNodesForOwnersServedForTest(t, ctx, db.New(conn), []string{"owner2", "owner"})
 	require.NoError(t, err)
 	joinPairs := batchLivePairs(t, conn, batchLiveNodesForOwnersJoin, "owner2", "owner")
 	require.Equal(t, joinPairs, servedPairs(served))
@@ -135,8 +136,8 @@ func batchServedInterleave(t *testing.T, s *BatchStore, conn, raw *sql.DB, ctx c
 		batchReserveForOwner(t, rawStore, ctx, owner, call+"-late")
 		require.NoError(t, rawStore.DeleteRoot(ctx, owner, "host", root))
 	}
-	batchLiveServedSeam.Store(&hook)
-	t.Cleanup(func() { batchLiveServedSeam.Store(nil) })
+	restoreSeam := sessionbatchread.SetBatchLiveServedSeamForTest(hook)
+	t.Cleanup(restoreSeam)
 	live := drive(reader)
 	require.True(t, live[owner].Complete)
 	require.True(t, live[owner].HasLive(), "the snapshot still shows the live root")
@@ -376,7 +377,7 @@ func TestBatchLiveRootVanishNeverCompletesEmpty(t *testing.T) {
 	t.Cleanup(func() { log.Intercept = nil })
 	res := reader.BatchLiveForOwner(ctx, "owner")
 	require.NotNil(t, res.Err)
-	require.ErrorIs(t, res.Err, errBatchLiveRootVanished)
+	require.ErrorIs(t, res.Err, sessionbatchread.ErrBatchLiveRootVanishedForTest(t))
 	require.False(t, res.Complete, "a vanished root must never read as complete")
 	require.True(t, res.HasLive(), "incomplete stays conservatively live")
 	require.Equal(t, []string{"begin", "rollback", "begin", "rollback"}, log.txEventsSnapshot())

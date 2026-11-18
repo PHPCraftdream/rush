@@ -1,4 +1,4 @@
-package session
+package sessionbatchread
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func (v BatchLevelResult) HasLive() bool { return !v.Complete || v.Disappeared |
 func (r *BatchLiveReader) BatchLevel(ctx context.Context, ref BatchLiveRef, nodeID string) BatchLevelResult {
 	v := BatchLevelResult{Ref: ref}
 	if r == nil || r.Source == nil || ctx == nil || ref.OwnerSessionID == "" || ref.RootID == "" {
-		v.Err = errBatchReadUnavailable
+		v.Err = ErrBatchReadUnavailable
 		return v
 	}
 	if nodeID == "" {
@@ -37,10 +37,10 @@ func (r *BatchLiveReader) BatchLevel(ctx context.Context, ref BatchLiveRef, node
 		v.Err = err
 		return v
 	}
-	return r.batchLevelRows(ref, nodeID, rows)
+	return r.BatchLevelRows(ref, nodeID, rows)
 }
 
-func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows []db.BatchNode) BatchLevelResult {
+func (r *BatchLiveReader) BatchLevelRows(ref BatchLiveRef, nodeID string, rows []db.BatchNode) BatchLevelResult {
 	v := BatchLevelResult{Ref: ref}
 	if nodeID == "" {
 		nodeID = ref.RootID
@@ -85,16 +85,16 @@ func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows [
 		visited[id] = true
 		st, ok := hosts[n.HostID]
 		if !ok {
-			st = r.hostStatus(n.HostID)
+			st = r.HostStatus(n.HostID)
 			hosts[n.HostID] = st
 		}
 		if st == sessionhosts.HostStatusUnknown {
 			v.Complete = false
 		}
-		fact := batchLiveFact(n, root.ToolCallID.String, depth, st)
+		fact := BatchLiveFact(n, root.ToolCallID.String, depth, st)
 		pos := len(v.Subtree)
 		v.Subtree = append(v.Subtree, fact)
-		counts.add(n)
+		counts.Add(n)
 		for _, child := range children[id] {
 			c := walk(child, depth+1)
 			counts.Pending += c.Pending
@@ -125,7 +125,7 @@ func (r *BatchLiveReader) batchLevelRows(ref BatchLiveRef, nodeID string, rows [
 	if nodeID == ref.RootID && len(visited) != len(byID) {
 		v.Complete = false
 	}
-	v.Finished = v.Complete && batchReadTerminal(node.State)
+	v.Finished = v.Complete && BatchReadTerminal(node.State)
 	return v
 }
 
@@ -168,7 +168,7 @@ func (r *BatchLiveReader) BatchCaptured(ctx context.Context, sessions []string) 
 	for _, session := range sessions {
 		if session == "" {
 			v.complete = false
-			v.err = errBatchReadUnavailable
+			v.err = ErrBatchReadUnavailable
 			continue
 		}
 		read, ok := reads[session]
@@ -194,7 +194,7 @@ func (r *BatchLiveReader) BatchCapturedLevel(ctx context.Context, captured Batch
 	v := BatchCapturedLevels{Complete: captured.complete, Err: captured.err}
 	if ctx == nil || r == nil || r.Source == nil {
 		v.Complete = false
-		v.Err = errBatchReadUnavailable
+		v.Err = ErrBatchReadUnavailable
 	} else if err := ctx.Err(); err != nil {
 		v.Complete = false
 		v.Err = err

@@ -114,7 +114,7 @@ func TestBatchReadLevelCountsEveryTaskState(t *testing.T) {
 	snap, err := s.Reserve(ctx, p)
 	require.NoError(t, err)
 	r := batchReadTestReader(t, conn)
-	level := r.BatchLevel(ctx, BatchLiveRef{"owner", snap.Snapshot.Root.RootID}, "")
+	level := r.BatchLevel(ctx, BatchLiveRef{OwnerSessionID: "owner", RootID: snap.Snapshot.Root.RootID}, "")
 	require.True(t, level.Complete)
 	require.Equal(t, BatchLiveCounts{Pending: 1, Starting: 1, Running: 1, Cancelling: 1, Active: 3, Completed: 1, Failed: 1, Cancelled: 1, TimedOut: 1, Interrupted: 1, Skipped: 1}, level.Counts)
 	require.Equal(t, level.Counts, level.Node.Counts)

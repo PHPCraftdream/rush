@@ -1,12 +1,19 @@
-package session
+package finholds
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 	"github.com/stretchr/testify/require"
 )
+
+// errFinalizationSeamStub marks the member failure the reader tests inject.
+// Copied from the root package's finalization_testkit_test.go: these tests
+// moved into package finholds and root test vars are not visible here.
+var errFinalizationSeamStub = errors.New("finalization seam stub failure")
 
 // holdsSumMemberStub is a fixed-count physical-holds facts member with a
 // call counter, for the Sum combinator tests.
@@ -21,7 +28,7 @@ func (s *holdsSumMemberStub) FinalizationPhysicalHoldsTx(_ context.Context, _ *s
 	return s.count, s.err
 }
 
-var _ FinalizationPhysicalHoldsFacts = (*holdsSumMemberStub)(nil)
+var _ finfacts.FinalizationPhysicalHoldsFacts = (*holdsSumMemberStub)(nil)
 
 // TestFinalizationHoldsFactsSumAddsMembers: the sum is exact, both members
 // are invoked exactly once per read.
@@ -47,7 +54,7 @@ func TestFinalizationHoldsFactsSumAddsMembers(t *testing.T) {
 // Revert-check: a Sum that treats a nil member as a zero-count source
 // claims hold coverage it cannot observe and seals with holds open.
 func TestFinalizationHoldsFactsSumNilMemberFailsClosed(t *testing.T) {
-	var nilMember FinalizationPhysicalHoldsFacts
+	var nilMember finfacts.FinalizationPhysicalHoldsFacts
 	good := &holdsSumMemberStub{count: 1}
 
 	n, err := NewFinalizationPhysicalHoldsFactsSum(nilMember, good).

@@ -1,4 +1,4 @@
-package session
+package sessionbatchread
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	batchReadChunk = 500
+	BatchReadChunk = 500
 	batchReadDepth = 16
 )
 
@@ -93,7 +93,7 @@ func batchLiveResultsUnavailable(sessions []string, errs ...error) map[string]Ba
 		err = errors.Join(err, e)
 	}
 	if err == nil {
-		err = errBatchReadUnavailable
+		err = ErrBatchReadUnavailable
 	}
 	for _, owner := range sessions {
 		if owner == "" {
@@ -125,7 +125,7 @@ func (r *BatchLiveReader) batchLiveForSessions(ctx context.Context, sessions []s
 		if st, ok := hosts[host]; ok {
 			return st
 		}
-		st := r.hostStatus(host)
+		st := r.HostStatus(host)
 		hosts[host] = st
 		return st
 	}
@@ -137,8 +137,8 @@ func (r *BatchLiveReader) batchLiveForSessions(ctx context.Context, sessions []s
 				todo = append(todo, owner)
 			}
 		}
-		for start := 0; start < len(todo); start += batchReadChunk {
-			chunk := todo[start:min(start+batchReadChunk, len(todo))]
+		for start := 0; start < len(todo); start += BatchReadChunk {
+			chunk := todo[start:min(start+BatchReadChunk, len(todo))]
 			err := ctx.Err()
 			var rows []db.BatchNode
 			if err == nil {
@@ -175,7 +175,7 @@ func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[
 		for _, session := range frontier {
 			err := failures[session]
 			if !fetched[session] && err == nil {
-				err = errBatchReadUnavailable
+				err = ErrBatchReadUnavailable
 			}
 			if err != nil {
 				v.Complete = false
@@ -190,7 +190,7 @@ func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[
 			counts := make(map[string]BatchLiveCounts)
 			for _, n := range nodes {
 				c := counts[n.RootID]
-				c.add(n)
+				c.Add(n)
 				counts[n.RootID] = c
 				if n.NodeID == n.RootID {
 					roots[n.RootID] = n
@@ -212,7 +212,7 @@ func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[
 						v.OwnComplete = false
 					}
 				}
-				fact := batchLiveFact(n, root.ToolCallID.String, depth, st)
+				fact := BatchLiveFact(n, root.ToolCallID.String, depth, st)
 				if n.NodeID == n.RootID {
 					fact.Counts = counts[n.RootID]
 					v.Tree = append(v.Tree, fact)
@@ -220,7 +220,7 @@ func batchLiveReplay(owner string, rows map[string][]db.BatchNode, failures map[
 						v.Own = append(v.Own, fact)
 					}
 				}
-				v.Counts.add(n)
+				v.Counts.Add(n)
 				child := n.ChildSessionID.String
 				if n.ChildSessionID.Valid && child != "" && !visited[child] {
 					visited[child] = true

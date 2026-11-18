@@ -1,4 +1,4 @@
-package session
+package sessionbatchread
 
 /*
 R10a additive readers are inert: the OLD async system remains the only production

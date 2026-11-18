@@ -1,4 +1,4 @@
-package session
+package finholds
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
 
@@ -25,11 +26,11 @@ type finalizationHostDriverHoldsFacts struct {
 	dataDir string
 }
 
-var _ FinalizationPhysicalHoldsFacts = finalizationHostDriverHoldsFacts{}
+var _ finfacts.FinalizationPhysicalHoldsFacts = finalizationHostDriverHoldsFacts{}
 
 // NewFinalizationHostDriverHoldsFacts builds the host-driver holds facts
 // reader for one data dir (the host lock files live under it).
-func NewFinalizationHostDriverHoldsFacts(dataDir string) FinalizationPhysicalHoldsFacts {
+func NewFinalizationHostDriverHoldsFacts(dataDir string) finfacts.FinalizationPhysicalHoldsFacts {
 	return finalizationHostDriverHoldsFacts{dataDir: dataDir}
 }
 

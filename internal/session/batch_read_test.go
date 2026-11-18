@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	sessionbatchread "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -61,7 +62,7 @@ func TestBatchReadStatesAndHostFacts(t *testing.T) {
 	s, conn, ctx := batchStoreTestDB(t)
 	r := batchReadTestReader(t, conn)
 	snap := batchReadTestReserve(t, s, ctx, "owner", "call", "")
-	ref := BatchLiveRef{"owner", snap.Root.RootID}
+	ref := BatchLiveRef{OwnerSessionID: "owner", RootID: snap.Root.RootID}
 	states := []string{"pending", "starting", "running", "cancelling", "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped"}
 	for i, state := range states {
 		p := BatchRootProjection{Owner: "owner", Root: ref.RootID, Updates: []db.ProjectBatchNodeParams{batchStoreTestUpdate(ref.RootID, state)}}
@@ -186,7 +187,7 @@ func TestBatchReadCaptureAddDisappearAndIdentity(t *testing.T) {
 	nestedLevel := r.BatchLevel(ctx, ref, ref.RootID+".10")
 	require.Len(t, nestedLevel.Children, 2)
 	require.Equal(t, 2, nestedLevel.Counts.Pending)
-	wrong := r.BatchLevel(ctx, BatchLiveRef{"other", ref.RootID}, "")
+	wrong := r.BatchLevel(ctx, BatchLiveRef{OwnerSessionID: "other", RootID: ref.RootID}, "")
 	require.True(t, wrong.Disappeared)
 	require.False(t, wrong.Finished)
 	require.True(t, wrong.HasLive())
@@ -208,7 +209,7 @@ func TestBatchReadConservativeFailuresAndZeroValues(t *testing.T) {
 	require.True(t, (BatchCapturedLevels{}).HasLive())
 	var nilReader *BatchLiveReader
 	require.True(t, nilReader.BatchLiveForOwner(context.Background(), "owner").HasLive())
-	require.True(t, nilReader.BatchLevel(context.Background(), BatchLiveRef{"owner", "root"}, "").HasLive())
+	require.True(t, nilReader.BatchLevel(context.Background(), BatchLiveRef{OwnerSessionID: "owner", RootID: "root"}, "").HasLive())
 	s, conn, ctx := batchStoreTestDB(t)
 	snap := batchReadTestReserve(t, s, ctx, "owner", "a", "")
 	r := batchReadTestReader(t, conn)
@@ -219,7 +220,7 @@ func TestBatchReadConservativeFailuresAndZeroValues(t *testing.T) {
 	require.True(t, r.BatchCapturedLevel(ctx, captured).HasLive())
 	source.failOwner = ""
 	source.failLevel = true
-	require.False(t, r.BatchLevel(ctx, BatchLiveRef{"owner", snap.Root.RootID}, "").Complete)
+	require.False(t, r.BatchLevel(ctx, BatchLiveRef{OwnerSessionID: "owner", RootID: snap.Root.RootID}, "").Complete)
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	require.False(t, r.BatchLiveForOwner(canceled, "owner").Complete)
@@ -233,7 +234,7 @@ func TestBatchReadConservativeFailuresAndZeroValues(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, other.Close()) })
 	r.Source = db.New(other)
 	require.False(t, r.BatchLiveForOwner(ctx, "owner").Complete)
-	require.False(t, r.BatchLevel(ctx, BatchLiveRef{"owner", snap.Root.RootID}, "").Complete)
+	require.False(t, r.BatchLevel(ctx, BatchLiveRef{OwnerSessionID: "owner", RootID: snap.Root.RootID}, "").Complete)
 }
 
 func TestBatchReadChunkBoundariesAndSelectiveFailure(t *testing.T) {
@@ -295,7 +296,7 @@ func TestBatchReadChunkBoundariesAndSelectiveFailure(t *testing.T) {
 func TestBatchReadDepthTruncation(t *testing.T) {
 	t.Parallel()
 	s, conn, ctx := batchStoreTestDB(t)
-	for i := 0; i < batchReadDepth+2; i++ {
+	for i := 0; i < sessionbatchread.BatchReadDepthForTest(t)+2; i++ {
 		owner := fmt.Sprintf("s%d", i)
 		require.NoError(t, seedSession(ctx, db.New(conn), owner))
 		child := fmt.Sprintf("s%d", i+1)
@@ -306,5 +307,5 @@ func TestBatchReadDepthTruncation(t *testing.T) {
 	require.True(t, live.OwnComplete)
 	require.False(t, live.Complete)
 	require.True(t, live.HasLive())
-	require.Len(t, live.Tree, batchReadDepth+1)
+	require.Len(t, live.Tree, sessionbatchread.BatchReadDepthForTest(t)+1)
 }

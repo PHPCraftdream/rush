@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 
+	sessionbatchread "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
@@ -58,7 +59,7 @@ func (s *BatchStore) BatchHistorySnapshot(ctx context.Context, reader *BatchLive
 	if err != nil {
 		return BatchHistorySnapshot{}, fmt.Errorf("batch snapshot: level nodes: %w", err)
 	}
-	level := reader.batchLevelRows(BatchLiveRef{OwnerSessionID: owner, RootID: root}, "", rows)
+	level := reader.BatchLevelRows(BatchLiveRef{OwnerSessionID: owner, RootID: root}, "", rows)
 	out := BatchHistorySnapshot{Owner: owner, RootID: root, Disappeared: level.Disappeared, Complete: level.Complete}
 	byID := make(map[string]db.BatchNode, len(rows))
 	for _, n := range rows {
@@ -76,7 +77,7 @@ func (s *BatchStore) BatchHistorySnapshot(ctx context.Context, reader *BatchLive
 		}
 		view := batchHistoryNodeView(fact, n)
 		out.Nodes = append(out.Nodes, view)
-		out.Counts.add(n)
+		out.Counts.Add(n)
 		if batchHistoryDebtRow(n) {
 			out.Debt++
 		}
@@ -106,7 +107,7 @@ func (s *BatchStore) BatchHistoryRootViews(ctx context.Context, reader *BatchLiv
 	out := make([]BatchHistoryNodeView, 0, len(roots))
 	for _, r := range roots {
 		out = append(out, BatchHistoryNodeView{
-			Fact:     batchLiveFact(r, r.ToolCallID.String, 0, reader.hostStatus(r.HostID)),
+			Fact:     sessionbatchread.BatchLiveFact(r, r.ToolCallID.String, 0, reader.HostStatus(r.HostID)),
 			Delivery: r.Delivery, Wake: r.Wake != 0, Reacted: r.Reacted != 0,
 			MessageID: r.NoticeMessageID.String,
 		})

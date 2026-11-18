@@ -1,4 +1,4 @@
-package session
+package finfacts
 
 import (
 	"context"

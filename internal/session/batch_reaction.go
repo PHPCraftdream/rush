@@ -10,6 +10,7 @@ import (
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
+	sessionbatchread "github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -129,14 +130,14 @@ func batchOwnerRootIDs(ctx context.Context, dbtx db.DBTX, owner string) ([]strin
 // hits exactly the same rows. Each match is served from
 // idx_batch_nodes_parent's root_id prefix instead of a scan, and the root
 // list itself is per-owner bounded by idx_batch_nodes_owner_roots. Chunks of
-// batchReadChunk roots keep the statement inside SQLite's variable limit.
+// sessionbatchread.BatchReadChunk roots keep the statement inside SQLite's variable limit.
 func batchOutboxClearFailureServed(ctx context.Context, dbtx db.DBTX, owner string, now int64) error {
 	rootIDs, err := batchOwnerRootIDs(ctx, dbtx, owner)
 	if err != nil {
 		return err
 	}
-	for start := 0; start < len(rootIDs); start += batchReadChunk {
-		chunk := rootIDs[start:min(start+batchReadChunk, len(rootIDs))]
+	for start := 0; start < len(rootIDs); start += sessionbatchread.BatchReadChunk {
+		chunk := rootIDs[start:min(start+sessionbatchread.BatchReadChunk, len(rootIDs))]
 		stmt := `UPDATE batch_nodes SET reacted_failed = 0, updated_at = ?1 WHERE owner_session_id = ?2 AND reacted_failed = 1 AND root_id IN (` +
 			strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",") + `)`
 		args := make([]any, 0, len(chunk)+2)
@@ -490,8 +491,8 @@ func batchOutboxFailedNodesServed(ctx context.Context, dbtx db.DBTX, owner strin
 		return nil, err
 	}
 	var rows []batchFailedNodeRow
-	for start := 0; start < len(rootIDs); start += batchReadChunk {
-		chunk := rootIDs[start:min(start+batchReadChunk, len(rootIDs))]
+	for start := 0; start < len(rootIDs); start += sessionbatchread.BatchReadChunk {
+		chunk := rootIDs[start:min(start+sessionbatchread.BatchReadChunk, len(rootIDs))]
 		stmt := `SELECT root_id, node_id, notice_sequence, notice_ordinal, outcome_summary FROM batch_nodes WHERE owner_session_id = ?1 AND notice_selected = 1 AND reacted_failed = 1 AND root_id IN (` +
 			strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",") + `)`
 		args := make([]any, 0, len(chunk)+1)

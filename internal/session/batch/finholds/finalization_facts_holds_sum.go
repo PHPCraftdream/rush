@@ -1,9 +1,11 @@
-package session
+package finholds
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 )
 
 // sumFinalizationPhysicalHoldsFacts folds exactly two physical-holds facts
@@ -11,15 +13,15 @@ import (
 // the host-driver marker reader. The sum is the seam's production holds
 // reader.
 type sumFinalizationPhysicalHoldsFacts struct {
-	a, b FinalizationPhysicalHoldsFacts
+	a, b finfacts.FinalizationPhysicalHoldsFacts
 }
 
-var _ FinalizationPhysicalHoldsFacts = sumFinalizationPhysicalHoldsFacts{}
+var _ finfacts.FinalizationPhysicalHoldsFacts = sumFinalizationPhysicalHoldsFacts{}
 
 // NewFinalizationPhysicalHoldsFactsSum builds the two-member composite. It
 // performs no nil check at construction: a nil member fails at read time,
 // wrapping ErrFinalizationPhysicalHoldsUnreadable, never as a silent 0.
-func NewFinalizationPhysicalHoldsFactsSum(a, b FinalizationPhysicalHoldsFacts) FinalizationPhysicalHoldsFacts {
+func NewFinalizationPhysicalHoldsFactsSum(a, b finfacts.FinalizationPhysicalHoldsFacts) finfacts.FinalizationPhysicalHoldsFacts {
 	return sumFinalizationPhysicalHoldsFacts{a: a, b: b}
 }
 

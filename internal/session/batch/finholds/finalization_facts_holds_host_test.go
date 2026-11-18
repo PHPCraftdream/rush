@@ -1,10 +1,11 @@
-package session
+package finholds
 
 import (
 	"context"
 	"os"
 	"testing"
 
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,7 @@ func registerForeignLiveHostHandle(t *testing.T, ctx context.Context, q *db.Quer
 // single-connection pool and reads the facts through it, rolling back so
 // the pooled connection is always freed. Transactions on one store are
 // never held concurrently.
-func readHostHoldsInTx(t *testing.T, st *sessionhosts.HostStore, facts FinalizationPhysicalHoldsFacts, owner string) (int, error) {
+func readHostHoldsInTx(t *testing.T, st *sessionhosts.HostStore, facts finfacts.FinalizationPhysicalHoldsFacts, owner string) (int, error) {
 	t.Helper()
 	tx, err := st.SQLDBForTest().BeginTx(t.Context(), nil)
 	require.NoError(t, err)

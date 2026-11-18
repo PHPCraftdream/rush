@@ -1,4 +1,4 @@
-package session
+package sessionbatchread
 
 import (
 	"context"
@@ -46,7 +46,8 @@ type BatchLiveCounts struct {
 	Completed, Failed, Cancelled, TimedOut, Interrupted, Skipped int
 }
 
-func (c *BatchLiveCounts) add(n db.BatchNode) {
+// Add folds one node row into the counts: structural batches never double count.
+func (c *BatchLiveCounts) Add(n db.BatchNode) {
 	if n.Kind != "task" {
 		return
 	}
@@ -93,11 +94,11 @@ type BatchLiveNode struct {
 	Counts                                                                  BatchLiveCounts
 }
 
-func batchLiveFact(n db.BatchNode, call string, depth int, status sessionhosts.HostLockStatus) BatchLiveNode {
+func BatchLiveFact(n db.BatchNode, call string, depth int, status sessionhosts.HostLockStatus) BatchLiveNode {
 	return BatchLiveNode{Ref: BatchLiveRef{n.OwnerSessionID, n.RootID}, NodeID: n.NodeID, ParentID: n.ParentID.String, SessionID: n.OwnerSessionID, ToolCallID: call, Kind: n.Kind, TaskKind: n.TaskKind.String, ChildSessionID: n.ChildSessionID.String, Depth: depth, Ordinal: n.Ordinal, State: n.State, Cause: n.Cause, Notify: n.Notify, HostID: n.HostID, HostStatus: status, StartedAt: time.Unix(n.CreatedAt, 0)}
 }
 
-func batchReadTerminal(state string) bool {
+func BatchReadTerminal(state string) bool {
 	switch state {
 	case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
 		return true
@@ -105,7 +106,7 @@ func batchReadTerminal(state string) bool {
 	return false
 }
 
-func (r *BatchLiveReader) hostStatus(host string) sessionhosts.HostLockStatus {
+func (r *BatchLiveReader) HostStatus(host string) sessionhosts.HostLockStatus {
 	if host == "" || r == nil {
 		return sessionhosts.HostStatusUnknown
 	}
@@ -125,7 +126,7 @@ func (r *BatchLiveReader) hostStatus(host string) sessionhosts.HostLockStatus {
 	return st
 }
 
-var errBatchReadUnavailable = errors.New("batch reader unavailable or invalid identity")
+var ErrBatchReadUnavailable = errors.New("batch reader unavailable or invalid identity")
 
 // BatchLiveResult keeps own roots, delegation-node evidence, and the complete
 // session tree distinct. A zero value cannot prove absence of live work.

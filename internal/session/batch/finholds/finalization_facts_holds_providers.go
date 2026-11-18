@@ -1,9 +1,11 @@
-package session
+package finholds
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 )
 
 // FinalizationHoldsProvider is one in-process physical-hold source: it counts
@@ -21,7 +23,7 @@ type providerFinalizationPhysicalHoldsFacts struct {
 	providers []FinalizationHoldsProvider
 }
 
-var _ FinalizationPhysicalHoldsFacts = providerFinalizationPhysicalHoldsFacts{}
+var _ finfacts.FinalizationPhysicalHoldsFacts = providerFinalizationPhysicalHoldsFacts{}
 
 // NewFinalizationPhysicalHoldsFactsFromProviders builds a composite
 // physical-holds facts reader that sums the in-process providers per owner.
@@ -36,7 +38,7 @@ var _ FinalizationPhysicalHoldsFacts = providerFinalizationPhysicalHoldsFacts{}
 // ErrFinalizationPhysicalHoldsUnreadable, never a silent 0. Cross-process
 // holds are not observable in-process and stay covered by the durable
 // descendants facts reader.
-func NewFinalizationPhysicalHoldsFactsFromProviders(providers ...FinalizationHoldsProvider) FinalizationPhysicalHoldsFacts {
+func NewFinalizationPhysicalHoldsFactsFromProviders(providers ...FinalizationHoldsProvider) finfacts.FinalizationPhysicalHoldsFacts {
 	return providerFinalizationPhysicalHoldsFacts{providers: providers}
 }
 

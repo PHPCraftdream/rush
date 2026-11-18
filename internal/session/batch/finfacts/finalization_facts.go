@@ -1,11 +1,11 @@
-package session
+package finfacts
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 
-	session "github.com/PHPCraftdream/rush/internal/session/service"
+	finterm "github.com/PHPCraftdream/rush/internal/session/batch/finterm"
 )
 
 // FinalizationDescendantsFacts counts the owner's live descendant work inside
@@ -42,7 +42,7 @@ type compositeFinalizationScopeReader struct {
 	debt           FinalizationReactionDebtFacts
 }
 
-var _ session.AgentFinalizationScopeReader = compositeFinalizationScopeReader{}
+var _ finterm.AgentFinalizationScopeReader = compositeFinalizationScopeReader{}
 
 // NewAgentFinalizationScopeReader builds the single production reader
 // . The reader is built per owner: the sources
@@ -58,7 +58,7 @@ func NewAgentFinalizationScopeReader(
 	queued FinalizationQueuedCallsFacts,
 	holds FinalizationPhysicalHoldsFacts,
 	debt FinalizationReactionDebtFacts,
-) session.AgentFinalizationScopeReader {
+) finterm.AgentFinalizationScopeReader {
 	return compositeFinalizationScopeReader{
 		ownerSessionID: ownerSessionID,
 		descendants:    descendants,
@@ -70,27 +70,27 @@ func NewAgentFinalizationScopeReader(
 
 // FinalizationSealScopeFacts reads every source inside the passed transaction,
 // in declaration order: descendants, queued calls, physical holds, debt.
-func (r compositeFinalizationScopeReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (session.AgentFinalizationScopeFacts, error) {
+func (r compositeFinalizationScopeReader) FinalizationSealScopeFacts(ctx context.Context, tx *sql.Tx) (finterm.AgentFinalizationScopeFacts, error) {
 	if tx == nil || r.ownerSessionID == "" || r.descendants == nil || r.queued == nil || r.holds == nil || r.debt == nil {
-		return session.AgentFinalizationScopeFacts{}, nil
+		return finterm.AgentFinalizationScopeFacts{}, nil
 	}
 	activeDescendants, err := r.descendants.FinalizationActiveDescendantsTx(ctx, tx, r.ownerSessionID)
 	if err != nil {
-		return session.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization descendants facts: %w", err)
+		return finterm.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization descendants facts: %w", err)
 	}
 	queuedCalls, err := r.queued.FinalizationQueuedCallsTx(ctx, tx, r.ownerSessionID)
 	if err != nil {
-		return session.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization queued calls facts: %w", err)
+		return finterm.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization queued calls facts: %w", err)
 	}
 	physicalHolds, err := r.holds.FinalizationPhysicalHoldsTx(ctx, tx, r.ownerSessionID)
 	if err != nil {
-		return session.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization physical holds facts: %w", err)
+		return finterm.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization physical holds facts: %w", err)
 	}
 	reactionDebt, err := r.debt.FinalizationReactionDebtTx(ctx, tx, r.ownerSessionID)
 	if err != nil {
-		return session.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization reaction debt facts: %w", err)
+		return finterm.AgentFinalizationScopeFacts{}, fmt.Errorf("read finalization reaction debt facts: %w", err)
 	}
-	return session.AgentFinalizationScopeFacts{
+	return finterm.AgentFinalizationScopeFacts{
 		Complete:          true,
 		ActiveDescendants: activeDescendants,
 		QueuedCalls:       queuedCalls,

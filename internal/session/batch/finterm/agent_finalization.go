@@ -1,9 +1,10 @@
-package session
+package finterm
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -19,7 +20,7 @@ type AgentFinalizationIdentity struct {
 	NodeToken                int64
 }
 
-func (id AgentFinalizationIdentity) valid() bool {
+func (id AgentFinalizationIdentity) Valid() bool {
 	return id.SessionID != "" && id.LogicalCallID != "" && id.Generation > 0 && id.NodeToken >= 0 && ((id.NodeID == "") == (id.NodeToken == 0))
 }
 
@@ -35,7 +36,7 @@ type AgentFinalizationRecord struct {
 	Cancelled       bool
 }
 
-func (r AgentFinalizationRecord) active() bool {
+func (r AgentFinalizationRecord) Active() bool {
 	return r.Phase == "executing" || r.Phase == "waiting_work" || r.Phase == "composing"
 }
 
@@ -47,8 +48,31 @@ func NewAgentFinalizationStore(conn *sql.DB) *AgentFinalizationStore {
 	return &AgentFinalizationStore{conn: conn}
 }
 
+// HasActiveFinalization reads whether the owner holds an active-phase record
+// with one query and never holds a transaction across polls. A nil store, a
+// canceled context, or a read error is an error, not "no record"; an empty
+// owner provably has no record because Bind refuses empty session ids.
+func (s *AgentFinalizationStore) HasActiveFinalization(ctx context.Context, ownerSessionID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if s == nil || s.conn == nil {
+		return false, errors.New("finalization terminal gate store is unavailable")
+	}
+	if ownerSessionID == "" {
+		return false, nil
+	}
+	var active int
+	err := s.conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_agent_finalizations
+		WHERE session_id=? AND phase IN ('executing', 'waiting_work', 'composing'))`, ownerSessionID).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("read active finalization record: %w", err)
+	}
+	return active != 0, nil
+}
+
 func (s *AgentFinalizationStore) Bind(ctx context.Context, id AgentFinalizationIdentity) error {
-	if !id.valid() {
+	if !id.Valid() {
 		return ErrAgentFinalizationChanged
 	}
 	_, err := s.conn.ExecContext(ctx, `INSERT INTO session_agent_finalizations
@@ -66,8 +90,8 @@ type finalizationQueryRow interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func readAgentFinalization(ctx context.Context, query finalizationQueryRow, id AgentFinalizationIdentity) (AgentFinalizationRecord, error) {
-	if !id.valid() {
+func ReadAgentFinalization(ctx context.Context, query finalizationQueryRow, id AgentFinalizationIdentity) (AgentFinalizationRecord, error) {
+	if !id.Valid() {
 		return AgentFinalizationRecord{}, ErrAgentFinalizationChanged
 	}
 	var r AgentFinalizationRecord
@@ -93,7 +117,7 @@ func readAgentFinalization(ctx context.Context, query finalizationQueryRow, id A
 }
 
 func (s *AgentFinalizationStore) Snapshot(ctx context.Context, id AgentFinalizationIdentity) (AgentFinalizationRecord, error) {
-	return readAgentFinalization(ctx, s.conn, id)
+	return ReadAgentFinalization(ctx, s.conn, id)
 }
 
 // Admit persists a hold and revision before the producer may perform any work.
@@ -107,14 +131,14 @@ func (s *AgentFinalizationStore) Admit(ctx context.Context, id AgentFinalization
 		return AgentFinalizationRecord{}, err
 	}
 	defer tx.Rollback()
-	r, err := readAgentFinalization(ctx, tx, id)
+	r, err := ReadAgentFinalization(ctx, tx, id)
 	if err != nil {
 		return AgentFinalizationRecord{}, err
 	}
 	if r.Cancelled {
 		return AgentFinalizationRecord{}, context.Canceled
 	}
-	if !r.active() {
+	if !r.Active() {
 		return AgentFinalizationRecord{}, ErrAgentFinalizationChanged
 	}
 	var released int
@@ -168,7 +192,7 @@ func (s *AgentFinalizationStore) Release(ctx context.Context, id AgentFinalizati
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := readAgentFinalization(ctx, tx, id); err != nil {
+	if _, err := ReadAgentFinalization(ctx, tx, id); err != nil {
 		return err
 	}
 	var released int
@@ -200,7 +224,7 @@ func (s *AgentFinalizationStore) SealTx(ctx context.Context, tx *sql.Tx, id Agen
 	if !c.valid() {
 		return ErrAgentFinalizationChanged
 	}
-	r, err := readAgentFinalization(ctx, tx, id)
+	r, err := ReadAgentFinalization(ctx, tx, id)
 	if err != nil {
 		return err
 	}
@@ -211,7 +235,7 @@ func (s *AgentFinalizationStore) SealTx(ctx context.Context, tx *sql.Tx, id Agen
 	if r.Phase == "accepted" && r.Revision == c.Revision && matches {
 		return ErrAgentFinalizationAccepted
 	}
-	if !r.active() || r.Revision != c.Revision || r.OpenTickets != 0 || !matches {
+	if !r.Active() || r.Revision != c.Revision || r.OpenTickets != 0 || !matches {
 		return ErrAgentFinalizationChanged
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE session_agent_finalizations

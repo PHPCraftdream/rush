@@ -1,10 +1,12 @@
-package session
+package findebt
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 )
 
 // FinalizationDebtStore reads and settles the owner's reaction debts across
@@ -17,8 +19,8 @@ type FinalizationDebtStore struct {
 }
 
 var (
-	_ FinalizationReactionDebtFacts = (*FinalizationDebtStore)(nil)
-	_ AgentFinalizationDebtSettler  = (*FinalizationDebtStore)(nil)
+	_ finfacts.FinalizationReactionDebtFacts = (*FinalizationDebtStore)(nil)
+	_ AgentFinalizationDebtSettler           = (*FinalizationDebtStore)(nil)
 )
 
 // NewFinalizationDebtStore builds the debt store over sqlDB.

@@ -19,7 +19,7 @@ func TestBatchAwaitFactsCapturedAndLevel(t *testing.T) {
 	root := snap.Root.RootID
 	captured := r.BatchCaptured(ctx, []string{"owner"})
 	require.True(t, captured.Complete())
-	require.Equal(t, []BatchLiveRef{{"owner", root}}, captured.Refs())
+	require.Equal(t, []BatchLiveRef{{OwnerSessionID: "owner", RootID: root}}, captured.Refs())
 	levels := r.BatchCapturedLevel(ctx, captured)
 	require.True(t, levels.Complete)
 	require.Len(t, levels.Roots, 1)

@@ -1,4 +1,4 @@
-package session
+package finterm
 
 import (
 	"context"
@@ -127,7 +127,7 @@ func (s *AgentFinalizationStore) TrySeal(ctx context.Context, id AgentFinalizati
 	if ctx.Err() != nil {
 		return AgentFinalizationSealOutcome{}, ctx.Err()
 	}
-	if !id.valid() || !c.valid() || messages == nil {
+	if !id.Valid() || !c.valid() || messages == nil {
 		return AgentFinalizationSealOutcome{}, ErrAgentFinalizationChanged
 	}
 	tx, err := s.conn.BeginTx(ctx, nil)
@@ -135,7 +135,7 @@ func (s *AgentFinalizationStore) TrySeal(ctx context.Context, id AgentFinalizati
 		return AgentFinalizationSealOutcome{}, err
 	}
 	defer tx.Rollback()
-	r, err := readAgentFinalization(ctx, tx, id)
+	r, err := ReadAgentFinalization(ctx, tx, id)
 	if err != nil {
 		return AgentFinalizationSealOutcome{}, err
 	}
@@ -163,7 +163,7 @@ func (s *AgentFinalizationStore) TrySeal(ctx context.Context, id AgentFinalizati
 		}
 		return AgentFinalizationSealOutcome{Accepted: true, Record: r, Message: stored}, nil
 	}
-	if !r.active() {
+	if !r.Active() {
 		return AgentFinalizationSealOutcome{Reason: AgentFinalizationSealWrongPhase, Record: r}, nil
 	}
 	if r.CandidateMessageID == "" && r.CandidateHash == "" {

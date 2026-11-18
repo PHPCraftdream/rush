@@ -1,9 +1,11 @@
-package session
+package finholds
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
 )
 
 // ErrFinalizationPhysicalHoldsUnreadable is the fail-closed verdict of
@@ -21,7 +23,7 @@ var ErrFinalizationPhysicalHoldsUnreadable = errors.New(
 // closed and NEVER returns a silent (0, nil) that would claim coverage.
 type finalizationPhysicalHoldsFacts struct{}
 
-var _ FinalizationPhysicalHoldsFacts = finalizationPhysicalHoldsFacts{}
+var _ finfacts.FinalizationPhysicalHoldsFacts = finalizationPhysicalHoldsFacts{}
 
 // NewFinalizationPhysicalHoldsFacts builds the physical-holds facts reader.
 //
@@ -52,7 +54,7 @@ var _ FinalizationPhysicalHoldsFacts = finalizationPhysicalHoldsFacts{}
 // caller — the owner waits instead of sealing on unobserved facts. Widening
 // coverage to a DB-visible hold registry is an operator decision, never a
 // silent zero.
-func NewFinalizationPhysicalHoldsFacts() FinalizationPhysicalHoldsFacts {
+func NewFinalizationPhysicalHoldsFacts() finfacts.FinalizationPhysicalHoldsFacts {
 	return finalizationPhysicalHoldsFacts{}
 }
 

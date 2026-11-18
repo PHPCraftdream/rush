@@ -1,5 +1,5 @@
 // W3: the ONE App-owned wake_only check-in timer for the batch runtime.
-package session
+package sessionbatchread
 
 import (
 	"context"
