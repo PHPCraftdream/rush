@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -52,7 +52,7 @@ func TestDrainSessionNow_ColdCall_OrphanedLeasedRow_IsVisible(t *testing.T) {
 	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-cold-orphaned-lease")
 	coord := &countingCoordinatorForDrain{}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p624-cold-orphaned-lease",
@@ -78,8 +78,8 @@ func TestDrainSessionNow_ColdCall_OrphanedLeasedRow_IsVisible(t *testing.T) {
 	defer cancel()
 	result, drainErr := pump.DrainSessionNow(drainCtx, sess.ID)
 
-	require.Equal(t, session.DrainFailed, result, "a cold call that finds this session's queue still holding an unresolved leased row must not report 'nothing for this call to do' over it")
-	require.ErrorIs(t, drainErr, session.ErrOutstandingRunQueueEntry)
+	require.Equal(t, runq.DrainFailed, result, "a cold call that finds this session's queue still holding an unresolved leased row must not report 'nothing for this call to do' over it")
+	require.ErrorIs(t, drainErr, runq.ErrOutstandingRunQueueEntry)
 	require.Zero(t, coord.calls.Load(), "the orphaned row was never this call's lease to execute")
 
 	// The row is untouched -- still leased by its (gone) foreign owner.
@@ -124,7 +124,7 @@ func TestDrainSessionNow_ColdCall_ForeignLiveOwner_ReportsOutstanding(t *testing
 	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-cold-foreign-live-owner")
 	coord := &countingCoordinatorForDrain{}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p624-foreign-live-owner",
@@ -147,8 +147,8 @@ func TestDrainSessionNow_ColdCall_ForeignLiveOwner_ReportsOutstanding(t *testing
 	defer cancel()
 	result, drainErr := pump.DrainSessionNow(drainCtx, sess.ID)
 
-	require.Equal(t, session.DrainFailed, result, "a live cross-process owner's outstanding row is undrained durable work whose outcome is unknown to this call -- reporting it is the honest answer, mirroring #610's accepted reporting for the anyExecuted arm")
-	require.ErrorIs(t, drainErr, session.ErrOutstandingRunQueueEntry)
+	require.Equal(t, runq.DrainFailed, result, "a live cross-process owner's outstanding row is undrained durable work whose outcome is unknown to this call -- reporting it is the honest answer, mirroring #610's accepted reporting for the anyExecuted arm")
+	require.ErrorIs(t, drainErr, runq.ErrOutstandingRunQueueEntry)
 	require.Zero(t, coord.calls.Load(), "the foreign-owned row was never this call's lease to execute")
 
 	current, err := svc.GetRunQueueEntry(ctx, "p624-foreign-live-row")
@@ -165,7 +165,7 @@ func TestDrainSessionNow_ColdCall_EmptyQueue_StillNoWork(t *testing.T) {
 	t.Parallel()
 	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p624-cold-empty-queue")
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    &countingCoordinatorForDrain{},
 		PumpInstanceID: "test-pump-p624-cold-empty",
@@ -175,7 +175,7 @@ func TestDrainSessionNow_ColdCall_EmptyQueue_StillNoWork(t *testing.T) {
 	defer cancel()
 	result, drainErr := pump.DrainSessionNow(drainCtx, sess.ID)
 
-	require.Equal(t, session.DrainNoWork, result)
+	require.Equal(t, runq.DrainNoWork, result)
 	require.NoError(t, drainErr)
 
 	has, err := svc.HasOutstandingRunQueueEntriesForSession(context.Background(), sess.ID)
@@ -235,7 +235,7 @@ func TestDrainSessionNow_CtxDeathAfterRowFailure_ReportsRowFailureNotCtxErr(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	coord := &cancellingTerminalCoordinator{cancel: cancel, err: termErr}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p624-priority-rule",
@@ -248,7 +248,7 @@ func TestDrainSessionNow_CtxDeathAfterRowFailure_ReportsRowFailureNotCtxErr(t *t
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, int64(1), coord.calls.Load(), "row A must have been attempted exactly once")
-	require.Equal(t, session.DrainFailed, result, "both a row failure and a ctx-death are on record -- DrainFailed either way; this assertion only rules out a false complete/partial")
+	require.Equal(t, runq.DrainFailed, result, "both a row failure and a ctx-death are on record -- DrainFailed either way; this assertion only rules out a false complete/partial")
 	require.ErrorIs(t, drainErr, termErr, "the row-attributed terminal cause must WIN over the fresher, general ctx.Err() entry -- the whole point of the #624/F-7 priority rule")
 	require.NotErrorIs(t, drainErr, context.Canceled, "a generic context error must not mask the specific durable-row cause a caller needs to act on")
 
@@ -278,7 +278,7 @@ func TestDrainSessionNow_OnlyUnattributed_StillReportsIt(t *testing.T) {
 	// top-of-loop check hits verdictOnCtxDone with a ledger holding one
 	// clean success and no failures -- the exact #607 shape.
 	coord := &cancellingTerminalCoordinator{cancel: cancel, err: nil}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p624-only-unattributed",
@@ -290,6 +290,6 @@ func TestDrainSessionNow_OnlyUnattributed_StillReportsIt(t *testing.T) {
 
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
-	require.Equal(t, session.DrainFailed, result, "a ctx death after a clean commit is not a completed drain (task #607)")
+	require.Equal(t, runq.DrainFailed, result, "a ctx death after a clean commit is not a completed drain (task #607)")
 	require.ErrorIs(t, drainErr, context.Canceled, "with no row-attributed failure on record, the unattributed ctx error must still be the representative -- the priority rule only re-ranks, it must not drop the tier-2 entry")
 }

@@ -35,7 +35,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -92,7 +92,7 @@ func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t
 	sessiontest.LimitParallel(t)
 	sess, svc := setupTestSession(t, "p588-success-then-busy")
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, nil }}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p588-success-busy",
@@ -104,9 +104,9 @@ func TestDrainSessionNow_PartialDrain_SuccessThenBusy_NeverReportsCleanSuccess(t
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "both row A and row B's Coordinator.Run must have been attempted")
-	require.Equal(t, session.DrainPartial, result, "row A genuinely executed and committed, but row B was left undrained (busy)")
+	require.Equal(t, runq.DrainPartial, result, "row A genuinely executed and committed, but row B was left undrained (busy)")
 	require.Error(t, drainErr, "row B was left undrained (busy) after row A succeeded -- this must NOT be reported as a clean success")
-	require.ErrorIs(t, drainErr, session.ErrDrainIncomplete, "the specific signal must be ErrDrainIncomplete: a row genuinely ran, but the queue was only partially drained")
+	require.ErrorIs(t, drainErr, runq.ErrDrainIncomplete, "the specific signal must be ErrDrainIncomplete: a row genuinely ran, but the queue was only partially drained")
 
 	// Row B must remain durably pending, untouched, for the next owner
 	// (this process's next call, another process, or the background tick)
@@ -137,7 +137,7 @@ func TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError(t *t
 	sess, svc := setupTestSession(t, "p588-retryable-then-busy")
 	retryErr := errors.New("p588: simulated transient retryable failure for row A")
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, retryErr }}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p588-retryable-busy",
@@ -157,7 +157,7 @@ func TestDrainSessionNow_PartialDrain_RetryableErrorThenBusy_PreservesError(t *t
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A must have been attempted once (retryable failure), then re-leased and found busy on retry")
-	require.Equal(t, session.DrainFailed, result, "row A's first attempt genuinely executed and reached a resolution (the retryable failure), never superseded by a later resolution of the SAME row")
+	require.Equal(t, runq.DrainFailed, result, "row A's first attempt genuinely executed and reached a resolution (the retryable failure), never superseded by a later resolution of the SAME row")
 	require.Error(t, drainErr, "a retryable failure was accumulated for row A; it must reach the caller, not be silently discarded for a bare nil")
 	require.ErrorIs(t, drainErr, retryErr, "the SPECIFIC retryable error must be preserved, not replaced by a generic sentinel")
 
@@ -183,7 +183,7 @@ func TestDrainSessionNow_PartialDrain_TerminalErrorThenBusy_PreservesError(t *te
 	sess, svc := setupTestSession(t, "p588-terminal-then-busy")
 	termErr := &agent.ErrCallAlreadyAttempted{Err: errors.New("p588: row A already attempted")}
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, termErr }}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p588-terminal-busy",
@@ -195,7 +195,7 @@ func TestDrainSessionNow_PartialDrain_TerminalErrorThenBusy_PreservesError(t *te
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A (terminal failure) and row B (busy) must both have been attempted")
-	require.Equal(t, session.DrainFailed, result, "row A genuinely executed and reached a resolution (a terminal one)")
+	require.Equal(t, runq.DrainFailed, result, "row A genuinely executed and reached a resolution (a terminal one)")
 	require.Error(t, drainErr, "row A terminal-failed; that permanent loss must reach the caller, not be replaced by a bare nil")
 	require.ErrorIs(t, drainErr, termErr, "the SPECIFIC terminal error must be preserved")
 
@@ -243,7 +243,7 @@ func TestDrainSessionNow_PartialDrain_AckErrorThenBusy_PreservesError(t *testing
 	sess, svc := setupTestSession(t, "p588-ack-then-busy")
 	failing := &ackFailingServiceP588{Service: svc, ackErr: errors.New("p588: disk on fire during row A's ack")}
 	coord := &twoRowCoordinator{firstFn: func() (*any, error) { return nil, nil }}
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       failing,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-p588-ack-busy",
@@ -255,9 +255,9 @@ func TestDrainSessionNow_PartialDrain_AckErrorThenBusy_PreservesError(t *testing
 	result, drainErr := pump.DrainSessionNow(ctx, sess.ID)
 
 	require.Equal(t, 2, coord.calls, "row A's turn (Ack fails after) and row B (busy) must both have been attempted")
-	require.Equal(t, session.DrainFailed, result, "row A's turn genuinely ran, even though its Ack write failed")
+	require.Equal(t, runq.DrainFailed, result, "row A's turn genuinely ran, even though its Ack write failed")
 	require.Error(t, drainErr, "row A's Ack failed -- the row was never actually committed; that must reach the caller, not be replaced by a bare nil")
-	require.ErrorIs(t, drainErr, session.ErrTurnCommitFailed, "the SPECIFIC Ack-failure sentinel must be preserved")
+	require.ErrorIs(t, drainErr, runq.ErrTurnCommitFailed, "the SPECIFIC Ack-failure sentinel must be preserved")
 }
 
 // VERBATIM revert-check output, captured by temporarily reverting the

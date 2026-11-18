@@ -19,7 +19,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -102,7 +102,7 @@ func TestResolveSession_ForeignSessionIsRefusedBeforeAnyWrite(t *testing.T) {
 
 	_, err = application.resolveSession(ctx, foreign.ID, false)
 	require.Error(t, err)
-	require.ErrorIs(t, err, session.ErrForeignWorkspace,
+	require.ErrorIs(t, err, runq.ErrForeignWorkspace,
 		"the refusal must stay typed: the run-queue pump nacks a foreign row without penalty on it")
 	require.Contains(t, err.Error(), foreign.WorkspaceRoot, "the message names the owning workspace")
 	require.Contains(t, err.Error(), foreign.GitBranch, "the message names that checkout's branch")
@@ -134,7 +134,7 @@ func TestResolveSession_ForeignWorkspaceGoneIsReportedAsSuch(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = application.resolveSession(ctx, foreign.ID, false)
-	require.ErrorIs(t, err, session.ErrForeignWorkspace)
+	require.ErrorIs(t, err, runq.ErrForeignWorkspace)
 	require.Contains(t, err.Error(), "(workspace no longer exists)")
 	require.Contains(t, err.Error(), "rush sessions fork")
 }
@@ -184,7 +184,7 @@ func TestResolveSession_LegacyRowIsRefusedFromLinkedAndDrivenFromHome(t *testing
 		application.home = false
 		t.Cleanup(func() { application.workspaceRoot = ""; application.home = true })
 		_, err := application.resolveSession(ctx, legacy.ID, false)
-		require.ErrorIs(t, err, session.ErrForeignWorkspace)
+		require.ErrorIs(t, err, runq.ErrForeignWorkspace)
 	})
 }
 
@@ -327,7 +327,7 @@ func TestRunNonInteractive_ForeignSessionIsRefusedEndToEnd(t *testing.T) {
 	_, err = application.RunNonInteractiveWithResult(ctx, io.Discard, "hello",
 		RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sessionID, false)
 	require.Error(t, err)
-	require.ErrorIs(t, err, session.ErrForeignWorkspace)
+	require.ErrorIs(t, err, runq.ErrForeignWorkspace)
 	require.Contains(t, err.Error(), foreignRoot)
 	require.Contains(t, err.Error(), "rush sessions fork")
 

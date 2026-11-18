@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -27,7 +27,7 @@ func TestBatchCLISessionValidatesExistingIDs(t *testing.T) {
 	foreign, err := foreignSvc.Create(ctx, "foreign")
 	require.NoError(t, err)
 	_, err = a.BatchCLISession(ctx, foreign.ID)
-	require.ErrorIs(t, err, session.ErrForeignWorkspace)
+	require.ErrorIs(t, err, runq.ErrForeignWorkspace)
 
 	parent, err := a.Sessions.Create(ctx, "parent")
 	require.NoError(t, err)

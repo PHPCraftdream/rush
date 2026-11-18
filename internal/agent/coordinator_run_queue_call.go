@@ -13,7 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/google/uuid"
 )
@@ -446,14 +446,14 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		record := recorder.Capture()
 		call.OnAssistantMessageCreated = func(id string) {
 			record(id)
-			session.RecordExecutionAssistantIdentity(ctx, id)
+			runq.RecordExecutionAssistantIdentity(ctx, id)
 			if originalOnAssistantMessageCreated != nil {
 				originalOnAssistantMessageCreated(id)
 			}
 		}
 	} else {
 		call.OnAssistantMessageCreated = func(id string) {
-			session.RecordExecutionAssistantIdentity(ctx, id)
+			runq.RecordExecutionAssistantIdentity(ctx, id)
 			if originalOnAssistantMessageCreated != nil {
 				originalOnAssistantMessageCreated(id)
 			}

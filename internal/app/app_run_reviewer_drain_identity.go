@@ -8,11 +8,11 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 )
 
 type drainCompletion struct {
-	result              session.DrainResult
+	result              runq.DrainResult
 	err                 error
 	recorder            *agent.CallResultRecorder
 	originalOwner       *agent.CallResultRecorder
@@ -68,7 +68,7 @@ func recordDrainAssistantIDs(
 }
 
 func (s *executeRunLoop) adoptDrainIdentity(completion drainCompletion) bool {
-	if completion.result != session.DrainComplete || completion.recorder == nil {
+	if completion.result != runq.DrainComplete || completion.recorder == nil {
 		s.eventOwner = completion.originalOwner
 		return false
 	}

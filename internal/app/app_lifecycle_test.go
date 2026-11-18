@@ -8,7 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -70,7 +70,7 @@ func TestAppShutdown_PumpStopPrecedesBrokerEOF(t *testing.T) {
 			if !test.forced {
 				close(release)
 			}
-			pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+			pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 				Sessions:    application.Sessions,
 				Coordinator: coordinator,
 				TestTick:    func() time.Duration { return time.Millisecond },

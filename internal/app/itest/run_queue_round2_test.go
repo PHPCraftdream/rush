@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -234,7 +234,7 @@ func TestRunQueue_TerminalFailureVsRetry(t *testing.T) {
 
 	// Test marker interface detection
 	alreadyAttemptedErr := &agent.ErrCallAlreadyAttempted{Err: errors.New("call was already executed")}
-	var alreadyAttempted session.AlreadyAttempted
+	var alreadyAttempted runq.AlreadyAttempted
 	require.True(t, errors.As(alreadyAttemptedErr, &alreadyAttempted), "marker interface should match error type")
 	require.True(t, alreadyAttempted.AlreadyAttempted(), "AlreadyAttempted() should return true")
 }
@@ -249,7 +249,7 @@ func TestRunQueue_PumpLifecycle_GracefulShutdown(t *testing.T) {
 	mockCoord := &mockCoordinator{}
 
 	// Create pump with fast tick for testing
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    mockCoord,
 		PumpInstanceID: "test-pump",
@@ -265,7 +265,7 @@ func TestRunQueue_PumpLifecycle_GracefulShutdown(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // Give it time to shut down cleanly
 
 	// Verify it stopped cleanly by trying to start again
-	pump2 := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump2 := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    mockCoord,
 		PumpInstanceID: "test-pump-2",
@@ -319,7 +319,7 @@ func (m *mockCoordinator) Run(ctx context.Context, callData coresession.SessionA
 // return value observable, so repeated runs can show whether "forced" is
 // ever actually reached under load before deciding whether the test harness
 // needs the same skip-close policy production has.
-func stopPumpLoggingForcedShutdown(t *testing.T, pump *session.RunQueuePump) {
+func stopPumpLoggingForcedShutdown(t *testing.T, pump *runq.RunQueuePump) {
 	t.Helper()
 	t.Cleanup(func() {
 		start := time.Now()
