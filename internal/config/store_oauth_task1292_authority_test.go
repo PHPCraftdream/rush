@@ -51,7 +51,7 @@ func TestTask1292Engine_SameRefreshExpiryAuthority(t *testing.T) {
 					candidate := f.store.loadSnapshot().clone()
 					candidate.config = &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{f.used.ID: f.used})}
 					f.store.overlayPendingOAuthLocked(candidate)
-					_, pending := f.store.pendingOAuth[f.used.ID]
+					_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 					f.store.publishMu.Unlock()
 					pc, _ := candidate.config.Providers.Get(f.used.ID)
 					require.Equal(t, want, pc.OAuthToken)
@@ -101,7 +101,7 @@ func TestTask1292Engine_LogoutClearsOwnership(t *testing.T) {
 	require.Nil(t, pc.OAuthToken)
 	require.Empty(t, pc.APIKey)
 	f.store.publishMu.Lock()
-	_, pending := f.store.pendingOAuth[f.used.ID]
+	_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
 	require.False(t, pending)
 	require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
@@ -129,16 +129,16 @@ func TestTask1292Engine_OptionalDigestValidationAndHistoryBuilders(t *testing.T)
 	next := b
 	next.AccessToken = "fixture-B2-access"
 	next.ExpiresAt += 60
-	require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, &b, &next, true))
+	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &b, &next, &b, true))
 	f.store.publishMu.Lock()
-	pending := f.store.pendingOAuth[f.used.ID]
+	pending, _ := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
-	require.Empty(t, pending.record.PredecessorRefreshTokenSHA256)
-	require.ElementsMatch(t, []string{oauthRefreshTokenSHA256(&a), oauthRefreshTokenSHA256(&c)}, pending.record.BurnedRefreshTokenSHA256)
-	require.NotContains(t, pending.record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&b))
+	require.Empty(t, pending.Record.PredecessorRefreshTokenSHA256)
+	require.ElementsMatch(t, []string{oauthRefreshTokenSHA256(&a), oauthRefreshTokenSHA256(&c)}, pending.Record.BurnedRefreshTokenSHA256)
+	require.NotContains(t, pending.Record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&b))
 	owned := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, &oauthJournalRecord{Token: &next, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&b)})
 	require.Empty(t, owned.Record.PredecessorRefreshTokenSHA256)
-	require.ElementsMatch(t, pending.record.BurnedRefreshTokenSHA256, owned.Record.BurnedRefreshTokenSHA256)
+	require.ElementsMatch(t, pending.Record.BurnedRefreshTokenSHA256, owned.Record.BurnedRefreshTokenSHA256)
 }
 
 func TestTask1292Engine_JournalFailureRetainsPendingOutbox(t *testing.T) {
@@ -169,9 +169,9 @@ func TestTask1292Engine_JournalFailureRetainsPendingOutbox(t *testing.T) {
 	pc, _ := f.store.Config().Providers.Get(f.used.ID)
 	require.Equal(t, &b, pc.OAuthToken)
 	f.store.publishMu.Lock()
-	pending := f.store.pendingOAuth[f.used.ID]
+	pending, _ := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
-	require.Equal(t, &b, pending.record.Token)
+	require.Equal(t, &b, pending.Record.Token)
 	// Repair and hand off to a fresh store without invoking external discovery.
 	oauthjournal.OAuthJournalAtomicWrite = oldWrite
 	lockPath := oauthRefreshLockPath(f.path, f.used.ID)

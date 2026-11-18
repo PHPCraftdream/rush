@@ -16,6 +16,7 @@ import (
 var (
 	oauthDiskSyncInterval = 5 * time.Second
 	oauthDiskSyncStat     = os.Stat
+	oauthDiskSyncWait     func(context.Context, time.Duration) error
 )
 
 type DiskSyncState struct {
@@ -50,7 +51,11 @@ func oauthDiskSyncDelay() time.Duration {
 func (s *Store) runOAuthDiskSync(ctx context.Context) {
 	var st DiskSyncState
 	delay := time.Duration(rand.Int64N(int64(oauthDiskSyncInterval)))
-	for s.port.WaitCodexRefresh(ctx, delay) == nil {
+	wait := oauthDiskSyncWait
+	if wait == nil {
+		wait = s.port.WaitCodexRefresh
+	}
+	for wait(ctx, delay) == nil {
 		if ctx.Err() != nil {
 			return
 		}

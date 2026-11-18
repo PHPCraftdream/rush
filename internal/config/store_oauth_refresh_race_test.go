@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/codex"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
@@ -128,14 +129,13 @@ func runOAuthRefreshSingleUseRace(t *testing.T, callers int, separateStores bool
 	codexRefreshTokenFn = codex.Refresh
 	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
 	serialized := make(chan struct{}, callers)
-	oldWaiterHook := codexRefreshWaiterHook
-	codexRefreshWaiterHook = func() {
+	restoreWaiter := oauthcred.SetCodexRefreshWaiterHookForTest(func() {
 		select {
 		case serialized <- struct{}{}:
 		default:
 		}
-	}
-	t.Cleanup(func() { codexRefreshWaiterHook = oldWaiterHook })
+	})
+	t.Cleanup(restoreWaiter)
 	var lockAttempts atomic.Int32
 	hookCodexRefreshLock(t, func(ctx context.Context, path string) (*filelock.FileLock, error) {
 		if strings.Contains(path, ".oauth-refresh-") && lockAttempts.Add(1) > 1 {
@@ -217,7 +217,7 @@ func runOAuthRefreshSingleUseRace(t *testing.T, callers int, separateStores bool
 		require.False(t, current.OAuthToken.IsExpired())
 		require.Empty(t, current.APIKey)
 	}
-	diskToken, err := stores[0].loadTokenFromDisk(ScopeGlobal, "openai-codex")
+	diskToken, err := stores[0].oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "openai-codex")
 	require.NoError(t, err)
 	require.NotNil(t, diskToken)
 	require.Equal(t, "single-use-new-access", diskToken.AccessToken)

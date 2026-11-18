@@ -16,6 +16,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/assert"
@@ -96,7 +97,7 @@ func TestOAuthRefresh_ReloadAfterMemoryPublishRetainsPendingToken(t *testing.T) 
 	pc, ok := f.store.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
 	assert.Equal(t, f.next, pc.OAuthToken, "reload from predecessor A must retain pending rotation B")
-	disk, err := f.store.loadTokenFromDisk(ScopeGlobal, f.used.ID)
+	disk, err := f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 	require.NoError(t, err)
 	require.Equal(t, f.used.OAuthToken, disk)
 
@@ -104,7 +105,7 @@ func TestOAuthRefresh_ReloadAfterMemoryPublishRetainsPendingToken(t *testing.T) 
 	require.NoError(t, awaitCodexResult(t, result))
 	waitOAuthJournalIdle(t, idle)
 	assertCodexPending(t, f, false)
-	disk, err = f.store.loadTokenFromDisk(ScopeGlobal, f.used.ID)
+	disk, err = f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 	require.NoError(t, err)
 	assert.Equal(t, f.next, disk, "pending rotation must reach disk after persistence resumes")
 	require.NoError(t, f.store.ReloadFromDisk(ctx))
@@ -129,8 +130,8 @@ func assertCodexPending(t *testing.T, f codexRefreshFixture, exists bool) {
 	f.store.publishMu.Unlock()
 	require.Equal(t, exists, ok)
 	if exists {
-		require.Equal(t, *f.used.OAuthToken, entry.predecessor)
-		require.Equal(t, *f.next, entry.token)
+		require.Equal(t, *f.used.OAuthToken, entry.Predecessor)
+		require.Equal(t, *f.next, entry.Token)
 	}
 }
 
@@ -311,9 +312,8 @@ func TestOAuthRefresh_RealPollingBudgetPreservesRejection(t *testing.T) {
 	f := newCodexRefreshReloadFixture(t)
 	rejected := &oauth.TokenExchangeError{StatusCode: 400, Body: "invalid_grant"}
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, rejected })
-	budget, interval := codexRefreshPollBudget, codexRefreshPollInterval
-	codexRefreshPollBudget, codexRefreshPollInterval = 80*time.Millisecond, 10*time.Millisecond
-	t.Cleanup(func() { codexRefreshPollBudget, codexRefreshPollInterval = budget, interval })
+	restorePollTiming := oauthcred.SetCodexRefreshPollTimingForTest(80*time.Millisecond, 10*time.Millisecond)
+	t.Cleanup(restorePollTiming)
 	start := time.Now()
 	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil)
 	elapsed := time.Since(start)

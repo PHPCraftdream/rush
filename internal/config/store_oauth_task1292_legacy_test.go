@@ -43,9 +43,7 @@ func task1292LegacySeam(t *testing.T, id string, fn func(context.Context, *http.
 
 func task1292LegacyReleased(t *testing.T, f codexRefreshFixture) {
 	t.Helper()
-	codexRefreshActive.Lock()
-	_, busy := codexRefreshActive.calls[codexRefreshKey{f.store, f.used.ID}]
-	codexRefreshActive.Unlock()
+	busy := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
 	require.False(t, busy, "legacy slot must be released")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

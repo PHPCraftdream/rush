@@ -72,7 +72,7 @@ func TestSetProviderAPIKeySerializesDiskWriteAndPublication(t *testing.T) {
 	require.Equal(t, "second", pc.APIKey)
 	require.Equal(t, "second", pc.OAuthToken.AccessToken)
 	require.Equal(t, "second-refresh", pc.OAuthToken.RefreshToken)
-	disk, err := store.loadTokenFromDisk(ScopeGlobal, "p")
+	disk, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "p")
 	require.NoError(t, err)
 	require.Equal(t, "second", disk.AccessToken)
 	require.Equal(t, "second-refresh", disk.RefreshToken)

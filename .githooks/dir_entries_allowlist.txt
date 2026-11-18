@@ -38,7 +38,7 @@ internal/serve/cmd 121
 # D2-4: 5 non-test Go files leave the root (apitoken 2, apiremote 1, listeners 1, copilot 1),
 # reducing its dir-entry count by 5. Root Go total falls 244 -> 233 (-11): 12 files moved/deleted,
 # offset by the new root api_remotes_integration_test.go (+1).
-internal/config 47
+internal/config 43
 # 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
 internal/config/discover 13
 internal/session/heartbeat 10

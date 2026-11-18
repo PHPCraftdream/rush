@@ -66,19 +66,19 @@ func TestTask1300AdoptionLineage(t *testing.T) {
 				require.NoError(t, err)
 				require.Nil(t, f.store.oauthOutboxCurrent(f.path, pc.ID))
 			} else {
-				require.ErrorIs(t, err, errOAuthCredentialCAS)
+				require.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
 				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, pc.ID))
 				require.False(t, entry.Obsolete)
 			}
 			pc, _ = f.store.Config().Providers.Get(pc.ID)
 			f.store.publishMu.Lock()
-			rotation, pending := f.store.pendingOAuth[pc.ID]
+			rotation, pending := f.store.oauthCredStore().PendingRotationForTest(t, pc.ID)
 			f.store.publishMu.Unlock()
 			require.Equal(t, adopt, pending)
 			if adopt {
 				require.Equal(t, &x, pc.OAuthToken)
-				require.Equal(t, &x, &rotation.token)
-				require.Equal(t, &live, &rotation.predecessor)
+				require.Equal(t, &x, &rotation.Token)
+				require.Equal(t, &live, &rotation.Predecessor)
 			} else {
 				require.Equal(t, &live, pc.OAuthToken)
 			}
@@ -164,7 +164,7 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			require.False(t, entry.Obsolete)
 			require.Equal(t, predecessor, oauthJournalLivePredecessor(&entry.Record, &live))
 			f.store.publishMu.Lock()
-			_, pending := f.store.pendingOAuth[f.used.ID]
+			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 			f.store.publishMu.Unlock()
 			require.False(t, pending, "failed publication CAS must not install pending B")
 			pc, _ := f.store.Config().Providers.Get(f.used.ID)
@@ -191,7 +191,7 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			done, attemptErr := f.store.oauthJournalWorkerAttempt(ctx, ScopeGlobal, f.used.ID, 0)
 			require.False(t, done)
 			if !predecessor {
-				require.ErrorIs(t, attemptErr, errOAuthCredentialCAS)
+				require.ErrorIs(t, attemptErr, f.store.oauthCredStore().ErrCredentialCAS())
 				pc, _ = f.store.Config().Providers.Get(f.used.ID)
 				require.Equal(t, &live, pc.OAuthToken)
 				disk, err = readOAuthJournalDiskToken(f.path, f.used.ID)
@@ -206,7 +206,7 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
 				require.False(t, entry.Obsolete)
 				f.store.publishMu.Lock()
-				_, pending = f.store.pendingOAuth[f.used.ID]
+				_, pending = f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 				f.store.publishMu.Unlock()
 				require.False(t, pending, "rejected adoption must not synthesize pending X")
 				return
@@ -220,11 +220,11 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			require.Equal(t, external, record, "external journal must be preserved")
 			require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
 			f.store.publishMu.Lock()
-			rotation, pending := f.store.pendingOAuth[f.used.ID]
+			rotation, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 			f.store.publishMu.Unlock()
 			require.True(t, pending)
-			require.Equal(t, &x, &rotation.token)
-			require.Equal(t, &live, &rotation.predecessor)
+			require.Equal(t, &x, &rotation.Token)
+			require.Equal(t, &live, &rotation.Predecessor)
 			require.Empty(t, pc.APIKey)
 			require.Equal(t, 1, calls)
 			require.Equal(t, &x, pc.OAuthToken)

@@ -16,6 +16,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,10 +28,10 @@ func task1314DiskNoExchange(t *testing.T) *atomic.Int32 {
 	base := oauthProviderDescriptors()
 	old := oauthProviderDescriptorsOverride
 	for index := range base {
-		base[index].exchange = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+		base[index] = base[index].WithExchangeForTest(func(context.Context, *http.Client, string) (*oauth.Token, error) {
 			calls.Add(1)
 			return nil, errors.New("unexpected task1314 exchange")
-		}
+		})
 	}
 	oauthProviderDescriptorsOverride = func() []oauthProviderDescriptor { return base }
 	t.Cleanup(func() {
@@ -76,14 +77,14 @@ func TestTask1314OAuthDiskSyncRealProviderMatrix(t *testing.T) {
 			require.NoError(t, writer.SetConfigFields(ScopeGlobal, map[string]any{"providers." + id + ".oauth": &replacement}))
 			require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, id))
 			before := f.store.Generation()
-			var state oauthDiskSyncState
+			var state oauthcred.DiskSyncState
 			f.store.syncOAuthFromDisk(t.Context(), &state)
 			require.Equal(t, &replacement, diskSyncLive(t, f.store, id))
 			require.Equal(t, before+1, f.store.Generation())
 			// A fresh state forces an actual equal-token read, not a stat-gate skip.
-			var equalState oauthDiskSyncState
+			var equalState oauthcred.DiskSyncState
 			f.store.syncOAuthFromDisk(t.Context(), &equalState)
-			require.True(t, equalState.settled)
+			require.True(t, equalState.SettledForTest())
 			require.Equal(t, before+1, f.store.Generation())
 			// Stat-gate identity/size/mtime and tick-12 fallback are pinned by
 			// TestOAuthDiskSync04EqualNoPublish in store_oauth_disk_sync_test.go.
@@ -153,7 +154,7 @@ func TestTask1314OAuthDiskSyncUncertainRealProviders(t *testing.T) {
 					require.Error(t, err)
 				}
 				before := f.store.Generation()
-				var state oauthDiskSyncState
+				var state oauthcred.DiskSyncState
 				f.store.syncOAuthFromDisk(t.Context(), &state)
 				require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, id))
 				require.Equal(t, before, f.store.Generation())
@@ -184,7 +185,7 @@ func TestTask1314OAuthDiskSyncLegacyExpiryAndProviderBoundary(t *testing.T) {
 				}
 				task1292WriteDisk(t, f.path, id, &disk, "")
 				before := f.store.Generation()
-				var state oauthDiskSyncState
+				var state oauthcred.DiskSyncState
 				f.store.syncOAuthFromDisk(t.Context(), &state)
 				if expired {
 					require.Equal(t, &live, diskSyncLive(t, f.store, id))
@@ -212,7 +213,7 @@ func TestTask1314OAuthDiskSyncLegacyExpiryAndProviderBoundary(t *testing.T) {
 			require.NoError(t, os.WriteFile(f.path, data, 0o600))
 			before := f.store.Config().Providers.Copy()
 			generation := f.store.Generation()
-			var state oauthDiskSyncState
+			var state oauthcred.DiskSyncState
 			f.store.syncOAuthFromDisk(t.Context(), &state)
 			require.Equal(t, before, f.store.Config().Providers.Copy())
 			require.Equal(t, generation, f.store.Generation())
@@ -231,9 +232,9 @@ func TestTask1314OAuthDiskSyncBurnedCodexPredecessor(t *testing.T) {
 	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true, record))
 	task1292WriteDisk(t, f.path, f.used.ID, &burned, "")
 	before := f.store.Generation()
-	var state oauthDiskSyncState
+	var state oauthcred.DiskSyncState
 	f.store.syncOAuthFromDisk(t.Context(), &state)
 	require.Equal(t, f.next, diskSyncLive(t, f.store, f.used.ID))
 	require.Equal(t, before, f.store.Generation())
-	require.False(t, state.settled)
+	require.False(t, state.SettledForTest())
 }

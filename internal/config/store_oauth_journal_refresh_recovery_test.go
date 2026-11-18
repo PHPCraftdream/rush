@@ -340,7 +340,7 @@ func TestOAuthJournalRefreshRecovery_SupersessionSyncFailureRetains(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			f := newOAuthJournalRefreshRecoveryFixture(t)
 			writeOAuthJournalFixture(t, f)
-			require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, f.used.OAuthToken, f.next, true))
+			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
 			disk := f.next
 			switch name {
 			case "later", "tie":
@@ -374,7 +374,7 @@ func TestOAuthJournalRefreshRecovery_SupersessionSyncFailureRetains(t *testing.T
 			assert.NoError(t, readErr)
 			assert.Equal(t, before, after)
 			f.store.publishMu.Lock()
-			_, pending := f.store.pendingOAuth[f.used.ID]
+			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 			f.store.publishMu.Unlock()
 			assert.True(t, pending)
 		})

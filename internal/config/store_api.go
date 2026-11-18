@@ -670,7 +670,7 @@ func (p journalPort) ViewSnap(fn func(oauthjournal.View) error) error {
 func (p journalPort) PublishMutation(fn func(oauthjournal.MutationScope) error) error {
 	p.store.publishMu.Lock()
 	defer p.store.publishMu.Unlock()
-	return fn(oauthMutationScope{store: p.store})
+	return fn(oauthMutationScope(p))
 }
 
 type oauthMutationScope struct{ store *ConfigStore }
@@ -772,7 +772,7 @@ func (p journalPort) ErrCredentialCAS() error { return p.store.oauthCredStore().
 
 // DeletePendingOAuthIfToken requires the root publishMu to be held.
 func (p journalPort) DeletePendingOAuthIfToken(provider string, token *oauth.Token) bool {
-	return oauthMutationScope{store: p.store}.DeletePendingOAuthIfToken(provider, token)
+	return oauthMutationScope(p).DeletePendingOAuthIfToken(provider, token)
 }
 
 // ---------------------------------------------------------------------------

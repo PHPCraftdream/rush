@@ -291,7 +291,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 		f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
 		// Install-before-publication is reachable with live A.
 		f.store.publishMu.Lock()
-		f.store.recordPendingOAuthLocked(f.used.ID, tok.a, tok.b)
+		f.store.oauthCredStore().RecordPendingOAuthLockedForTest(f.used.ID, tok.a, tok.b)
 		f.store.publishMu.Unlock()
 	}
 	beforeConfig, err := os.ReadFile(f.path)
@@ -434,7 +434,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	if want.blockedIO {
 		assert.Error(t, refreshErr, "I2: journal I/O must be reported")
 	} else if want.staleCaller {
-		assert.ErrorIs(t, refreshErr, errOAuthCredentialCAS, "I2: stale client must be rejected")
+		assert.ErrorIs(t, refreshErr, f.store.oauthCredStore().ErrCredentialCAS(), "I2: stale client must be rejected")
 	} else if want.final != nil {
 		assert.NoError(t, refreshErr, "I2: intact owned lineage must not reject refresh or hide unexpected credential CAS")
 	}

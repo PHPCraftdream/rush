@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 
@@ -23,9 +24,7 @@ func task1292Descriptor(t *testing.T, preserve bool, exchange func(context.Conte
 	base := oauthProviderDescriptors()
 	old := oauthProviderDescriptorsOverride
 	oauthProviderDescriptorsOverride = func() []oauthProviderDescriptor {
-		return append(append([]oauthProviderDescriptor(nil), base...), oauthProviderDescriptor{
-			id: task1292Provider, rotating: true, preserveAccountID: preserve, exchange: exchange,
-		})
+		return append(append([]oauthProviderDescriptor(nil), base...), oauthcred.NewRotatingDescriptorForTest(task1292Provider, preserve, exchange))
 	}
 	t.Cleanup(func() { oauthProviderDescriptorsOverride = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
@@ -143,12 +142,12 @@ func TestTask1292Engine_RefreshVariantsAndPolicy(t *testing.T) {
 					require.Empty(t, record.BurnedRefreshTokenSHA256)
 				}
 				f.store.publishMu.Lock()
-				pending := f.store.pendingOAuth[f.used.ID]
+				pending, _ := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 				candidate := f.store.loadSnapshot().clone()
 				candidate.config = &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{f.used.ID: f.used})}
 				f.store.overlayPendingOAuthLocked(candidate)
 				f.store.publishMu.Unlock()
-				require.Equal(t, &want, pending.record.Token)
+				require.Equal(t, &want, pending.Record.Token)
 				adopted, _ := candidate.config.Providers.Get(f.used.ID)
 				require.Equal(t, &want, adopted.OAuthToken, "memory-first overlay retains replacement before config persistence")
 				require.Empty(t, adopted.APIKey)
@@ -177,14 +176,13 @@ func TestTask1292Engine_ConcurrentSingleExchangeAndStaleCaller(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	})
-	old := codexRefreshWaiterHook
-	codexRefreshWaiterHook = func() {
+	restore := oauthcred.SetCodexRefreshWaiterHookForTest(func() {
 		select {
 		case waiter <- struct{}{}:
 		default:
 		}
-	}
-	t.Cleanup(func() { codexRefreshWaiterHook = old })
+	})
+	t.Cleanup(restore)
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	first := task1292Start(t, f.store, f.used)
 	awaitCodexSignal(t, entered)

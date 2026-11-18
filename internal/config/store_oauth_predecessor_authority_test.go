@@ -35,7 +35,7 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	writeCodexPendingDisk(t, f, &a)
 	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&a), Token: &b}
 	f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-	require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, &a, &b, true))
+	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true))
 	before, err := os.ReadFile(f.path)
 	require.NoError(t, err)
 	d := b
@@ -93,11 +93,11 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 		assert.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
 	}
 	f.store.publishMu.Lock()
-	pending, pendingOK := f.store.pendingOAuth[f.used.ID]
+	pending, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
 	assert.True(t, pendingOK)
-	assert.Equal(t, d, pending.token)
-	assert.Equal(t, b, pending.predecessor)
+	assert.Equal(t, d, pending.Token)
+	assert.Equal(t, b, pending.Predecessor)
 	after, readErr := os.ReadFile(f.path)
 	require.NoError(t, readErr)
 	assert.Equal(t, before, after, "blocked worker must leave config A untouched")

@@ -77,11 +77,11 @@ var _ oauthcred.Port = credPort{}
 // credSnapshot exposes a storeSnapshot as an oauthcred.Snapshot.
 type credSnapshot struct{ sn *storeSnapshot }
 
-func (v credSnapshot) Config() *cfgmodel.Config             { return v.sn.config }
-func (v credSnapshot) KnownProviders() []catwalk.Provider   { return v.sn.knownProviders }
-func (v credSnapshot) Generation() uint64                   { return v.sn.generation }
-func (v credSnapshot) Clone() oauthcred.Snapshot            { return credSnapshot{sn: v.sn.clone()} }
-func (v credSnapshot) SetConfig(cfg *cfgmodel.Config)       { v.sn.config = cfg }
+func (v credSnapshot) Config() *cfgmodel.Config           { return v.sn.config }
+func (v credSnapshot) KnownProviders() []catwalk.Provider { return v.sn.knownProviders }
+func (v credSnapshot) Generation() uint64                 { return v.sn.generation }
+func (v credSnapshot) Clone() oauthcred.Snapshot          { return credSnapshot{sn: v.sn.clone()} }
+func (v credSnapshot) SetConfig(cfg *cfgmodel.Config)     { v.sn.config = cfg }
 
 func (p credPort) ViewSnap(fn func(oauthcred.Snapshot) error) error {
 	return fn(credSnapshot{sn: p.store.loadSnapshot()})
@@ -162,9 +162,9 @@ func (p credPort) RemoveConfigFieldWithAuthority(scope cfgmodel.Scope, key strin
 	return p.store.RemoveConfigFieldWithAuthority(scope, key, authority)
 }
 
-func (p credPort) TryLockDiskWrite() bool   { return p.store.diskWriteMu.TryLock() }
-func (p credPort) UnlockDiskWrite()         { p.store.diskWriteMu.Unlock() }
-func (p credPort) CommitDiskWrite()         { p.store.diskWriteGeneration++ }
+func (p credPort) TryLockDiskWrite() bool                { return p.store.diskWriteMu.TryLock() }
+func (p credPort) UnlockDiskWrite()                      { p.store.diskWriteMu.Unlock() }
+func (p credPort) CommitDiskWrite()                      { p.store.diskWriteGeneration++ }
 func (p credPort) ConfigWriteLockTimeout() time.Duration { return configWriteLockTimeout }
 
 func (p credPort) ResolveConfigWriteTarget(path string) (oauthcred.WriteTarget, error) {
@@ -250,8 +250,8 @@ func (s *ConfigStore) RemoveProviderAPIKeyWithAuthority(scope Scope, providerID 
 	return s.oauthCredStore().RemoveProviderAPIKeyWithAuthority(scope, providerID, authority)
 }
 
-func (s *ConfigStore) StartOAuthDiskSync()  { s.oauthCredStore().StartOAuthDiskSync() }
-func (s *ConfigStore) StopOAuthDiskSync()   { s.oauthCredStore().StopOAuthDiskSync() }
+func (s *ConfigStore) StartOAuthDiskSync() { s.oauthCredStore().StartOAuthDiskSync() }
+func (s *ConfigStore) StopOAuthDiskSync()  { s.oauthCredStore().StopOAuthDiskSync() }
 func (s *ConfigStore) OAuthDiskSyncRunning() bool {
 	return s.oauthCredStore().OAuthDiskSyncRunning()
 }

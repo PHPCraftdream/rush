@@ -37,7 +37,7 @@ func runOAuthRound8OwnedEqualDisk(t *testing.T, intermittent bool) {
 	})
 	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(a), Token: b}
 	entry := store.installOAuthOutbox(path, ScopeGlobal, provider, record)
-	require.NoError(t, store.applyOAuthTokenWithPending(provider, a, b, true))
+	require.NoError(t, store.applyOAuthTokenWithPendingPredecessor(provider, a, b, a, true))
 	journal := oauthJournalPath(path, provider)
 	_, err := os.Stat(journal)
 	require.True(t, os.IsNotExist(err))
@@ -82,10 +82,10 @@ func runOAuthRound8OwnedEqualDisk(t *testing.T, intermittent bool) {
 	assert.Equal(t, record, wal, "verification failure must retain durable B")
 	assert.Same(t, entry, store.oauthOutboxCurrent(path, provider))
 	store.publishMu.Lock()
-	pending, pendingOK := store.pendingOAuth[provider]
+	pending, pendingOK := store.oauthCredStore().PendingRotationForTest(t, provider)
 	store.publishMu.Unlock()
 	assert.True(t, pendingOK, "verification failure must retain pending B")
-	assert.Equal(t, *b, pending.token)
+	assert.Equal(t, *b, pending.Token)
 	live, _ := store.Config().Providers.Get(provider)
 	assert.Equal(t, b, live.OAuthToken)
 	after, readErr := os.ReadFile(path)
@@ -102,7 +102,7 @@ func runOAuthRound8OwnedEqualDisk(t *testing.T, intermittent bool) {
 	assert.GreaterOrEqual(t, verificationCalls, 2)
 	assert.Nil(t, store.oauthOutboxCurrent(path, provider))
 	store.publishMu.Lock()
-	_, pendingOK = store.pendingOAuth[provider]
+	_, pendingOK = store.oauthCredStore().PendingRotationForTest(t, provider)
 	store.publishMu.Unlock()
 	assert.False(t, pendingOK)
 	_, err = os.Stat(journal)

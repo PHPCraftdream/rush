@@ -13,18 +13,19 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
-	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
-// These package-private budgets are test seams. Override only in serial tests
+// These package-private hooks and timings are test seams. Override only in serial tests
 // and restore after all refresh workers have joined.
 var (
-	codexRefreshWaiterHook  func()
-	codexRefreshPollBudget  = 12 * time.Second
+	codexRefreshWaiterHook   func()
+	codexRefreshPollWait     func(context.Context, time.Duration) error
+	codexRefreshPollBudget   = 12 * time.Second
 	codexRefreshPollInterval = 300 * time.Millisecond
 )
 
@@ -362,7 +363,11 @@ func (s *Store) pollCodexRefreshDisk(ctx context.Context, scope cfgmodel.Scope, 
 				}
 			}
 		}
-		if err := s.port.WaitCodexRefresh(pollCtx, codexRefreshPollInterval); err != nil {
+		wait := codexRefreshPollWait
+		if wait == nil {
+			wait = s.port.WaitCodexRefresh
+		}
+		if err := wait(pollCtx, codexRefreshPollInterval); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

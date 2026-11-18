@@ -109,9 +109,7 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 			lock, lockErr := filelock.TryAcquireFileLock(oauthRefreshLockPath(f.path, f.used.ID))
 			require.NoError(t, lockErr)
 			require.NoError(t, releaseConfigFileLock(oauthRefreshLockPath(f.path, f.used.ID), lock))
-			codexRefreshActive.Lock()
-			_, active := codexRefreshActive.calls[codexRefreshKey{f.store, f.used.ID}]
-			codexRefreshActive.Unlock()
+			active := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
 			assert.False(t, active)
 			require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 			require.NoError(t, f.store.ReloadFromDisk(context.Background()))
@@ -338,7 +336,7 @@ func TestOAuthJournalOutbox_ExternalJournalArbitration(t *testing.T) {
 			f := newOAuthJournalRefreshRecoveryFixture(t)
 			record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken), Token: f.next}
 			entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-			require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, f.used.OAuthToken, f.next, true))
+			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
 			external := *f.next
 			external.AccessToken, external.RefreshToken = "fixture-external-access", "fixture-external-refresh"
 			if name == "later" {

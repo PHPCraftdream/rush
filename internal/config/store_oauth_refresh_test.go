@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
@@ -107,7 +108,7 @@ func assertCodexRefreshTokens(t *testing.T, f codexRefreshFixture, memory, disk 
 	require.True(t, ok)
 	require.Equal(t, memory, pc.OAuthToken)
 	require.Empty(t, pc.APIKey)
-	actual, err := f.store.loadTokenFromDisk(ScopeGlobal, f.used.ID)
+	actual, err := f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 	require.NoError(t, err)
 	require.Equal(t, disk, actual)
 }
@@ -167,7 +168,7 @@ func TestOAuthRefresh_EqualExpiryNewCredentialRejectsStaleClient(t *testing.T) {
 	})
 
 	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, &http.Client{})
-	require.ErrorIs(t, err, errOAuthCredentialCAS)
+	require.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
 	require.Zero(t, calls, "a stale client must not exchange a replacement credential")
 }
 
@@ -213,7 +214,7 @@ func TestOAuthRefresh_ExpiredNewerCredentialRejectsStaleClient(t *testing.T) {
 	})
 
 	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, client)
-	require.ErrorIs(t, err, errOAuthCredentialCAS)
+	require.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
 	require.Zero(t, calls, "a stale client must not carry the newer credential")
 }
 
@@ -262,9 +263,8 @@ func TestOAuthRefresh_MemoryFirstWaiterReturnsBeforePersist(t *testing.T) {
 	allowPersist := make(chan struct{})
 	waiting := make(chan struct{})
 	var waiterOnce sync.Once
-	oldHook := codexRefreshWaiterHook
-	codexRefreshWaiterHook = func() { waiterOnce.Do(func() { close(waiting) }) }
-	t.Cleanup(func() { codexRefreshWaiterHook = oldHook })
+	restoreWaiter := oauthcred.SetCodexRefreshWaiterHookForTest(func() { waiterOnce.Do(func() { close(waiting) }) })
+	t.Cleanup(restoreWaiter)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		close(exchange)
 		<-allowExchange
@@ -428,8 +428,7 @@ func TestOAuthRefresh_RejectionDelayedDiskAdoption(t *testing.T) {
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, rejected })
 	polling := make(chan struct{})
 	resume := make(chan struct{})
-	old := codexRefreshPollWait
-	codexRefreshPollWait = func(ctx context.Context, _ time.Duration) error {
+	restorePollWait := oauthcred.SetCodexRefreshPollWaitForTest(func(ctx context.Context, _ time.Duration) error {
 		close(polling)
 		select {
 		case <-resume:
@@ -437,8 +436,8 @@ func TestOAuthRefresh_RejectionDelayedDiskAdoption(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	}
-	t.Cleanup(func() { codexRefreshPollWait = old })
+	})
+	t.Cleanup(restorePollWait)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := startCodexRefresh(t, ctx, f)
@@ -455,9 +454,8 @@ func TestOAuthRefresh_RejectionNoUpdatePreservesError(t *testing.T) {
 	f := newCodexRefreshFixture(t)
 	rejected := &oauth.TokenExchangeError{StatusCode: 400, Body: "invalid_grant"}
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, rejected })
-	old := codexRefreshPollWait
-	codexRefreshPollWait = func(context.Context, time.Duration) error { return context.DeadlineExceeded }
-	t.Cleanup(func() { codexRefreshPollWait = old })
+	restorePollWait := oauthcred.SetCodexRefreshPollWaitForTest(func(context.Context, time.Duration) error { return context.DeadlineExceeded })
+	t.Cleanup(restorePollWait)
 	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil)
 	require.ErrorIs(t, err, rejected)
 	assertCodexRefreshTokens(t, f, f.used.OAuthToken, f.used.OAuthToken)
@@ -470,9 +468,8 @@ func TestOAuthRefresh_CanceledSingleflightWaiter(t *testing.T) {
 	release := make(chan struct{})
 	waiting := make(chan struct{})
 	var once sync.Once
-	old := codexRefreshWaiterHook
-	codexRefreshWaiterHook = func() { once.Do(func() { close(waiting) }) }
-	t.Cleanup(func() { codexRefreshWaiterHook = old })
+	restoreWaiter := oauthcred.SetCodexRefreshWaiterHookForTest(func() { once.Do(func() { close(waiting) }) })
+	t.Cleanup(restoreWaiter)
 	var calls atomic.Int32
 	stubCodexRefresh(t, func(ctx context.Context, _ *http.Client, _ string) (*oauth.Token, error) {
 		calls.Add(1)
@@ -498,9 +495,7 @@ func TestOAuthRefresh_CanceledSingleflightWaiter(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 	close(release)
 	require.NoError(t, awaitCodexResult(t, leader))
-	codexRefreshActive.Lock()
-	_, exists := codexRefreshActive.calls[codexRefreshKey{f.store, f.used.ID}]
-	codexRefreshActive.Unlock()
+	exists := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
 	require.False(t, exists)
 }
 
@@ -555,7 +550,7 @@ func TestOAuthRefresh_CanceledDiskWaitRetainsToken(t *testing.T) {
 	select {
 	case <-idle:
 	case <-terminated:
-		disk, err := f.store.loadTokenFromDisk(ScopeGlobal, f.used.ID)
+		disk, err := f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 		require.NoError(t, err)
 		require.Equal(t, f.next, disk, "caller cancellation stopped persistence")
 	case <-time.After(5 * time.Second):

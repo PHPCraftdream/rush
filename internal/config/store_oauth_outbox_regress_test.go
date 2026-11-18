@@ -136,7 +136,7 @@ func TestOAuthRound7_P1_2_EqualConfigOutboxUncertainty(t *testing.T) {
 			d.ExpiresAt = time.Now().Add(2 * time.Hour).Unix()
 			record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken), Token: &b}
 			entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-			require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, f.used.OAuthToken, &b, true))
+			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, &b, f.used.OAuthToken, true))
 			writeCodexPendingDisk(t, f, &b)
 			before, err := os.ReadFile(f.path)
 			require.NoError(t, err)
@@ -201,8 +201,6 @@ func requireOAuthRound7Released(t *testing.T, f codexRefreshFixture) {
 	lock, err := filelock.TryAcquireFileLock(path)
 	require.NoError(t, err)
 	require.NoError(t, releaseConfigFileLock(path, lock))
-	codexRefreshActive.Lock()
-	_, active := codexRefreshActive.calls[codexRefreshKey{f.store, f.used.ID}]
-	codexRefreshActive.Unlock()
+	active := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
 	require.False(t, active)
 }
