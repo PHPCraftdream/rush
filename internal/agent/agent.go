@@ -499,6 +499,22 @@ func (a *sessionAgent) diskCapsRef() *DiskProviderRegistry {
 	return a.diskCaps
 }
 
+func (a *sessionAgent) sessionOwnershipComponent() *sessionOwnership {
+	return &sessionOwnership{
+		host:                    a,
+		mailboxes:               func() *csync.Map[string, *mailbox] { return a.mailboxes },
+		sessions:                func() coresession.Service { return a.sessions },
+		hasSummarizeQueue:       func() bool { return a.summarizeQueue != nil },
+		armQueuedBuildRetention: func() func(*SessionAgentCall) { return a.armQueuedBuildRetention },
+	}
+}
+
+func (a *sessionAgent) onOwnershipSessionIdle(sessionID string) {
+	if a.onSessionIdle != nil {
+		a.onSessionIdle(sessionID)
+	}
+}
+
 // SessionAgentOptions is defined in agent_options.go (pure move, phase-4
 // step 3 file-size ratchet: this file was already at the 1000-line cap).
 

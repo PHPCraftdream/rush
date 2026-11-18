@@ -358,15 +358,15 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 	// TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress), which
 	// would otherwise produce more real calls during the long wait below and
 	// make this assertion meaningless.
-	cfg := SupervisionConfig{Enabled: true, Interval: 50 * time.Millisecond, MaxInterval: 500 * time.Millisecond, MaxNoProgress: 1}
+	cfg := SupervisionConfig{Enabled: true, Interval: 50 * time.Millisecond, MaxInterval: 1500 * time.Millisecond, MaxNoProgress: 1}
 	// Simulate a deadline already grown far out by prior no-progress ticks.
 	// nextGen is seeded to match the manually-assigned generation so
 	// recordProgress's bump produces a GENUINELY new value (2, not a
 	// coincidental collision back to 1) -- otherwise the staleness check
 	// below would pass for the wrong reason.
 	coord.supervision.nextGen = 1
-	coord.supervision.byRoot["reset-root"] = &supervisionState{rootSessionID: "reset-root", cfg: cfg, interval: 500 * time.Millisecond, generation: 1}
-	coord.timeouts.armFunc(start.Add(500*time.Millisecond), func() { coord.handleSupervisionDeadline("reset-root", 1) })
+	coord.supervision.byRoot["reset-root"] = &supervisionState{rootSessionID: "reset-root", cfg: cfg, interval: 1500 * time.Millisecond, generation: 1}
+	coord.timeouts.armFunc(start.Add(1500*time.Millisecond), func() { coord.handleSupervisionDeadline("reset-root", 1) })
 
 	time.Sleep(20 * time.Millisecond)
 	coord.recordProgress("reset-root") // resets interval to cfg.Interval (50ms) and re-arms from now, invalidating generation 1
@@ -378,14 +378,14 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 	}
 	got := snapshotCalls()
 	require.Len(t, got, 1, "recordProgress's invalidated generation-1 deadline must not ALSO fire")
-	require.Less(t, got[0].Sub(start), 300*time.Millisecond,
-		"progress must pull the tick back to roughly base-interval-from-now, not leave the stale ~500ms grown deadline to fire")
+	require.Less(t, got[0].Sub(start), 1000*time.Millisecond,
+		"progress must pull the tick back to roughly base-interval-from-now, not leave the stale ~1.5s grown deadline to fire (wide margins: a loaded machine delays timers by hundreds of ms)")
 
 	// Prove the staleness check, not timing luck, is what protects this:
 	// wait past the original (now-invalidated) 500ms deadline and confirm
 	// it never produces a second call.
-	time.Sleep(600 * time.Millisecond)
-	require.Len(t, snapshotCalls(), 1, "the stale generation-1 deadline must never fire, even once its original 500ms elapses")
+	time.Sleep(1600 * time.Millisecond)
+	require.Len(t, snapshotCalls(), 1, "the stale generation-1 deadline must never fire, even once its original 1.5s elapses")
 }
 
 // TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules: unlike

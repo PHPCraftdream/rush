@@ -17,16 +17,37 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
+
+type ownershipHost interface {
+	SessionAgent
+	restartOrphanedWithRetry(calls []SessionAgentCall) error
+	diskCapsRef() *DiskProviderRegistry
+	onOwnershipSessionIdle(sessionID string)
+}
+
+type sessionOwnership struct {
+	host                    ownershipHost
+	mailboxes               func() *csync.Map[string, *mailbox]
+	sessions                func() coresession.Service
+	hasSummarizeQueue       func() bool
+	armQueuedBuildRetention func() func(*SessionAgentCall)
+}
 
 // getMailbox returns the per-session mailbox for sessionID, creating it
 // lazily on first touch. Mirrors activeRequests' "one map, lazily
 // populated, entries live forever" lifetime — see mailbox.go and
 // docs/plans/2026-08-04-session-owner-mailbox-design.md §1.
 func (a *sessionAgent) getMailbox(sessionID string) *mailbox {
-	return a.mailboxes.GetOrSet(sessionID, func() *mailbox {
-		return &mailbox{armQueuedBuild: a.armQueuedBuildRetention}
+	return a.sessionOwnershipComponent().getMailbox(sessionID)
+}
+
+func (a *sessionOwnership) getMailbox(sessionID string) *mailbox {
+	return a.mailboxes().GetOrSet(sessionID, func() *mailbox {
+		return &mailbox{armQueuedBuild: a.armQueuedBuildRetention()}
 	})
 }
 
@@ -55,6 +76,10 @@ func (a *sessionAgent) getMailbox(sessionID string) *mailbox {
 // different, later owner's state. See mailbox.epoch's doc for the full
 // rationale.
 func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel context.CancelFunc) (becomeOwner bool, epoch uint64) {
+	return a.sessionOwnershipComponent().tryReserveSession(call, reserveCancel)
+}
+
+func (a *sessionOwnership) tryReserveSession(call SessionAgentCall, reserveCancel context.CancelFunc) (becomeOwner bool, epoch uint64) {
 	return a.getMailbox(call.SessionID).submit(call, reserveCancel)
 }
 
@@ -112,8 +137,12 @@ func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel co
 // not reopen any gap (rebindDispatcher never changes mb.epoch/state, only
 // which CancelFunc is live for the still-continuous era).
 func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
+	return a.sessionOwnershipComponent().reserveExclusive(ctx, sessionID)
+}
+
+func (s *sessionOwnership) reserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	holdCtx, holdCancel := context.WithCancel(ctx)
-	mb := a.getMailbox(sessionID)
+	mb := s.getMailbox(sessionID)
 	epoch, ok = mb.beginCompact(holdCancel)
 	if !ok {
 		holdCancel()
@@ -131,10 +160,14 @@ func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (
 // both of which see mbOwned and queue rather than become owner) is handed
 // to a fresh detached run rather than silently dropped.
 func (a *sessionAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
+	a.sessionOwnershipComponent().releaseExclusive(sessionID, epoch, cancel)
+}
+
+func (s *sessionOwnership) releaseExclusive(sessionID string, epoch uint64, cancel context.CancelFunc) {
 	if cancel != nil {
 		cancel()
 	}
-	a.abandonOwnershipWithHandoff(sessionID, epoch)
+	s.abandonOwnershipWithHandoff(sessionID, epoch)
 }
 
 // releaseSessionReservation clears the busy slot claimed by
@@ -161,6 +194,10 @@ func (a *sessionAgent) ReleaseExclusive(sessionID string, epoch uint64, cancel c
 // through drainOrReleaseFinal instead. Kept as a thin wrapper for direct
 // mailbox-level testing and any future caller with no OS lock in play.
 func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64) (SessionAgentCall, bool) {
+	return a.sessionOwnershipComponent().releaseSessionReservation(sessionID, epoch)
+}
+
+func (a *sessionOwnership) releaseSessionReservation(sessionID string, epoch uint64) (SessionAgentCall, bool) {
 	return a.getMailbox(sessionID).drainOrRelease(epoch)
 }
 
@@ -243,6 +280,10 @@ func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64)
 // then never runs, AND would release lk from the wrong place (Run's own
 // deferred lk.Release() already owns that responsibility on that path).
 func (a *sessionAgent) drainOrReleaseMerged(sessionID string, epoch uint64, lk *sessionlock.SessionLock, runCancel context.CancelFunc) (SessionAgentCall, bool) {
+	return a.sessionOwnershipComponent().drainOrReleaseMerged(sessionID, epoch, lk, runCancel)
+}
+
+func (a *sessionOwnership) drainOrReleaseMerged(sessionID string, epoch uint64, lk *sessionlock.SessionLock, runCancel context.CancelFunc) (SessionAgentCall, bool) {
 	var release func() error
 	if lk != nil {
 		release = lk.Release
@@ -294,6 +335,10 @@ func (a *sessionAgent) drainOrReleaseMerged(sessionID string, epoch uint64, lk *
 // the OS lock first to avoid the HIGH-1 window where mbIdle becomes true
 // while the lock is still held.
 func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint64) {
+	a.sessionOwnershipComponent().abandonOwnershipWithHandoff(sessionID, epoch)
+}
+
+func (a *sessionOwnership) abandonOwnershipWithHandoff(sessionID string, epoch uint64) {
 	mb := a.getMailbox(sessionID)
 	popped := mb.abandonOwnershipAndPopSubmitted(epoch)
 	// Phase 3's by-construction release trigger (sessionAgent.onSessionIdle's
@@ -308,9 +353,7 @@ func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint6
 	// Called unconditionally regardless of epoch match: even a stale call (a
 	// later owner already re-claimed the mailbox) is a safe, cheap no-op for
 	// the callback -- see its own doc.
-	if a.onSessionIdle != nil {
-		a.onSessionIdle(sessionID)
-	}
+	a.host.onOwnershipSessionIdle(sessionID)
 	if popped != nil {
 		// Expected handoff, not a failure: a call (most often a completion
 		// Drain) raced into the mailbox while this Run was already exiting.
@@ -335,7 +378,7 @@ func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint6
 		// the error to the original caller (Run's defer is already unwinding),
 		// so we log it at ERROR level with full context to make failures
 		// visible to operators.
-		if err := a.restartOrphanedWithRetry(popped); err != nil {
+		if err := a.host.restartOrphanedWithRetry(popped); err != nil {
 			slog.Error("agent.Run: failed to restart orphaned calls during ownership handoff",
 				"session_id", sessionID,
 				"num_calls", len(popped),
@@ -348,10 +391,10 @@ func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint6
 	// session became idle through a non-web path (CLI, detached runs, etc.).
 	// We run this in a detached goroutine with a fresh context.Background() to
 	// avoid any dependencies on the current owner's request context.
-	if a.summarizeQueue != nil {
-		if opts, queued := a.TakeSummarizeQueue(sessionID); queued {
+	if a.hasSummarizeQueue() {
+		if opts, queued := a.host.TakeSummarizeQueue(sessionID); queued {
 			go func() {
-				if err := a.Summarize(context.Background(), sessionID, opts); err != nil {
+				if err := a.host.Summarize(context.Background(), sessionID, opts); err != nil {
 					if errors.Is(err, ErrSummarizeQueued) {
 						// Re-queuing due to ownership contention is expected and self-healing,
 						// not an error. Log at debug level to avoid confusing operators.
@@ -383,7 +426,11 @@ func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint6
 //
 // P0-3 fix: now propagates the error instead of silently discarding it.
 func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
-	return a.restartOrphanedWithRetry(calls)
+	return a.sessionOwnershipComponent().restartOrphaned(calls)
+}
+
+func (a *sessionOwnership) restartOrphaned(calls []SessionAgentCall) error {
+	return a.host.restartOrphanedWithRetry(calls)
 }
 
 // restartOrphanedWithRetry durably enqueues calls for recovery by the run queue pump
@@ -427,6 +474,10 @@ func (a *sessionAgent) restartOrphaned(calls []SessionAgentCall) error {
 // enqueues the rest, so the waiter's own caller decides whether to retry
 // instead of blocking indefinitely.
 func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error {
+	return a.sessionOwnershipComponent().restartOrphanedWithRetry(calls)
+}
+
+func (a *sessionOwnership) restartOrphanedWithRetry(calls []SessionAgentCall) error {
 	calls = splitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
 	// Package L round 2: a retained queued call is NOT a waiter (its
 	// OnQueueResolved is nil), so splitCallsWithoutWaiters above correctly
@@ -535,7 +586,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 			// Layer-1 refusal above.
 			var holdRelease func()
 			if req := requirementFromCall(call); req != nil {
-				rel, ok := holdDurableContinuationOwner(a.diskCapsRef(), req.BindingID, idempotencyKey)
+				rel, ok := holdDurableContinuationOwner(a.host.diskCapsRef(), req.BindingID, idempotencyKey)
 				if !ok {
 					slog.Error("agent: refusing to durably enqueue a call whose disk provider binding is already lost",
 						"session_id", call.SessionID, "logical_call_id", call.LogicalCallID, "binding_id", req.BindingID)
@@ -568,7 +619,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 
 			// Durably enqueue the call BEFORE returning control (P0-2 requirement)
 			// This ensures the call will eventually be executed even if this goroutine exits
-			if enqueueErr := enqueueFinalizationCall(enqueueCtx, a.sessions, idempotencyKey, call, callDataJSON); enqueueErr != nil {
+			if enqueueErr := enqueueFinalizationCall(enqueueCtx, a.sessions(), idempotencyKey, call, callDataJSON); enqueueErr != nil {
 				// Build safe log fields (SEC-1 fix: never log raw prompt)
 				logFields := []any{
 					"session_id", call.SessionID,
@@ -632,7 +683,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 					// replacement cannot be acquired, keep the ORIGINAL holder (the
 					// primary row id stays the recoverable key) and refuse the fallback
 					// instead of persisting a record whose provider is already gone.
-					rel, ok := holdDurableContinuationOwner(a.diskCapsRef(), req.BindingID, outboxID)
+					rel, ok := holdDurableContinuationOwner(a.host.diskCapsRef(), req.BindingID, outboxID)
 					if !ok {
 						callErrs[i] = fmt.Errorf("%w: orphan outbox fallback could not retain disk provider binding %s (session=%s); the original row-keyed holder is preserved", ErrDiskProviderUnavailable, req.BindingID, call.SessionID)
 						return
@@ -642,7 +693,7 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 						holdRelease()
 					}
 				}
-				if outboxErr := a.sessions.WriteToOrphanOutbox(outboxCtx, outboxID, call.SessionID, callDataJSON); outboxErr != nil {
+				if outboxErr := a.sessions().WriteToOrphanOutbox(outboxCtx, outboxID, call.SessionID, callDataJSON); outboxErr != nil {
 					logFields := []any{
 						"session_id", call.SessionID,
 						"prompt_length", len(call.Prompt),

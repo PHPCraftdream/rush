@@ -27,15 +27,19 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 )
 
+func (c *coordinator) sessionPromptForCall(ctx context.Context, sessionID string, pinned *resolvedOverrides) string {
+	return newSessionStateComponent(c).sessionPromptForCall(ctx, sessionID, pinned)
+}
+
 // sessionPromptForCall returns the system prompt this call's turn must run on:
 // the session's stored prompt when it was built in the same mode as the call's
 // tool set, and the call's own pinned.systemPrompt persisted over it when the
 // two disagree (one cache miss per mode change). A session that has no stored
 // prompt yet, or a pinned snapshot that could not build one, falls back to
 // resolveSessionSystemPrompt — the resolve-and-persist path, unchanged.
-func (c *coordinator) sessionPromptForCall(ctx context.Context, sessionID string, pinned *resolvedOverrides) string {
+func (s *sessionStateComponent) sessionPromptForCall(ctx context.Context, sessionID string, pinned *resolvedOverrides) string {
 	if pinned != nil {
-		sess, err := c.sessions.Get(ctx, sessionID)
+		sess, err := s.sessions().Get(ctx, sessionID)
 		if err != nil {
 			return ""
 		}
@@ -45,7 +49,7 @@ func (c *coordinator) sessionPromptForCall(ctx context.Context, sessionID string
 				return sess.SystemPrompt
 			}
 			if pinned.systemPrompt != "" {
-				if err := c.sessions.UpdateSystemPrompt(ctx, sessionID, pinned.systemPrompt); err != nil {
+				if err := s.sessions().UpdateSystemPrompt(ctx, sessionID, pinned.systemPrompt); err != nil {
 					// The turn still runs on the prompt that matches its tool
 					// set; a failed save only costs a rebuild next turn.
 					slog.Warn("coordinator: failed to re-save system prompt for a mode change", "sessionID", sessionID, "err", err)
@@ -54,5 +58,5 @@ func (c *coordinator) sessionPromptForCall(ctx context.Context, sessionID string
 			}
 		}
 	}
-	return c.resolveSessionSystemPrompt(ctx, sessionID)
+	return s.host.resolveSessionSystemPrompt(ctx, sessionID)
 }
