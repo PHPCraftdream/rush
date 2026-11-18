@@ -160,6 +160,9 @@ func isolatedJobsEnv(t *testing.T) (a *app.App, dataDir string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	auditJobsCmd := &cobra.Command{Use: "jobs"}
 	ensureRootFlagStandIns(auditJobsCmd, dataDir)
+	if f := auditJobsCmd.Flags().Lookup("json"); f == nil {
+		auditJobsCmd.Flags().Bool("json", false, "")
+	}
 	require.NoError(t, auditJobsCmd.Flags().Set("json", "false"))
 	auditJobsCmd.SetContext(ctx)
 

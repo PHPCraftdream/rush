@@ -478,7 +478,7 @@ func TestSessionsKillCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	require.True(t, os.IsNotExist(wrongStatErr))
 
 	stderr := cmdtest.CaptureStderr(t, func() {
-		runErr := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessionID})
+		runErr := sessionsKillCmdRunWithBatchNote(sessionsKillCmd, []string{sessionID}, purgeQueuedWorkAfterStopForTest, func(context.Context, string, string) BatchKillScopeState { return BatchKillScopeState{} })
 		require.NoError(t, runErr)
 	})
 	t.Logf("sessions kill stderr:\n%s", stderr)
