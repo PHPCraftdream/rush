@@ -398,7 +398,19 @@ func TestPublicResponsesWebSocketCancellationAllowsLaterRequest(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancel did not close peer")
 	}
-	_, err := collectPublicResponsesStream(publicResponsesTestContext(t), model, fantasy.Call{})
+	// The peer sees the socket close before the cancelled attempt releases its lease (the
+	// AfterFunc closes the connection, then resolves the body). In that instant a new request
+	// finds the conversation connection busy and takes the HTTP fallback by design; retry until
+	// the lease is released, which is the property under test (a later request works over WS).
+	var err error
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		_, err = collectPublicResponsesStream(publicResponsesTestContext(t), model, fantasy.Call{})
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		httpRequests.Store(0)
+		time.Sleep(5 * time.Millisecond)
+	}
 	require.NoError(t, err)
 	require.EqualValues(t, 2, requests.Load())
 	coord.CancelAll()

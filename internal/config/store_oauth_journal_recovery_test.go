@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,9 +93,9 @@ func TestOAuthJournal_CorruptConfigRestartThenRepair(t *testing.T) {
 		require.NoError(t, os.WriteFile(f.path, []byte("{invalid config"), 0o600))
 		return f.next, nil
 	})
-	oldBefore := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = oldBefore })
+	oldBefore := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = oldBefore })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 	f.store.stopOAuthJournalWorkers()
@@ -121,7 +122,7 @@ func TestOAuthJournal_CorruptConfigRestartThenRepair(t *testing.T) {
 	third.workingDir = second.workingDir
 	trackOAuthJournalTestStore(t, third)
 	g.store = third
-	oauthJournalBeforeWorker = nil
+	oauthjournal.OAuthJournalBeforeWorker = nil
 	idle := hookOAuthJournalIdle(t, third)
 	_, record, err := recoverOAuthJournalFixture(t, g)
 	require.NoError(t, err)

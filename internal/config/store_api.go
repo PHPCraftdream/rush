@@ -3,11 +3,15 @@ package config
 import (
 	"context"
 	"os"
+	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/casefold"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 )
 
@@ -276,6 +280,10 @@ func (s *ConfigStore) PersistMCPConfigExact(scope Scope, name string, value MCPC
 
 func (s *ConfigStore) PersistMCPConfigResult(scope Scope, name string, value MCPConfig) (MCPMutationResult, error) {
 	return s.mcpStore().PersistMCPConfigResult(scope, name, value)
+}
+
+func (s *ConfigStore) mutateMCPExact(operation string, scope Scope, oldName, newName string, value MCPConfig, disabled *bool) (MCPMutationResult, error) {
+	return s.mcpStore().MutateMCPExact(operation, scope, oldName, newName, value, disabled)
 }
 
 func (s *ConfigStore) PersistRemoveMCPConfig(scope Scope, name string) error {
@@ -592,3 +600,273 @@ func dataFingerprint(path string, data []byte) docread.Fingerprint {
 func validatePreparedAdmissionFile(ctx context.Context, path string, file *os.File, expected docread.Fingerprint, expectedOwner int, enforceOwner bool) error {
 	return mcpstore.ValidatePreparedAdmissionFile(ctx, path, file, expected, expectedOwner, enforceOwner)
 }
+
+// ---------------------------------------------------------------------------
+// X3 oauthjournal wiring
+// ---------------------------------------------------------------------------
+
+// oauthJournal returns the store's shared OAuth journal recovery component,
+// initializing it on first use even for a zero-value ConfigStore.
+func (s *ConfigStore) oauthJournal() *oauthjournal.Store {
+	s.oauthJournalOnce.Do(func() {
+		s.oauthjournal = oauthjournal.NewStore(journalPort{store: s})
+	})
+	return s.oauthjournal
+}
+
+// Root-owned *ConfigStore-typed worker test hooks (moved verbatim from the
+// deleted root store_oauth_journal_worker.go).
+var (
+	oauthJournalWorkerDone func(*ConfigStore, string)
+	oauthJournalWorkerIdle func(*ConfigStore, string)
+)
+
+// The component owns the serial wait seams; seed them with the root
+// interruptible sleep so production behavior matches the pre-move defaults.
+func init() {
+	oauthjournal.OAuthJournalReadWait = waitCodexRefresh
+	oauthjournal.OAuthJournalRetryWait = waitCodexRefresh
+	oauthjournal.OAuthJournalWorkerWait = waitCodexRefresh
+}
+
+// journalPort adapts *ConfigStore to the oauthjournal.Port interface. It
+// exposes exactly the existing ConfigStore primitives (loadSnapshot,
+// publishMu, configPath, diskWriteMu, the codex refresh constants and write
+// locks, applyOAuthToken*, and the root worker test hooks) without adding
+// any new locking.
+type journalPort struct {
+	store *ConfigStore
+}
+
+// Compile-time assertion: journalPort implements oauthjournal.Port.
+var _ oauthjournal.Port = journalPort{}
+
+// journalWriteTargetOf converts the root configWriteTarget to the
+// oauthjournal.WriteTarget seam type (the lockTargetOf pattern).
+func journalWriteTargetOf(t configWriteTarget) oauthjournal.WriteTarget {
+	return oauthjournal.WriteTarget{Path: t.path, SelectedPath: t.selectedPath, LockPath: t.lockPath, Expected: t.expected, Owner: t.owner, Enforce: t.enforce}
+}
+
+func configWriteTargetOfJournal(t oauthjournal.WriteTarget) configWriteTarget {
+	return configWriteTarget{path: t.Path, selectedPath: t.SelectedPath, lockPath: t.LockPath, expected: t.Expected, owner: t.Owner, enforce: t.Enforce}
+}
+
+// credToJournal/journalToCred convert between the oauthcred and oauthjournal
+// WriteTarget seam types (same field shape).
+func credToJournal(t oauthcred.WriteTarget) oauthjournal.WriteTarget {
+	return oauthjournal.WriteTarget{Path: t.Path, SelectedPath: t.SelectedPath, LockPath: t.LockPath, Expected: t.Expected, Owner: t.Owner, Enforce: t.Enforce}
+}
+
+func journalToCred(t oauthjournal.WriteTarget) oauthcred.WriteTarget {
+	return oauthcred.WriteTarget{Path: t.Path, SelectedPath: t.SelectedPath, LockPath: t.LockPath, Expected: t.Expected, Owner: t.Owner, Enforce: t.Enforce}
+}
+
+func (p journalPort) ViewSnap(fn func(oauthjournal.View) error) error {
+	return fn(snapView{sn: p.store.loadSnapshot()})
+}
+
+// PublishMutation holds the root publishMu for the whole callback.
+func (p journalPort) PublishMutation(fn func(oauthjournal.MutationScope) error) error {
+	p.store.publishMu.Lock()
+	defer p.store.publishMu.Unlock()
+	return fn(oauthMutationScope(p))
+}
+
+type oauthMutationScope struct{ store *ConfigStore }
+
+func (m oauthMutationScope) Current() oauthjournal.View { return snapView{sn: m.store.loadSnapshot()} }
+
+func (m oauthMutationScope) Publish(cfg *cfgmodel.Config) {
+	sn := m.store.loadSnapshot().clone()
+	sn.config = cfg
+	m.store.publishLocked(sn)
+}
+
+func (m oauthMutationScope) PendingOAuthDigests(provider string) []string {
+	return m.store.oauthCredStore().PendingDigestsLocked(provider)
+}
+
+func (m oauthMutationScope) DeletePendingOAuthIfToken(provider string, token *oauth.Token) bool {
+	return m.store.oauthCredStore().DeletePendingOAuthIfTokenLocked(provider, token)
+}
+
+func (p journalPort) WithPublishMu(fn func()) {
+	p.store.publishMu.Lock()
+	defer p.store.publishMu.Unlock()
+	fn()
+}
+
+func (p journalPort) ScopePath(scope cfgmodel.Scope) (string, error) {
+	return p.store.configPath(scope)
+}
+
+func (p journalPort) ApplyOAuthToken(providerID string, expected, token *oauth.Token) error {
+	return p.store.applyOAuthToken(providerID, expected, token)
+}
+
+func (p journalPort) ApplyOAuthTokenWithPendingPredecessor(providerID string, expected, token, predecessor *oauth.Token, pending bool, records ...*docread.OAuthJournalRecord) error {
+	return p.store.applyOAuthTokenWithPendingPredecessor(providerID, expected, token, predecessor, pending, records...)
+}
+
+func (p journalPort) TryLockDiskWrite() bool                { return p.store.diskWriteMu.TryLock() }
+func (p journalPort) UnlockDiskWrite()                      { p.store.diskWriteMu.Unlock() }
+func (p journalPort) ConfigWriteLockTimeout() time.Duration { return configWriteLockTimeout }
+func (p journalPort) CodexRefreshLockWait() time.Duration   { return codexRefreshLockWait }
+func (p journalPort) WaitCodexRefresh(ctx context.Context, d time.Duration) error {
+	return waitCodexRefresh(ctx, d)
+}
+
+func (p journalPort) CodexRefreshBeforePersist() func(context.Context, int) error {
+	return codexRefreshBeforePersist
+}
+
+func (p journalPort) OAuthJournalWorkerDone(provider string) {
+	if oauthJournalWorkerDone != nil {
+		oauthJournalWorkerDone(p.store, provider)
+	}
+}
+
+func (p journalPort) OAuthJournalWorkerIdle(provider string) {
+	if oauthJournalWorkerIdle != nil {
+		oauthJournalWorkerIdle(p.store, provider)
+	}
+}
+
+func (p journalPort) OAuthRotatingProviders() []oauthjournal.OAuthDescriptor {
+	descriptors := p.store.oauthCredStore().Descriptors()
+	out := make([]oauthjournal.OAuthDescriptor, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		out = append(out, oauthjournal.OAuthDescriptor{ID: descriptor.ID(), Rotating: descriptor.Rotating()})
+	}
+	return out
+}
+
+func (p journalPort) ResolveConfigWriteTarget(path string) (oauthjournal.WriteTarget, error) {
+	target, err := p.store.resolveConfigWriteTarget(path)
+	if err != nil {
+		return oauthjournal.WriteTarget{}, err
+	}
+	return journalWriteTargetOf(target), nil
+}
+
+func (p journalPort) WithCodexConfigWriteLock(ctx context.Context, path string, target oauthjournal.WriteTarget, fn func(oauthjournal.WriteTarget) error) error {
+	return p.store.oauthCredStore().WithCodexConfigWriteLock(ctx, path, journalToCred(target), func(t oauthcred.WriteTarget) error {
+		return fn(credToJournal(t))
+	})
+}
+
+func (p journalPort) SetOAuthTokenIfCurrentWithLock(scope cfgmodel.Scope, providerID string, expected, token *oauth.Token, withLock func(string, func(oauthjournal.WriteTarget) error) error) (bool, error) {
+	return p.store.oauthCredStore().SetOAuthTokenIfCurrentWithLock(scope, providerID, expected, token, func(_ string, fn func(oauthcred.WriteTarget) error) error {
+		return withLock(providerID, func(target oauthjournal.WriteTarget) error {
+			return fn(journalToCred(target))
+		})
+	})
+}
+
+func (p journalPort) TokenProviderConfig(providerID string, pc cfgmodel.ProviderConfig, token *oauth.Token) cfgmodel.ProviderConfig {
+	return p.store.oauthCredStore().TokenProviderConfig(providerID, pc, token)
+}
+
+func (p journalPort) ErrCredentialCAS() error { return p.store.oauthCredStore().ErrCredentialCAS() }
+
+// DeletePendingOAuthIfToken requires the root publishMu to be held.
+func (p journalPort) DeletePendingOAuthIfToken(provider string, token *oauth.Token) bool {
+	return oauthMutationScope(p).DeletePendingOAuthIfToken(provider, token)
+}
+
+// ---------------------------------------------------------------------------
+// X3 delegators: each forwards to the OAuth journal component (s.oauthJournal).
+// ---------------------------------------------------------------------------
+
+func (s *ConfigStore) installOAuthOutbox(path string, scope Scope, provider string, record *docread.OAuthJournalRecord) *oauthOutboxEntry {
+	return s.oauthJournal().InstallOAuthOutbox(path, scope, provider, record)
+}
+
+func (s *ConfigStore) oauthOutboxCurrent(path, provider string) *oauthOutboxEntry {
+	return s.oauthJournal().OutboxCurrent(path, provider)
+}
+
+func (s *ConfigStore) clearOAuthOutbox(path, provider string, entry *oauthOutboxEntry) {
+	s.oauthJournal().ClearOutbox(path, provider, entry)
+}
+
+func (s *ConfigStore) settleOAuthOutbox(ctx context.Context, path, provider string, entry *oauthOutboxEntry) (bool, error) {
+	return s.oauthJournal().SettleOutbox(ctx, path, provider, entry)
+}
+
+func (s *ConfigStore) flushOAuthOutbox(ctx context.Context, path, provider string) error {
+	return s.oauthJournal().FlushOutbox(ctx, path, provider)
+}
+
+func (s *ConfigStore) stopOAuthJournalWorkers() { s.oauthJournal().StopWorkers() }
+
+func (s *ConfigStore) startOAuthJournalWorker(scope Scope, provider string) {
+	s.oauthJournal().StartWorker(scope, provider)
+}
+
+func (s *ConfigStore) recoverCodexOAuthJournal(ctx context.Context, scope Scope, provider string) (*oauth.Token, *docread.OAuthJournalRecord, error) {
+	return s.oauthJournal().RecoverCodexJournal(ctx, scope, provider)
+}
+
+func (s *ConfigStore) withOAuthJournalRecoveryWriteLock(parent context.Context, path string, fn func() error) error {
+	return s.oauthJournal().WithRecoveryWriteLock(parent, path, fn)
+}
+
+func (s *ConfigStore) recoverOAuthJournalsAtLoad() { s.oauthJournal().RecoverAtLoad() }
+
+func (s *ConfigStore) runOAuthJournalWorker(ctx context.Context, provider string, worker *oauthJournalWorker) {
+	s.oauthJournal().RunWorker(ctx, provider, worker)
+}
+
+func (s *ConfigStore) oauthJournalWorkerAttempt(ctx context.Context, scope Scope, provider string, attempt int) (bool, error) {
+	return s.oauthJournal().WorkerAttempt(ctx, scope, provider, attempt)
+}
+
+// White-box test aliases: the staying-root tests keep the original
+// unexported type names for the oauthjournal types they construct.
+type (
+	oauthOutboxKey       = oauthjournal.Key
+	oauthOutboxEntry     = oauthjournal.Entry
+	oauthJournalWorker   = oauthjournal.Worker
+	oauthJournalDecision = oauthjournal.Decision
+	oauthJournalRecord   = docread.OAuthJournalRecord
+	oauthJournalLogKey   = oauthjournal.LogKey
+)
+
+var (
+	errOAuthJournalRead    = oauthjournal.ErrOAuthJournalRead
+	errOAuthJournalDisk    = oauthjournal.ErrOAuthJournalDisk
+	errOAuthJournalInvalid = oauthjournal.ErrOAuthJournalInvalid
+
+	arbitrateOAuthJournal           = oauthjournal.Arbitrate
+	readOAuthJournal                = oauthjournal.ReadJournal
+	readOAuthJournalDiskToken       = oauthjournal.ReadJournalDiskToken
+	readOAuthJournalWithRetry       = oauthjournal.ReadJournalWithRetry
+	writeOAuthJournalOnce           = oauthjournal.WriteJournalOnce
+	writeOAuthJournalUntilDurable   = oauthjournal.WriteJournalUntilDurable
+	verifyOAuthJournalConfigDurable = oauthjournal.VerifyConfigDurable
+	removeOAuthJournal              = oauthjournal.RemoveJournal
+	verifyOAuthOutboxJournal        = oauthjournal.VerifyOutboxJournal
+	quarantineOAuthJournal          = oauthjournal.Quarantine
+	quarantineOwnedOAuthJournal     = oauthjournal.QuarantineOwned
+	pruneOAuthJournalQuarantines    = oauthjournal.PruneQuarantines
+	oauthJournalPath                = oauthjournal.JournalPath
+	oauthRefreshLockPath            = oauthjournal.RefreshLockPath
+	oauthJournalLivePredecessor     = oauthjournal.LivePredecessor
+	oauthJournalWithBurned          = oauthjournal.WithBurned
+	oauthRefreshTokenSHA256         = oauthjournal.RefreshTokenSHA256
+	oauthRotationDigest             = oauthjournal.RotationDigest
+	decodeOAuthJournalDiskToken     = oauthjournal.DecodeOAuthJournalDiskToken
+	logOAuthJournalFailure          = oauthjournal.LogOAuthJournalFailure
+	logOAuthJournalFailureAt        = oauthjournal.LogOAuthJournalFailureAt
+	oauthJournalLogs                = &oauthjournal.OAuthJournalLogs
+)
+
+const (
+	oauthJournalError          = oauthjournal.OAuthJournalError
+	oauthJournalEqual          = oauthjournal.OAuthJournalEqual
+	oauthJournalPredecessor    = oauthjournal.OAuthJournalPredecessor
+	oauthJournalDiskLaterOrTie = oauthjournal.OAuthJournalDiskLaterOrTie
+	oauthJournalLater          = oauthjournal.OAuthJournalLater
+	oauthJournalLogout         = oauthjournal.OAuthJournalLogout
+)

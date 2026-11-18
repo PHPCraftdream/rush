@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,10 +49,10 @@ func TestOAuthRound9_BurnedDigestNonfirstAuthority(t *testing.T) {
 			d := b
 			d.AccessToken, d.RefreshToken = "fixture-D-access", "fixture-D-refresh"
 			d.ExpiresAt = time.Now().Add(3 * time.Hour).Unix()
-			oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
+			oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
 			journal := oauthJournalPath(f.path, f.used.ID)
-			oauthJournalWriteBudget = 10 * time.Millisecond
-			oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+			oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
+			oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 				if path == journal {
 					return os.ErrPermission
 				}
@@ -59,7 +60,7 @@ func TestOAuthRound9_BurnedDigestNonfirstAuthority(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				f.store.stopOAuthJournalWorkers()
-				oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget
+				oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 			})
 			calls := 0
 			stubCodexRefresh(t, func(_ context.Context, _ *http.Client, refresh string) (*oauth.Token, error) {
@@ -99,17 +100,17 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(journal, walBytes, 0o600))
 
-	oldBefore, oldWait := oauthJournalBeforeWorker, oauthJournalWorkerWait
-	oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
+	oldBefore, oldWait := oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait
+	oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
 	start, permits := make(chan struct{}), make(chan struct{})
 	attempts := make(chan struct{}, 1)
-	oauthJournalBeforeWorker = func(ctx context.Context) {
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) {
 		select {
 		case <-start:
 		case <-ctx.Done():
 		}
 	}
-	oauthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
+	oauthjournal.OAuthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
 		select {
 		case attempts <- struct{}{}:
 		case <-ctx.Done():
@@ -125,8 +126,8 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	var failing atomic.Bool
 	failing.Store(true)
 	var writes atomic.Int32
-	oauthJournalWriteBudget = 10 * time.Millisecond
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if path == journal {
 			writes.Add(1)
 			if failing.Load() {
@@ -137,8 +138,8 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	}
 	t.Cleanup(func() {
 		f.store.stopOAuthJournalWorkers()
-		oauthJournalBeforeWorker, oauthJournalWorkerWait = oldBefore, oldWait
-		oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget
+		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait = oldBefore, oldWait
+		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 	})
 	idle := hookOAuthJournalIdle(t, f.store)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -153,13 +154,13 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	require.Equal(t, record, pendingRecord)
 	assertCodexRefreshTokens(t, f, &b, &c)
 	f.store.publishMu.Lock()
-	pending, pendingOK := f.store.pendingOAuth[f.used.ID]
+	pending, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
 	require.True(t, pendingOK)
-	require.Equal(t, c, pending.predecessor)
-	require.Equal(t, b, pending.token)
-	require.Equal(t, oauthRefreshTokenSHA256(&a), pending.record.PredecessorRefreshTokenSHA256)
-	require.Contains(t, pending.record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&c))
+	require.Equal(t, c, pending.Predecessor)
+	require.Equal(t, b, pending.Token)
+	require.Equal(t, oauthRefreshTokenSHA256(&a), pending.Record.PredecessorRefreshTokenSHA256)
+	require.Contains(t, pending.Record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&c))
 	retained, err := os.ReadFile(journal)
 	require.NoError(t, err)
 	require.Equal(t, walBytes, retained)
@@ -201,10 +202,10 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 		require.Positive(t, writes.Load())
 		owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 		require.NotNil(t, owned)
-		require.Equal(t, &d, owned.record.Token)
-		require.Equal(t, oauthRefreshTokenSHA256(&b), owned.record.PredecessorRefreshTokenSHA256)
-		require.Contains(t, owned.record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&a))
-		require.Contains(t, owned.record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&c))
+		require.Equal(t, &d, owned.Record.Token)
+		require.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
+		require.Contains(t, owned.Record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&a))
+		require.Contains(t, owned.Record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&c))
 	}
 	assertCodexRefreshTokens(t, f, want, &a)
 	failing.Store(false)
@@ -216,7 +217,7 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 			assertCodexRefreshTokens(t, f, want, want)
 			require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
 			f.store.publishMu.Lock()
-			_, pendingOK := f.store.pendingOAuth[f.used.ID]
+			_, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 			f.store.publishMu.Unlock()
 			require.False(t, pendingOK, "convergence must clear pending ownership")
 			_, err := os.Stat(journal)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,10 +33,9 @@ func TestOAuthRefresh_TransportFailureDoesNotPoll(t *testing.T) {
 	f := newCodexRefreshFixture(t)
 	transportErr := errors.New("injected transport failure")
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, transportErr })
-	old := codexRefreshPollWait
 	polls := 0
-	codexRefreshPollWait = func(context.Context, time.Duration) error { polls++; return context.DeadlineExceeded }
-	t.Cleanup(func() { codexRefreshPollWait = old })
+	restorePollWait := oauthcred.SetCodexRefreshPollWaitForTest(func(context.Context, time.Duration) error { polls++; return context.DeadlineExceeded })
+	t.Cleanup(restorePollWait)
 	require.ErrorIs(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil), transportErr)
 	require.Zero(t, polls)
 	assertCodexRefreshTokens(t, f, f.used.OAuthToken, f.used.OAuthToken)

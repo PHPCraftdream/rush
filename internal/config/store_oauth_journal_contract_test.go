@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/stretchr/testify/require"
 )
@@ -41,9 +42,9 @@ func TestOAuthJournal_TransientWriteFailuresAreDurableAndSanitized(t *testing.T)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 	entered, release := pauseCodexPendingPersist(t)
 	t.Cleanup(release)
-	oldWrite, oldWait := oauthJournalAtomicWrite, oauthJournalRetryWait
+	oldWrite, oldWait := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait
 	attempts := 0
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		attempts++
 		pc, ok := f.store.Config().Providers.Get(f.used.ID)
 		require.True(t, ok)
@@ -53,8 +54,8 @@ func TestOAuthJournal_TransientWriteFailuresAreDurableAndSanitized(t *testing.T)
 		}
 		return atomicWriteFile(path, data, mode)
 	}
-	oauthJournalRetryWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-	t.Cleanup(func() { oauthJournalAtomicWrite, oauthJournalRetryWait = oldWrite, oldWait })
+	oauthjournal.OAuthJournalRetryWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait = oldWrite, oldWait })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 	awaitCodexSignal(t, entered)
@@ -112,9 +113,9 @@ func TestOAuthJournal_ConfigRetryLoggingIsRateLimited(t *testing.T) {
 func TestOAuthJournal_RecoveryHoldsRefreshLock(t *testing.T) {
 	f := newCodexRefreshReloadFixture(t)
 	writeOAuthJournalFixture(t, f)
-	old := oauthJournalRecoveryHook
+	old := oauthjournal.OAuthJournalRecoveryHook
 	var checked atomic.Int32
-	oauthJournalRecoveryHook = func() {
+	oauthjournal.OAuthJournalRecoveryHook = func() {
 		lock, err := filelock.TryAcquireFileLock(oauthRefreshLockPath(f.path, f.used.ID))
 		if lock != nil {
 			_ = lock.Release()
@@ -123,11 +124,11 @@ func TestOAuthJournal_RecoveryHoldsRefreshLock(t *testing.T) {
 		require.ErrorAs(t, err, &contended)
 		checked.Add(1)
 	}
-	t.Cleanup(func() { oauthJournalRecoveryHook = old })
+	t.Cleanup(func() { oauthjournal.OAuthJournalRecoveryHook = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
-	before := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = before })
+	before := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = before })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		t.Error("unexpected exchange")
@@ -170,10 +171,12 @@ func TestOAuthJournal_QuarantineAllPreservationFailsStillRefreshes(t *testing.T)
 	secret := "fake-corrupt-refresh-secret"
 	path := oauthJournalPath(f.path, f.used.ID)
 	require.NoError(t, os.WriteFile(path, []byte(secret), 0o600))
-	oldRename, oldCopy := oauthJournalQuarantineRename, oauthJournalQuarantineCopy
-	oauthJournalQuarantineRename = func(string, string) error { return errors.New(secret) }
-	oauthJournalQuarantineCopy = func(string, string) error { return errors.New(secret) }
-	t.Cleanup(func() { oauthJournalQuarantineRename, oauthJournalQuarantineCopy = oldRename, oldCopy })
+	oldRename, oldCopy := oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy
+	oauthjournal.OAuthJournalQuarantineRename = func(string, string) error { return errors.New(secret) }
+	oauthjournal.OAuthJournalQuarantineCopy = func(string, string) error { return errors.New(secret) }
+	t.Cleanup(func() {
+		oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy = oldRename, oldCopy
+	})
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 	entered, release := pauseCodexPendingPersist(t)

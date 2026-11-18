@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +35,7 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	writeCodexPendingDisk(t, f, &a)
 	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&a), Token: &b}
 	f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-	require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, &a, &b, true))
+	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true))
 	before, err := os.ReadFile(f.path)
 	require.NoError(t, err)
 	d := b
@@ -41,10 +43,10 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	d.ExpiresAt = time.Now().Add(3 * time.Hour).Unix()
 
 	journal := oauthJournalPath(f.path, f.used.ID)
-	oldWrite, oldBudget := oauthJournalAtomicWrite, oauthJournalWriteBudget
-	oauthJournalWriteBudget = 10 * time.Millisecond
+	oldWrite, oldBudget := oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget
+	oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
 	writes := 0
-	oauthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
+	oauthjournal.OAuthJournalAtomicWrite = func(path string, data []byte, mode os.FileMode) error {
 		if path == journal {
 			writes++
 			return errors.New("injected round9 journal write failure")
@@ -53,7 +55,7 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	}
 	t.Cleanup(func() {
 		f.store.stopOAuthJournalWorkers()
-		oauthJournalAtomicWrite, oauthJournalWriteBudget = oldWrite, oldBudget
+		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 	})
 	calls := 0
 	client := &http.Client{}
@@ -87,15 +89,15 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	assert.Empty(t, live.APIKey)
 	owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
 	if assert.NotNil(t, owned, "failed journal writes must retain D ownership") {
-		assert.Equal(t, &d, owned.record.Token)
-		assert.Equal(t, oauthRefreshTokenSHA256(&b), owned.record.PredecessorRefreshTokenSHA256)
+		assert.Equal(t, &d, owned.Record.Token)
+		assert.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
 	}
 	f.store.publishMu.Lock()
-	pending, pendingOK := f.store.pendingOAuth[f.used.ID]
+	pending, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 	f.store.publishMu.Unlock()
 	assert.True(t, pendingOK)
-	assert.Equal(t, d, pending.token)
-	assert.Equal(t, b, pending.predecessor)
+	assert.Equal(t, d, pending.Token)
+	assert.Equal(t, b, pending.Predecessor)
 	after, readErr := os.ReadFile(f.path)
 	require.NoError(t, readErr)
 	assert.Equal(t, before, after, "blocked worker must leave config A untouched")

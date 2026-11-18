@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,15 +23,59 @@ import (
 // at least this long, or a legitimate lock wait reads as a failure.
 const BusyTimeout = 30 * time.Second
 
-var pragmas = map[string]string{
-	"foreign_keys":  "ON",
-	"journal_mode":  "WAL",
-	"page_size":     "4096",
-	"temp_store":    "MEMORY",
-	"cache_size":    "-8000",
-	"synchronous":   "NORMAL",
-	"secure_delete": "ON",
-	"busy_timeout":  strconv.FormatInt(BusyTimeout.Milliseconds(), 10),
+// pragmaList is applied to every new connection IN THIS ORDER. busy_timeout must come
+// first: journal_mode(WAL) and the later pragmas can need a lock, and with the timeout
+// not yet set a concurrent opener fails at once with SQLITE_BUSY instead of waiting.
+var pragmaList = []struct{ name, value string }{
+	{"busy_timeout", strconv.FormatInt(BusyTimeout.Milliseconds(), 10)},
+	{"foreign_keys", "ON"},
+	{"journal_mode", "WAL"},
+	{"page_size", "4096"},
+	{"temp_store", "MEMORY"},
+	{"cache_size", "-8000"},
+	{"synchronous", "NORMAL"},
+	{"secure_delete", "ON"},
+}
+
+// IsBusy reports a SQLITE_BUSY / "database is locked" failure from either SQLite driver.
+func IsBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+}
+
+// OpenWriter opens the single-connection writer for dbPath and proves it usable. The first
+// connection runs journal_mode(WAL), which can fail with SQLITE_BUSY without consulting
+// busy_timeout when another process is converting or opening the same file at that moment
+// (two `rush run` starting together on a fresh data directory), so a busy open is retried
+// with a short jittered backoff for up to BusyTimeout instead of failing the run.
+func OpenWriter(ctx context.Context, dbPath string) (*sql.DB, error) {
+	deadline := time.Now().Add(BusyTimeout)
+	for attempt := 0; ; attempt++ {
+		conn, err := OpenDB(dbPath)
+		if err != nil {
+			return nil, err
+		}
+		// Serialized through one connection: interleaved pooled writes/checkpoints have
+		// caused WAL/header desync (SQLITE_NOTADB) on the next open.
+		conn.SetMaxOpenConns(1)
+		err = conn.PingContext(ctx)
+		if err == nil {
+			return conn, nil
+		}
+		_ = conn.Close()
+		if !IsBusy(err) || time.Now().After(deadline) || ctx.Err() != nil {
+			return nil, fmt.Errorf("failed to connect to database: %w", err)
+		}
+		wait := time.Duration(20*(attempt+1))*time.Millisecond + time.Duration(rand.IntN(40))*time.Millisecond
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("failed to connect to database: %w", err)
+		case <-time.After(min(wait, 500*time.Millisecond)):
+		}
+	}
 }
 
 //go:embed migrations/*.sql

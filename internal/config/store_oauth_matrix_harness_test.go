@@ -12,24 +12,26 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func oauthMatrixSeamRestorer() func() {
-	read, write := oauthJournalReadFile, oauthJournalAtomicWrite
-	readWait, retryWait, budget := oauthJournalReadWait, oauthJournalRetryWait, oauthJournalWriteBudget
-	rename, copy := oauthJournalQuarantineRename, oauthJournalQuarantineCopy
-	before, wait, idle := oauthJournalBeforeWorker, oauthJournalWorkerWait, oauthJournalWorkerIdle
+	read, write := oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalAtomicWrite
+	readWait, retryWait, budget := oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget
+	rename, copy := oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy
+	before, wait, idle := oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait, oauthJournalWorkerIdle
 	exchange := codexRefreshTokenFn
 	configTestHooks.Lock()
 	syncParent := configTestHooks.syncParent
 	configTestHooks.Unlock()
 	return func() {
-		oauthJournalReadFile, oauthJournalAtomicWrite = read, write
-		oauthJournalReadWait, oauthJournalRetryWait, oauthJournalWriteBudget = readWait, retryWait, budget
-		oauthJournalQuarantineRename, oauthJournalQuarantineCopy = rename, copy
-		oauthJournalBeforeWorker, oauthJournalWorkerWait, oauthJournalWorkerIdle = before, wait, idle
+		oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalAtomicWrite = read, write
+		oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget = readWait, retryWait, budget
+		oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy = rename, copy
+		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait, oauthJournalWorkerIdle = before, wait, idle
 		codexRefreshTokenFn = exchange
 		configTestHooks.Lock()
 		configTestHooks.syncParent = syncParent
@@ -60,9 +62,9 @@ func oauthMatrixSeamPointers() []uintptr {
 	syncParent := configTestHooks.syncParent
 	configTestHooks.Unlock()
 	seams := []any{
-		oauthJournalReadFile, oauthJournalAtomicWrite, oauthJournalReadWait, oauthJournalRetryWait,
-		oauthJournalQuarantineRename, oauthJournalQuarantineCopy, oauthJournalBeforeWorker,
-		oauthJournalWorkerWait, oauthJournalWorkerIdle, codexRefreshTokenFn, syncParent,
+		oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalRetryWait,
+		oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy, oauthjournal.OAuthJournalBeforeWorker,
+		oauthjournal.OAuthJournalWorkerWait, oauthJournalWorkerIdle, codexRefreshTokenFn, syncParent,
 	}
 	var pointers []uintptr
 	for _, seam := range seams {
@@ -72,7 +74,7 @@ func oauthMatrixSeamPointers() []uintptr {
 }
 
 func TestOAuthRound9_MatrixCleanupTimeoutPath(t *testing.T) {
-	before, budget := oauthMatrixSeamPointers(), oauthJournalWriteBudget
+	before, budget := oauthMatrixSeamPointers(), oauthjournal.OAuthJournalWriteBudget
 	restore := oauthMatrixSeamRestorer()
 	t.Cleanup(restore)
 	var joins atomic.Int32
@@ -88,15 +90,15 @@ func TestOAuthRound9_MatrixCleanupTimeoutPath(t *testing.T) {
 	t.Run("fatal-style-cleanup", func(child *testing.T) {
 		store := &ConfigStore{}
 		trackOAuthJournalTestStore(child, store)
-		oauthJournalReadFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
-		oauthJournalAtomicWrite = func(string, []byte, os.FileMode) error { return os.ErrPermission }
-		oauthJournalReadWait = func(context.Context, time.Duration) error { return os.ErrPermission }
-		oauthJournalRetryWait = oauthJournalReadWait
-		oauthJournalWriteBudget = time.Millisecond
-		oauthJournalQuarantineRename = func(string, string) error { return os.ErrPermission }
-		oauthJournalQuarantineCopy = oauthJournalQuarantineRename
-		oauthJournalBeforeWorker = func(context.Context) {}
-		oauthJournalWorkerWait = oauthJournalReadWait
+		oauthjournal.OAuthJournalReadFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+		oauthjournal.OAuthJournalAtomicWrite = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+		oauthjournal.OAuthJournalReadWait = func(context.Context, time.Duration) error { return os.ErrPermission }
+		oauthjournal.OAuthJournalRetryWait = oauthjournal.OAuthJournalReadWait
+		oauthjournal.OAuthJournalWriteBudget = time.Millisecond
+		oauthjournal.OAuthJournalQuarantineRename = func(string, string) error { return os.ErrPermission }
+		oauthjournal.OAuthJournalQuarantineCopy = oauthjournal.OAuthJournalQuarantineRename
+		oauthjournal.OAuthJournalBeforeWorker = func(context.Context) {}
+		oauthjournal.OAuthJournalWorkerWait = oauthjournal.OAuthJournalReadWait
 		oauthJournalWorkerIdle = func(*ConfigStore, string) {}
 		codexRefreshTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, os.ErrPermission }
 		configTestHooks.Lock()
@@ -131,10 +133,10 @@ func TestOAuthRound9_MatrixCleanupTimeoutPath(t *testing.T) {
 			require.True(child, ok)
 			assert.Empty(child, value, "registration must be consumed before fixture cleanup")
 			assert.Equal(child, before, oauthMatrixSeamPointers(), "all matrix function seams restored")
-			assert.Equal(child, budget, oauthJournalWriteBudget)
+			assert.Equal(child, budget, oauthjournal.OAuthJournalWriteBudget)
 		})
 	})
 	assert.Equal(t, int32(1), joins.Load(), "fixture cleanup must not join a second time")
 	assert.Equal(t, before, oauthMatrixSeamPointers(), "parent continues after fatal-style cleanup")
-	assert.Equal(t, budget, oauthJournalWriteBudget)
+	assert.Equal(t, budget, oauthjournal.OAuthJournalWriteBudget)
 }

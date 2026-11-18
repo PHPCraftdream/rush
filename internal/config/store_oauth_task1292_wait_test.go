@@ -63,9 +63,7 @@ func TestTask1292Legacy_SlotWaitCancellationAndBudget(t *testing.T) {
 					want = context.Canceled
 				}
 				require.ErrorIs(t, awaitCodexResult(t, result), want)
-				codexRefreshActive.Lock()
-				_, busy := codexRefreshActive.calls[codexRefreshKey{f.store, id}]
-				codexRefreshActive.Unlock()
+				busy := f.store.oauthCredStore().CodexRefreshActiveForTest(id)
 				require.True(t, busy, "canceled waiter must not release leader's slot")
 				close(release)
 				require.NoError(t, awaitCodexResult(t, leader))

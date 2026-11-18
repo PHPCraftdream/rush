@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,9 +20,9 @@ import (
 func newOAuthJournalRefreshRecoveryFixture(t *testing.T) codexRefreshFixture {
 	t.Helper()
 	f := newCodexRefreshReloadFixture(t)
-	old := oauthJournalBeforeWorker
-	oauthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
-	t.Cleanup(func() { oauthJournalBeforeWorker = old })
+	old := oauthjournal.OAuthJournalBeforeWorker
+	oauthjournal.OAuthJournalBeforeWorker = func(ctx context.Context) { <-ctx.Done() }
+	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	return f
 }
@@ -109,7 +110,7 @@ func TestOAuthJournalRefreshRecovery_ExpiredBCorruptConfigExchanges(t *testing.T
 	repaired := newTestConfigStore(testStoreOpts{config: f.store.Config(), globalDataPath: f.path})
 	repaired.workingDir = f.store.workingDir
 	trackOAuthJournalTestStore(t, repaired)
-	oauthJournalBeforeWorker = nil
+	oauthjournal.OAuthJournalBeforeWorker = nil
 	idle := hookOAuthJournalIdle(t, repaired)
 	require.NoError(t, repaired.applyOAuthTokenWithPendingPredecessor(f.used.ID, &c, &c, &b, true))
 	require.NoError(t, repaired.ReloadFromDisk(context.Background()))
@@ -199,20 +200,20 @@ func TestOAuthJournalRefreshRecovery_PersistentReadIO(t *testing.T) {
 			path := oauthJournalPath(f.path, f.used.ID)
 			before, err := os.ReadFile(path)
 			require.NoError(t, err)
-			oldWait := oauthJournalReadWait
-			oauthJournalReadWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
-			t.Cleanup(func() { oauthJournalReadWait = oldWait })
+			oldWait := oauthjournal.OAuthJournalReadWait
+			oauthjournal.OAuthJournalReadWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+			t.Cleanup(func() { oauthjournal.OAuthJournalReadWait = oldWait })
 			joinOAuthJournalTestStoresBeforeRestore(t)
-			old := oauthJournalReadFile
+			old := oauthjournal.OAuthJournalReadFile
 			reads := 0
-			oauthJournalReadFile = func(name string) ([]byte, error) {
+			oauthjournal.OAuthJournalReadFile = func(name string) ([]byte, error) {
 				if name == path {
 					reads++
 					return nil, &os.PathError{Op: "read", Path: name, Err: os.ErrPermission}
 				}
 				return old(name)
 			}
-			t.Cleanup(func() { oauthJournalReadFile = old })
+			t.Cleanup(func() { oauthjournal.OAuthJournalReadFile = old })
 			joinOAuthJournalTestStoresBeforeRestore(t)
 			calls := 0
 			stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) {
@@ -231,9 +232,7 @@ func TestOAuthJournalRefreshRecovery_PersistentReadIO(t *testing.T) {
 				loaded, loadErr := Load(f.store.workingDir, "", false)
 				require.NoError(t, loadErr)
 				trackOAuthJournalTestStore(t, loaded)
-				loaded.oauthWorkerMu.Lock()
-				assert.NotNil(t, loaded.oauthWorkers[f.used.ID])
-				loaded.oauthWorkerMu.Unlock()
+				assert.NotNil(t, loaded.oauthJournal().WorkerFor(f.used.ID))
 				loaded.stopOAuthJournalWorkers()
 			}
 			f.store.stopOAuthJournalWorkers()
@@ -254,10 +253,10 @@ func TestOAuthJournalRefreshRecovery_TransientReadIO(t *testing.T) {
 	f := newOAuthJournalRefreshRecoveryFixture(t)
 	writeOAuthJournalFixture(t, f)
 	path := oauthJournalPath(f.path, f.used.ID)
-	oldRead, oldWait := oauthJournalReadFile, oauthJournalReadWait
+	oldRead, oldWait := oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalReadWait
 	reads := 0
 	var waits []time.Duration
-	oauthJournalReadFile = func(name string) ([]byte, error) {
+	oauthjournal.OAuthJournalReadFile = func(name string) ([]byte, error) {
 		if name == path {
 			reads++
 			if reads <= 2 {
@@ -266,11 +265,11 @@ func TestOAuthJournalRefreshRecovery_TransientReadIO(t *testing.T) {
 		}
 		return oldRead(name)
 	}
-	oauthJournalReadWait = func(ctx context.Context, delay time.Duration) error {
+	oauthjournal.OAuthJournalReadWait = func(ctx context.Context, delay time.Duration) error {
 		waits = append(waits, delay)
 		return ctx.Err()
 	}
-	t.Cleanup(func() { oauthJournalReadFile, oauthJournalReadWait = oldRead, oldWait })
+	t.Cleanup(func() { oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalReadWait = oldRead, oldWait })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	calls := 0
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) {
@@ -280,7 +279,7 @@ func TestOAuthJournalRefreshRecovery_TransientReadIO(t *testing.T) {
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 	f.store.stopOAuthJournalWorkers()
 	assert.Equal(t, 3, reads)
-	assert.Equal(t, oauthJournalReadBackoffs[:2], waits)
+	assert.Equal(t, oauthjournal.OAuthJournalReadBackoffs[:2], waits)
 	assert.Zero(t, calls)
 	pc, ok := f.store.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
@@ -295,16 +294,16 @@ func TestOAuthJournalRefreshRecovery_WorkerReadIOKeepsScope(t *testing.T) {
 	f := newOAuthJournalRefreshRecoveryFixture(t)
 	writeOAuthJournalFixture(t, f)
 	path := oauthJournalPath(f.path, f.used.ID)
-	oldRead, oldReadWait, oldWorkerWait := oauthJournalReadFile, oauthJournalReadWait, oauthJournalWorkerWait
-	oauthJournalReadFile = func(name string) ([]byte, error) {
+	oldRead, oldReadWait, oldWorkerWait := oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalWorkerWait
+	oauthjournal.OAuthJournalReadFile = func(name string) ([]byte, error) {
 		if name == path {
 			return nil, os.ErrPermission
 		}
 		return oldRead(name)
 	}
-	oauthJournalReadWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	oauthjournal.OAuthJournalReadWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	waiting, resume := make(chan struct{}), make(chan struct{})
-	oauthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
+	oauthjournal.OAuthJournalWorkerWait = func(ctx context.Context, _ time.Duration) error {
 		close(waiting)
 		select {
 		case <-resume:
@@ -314,21 +313,19 @@ func TestOAuthJournalRefreshRecovery_WorkerReadIOKeepsScope(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		oauthJournalReadFile, oauthJournalReadWait, oauthJournalWorkerWait = oldRead, oldReadWait, oldWorkerWait
+		oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalWorkerWait = oldRead, oldReadWait, oldWorkerWait
 	})
 	joinOAuthJournalTestStoresBeforeRestore(t)
-	oauthJournalBeforeWorker = nil
+	oauthjournal.OAuthJournalBeforeWorker = nil
 	idle := hookOAuthJournalIdle(t, f.store)
 	f.store.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
 	awaitCodexSignal(t, waiting)
-	f.store.oauthWorkerMu.Lock()
-	worker := f.store.oauthWorkers[f.used.ID]
+	worker := f.store.oauthJournal().WorkerFor(f.used.ID)
 	require.NotNil(t, worker)
-	assert.NotZero(t, worker.scopes[ScopeGlobal])
-	f.store.oauthWorkerMu.Unlock()
+	assert.NotZero(t, worker.Scopes[ScopeGlobal])
 	// Channel release orders seam repair before the worker's next attempt.
-	oauthJournalReadFile = oldRead
-	oauthJournalWorkerWait = oldWorkerWait
+	oauthjournal.OAuthJournalReadFile = oldRead
+	oauthjournal.OAuthJournalWorkerWait = oldWorkerWait
 	close(resume)
 	waitOAuthJournalIdle(t, idle)
 	f.store.stopOAuthJournalWorkers()
@@ -343,7 +340,7 @@ func TestOAuthJournalRefreshRecovery_SupersessionSyncFailureRetains(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			f := newOAuthJournalRefreshRecoveryFixture(t)
 			writeOAuthJournalFixture(t, f)
-			require.NoError(t, f.store.applyOAuthTokenWithPending(f.used.ID, f.used.OAuthToken, f.next, true))
+			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
 			disk := f.next
 			switch name {
 			case "later", "tie":
@@ -377,7 +374,7 @@ func TestOAuthJournalRefreshRecovery_SupersessionSyncFailureRetains(t *testing.T
 			assert.NoError(t, readErr)
 			assert.Equal(t, before, after)
 			f.store.publishMu.Lock()
-			_, pending := f.store.pendingOAuth[f.used.ID]
+			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
 			f.store.publishMu.Unlock()
 			assert.True(t, pending)
 		})
