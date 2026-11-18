@@ -192,25 +192,7 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 		}
 	}
 
-	// Stop every pending cache keep-alive timer AND cut off any replay
-	// already in flight (bounded only by cacheKeepAliveCallTimeout, 30s,
-	// otherwise) — defense in depth on top of tryAdmitRunWg's gate inside
-	// fireCacheKeepAlive itself, so no new replay call is even attempted
-	// once shutdown begins. Both maps swept under ONE cacheKeepAliveMu hold,
-	// matching cancelCacheKeepAlive's own reasoning: fireCacheKeepAlive
-	// moves an entry from "pending" to "in-flight" atomically, so a single
-	// hold here sees a consistent snapshot instead of two separate looks
-	// that could straddle that transition.
-	a.cacheKeepAliveMu.Lock()
-	for sessionID, entry := range a.cacheKeepAlive.Seq2() {
-		entry.timer.Stop()
-		a.cacheKeepAlive.Del(sessionID)
-	}
-	for sessionID, inFlight := range a.cacheKeepAliveInFlight.Seq2() {
-		inFlight.cancel()
-		a.cacheKeepAliveInFlight.Del(sessionID)
-	}
-	a.cacheKeepAliveMu.Unlock()
+	a.cacheKeepAliveComponent.cancelAll()
 
 	// Stop every in-flight title-generation goroutine too. Their contexts
 	// are deliberately detached from each turn's own cancel (see

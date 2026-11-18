@@ -21,6 +21,35 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
+type compactionHost interface {
+	compactionSessions() session.Service
+	compactionMessages() message.Service
+}
+
+func (a *sessionAgent) compactionSessions() session.Service { return a.sessions }
+
+func (a *sessionAgent) compactionMessages() message.Service { return a.messages }
+
+type recoveryHost interface {
+	compactionHost
+	preparePrompt(msgs []message.Message, todos []session.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart)
+	getSessionMessages(ctx context.Context, sess session.Session) ([]message.Message, error)
+	accountRecoverySummary(ctx context.Context, sessionID, messageID string, model Model, usage fantasy.Usage, cost float64, snapshot session.Session) error
+	checkRecoverySummaryInput(ctx context.Context, sessionID string, summary message.Message, tail, pinned []message.Message, todos []session.Todo, state *codexRecoveryState) error
+	checkRecoverySummaryCost(ctx context.Context, sessionID string, maxCost, delta float64) error
+	openrouterCost(metadata fantasy.ProviderMetadata) *float64
+	updateSessionUsage(model Model, sess *session.Session, usage fantasy.Usage, overrideCost *float64) float64
+	recordMessageUsage(ctx context.Context, messageID string, model Model, usage fantasy.Usage, costDelta float64, estimated bool)
+}
+
+type recoveryComponent struct {
+	host recoveryHost
+}
+
+func newRecoveryComponent(a *sessionAgent) *recoveryComponent {
+	return &recoveryComponent{host: a}
+}
+
 // runSummarizeSilent compacts the older portion of the session history
 // synchronously under the caller's mailbox ownership without any visible
 // change in the UI. It retains the recent tail verbatim, summarizes eligible
@@ -33,10 +62,18 @@ import (
 // mistook the summary sorting after the retained tail (which hid it from the
 // reader) for a design flaw; the summary belongs before the verbatim tail.
 func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
-	return a.runSummarizeSilentForRecovery(ctx, sessionID, opts, smartModel, systemPromptPrefix, "", 0, nil)
+	return newRecoveryComponent(a).runSummarizeSilent(ctx, sessionID, opts, smartModel, systemPromptPrefix)
 }
 
 func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix, retainUserID string, maxOutputTokens int64, state *codexRecoveryState) error {
+	return newRecoveryComponent(a).runSummarizeSilentForRecovery(ctx, sessionID, opts, smartModel, systemPromptPrefix, retainUserID, maxOutputTokens, state)
+}
+
+func (c *recoveryComponent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
+	return c.runSummarizeSilentForRecovery(ctx, sessionID, opts, smartModel, systemPromptPrefix, "", 0, nil)
+}
+
+func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix, retainUserID string, maxOutputTokens int64, state *codexRecoveryState) error {
 	// Keep the ordinary silent-compaction path intact; recovery adds checks around
 	// the same stream and persistence operations only when retainUserID is set.
 	recovery := retainUserID != ""
@@ -51,11 +88,11 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	// Heartbeat attribution: same summary purpose, silent path (design pt. 1).
 	role, source := callbeat.HbInherited(ctx)
 	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
-	currentSession, err := a.sessions.Get(ctx, sessionID)
+	currentSession, err := c.host.compactionSessions().Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
-	msgs, err := a.getSessionMessages(ctx, currentSession)
+	msgs, err := c.host.getSessionMessages(ctx, currentSession)
 	if err != nil {
 		return err
 	}
@@ -96,7 +133,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		}
 		return nil
 	}
-	aiMsgs, _ := a.preparePrompt(toSummarise, nil, smartModel.Model.Provider())
+	aiMsgs, _ := c.host.preparePrompt(toSummarise, nil, smartModel.Model.Provider())
 	if recovery {
 		if maxOutputTokens <= 0 {
 			return errors.New("automatic context recovery requires known worker output limits")
@@ -112,7 +149,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		fantasy.WithSystemPrompt(string(summaryPrompt)),
 	)
 	// Create the summary message as hidden so it is invisible in the UI.
-	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+	summaryMessage, err := c.host.compactionMessages().Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
 		Model:            smartModel.Model.Model(),
 		Provider:         smartModel.Model.Provider(),
@@ -134,7 +171,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		if !summaryMessage.TruncateStreamedContent() {
 			return nil
 		}
-		return a.messages.Update(ctx, summaryMessage.Clone())
+		return c.host.compactionMessages().Update(ctx, summaryMessage.Clone())
 	}
 
 	var pinnedOutside []message.Message
@@ -151,7 +188,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	}
 	if recovery {
 		if err := ctx.Err(); err != nil {
-			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, err)
+			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
 		}
 	}
 	var retryCount *int
@@ -195,7 +232,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 				return err
 			}
 			summaryMessage.StartReasoningContent(reasoning.Text)
-			return a.messages.Update(ctx, summaryMessage)
+			return c.host.compactionMessages().Update(ctx, summaryMessage)
 		},
 		OnReasoningDelta: func(id string, text string) error {
 			notifyActivity(ctx)
@@ -204,7 +241,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 				return err
 			}
 			summaryMessage.AppendReasoningContent(text)
-			return a.messages.Update(ctx, summaryMessage)
+			return c.host.compactionMessages().Update(ctx, summaryMessage)
 		},
 		OnReasoningEnd: func(id string, reasoning fantasy.ReasoningContent) error {
 			notifyActivity(ctx)
@@ -215,7 +252,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 				}
 			}
 			summaryMessage.FinishThinking()
-			return a.messages.Update(ctx, summaryMessage)
+			return c.host.compactionMessages().Update(ctx, summaryMessage)
 		},
 		OnTextDelta: func(id, text string) error {
 			notifyActivity(ctx)
@@ -224,13 +261,13 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 				return err
 			}
 			summaryMessage.AppendContent(text)
-			return a.messages.Update(ctx, summaryMessage)
+			return c.host.compactionMessages().Update(ctx, summaryMessage)
 		},
 	})
 	if err != nil {
 		if retainUserID != "" {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-			deleteErr := a.messages.Delete(cleanupCtx, summaryMessage.ID)
+			deleteErr := c.host.compactionMessages().Delete(cleanupCtx, summaryMessage.ID)
 			cleanupCancel()
 			return errors.Join(fmt.Errorf("automatic context recovery summary stream: %w", err), deleteErr)
 		}
@@ -241,7 +278,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 			// fail and leave an orphaned summary message in the DB.
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
 			defer cleanupCancel()
-			deleteErr := a.messages.Delete(cleanupCtx, summaryMessage.ID)
+			deleteErr := c.host.compactionMessages().Delete(cleanupCtx, summaryMessage.ID)
 			if deleteErr != nil {
 				slog.Warn("Silent summarize: failed to delete orphaned summary message after cancel", "session_id", sessionID, "err", deleteErr)
 			}
@@ -266,14 +303,14 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		}
 		accountCtx, accountCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
 		defer accountCancel()
-		return a.accountRecoverySummary(accountCtx, sessionID, summaryMessage.ID, smartModel, recoveryUsage, recoveryCostDelta, recoverySession)
+		return c.host.accountRecoverySummary(accountCtx, sessionID, summaryMessage.ID, smartModel, recoveryUsage, recoveryCostDelta, recoverySession)
 	}
 	if recovery {
 		recoveryUsage = normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
 		recoverySpent = addStepUsageTokens(0, recoveryUsage)
 		var providerCost *float64
 		for _, step := range resp.Steps {
-			if stepCost := a.openrouterCost(step.ProviderMetadata); stepCost != nil {
+			if stepCost := c.host.openrouterCost(step.ProviderMetadata); stepCost != nil {
 				if providerCost == nil {
 					providerCost = new(float64)
 				}
@@ -281,15 +318,15 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 			}
 		}
 		var usageBase session.Session
-		recoveryCostDelta = a.updateSessionUsage(smartModel, &usageBase, recoveryUsage, providerCost)
+		recoveryCostDelta = c.host.updateSessionUsage(smartModel, &usageBase, recoveryUsage, providerCost)
 		var usageErr error
-		recoverySession, usageErr = a.sessions.Get(ctx, sessionID)
+		recoverySession, usageErr = c.host.compactionSessions().Get(ctx, sessionID)
 		if usageErr != nil {
 			recoverySession = usageBase
 			return errors.Join(errors.New("automatic context recovery cannot account summary usage"), accountRecovery())
 		}
 		updateSessionTokenCounters(&recoverySession, recoveryUsage)
-		capacityErr := a.checkRecoverySummaryInput(ctx, sessionID, summaryMessage, msgs[boundary:], pinnedOutside, currentSession.Todos, state)
+		capacityErr := c.host.checkRecoverySummaryInput(ctx, sessionID, summaryMessage, msgs[boundary:], pinnedOutside, currentSession.Todos, state)
 		if strings.TrimSpace(summaryMessage.Content().Text) == "" {
 			capacityErr = errors.Join(capacityErr, errors.New("automatic context recovery summary was empty"))
 		}
@@ -297,17 +334,17 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		if state.MaxTokens > 0 && state.Spent.Load()+recoverySpent > state.MaxTokens {
 			tokenErr = errors.New("automatic context recovery would exceed the call token cap")
 		}
-		costErr := a.checkRecoverySummaryCost(ctx, sessionID, state.MaxCost, recoveryCostDelta)
+		costErr := c.host.checkRecoverySummaryCost(ctx, sessionID, state.MaxCost, recoveryCostDelta)
 		if costErr != nil {
 			accountErr := accountRecovery()
-			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, errors.Join(costErr, accountErr))
+			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, errors.Join(costErr, accountErr))
 		}
 		if err := ctx.Err(); err != nil {
 			capacityErr = errors.Join(capacityErr, err)
 		}
 		if capacityErr != nil || tokenErr != nil || costErr != nil {
 			accountErr := accountRecovery()
-			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, errors.Join(capacityErr, tokenErr, costErr, accountErr))
+			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, errors.Join(capacityErr, tokenErr, costErr, accountErr))
 		}
 		state.Spent.Add(recoverySpent)
 		recoverySpentAdded = true
@@ -315,7 +352,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
 	defer cleanupCancel()
-	if err = a.messages.Update(cleanupCtx, summaryMessage); err != nil {
+	if err = c.host.compactionMessages().Update(cleanupCtx, summaryMessage); err != nil {
 		if recovery {
 			return errors.Join(err, accountRecovery())
 		}
@@ -345,7 +382,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 
 	// Point SummaryMessageID at the new hidden summary and reset token
 	// counters so the next call gets an accurate remaining-context estimate.
-	freshSession, err := a.sessions.Get(commitCtx, sessionID)
+	freshSession, err := c.host.compactionSessions().Get(commitCtx, sessionID)
 	if err != nil {
 		if recovery {
 			return errors.Join(fmt.Errorf("silent summarise: failed to re-fetch session: %w", err), accountRecovery())
@@ -354,7 +391,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	}
 	var openrouterCost *float64
 	for _, step := range resp.Steps {
-		if stepCost := a.openrouterCost(step.ProviderMetadata); stepCost != nil {
+		if stepCost := c.host.openrouterCost(step.ProviderMetadata); stepCost != nil {
 			if openrouterCost == nil {
 				openrouterCost = new(float64)
 			}
@@ -363,7 +400,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	}
 	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
 	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
-	costDelta := a.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
+	costDelta := c.host.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
 	if recovery {
 		freshSession.PromptTokens = recoverySession.PromptTokens
 		freshSession.CompletionTokens = recoverySession.CompletionTokens
@@ -373,29 +410,29 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	}
 	if recovery {
 		if ctx.Err() != nil {
-			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, ctx.Err())
+			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, ctx.Err())
 		}
-		if err := a.sessions.SetUsage(commitCtx, freshSession.ID, recoverySession.PromptTokens, recoverySession.CompletionTokens); err != nil {
+		if err := c.host.compactionSessions().SetUsage(commitCtx, freshSession.ID, recoverySession.PromptTokens, recoverySession.CompletionTokens); err != nil {
 			_ = accountRecovery()
-			return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, err)
+			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
 		}
 		if recoveryCostDelta != 0 {
-			if _, err := a.sessions.IncrementCost(commitCtx, freshSession.ID, recoveryCostDelta); err != nil {
+			if _, err := c.host.compactionSessions().IncrementCost(commitCtx, freshSession.ID, recoveryCostDelta); err != nil {
 				_ = accountRecovery()
-				return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, err)
+				return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
 			}
 		}
 		callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), recoveryUsage, recoveryCostDelta)
-		a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, recoveryUsage, recoveryCostDelta, false)
+		c.host.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, recoveryUsage, recoveryCostDelta, false)
 		recoveryAccounted = true
 	} else {
 		callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
 		if costDelta != 0 {
-			if _, err := a.sessions.IncrementCost(commitCtx, freshSession.ID, costDelta); err != nil {
+			if _, err := c.host.compactionSessions().IncrementCost(commitCtx, freshSession.ID, costDelta); err != nil {
 				return err
 			}
 		}
-		a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
+		c.host.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
 	}
 
 	if boundary < len(msgs) {
@@ -404,11 +441,11 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		// A pinned older row at keptAt sorts after the summary in the same second,
 		// so it stays in the tail in chronological order; manual compaction differs.
 		keptAt := msgs[boundary].CreatedAt
-		timestampService, ok := a.messages.(interface {
+		timestampService, ok := c.host.compactionMessages().(interface {
 			SetSummaryCreatedAt(context.Context, string, string, int64) (bool, error)
 		})
 		if !ok {
-			cleanupErr := a.messages.Delete(commitCtx, summaryMessage.ID)
+			cleanupErr := c.host.compactionMessages().Delete(commitCtx, summaryMessage.ID)
 			stampErr := errors.Join(errors.New("message service does not support summary timestamps"), cleanupErr)
 			if recovery {
 				return errors.Join(stampErr, accountRecovery())
@@ -416,7 +453,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 			return stampErr
 		}
 		if applied, stampErr := timestampService.SetSummaryCreatedAt(commitCtx, sessionID, summaryMessage.ID, keptAt-1); stampErr != nil || !applied {
-			cleanupErr := a.messages.Delete(commitCtx, summaryMessage.ID)
+			cleanupErr := c.host.compactionMessages().Delete(commitCtx, summaryMessage.ID)
 			if recovery {
 				if stampErr == nil && !applied {
 					stampErr = errors.New("set sliding summary timestamp: no matching summary row updated")
@@ -448,9 +485,9 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 		}
 	}
 	if recovery && ctx.Err() != nil {
-		return cleanupUncommittedSummary(a.messages, ctx, summaryMessage.ID, ctx.Err())
+		return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, ctx.Err())
 	}
-	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, summaryCompletionTokens(resp.Response.Usage, summaryMessage)); err != nil {
+	if err := c.host.compactionSessions().SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, summaryCompletionTokens(resp.Response.Usage, summaryMessage)); err != nil {
 		if recovery {
 			return errors.Join(err, accountRecovery())
 		}
@@ -463,7 +500,7 @@ func (a *sessionAgent) runSummarizeSilentForRecovery(ctx context.Context, sessio
 	// replaces. A failure here is survivable — the summary already stands in
 	// for these rows, so the worst case is redundant history, not a hole.
 	for _, m := range toSummarise {
-		if delErr := a.messages.Delete(commitCtx, m.ID); delErr != nil {
+		if delErr := c.host.compactionMessages().Delete(commitCtx, m.ID); delErr != nil {
 			slog.Warn("silent summarise: failed to delete old message", "id", m.ID, "err", delErr)
 		}
 	}

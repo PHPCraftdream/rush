@@ -423,12 +423,7 @@ type sessionAgent struct {
 	// sessionID entries are inert (already-fired cancelFuncs) and are no
 	// longer consulted for busy state (IsSessionBusy reads the mailbox).
 	activeRequests *csync.Map[string, context.CancelFunc]
-	// summarizeQueue holds a pending manual-summarise snapshot per session,
-	// queued while the session was busy. The snapshot contains the model,
-	// provider options, and prompt prefix resolved from the target session,
-	// ensuring the entire summarize operation uses consistent configuration
-	// regardless of concurrent SetModels calls (task #341, P1-1).
-	summarizeQueue *csync.Map[string, *SummarizeSnapshot]
+	turnBudget
 	// mailboxes holds the per-session owner/mailbox state machine described
 	// in docs/plans/2026-08-04-session-owner-mailbox-design.md. Stages
 	// 2.1-2.4 migrated tryReserveSession/releaseSessionReservation,
@@ -441,27 +436,7 @@ type sessionAgent struct {
 	// explicitly deleted — same "one map, lazily populated, entries live
 	// forever" lifetime as activeRequests today.
 	mailboxes *csync.Map[string, *mailbox]
-	// cacheKeepAlive holds one pending keep-alive timer per session, armed
-	// after a turn writes to the provider's ephemeral prompt cache. See
-	// agent_cache_keepalive.go.
-	cacheKeepAlive *csync.Map[string, *cacheKeepAliveEntry]
-	// cacheKeepAliveMu serializes schedule/fire generation check-and-act
-	// sequences on cacheKeepAlive, since csync.Map has no atomic CAS.
-	cacheKeepAliveMu sync.Mutex
-	// cacheKeepAliveGen is a monotonic counter; each scheduled entry captures
-	// the generation current at schedule time so a racing stale fire can
-	// detect it has been superseded. See agent_cache_keepalive.go.
-	cacheKeepAliveGen atomic.Int64
-	// cacheKeepAliveInFlight holds the in-flight registration for a replay
-	// call currently executing inside fireCacheKeepAlive, keyed by session id.
-	// The registration carries the owning fire's generation so the rearm
-	// decision (K-1) and deferred release can test ownership under
-	// cacheKeepAliveMu. Deliberately separate from cacheKeepAlive/cacheKeepAliveEntry:
-	// that map entry is removed BEFORE the replay call starts (so a new
-	// schedule is never blocked by an old in-flight call), so overloading it
-	// here would conflict with that "removed = free to reschedule" invariant.
-	// See fireCacheKeepAlive and cancelCacheKeepAlive.
-	cacheKeepAliveInFlight *csync.Map[string, cacheKeepAliveInFlightEntry]
+	cacheKeepAliveComponent
 
 	// runAllowlists, when non-nil, lets the turn loop activate each call's
 	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at
@@ -522,25 +497,27 @@ func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
 	return &sessionAgent{
-		smartModel:                 csync.NewValue(opts.SmartModel),
-		fastModel:                  csync.NewValue(opts.FastModel),
-		systemPromptPrefix:         csync.NewValue(opts.SystemPromptPrefix),
-		systemPrompt:               csync.NewValue(opts.SystemPrompt),
-		config:                     opts.Config,
-		isSubAgent:                 opts.IsSubAgent,
-		sessions:                   opts.Sessions,
-		messages:                   opts.Messages,
-		disableAutoSummarize:       opts.DisableAutoSummarize,
-		tools:                      csync.NewSliceFrom(decorateSessionTools(opts.Tools, opts.RestrictedRuns)),
-		coord:                      opts.Coord,
-		onSessionIdle:              opts.OnSessionIdle,
-		isYolo:                     opts.IsYolo,
-		notify:                     opts.Notify,
-		activeRequests:             csync.NewMap[string, context.CancelFunc](),
-		summarizeQueue:             csync.NewMap[string, *SummarizeSnapshot](),
-		mailboxes:                  csync.NewMap[string, *mailbox](),
-		cacheKeepAlive:             csync.NewMap[string, *cacheKeepAliveEntry](),
-		cacheKeepAliveInFlight:     csync.NewMap[string, cacheKeepAliveInFlightEntry](),
+		smartModel:           csync.NewValue(opts.SmartModel),
+		fastModel:            csync.NewValue(opts.FastModel),
+		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
+		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		config:               opts.Config,
+		isSubAgent:           opts.IsSubAgent,
+		sessions:             opts.Sessions,
+		messages:             opts.Messages,
+		disableAutoSummarize: opts.DisableAutoSummarize,
+		tools:                csync.NewSliceFrom(decorateSessionTools(opts.Tools, opts.RestrictedRuns)),
+		coord:                opts.Coord,
+		onSessionIdle:        opts.OnSessionIdle,
+		isYolo:               opts.IsYolo,
+		notify:               opts.Notify,
+		activeRequests:       csync.NewMap[string, context.CancelFunc](),
+		turnBudget:           turnBudget{summarizeQueue: csync.NewMap[string, *SummarizeSnapshot]()},
+		mailboxes:            csync.NewMap[string, *mailbox](),
+		cacheKeepAliveComponent: cacheKeepAliveComponent{
+			cacheKeepAlive:         csync.NewMap[string, *cacheKeepAliveEntry](),
+			cacheKeepAliveInFlight: csync.NewMap[string, cacheKeepAliveInFlightEntry](),
+		},
 		streamIdleTimeout:          opts.StreamIdleTimeout,
 		streamWatchdogTick:         opts.StreamWatchdogTick,
 		titleJoinGrace:             opts.TitleJoinGrace,
