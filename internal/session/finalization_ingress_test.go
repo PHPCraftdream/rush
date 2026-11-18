@@ -259,7 +259,7 @@ func TestBatchToolResultAdmissionAndUnboundLegacy(t *testing.T) {
 	legacy, legacyConn, legacyCtx := batchStoreTestDB(t)
 	legacySnapshot := pdcReserveOneTask(t, legacy, legacyCtx)
 	pdcSettleOneTaskRoot(t, legacy, legacyCtx, legacySnapshot)
-	legacyMessages := message.NewService(db.New(legacy.writer))
+	legacyMessages := message.NewService(db.New(legacyConn))
 	_, consumed, err = legacy.BatchConsumeToolResult(legacyCtx, legacyMessages, "owner", pdcConsumeIdentity(legacySnapshot.Root.RootID), pdcToolResultParams("legacy"))
 	require.NoError(t, err)
 	require.True(t, consumed)

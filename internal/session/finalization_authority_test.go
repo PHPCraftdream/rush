@@ -68,7 +68,7 @@ func TestBatchCommitOwnerAdmissionReleaseClosureIsIdempotent(t *testing.T) {
 			return nil
 		}, nil
 	}
-	release, _, err := session.AdmitBatchCommitOwners(env.store.writer, env.ctx, identity, admissionSubmit("r", "call-r", 1), []string{"owner", "owner"})
+	release, _, err := session.AdmitBatchCommitOwners(env.conn, env.ctx, identity, admissionSubmit("r", "call-r", 1), []string{"owner", "owner"})
 	require.NoError(t, err)
 	require.NotNil(t, release)
 	before, err := session.NewAgentFinalizationStore(env.conn).Snapshot(env.ctx, authority.Identity)
