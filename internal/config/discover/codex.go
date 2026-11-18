@@ -16,8 +16,11 @@ import (
 const (
 	// CodexBaseURL is the authenticated ChatGPT backend root used for Codex.
 	CodexBaseURL = "https://chatgpt.com/backend-api"
-	// CodexClientVersion selects the model catalog version supported by Rush.
-	CodexClientVersion    = "0.159.0"
+	// CodexClientVersion selects the model catalog version supported by Rush. The
+	// backend lists a model generation only for clients at least as new as the
+	// Codex CLI release that introduced it (0.159.0 hid gpt-6.2-*). Raise it with
+	// every Codex CLI release that brings models; keep equal to codexprovider.codexVersion.
+	CodexClientVersion    = "0.169.0"
 	codexMaxResponseBytes = 10 << 20
 )
 

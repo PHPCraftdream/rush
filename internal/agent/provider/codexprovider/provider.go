@@ -20,9 +20,13 @@ import (
 
 const (
 	// Name identifies the direct Codex Responses provider.
-	Name            = "openai-codex"
-	responsesURL    = "https://chatgpt.com/backend-api/codex/responses"
-	codexVersion    = "0.159.0"
+	Name         = "openai-codex"
+	responsesURL = "https://chatgpt.com/backend-api/codex/responses"
+	// codexVersion is the Codex CLI version sent as the version header. The backend
+	// hides a model generation from clients older than the release that introduced
+	// it (0.159.0 hid gpt-6.2-*: model_not_found). Raise it with every Codex CLI
+	// release that brings models; keep it equal to discover.CodexClientVersion.
+	codexVersion    = "0.169.0"
 	maxErrorBody    = 1 << 20
 	maxSSEEventSize = 4 << 20
 )
