@@ -13,6 +13,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
@@ -166,7 +167,7 @@ func TestCodexStreamCacheAffinityWireBodyAndOutput(t *testing.T) {
 		"Chatgpt-Account-Id":   "workspace-account-42",
 		"Openai-Beta":          "responses=experimental",
 		"Originator":           "omp",
-		"Version":              codexVersion,
+		"Version":              discover.CodexClientVersion(),
 		"X-Codex-Routing-Hint": "model=gpt-5-codex",
 		"Conversation_Id":      "wire-session",
 		"Session_Id":           "wire-session",

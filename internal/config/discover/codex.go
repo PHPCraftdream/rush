@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"charm.land/catwalk/pkg/catwalk"
 )
@@ -16,13 +18,50 @@ import (
 const (
 	// CodexBaseURL is the authenticated ChatGPT backend root used for Codex.
 	CodexBaseURL = "https://chatgpt.com/backend-api"
-	// CodexClientVersion selects the model catalog version supported by Rush. The
-	// backend lists a model generation only for clients at least as new as the
-	// Codex CLI release that introduced it (0.159.0 hid gpt-6.2-*). Raise it with
-	// every Codex CLI release that brings models; keep equal to codexprovider.codexVersion.
-	CodexClientVersion    = "0.169.0"
-	codexMaxResponseBytes = 10 << 20
+	// DefaultCodexClientVersion is the Codex CLI version Rush presents when rush.json
+	// does not override it (providers.openai-codex.extra_headers.version). The backend
+	// lists a model generation only for clients at least as new as the Codex CLI
+	// release that introduced it (0.159.0 hid gpt-6.2-*: model_not_found), so a new
+	// generation needs only a config edit, not a Rush release.
+	DefaultCodexClientVersion = "0.169.0"
+	codexMaxResponseBytes     = 10 << 20
 )
+
+var codexClientVersion atomic.Pointer[string]
+
+// SetCodexClientVersion installs the configured Codex client version; blank restores the default.
+func SetCodexClientVersion(v string) {
+	if v = strings.TrimSpace(v); v == "" {
+		codexClientVersion.Store(nil)
+		return
+	}
+	codexClientVersion.Store(&v)
+}
+
+// ApplyCodexConfig installs the version override from the provider's extra_headers
+// ("version"; blank restores the default) and returns the Codex backend base URL.
+func ApplyCodexConfig(extraHeaders map[string]string) string {
+	SetCodexClientVersion(extraHeaders["version"])
+	return CodexBaseURL
+}
+
+// CodexCatalogIdentity keys the cached account catalog; a version override gets its own
+// entry because the backend lists different models per client version.
+func CodexCatalogIdentity(accountID, accessToken string) string {
+	id := cmp.Or(accountID, accessToken)
+	if v := CodexClientVersion(); v != DefaultCodexClientVersion {
+		id += "@" + v
+	}
+	return id
+}
+
+// CodexClientVersion is the version sent as client_version and the version header.
+func CodexClientVersion() string {
+	if v := codexClientVersion.Load(); v != nil {
+		return *v
+	}
+	return DefaultCodexClientVersion
+}
 
 // DiscoverCodexModels reads the authenticated account's ChatGPT Codex model
 // catalog. The access token is Rush's own OAuth credential, not a Codex CLI
@@ -39,7 +78,7 @@ func discoverCodexModels(ctx context.Context, client *http.Client, baseURL, acce
 			return nil, fmt.Errorf("build Codex model-list URL: %w", err)
 		}
 		query := u.Query()
-		query.Set("client_version", CodexClientVersion)
+		query.Set("client_version", CodexClientVersion())
 		u.RawQuery = query.Encode()
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -52,7 +91,7 @@ func discoverCodexModels(ctx context.Context, client *http.Client, baseURL, acce
 		}
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("originator", "omp")
-		req.Header.Set("version", CodexClientVersion)
+		req.Header.Set("version", CodexClientVersion())
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := client.Do(req)
