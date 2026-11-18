@@ -59,7 +59,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/session/run/sessiontest"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -124,7 +124,7 @@ func TestOrphanOutbox_PoisonEntryQuarantinesInsteadOfRetryingForever(t *testing.
 	// Drive the REAL pump through drainOrphanOutbox -> processOrphanOutboxEntry
 	// -> DrainOrphanOutboxEntry, one simulated tick per iteration, exactly as
 	// production does -- not svc.RecordOrphanOutboxFailure called directly.
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    nil, // no main-queue coordinator needed; this only exercises the orphan drain
 		PumpInstanceID: "test-pump-poison",
@@ -264,7 +264,7 @@ func TestOrphanOutbox_TransientBusyDoesNotCountAgainstBudget(t *testing.T) {
 	wrapped := &transientBusySessions{Service: svc, busyErr: busyErr, releaseNinthCall: make(chan struct{})}
 	wrapped.failuresLeft.Store(8)
 
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       wrapped,
 		Coordinator:    &countingCoordinatorForDrain{},
 		PumpInstanceID: "test-pump-transient-busy",
@@ -364,7 +364,7 @@ func TestOrphanOutbox_HealthyEntryStillDrains(t *testing.T) {
 	callData := []byte(`{"SessionID":"` + sess.ID + `","Prompt":"continue"}`)
 	require.NoError(t, svc.WriteToOrphanOutbox(ctx, "healthy-1", sess.ID, callData))
 
-	pump := session.NewRunQueuePump(session.RunQueuePumpConfig{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       svc,
 		Coordinator:    &countingCoordinatorForDrain{},
 		PumpInstanceID: "test-pump-orphan-healthy",
