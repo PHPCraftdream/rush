@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/stretchr/testify/require"
 )
 
@@ -113,7 +113,7 @@ func TestDecideAccount_ForeignWorkspaceDoesNotPaceOrSettle(t *testing.T) {
 // brings in -- the DB half of the facts holds no workspace column to read it
 // from.
 //
-// Revert-check: removing the errors.Is(runErr, session.ErrForeignWorkspace)
+// Revert-check: removing the errors.Is(runErr, runq.ErrForeignWorkspace)
 // stamping in readTurnFacts (internal/agent/turn_arbiter.go) fails the foreign
 // sub-case: the fact stays false and the verdict becomes a run.
 func TestReadTurnFacts_StampsForeignWorkspaceFromTheRunError(t *testing.T) {
@@ -121,7 +121,7 @@ func TestReadTurnFacts_StampsForeignWorkspaceFromTheRunError(t *testing.T) {
 	f := newAttemptFixture(t, "ws-facts-stamping", attemptFixtureOpts{noIdle: true})
 
 	// A foreign refusal, wrapped exactly the way runOwned's guard returns it.
-	wrapped := &DrainNotAttemptedError{Err: session.ErrForeignWorkspace}
+	wrapped := &DrainNotAttemptedError{Err: runq.ErrForeignWorkspace}
 
 	facts, err := f.coord.readTurnFacts(ctx, f.sessID, siteTick, wrapped)
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestAccountDrainAttempt_ForeignLegLeavesTheDebtAlone(t *testing.T) {
 	// A refused leg, exactly the shape runOwned's guard produces: the call
 	// never reached the provider, and the refusal names another workspace.
 	att := &drainAttempt{sessionID: f.sessID, outcome: drainNotAttempted}
-	turnErr := &DrainNotAttemptedError{Err: session.ErrForeignWorkspace}
+	turnErr := &DrainNotAttemptedError{Err: runq.ErrForeignWorkspace}
 
 	f.coord.accountDrainAttempt(ctx, att, turnErr)
 

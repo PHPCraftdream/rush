@@ -45,7 +45,7 @@ internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
 internal/serve/server 46
-internal/session 64
+internal/session 52
 # MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
 internal/session/service 40
@@ -54,3 +54,6 @@ internal/kit/sys/shell 17
 # globalpaths, worktreehome, load_skills, systemconfig_unix/windows (an OS pair) and export); falls to <= 7 when the
 # small files merge (D2-6).
 internal/config/domains/datadir 9
+# internal/session/run/sessionrun is born with 12 elements: all 12 run-queue production files move together (lane MV4,
+# amended plan D3: the temporary sessiondrain owner is dropped). It falls to <= 7 when EX7 splits them into the run components.
+internal/session/run/sessionrun 12

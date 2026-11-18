@@ -15,7 +15,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -699,7 +699,7 @@ func testInterruptBeforeFirstGeneration(t *testing.T, rejectReplacement bool) {
 	select {
 	case runErr := <-runDone:
 		if rejectReplacement {
-			var alreadyAttempted session.AlreadyAttempted
+			var alreadyAttempted runq.AlreadyAttempted
 			require.ErrorIs(t, runErr, coresession.ErrCallQueuedNotExecuted)
 			require.False(t, errors.As(runErr, &alreadyAttempted))
 			require.Contains(t, runErr.Error(), "deterministic provider rejection")

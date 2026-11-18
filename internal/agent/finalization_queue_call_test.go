@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -46,7 +46,7 @@ func TestQueuedFinalizationRefusesBeforeModelConstructionWithoutLeaseProof(t *te
 			}
 			// No config/model/provider exists: rejection must precede all rebuilds.
 			coordinator := &coordinator{sessions: coresession.NewService(db.New(fixture.conn), fixture.conn)}
-			_, err := coordinator.RebuildSessionAgentCall(session.WithRunQueueRowID(context.Background(), "forged-row"), "forged-row", data)
+			_, err := coordinator.RebuildSessionAgentCall(runq.WithRunQueueRowID(context.Background(), "forged-row"), "forged-row", data)
 			require.ErrorIs(t, err, coresession.ErrAgentFinalizationChanged)
 			var attempted *ErrCallAlreadyAttempted
 			require.ErrorAs(t, err, &attempted)

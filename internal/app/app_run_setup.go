@@ -19,7 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/text/format"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -618,7 +618,7 @@ type RunEnv struct {
 	Coord    func() agent.Coordinator
 	Perms    func() permission.Service
 	// Pump is the run-queue pump, constructed late in New.
-	Pump func() *session.RunQueuePump
+	Pump func() *runq.RunQueuePump
 	// WakeStore is the wake-schedule store; tests can wire it after New.
 	WakeStore func() *sessionwake.WakeScheduleStore
 	// DB is the nilable underlying SQLite connection (nil in library mode).

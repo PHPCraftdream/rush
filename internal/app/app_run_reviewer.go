@@ -23,7 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/session"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/charmbracelet/x/ansi"
@@ -222,13 +222,13 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 				}
 				s.eventOwner = recorder
 				go func(originalErr error, recorder *agent.CallResultRecorder, originalOwner *agent.CallResultRecorder) {
-					drainCtx := session.WithDrainAssistantIdentity(s.ctx, func(ids map[string]struct{}, terminalID string) {
+					drainCtx := runq.WithDrainAssistantIdentity(s.ctx, func(ids map[string]struct{}, terminalID string) {
 						confirmedTerminal := recordDrainAssistantIDs(&assistantIDsMu, recorder, assistantIDs, s.baselineIDs, ids, terminalID)
 						assistantIDsMu.Lock()
 						terminalAssistantID = confirmedTerminal
 						assistantIDsMu.Unlock()
 					})
-					drainCtx = session.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
+					drainCtx = runq.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
 					result, drainErr := s.env.Pump().DrainSessionNow(drainCtx, s.sess.ID)
 					assistantIDsMu.Lock()
 					confirmedIDs := cloneAssistantIDSet(assistantIDs)
@@ -309,13 +309,13 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 					}
 					s.eventOwner = recorder
 					go func(originalErr error, recorder *agent.CallResultRecorder, originalOwner *agent.CallResultRecorder) {
-						drainCtx := session.WithDrainAssistantIdentity(s.ctx, func(ids map[string]struct{}, terminalID string) {
+						drainCtx := runq.WithDrainAssistantIdentity(s.ctx, func(ids map[string]struct{}, terminalID string) {
 							confirmedTerminal := recordDrainAssistantIDs(&assistantIDsMu, recorder, assistantIDs, s.baselineIDs, ids, terminalID)
 							assistantIDsMu.Lock()
 							terminalAssistantID = confirmedTerminal
 							assistantIDsMu.Unlock()
 						})
-						drainCtx = session.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
+						drainCtx = runq.WithDrainAssistantIdentityLive(drainCtx, captureAssistantID)
 						queuedResult, drainErr := s.env.Pump().DrainSessionNow(drainCtx, s.sess.ID)
 						assistantIDsMu.Lock()
 						confirmedIDs := cloneAssistantIDSet(assistantIDs)
