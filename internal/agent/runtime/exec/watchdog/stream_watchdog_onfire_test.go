@@ -2,7 +2,7 @@
 // complete before cancel(), the cause must be stored before slow diagnostic
 // work runs, and async diagnostic work must never delay cancellation.
 
-package agent
+package watchdog_test
 
 import (
 	"context"
@@ -10,16 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"github.com/stretchr/testify/assert"
 )
 
 // TestStreamWatchdog_OnFireCompletesBeforeCancel is the regression test for
-// task #227: startStreamWatchdog's doc comment says onFire is invoked AFTER
+// task #227: watchdog.StartStreamWatchdog's doc comment says onFire is invoked AFTER
 // stalled is set to true and BEFORE cancel(), but until this fix all 5 fire
 // sites actually did `stalled.Store(true); cancel(); onFire(...)` — the
 // OPPOSITE order. That let a second goroutine blocked on <-ctx.Done() race
 // ahead and observe cancellation before onFire (which, in agent.go, stores
-// the real watchdogCause AFTER a slow disk-writing goroutine dump) had
+// the real watchdog.Cause AFTER a slow disk-writing goroutine dump) had
 // finished recording anything — silently defeating task #223's cause
 // attribution on a genuine hard-cap/tool-timeout fire.
 //
@@ -46,7 +48,7 @@ func TestStreamWatchdog_OnFireCompletesBeforeCancel(t *testing.T) {
 	// before the watchdog goroutine calls cancel().
 	onFireReturned := make(chan struct{})
 
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdog.Cause) {
 		close(onFireEntered)
 		<-releaseOnFire
 		close(onFireReturned)
@@ -84,12 +86,12 @@ func TestStreamWatchdog_OnFireCompletesBeforeCancel(t *testing.T) {
 	// returned. Poll done deterministically via the watchdog's own done
 	// channel, which only closes after the fire-site's cancel()+return.
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog goroutine never exited after onFire returned")
 	}
 	assert.Error(t, ctx.Err(), "ctx must be cancelled after onFire returned")
-	assert.True(t, wd.stalled.Load())
+	assert.True(t, wd.Stalled.Load())
 }
 
 // TestStreamWatchdog_CauseStoredBeforeSlowDiagnosticWork is the regression
@@ -115,12 +117,12 @@ func TestStreamWatchdog_CauseStoredBeforeSlowDiagnosticWork(t *testing.T) {
 	const tick = 5 * time.Millisecond
 
 	var causeVal atomic.Int32
-	causeVal.Store(int32(causeIdleStall)) // zero value; must be overwritten by the real cause
+	causeVal.Store(int32(watchdog.CauseIdleStall)) // zero value; must be overwritten by the real cause
 
 	diagnosticWorkEntered := make(chan struct{})
 	releaseDiagnosticWork := make(chan struct{})
 
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdogCause) {
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(_ time.Duration, cause watchdog.Cause) {
 		// Mirrors agent.go's onFire: store the cause FIRST, synchronously,
 		// before any slow diagnostic work.
 		causeVal.Store(int32(cause))
@@ -128,14 +130,14 @@ func TestStreamWatchdog_CauseStoredBeforeSlowDiagnosticWork(t *testing.T) {
 		<-releaseDiagnosticWork
 	},
 		false, 0,
-		1*time.Millisecond, // toolMaxDuration: tiny, so a tool-in-flight fires with causeToolTimeout
+		1*time.Millisecond, // toolMaxDuration: tiny, so a tool-in-flight fires with watchdog.CauseToolTimeout
 		0, nil)
 
-	// Put a tool in flight so the watchdog fires with causeToolTimeout, not
-	// causeIdleStall — this makes the assertion meaningful: if the store
+	// Put a tool in flight so the watchdog fires with watchdog.CauseToolTimeout, not
+	// watchdog.CauseIdleStall — this makes the assertion meaningful: if the store
 	// were still reachable only after the slow work, we'd see the zero
-	// value (causeIdleStall) instead.
-	wd.toolStarted()
+	// value (watchdog.CauseIdleStall) instead.
+	wd.ToolStarted()
 
 	select {
 	case <-diagnosticWorkEntered:
@@ -144,14 +146,14 @@ func TestStreamWatchdog_CauseStoredBeforeSlowDiagnosticWork(t *testing.T) {
 	}
 
 	// While the diagnostic work is still blocked, the cause must already be
-	// the real fired cause (causeToolTimeout), not the zero value.
-	assert.Equal(t, int32(causeToolTimeout), causeVal.Load(),
+	// the real fired cause (watchdog.CauseToolTimeout), not the zero value.
+	assert.Equal(t, int32(watchdog.CauseToolTimeout), causeVal.Load(),
 		"cause must be stored before the slow diagnostic work runs, so a concurrent reader "+
 			"never observes the zero value for a real tool-timeout/hard-cap fire")
 
 	close(releaseDiagnosticWork)
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog goroutine never exited")
 	}
@@ -190,7 +192,7 @@ func TestStreamWatchdog_AsyncDiagnosticWorkDoesNotDelayCancel(t *testing.T) {
 	})
 
 	onFireReturned := make(chan struct{})
-	wd := startStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdogCause) {
+	wd := watchdog.StartStreamWatchdog(ctx, cancel, idle, tick, func(time.Duration, watchdog.Cause) {
 		go func() {
 			close(diagnosticStarted)
 			<-neverReleased // never closed by the test — simulates a hung write
@@ -219,9 +221,9 @@ func TestStreamWatchdog_AsyncDiagnosticWorkDoesNotDelayCancel(t *testing.T) {
 		t.Fatal("ctx was never cancelled — a hung async diagnostic write must not block cancel()")
 	}
 	select {
-	case <-wd.done:
+	case <-wd.Done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchdog goroutine never exited — a hung async diagnostic write must not block it")
 	}
-	assert.True(t, wd.stalled.Load())
+	assert.True(t, wd.Stalled.Load())
 }

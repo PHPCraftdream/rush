@@ -134,7 +134,7 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 	c.StopWakeScheduler()
 	// Stop timer admission before closing callback admission. Detached timer
 	// deliveries and recheck wakes remain separate lifecycle backlog.
-	c.timeouts.close()
+	c.timeouts.Close()
 	if c.responsesWS != nil {
 		_ = c.responsesWS.Close()
 	}

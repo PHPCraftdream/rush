@@ -1,4 +1,4 @@
-package agent
+package responsesws
 
 import (
 	"bytes"
@@ -26,20 +26,20 @@ import (
 
 // The bridge retains fantasy v0.45.5's serializer, event parser and usage logic.
 // No HTTP transport is modified; unsupported calls use the current HTTP client.
-type publicResponsesPolicy struct {
-	transport config.ResponsesTransport
-	network   config.NetworkConfig
-	apiKey    string
-	headers   map[string]string
-	client    *http.Client
-	revision  uint64
+type PublicResponsesPolicy struct {
+	Transport config.ResponsesTransport
+	Network   config.NetworkConfig
+	APIKey    string
+	Headers   map[string]string
+	Client    *http.Client
+	Revision  uint64
 }
 
 type publicResponsesClient struct {
 	manager         *nettransport.ResponsesWSManager
-	current         func(context.Context) (publicResponsesPolicy, error)
+	current         func(context.Context) (PublicResponsesPolicy, error)
 	originalHeaders map[string]string
-	valid           func(publicResponsesPolicy) bool
+	valid           func(PublicResponsesPolicy) bool
 	// Test-only endpoint; production eligibility is restricted to api.openai.com.
 	endpoint string
 }
@@ -112,6 +112,15 @@ func (a *publicResponsesAttempt) resolve(accepted bool) {
 }
 
 func (a *publicResponsesAttempt) close() { a.resolve(false) }
+
+func NewPublicResponsesProvider(baseURL, apiKey string, headers map[string]string, manager *nettransport.ResponsesWSManager, endpoint string, current func(context.Context) (PublicResponsesPolicy, error), valid func(PublicResponsesPolicy) bool) (fantasy.Provider, error) {
+	bridge := &publicResponsesClient{manager: manager, originalHeaders: headers, endpoint: endpoint, current: current, valid: valid}
+	provider, err := newPublicResponsesSDKProvider(baseURL, apiKey, headers, bridge)
+	if err != nil {
+		return nil, err
+	}
+	return &publicResponsesProvider{Provider: provider}, nil
+}
 
 func newPublicResponsesSDKProvider(baseURL, apiKey string, headers map[string]string, client *publicResponsesClient) (fantasy.Provider, error) {
 	opts := []openai.Option{openai.WithAPIKey(apiKey), openai.WithHeaders(headers), openai.WithUseResponsesAPI(), openai.WithHTTPClient(client)}
@@ -238,12 +247,12 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 			return nil, err
 		}
 		request.Header = c.requestHeaders(original.Header, latest, attempt)
-		if latest.client == nil {
+		if latest.Client == nil {
 			return http.DefaultClient.Do(request)
 		}
-		return latest.client.Do(request)
+		return latest.Client.Do(request)
 	}
-	if policy.transport == config.ResponsesTransportHTTP {
+	if policy.Transport == config.ResponsesTransportHTTP {
 		c.manager.InvalidateConversation(conversation)
 		return fallback("policy_http")
 	}
@@ -289,9 +298,9 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 	open := func() (*nettransport.ResponsesWSLease, *nettransport.ResponsesWSConn, string, error) {
 		lease, err := c.manager.Acquire(request.Context(), nettransport.ResponsesWSOptions{
 			Protocol: "public-openai-responses", Endpoint: endpoint, ReadPolicy: nettransport.ResponsesWSReadRequestContext,
-			AuthHeaders: http.Header{"Authorization": []string{auth}}, Headers: headers, Network: policy.network,
+			AuthHeaders: http.Header{"Authorization": []string{auth}}, Headers: headers, Network: policy.Network,
 			StillCurrent: func() bool { return c.valid == nil || c.valid(policy) },
-			Owner:        nettransport.ResponsesWSOwner{AccountID: owner, AuthRevision: owner + ":" + strconv.FormatUint(policy.revision, 10), ConversationID: conversation},
+			Owner:        nettransport.ResponsesWSOwner{AccountID: owner, AuthRevision: owner + ":" + strconv.FormatUint(policy.Revision, 10), ConversationID: conversation},
 		}, nettransport.ResponsesWSPlannedMaxAge)
 		if err != nil {
 			slog.Debug("responses transport: websocket unavailable, using http", "provider", "openai", "reason", "acquire_failed", "error", err.Error())
@@ -299,7 +308,7 @@ func (c *publicResponsesClient) Do(original *http.Request) (*http.Response, erro
 		}
 		conn := lease.Conn()
 		latest, policyErr := c.current(request.Context())
-		if policyErr != nil || latest.revision != policy.revision || latest.apiKey != policy.apiKey || latest.transport != policy.transport || latest.network != policy.network || !maps.Equal(latest.headers, policy.headers) {
+		if policyErr != nil || latest.Revision != policy.Revision || latest.APIKey != policy.APIKey || latest.Transport != policy.Transport || latest.Network != policy.Network || !maps.Equal(latest.Headers, policy.Headers) {
 			_ = conn.Close()
 			lease.Release()
 			return nil, nil, "credentials_or_policy_changed", nil
@@ -381,7 +390,7 @@ func logPublicResponsesExchange(conversation string, conn *nettransport.Response
 	slog.Debug("responses transport exchange", append(attrs, conn.FrameAttrs()...)...)
 }
 
-func (c *publicResponsesClient) requestHeaders(original http.Header, policy publicResponsesPolicy, attempt *publicResponsesAttempt) http.Header {
+func (c *publicResponsesClient) requestHeaders(original http.Header, policy PublicResponsesPolicy, attempt *publicResponsesAttempt) http.Header {
 	headers := original.Clone()
 	protected := func(key string) bool { return attempt != nil && attempt.overrides[http.CanonicalHeaderKey(key)] }
 	for key := range c.originalHeaders {
@@ -390,9 +399,9 @@ func (c *publicResponsesClient) requestHeaders(original http.Header, policy publ
 		}
 	}
 	if !protected("Authorization") {
-		headers.Set("Authorization", "Bearer "+policy.apiKey)
+		headers.Set("Authorization", "Bearer "+policy.APIKey)
 	}
-	for key, value := range policy.headers {
+	for key, value := range policy.Headers {
 		if protected(key) {
 			continue
 		}

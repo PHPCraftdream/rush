@@ -10,9 +10,13 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"charm.land/fantasy"
 
@@ -97,6 +101,50 @@ type cacheKeepAliveInFlightEntry struct {
 	cancel     context.CancelFunc
 }
 
+type cacheKeepAliveHost interface {
+	tryAdmitRun() (done func(), ok bool)
+	openrouterCost(metadata fantasy.ProviderMetadata) *float64
+	cacheKeepAliveSessions() coresession.Service
+	cacheKeepAlivePeakHours() cacheKeepAlivePeakHoursChecker
+}
+
+type cacheKeepAlivePeakHoursChecker interface {
+	checkLivePeakHours(providerID string) error
+}
+
+func (a *sessionAgent) cacheKeepAliveSessions() coresession.Service { return a.sessions }
+
+func (a *sessionAgent) cacheKeepAlivePeakHours() cacheKeepAlivePeakHoursChecker {
+	if a.coord == nil {
+		return nil
+	}
+	return a.coord
+}
+
+type cacheKeepAliveComponent struct {
+	// cacheKeepAlive holds one pending keep-alive timer per session, armed
+	// after a turn writes to the provider's ephemeral prompt cache. See
+	// agent_cache_keepalive.go.
+	cacheKeepAlive *csync.Map[string, *cacheKeepAliveEntry]
+	// cacheKeepAliveMu serializes schedule/fire generation check-and-act
+	// sequences on cacheKeepAlive, since csync.Map has no atomic CAS.
+	cacheKeepAliveMu sync.Mutex
+	// cacheKeepAliveGen is a monotonic counter; each scheduled entry captures
+	// the generation current at schedule time so a racing stale fire can
+	// detect it has been superseded. See agent_cache_keepalive.go.
+	cacheKeepAliveGen atomic.Int64
+	// cacheKeepAliveInFlight holds the in-flight registration for a replay
+	// call currently executing inside fireCacheKeepAlive, keyed by session id.
+	// The registration carries the owning fire's generation so the rearm
+	// decision (K-1) and deferred release can test ownership under
+	// cacheKeepAliveMu. Deliberately separate from cacheKeepAlive/cacheKeepAliveEntry:
+	// that map entry is removed BEFORE the replay call starts (so a new
+	// schedule is never blocked by an old in-flight call), so overloading it
+	// here would conflict with that "removed = free to reschedule" invariant.
+	// See fireCacheKeepAlive and cancelCacheKeepAlive.
+	cacheKeepAliveInFlight *csync.Map[string, cacheKeepAliveInFlightEntry]
+}
+
 // cacheKeepAliveExplicitCacheProvider reports whether provider is one of the
 // explicit prompt-cache providers getCacheControlOptions marks up. Mirrors
 // that switch exactly — an implicit-cache provider gets zero benefit from a
@@ -119,12 +167,20 @@ func cacheKeepAliveExplicitCacheProvider(provider string) bool {
 // exactly those already-prepared messages — re-adding WithSystemPrompt would
 // duplicate the system message in the replay's prompt.
 func (a *sessionAgent) scheduleCacheKeepAlive(sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, maxCost float64) {
-	a.scheduleCacheKeepAliveFromCtx(heartbeat.Context{}, sessionID, model, messages, tools, providerOptions, maxCost)
+	a.cacheKeepAliveComponent.scheduleCacheKeepAlive(a, sessionID, model, messages, tools, providerOptions, maxCost)
+}
+
+func (k *cacheKeepAliveComponent) scheduleCacheKeepAlive(h cacheKeepAliveHost, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, maxCost float64) {
+	k.scheduleCacheKeepAliveFromCtx(h, heartbeat.Context{}, sessionID, model, messages, tools, providerOptions, maxCost)
 }
 
 // scheduleCacheKeepAliveFromCtx carries the triggering turn's attribution into
 // the detached replay (the fire's own ctx is built from context.Background()).
 func (a *sessionAgent) scheduleCacheKeepAliveFromCtx(hb heartbeat.Context, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, maxCost float64) {
+	a.cacheKeepAliveComponent.scheduleCacheKeepAliveFromCtx(a, hb, sessionID, model, messages, tools, providerOptions, maxCost)
+}
+
+func (k *cacheKeepAliveComponent) scheduleCacheKeepAliveFromCtx(h cacheKeepAliveHost, hb heartbeat.Context, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, maxCost float64) {
 	if t, _ := strconv.ParseBool(os.Getenv("RUSH_DISABLE_ANTHROPIC_CACHE")); t {
 		return
 	}
@@ -137,19 +193,19 @@ func (a *sessionAgent) scheduleCacheKeepAliveFromCtx(hb heartbeat.Context, sessi
 		return
 	}
 
-	a.cacheKeepAliveMu.Lock()
-	defer a.cacheKeepAliveMu.Unlock()
+	k.cacheKeepAliveMu.Lock()
+	defer k.cacheKeepAliveMu.Unlock()
 
-	if old, ok := a.cacheKeepAlive.Take(sessionID); ok {
+	if old, ok := k.cacheKeepAlive.Take(sessionID); ok {
 		old.timer.Stop()
 	}
 
-	gen := a.cacheKeepAliveGen.Add(1)
+	gen := k.cacheKeepAliveGen.Add(1)
 	entry := &cacheKeepAliveEntry{generation: gen}
 	entry.timer = time.AfterFunc(cacheKeepAliveIntervalFor(model.Model.Provider()), func() {
-		a.fireCacheKeepAliveHB(hb, sessionID, model, messages, tools, providerOptions, 0, gen, maxCost)
+		k.fireCacheKeepAliveHB(h, hb, sessionID, model, messages, tools, providerOptions, 0, gen, maxCost)
 	})
-	a.cacheKeepAlive.Set(sessionID, entry)
+	k.cacheKeepAlive.Set(sessionID, entry)
 }
 
 // noExecuteToolCallRefused is returned by every noExecuteTool in place of
@@ -197,10 +253,18 @@ func noExecuteTools(tools []fantasy.AgentTool) []fantasy.AgentTool {
 // its cap. Unlike a failed replay, a cost-capped skip does not reschedule,
 // matching a real turn's max-cost abort being terminal rather than retried.
 func (a *sessionAgent) fireCacheKeepAlive(sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, extension int, gen int64, maxCost float64) {
-	a.fireCacheKeepAliveHB(heartbeat.Context{}, sessionID, model, messages, tools, providerOptions, extension, gen, maxCost)
+	a.cacheKeepAliveComponent.fireCacheKeepAlive(a, sessionID, model, messages, tools, providerOptions, extension, gen, maxCost)
 }
 
 func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, extension int, gen int64, maxCost float64) {
+	a.cacheKeepAliveComponent.fireCacheKeepAliveHB(a, hb, sessionID, model, messages, tools, providerOptions, extension, gen, maxCost)
+}
+
+func (k *cacheKeepAliveComponent) fireCacheKeepAlive(h cacheKeepAliveHost, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, extension int, gen int64, maxCost float64) {
+	k.fireCacheKeepAliveHB(h, heartbeat.Context{}, sessionID, model, messages, tools, providerOptions, extension, gen, maxCost)
+}
+
+func (k *cacheKeepAliveComponent) fireCacheKeepAliveHB(h cacheKeepAliveHost, hb heartbeat.Context, sessionID string, model Model, messages []fantasy.Message, tools []fantasy.AgentTool, providerOptions fantasy.ProviderOptions, extension int, gen int64, maxCost float64) {
 	// Built before the lock so it is ready to register atomically with the
 	// pending-entry removal below — see the in-flight-registration comment.
 	ctx, cancel := context.WithTimeout(context.Background(), cacheKeepAliveCallTimeout)
@@ -210,14 +274,14 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	}
 	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeKeepalive, hb.Role, hb.Source)
 
-	a.cacheKeepAliveMu.Lock()
-	current, ok := a.cacheKeepAlive.Get(sessionID)
+	k.cacheKeepAliveMu.Lock()
+	current, ok := k.cacheKeepAlive.Get(sessionID)
 	if !ok || current.generation != gen {
-		a.cacheKeepAliveMu.Unlock()
+		k.cacheKeepAliveMu.Unlock()
 		cancel()
 		return
 	}
-	a.cacheKeepAlive.Del(sessionID)
+	k.cacheKeepAlive.Del(sessionID)
 	// Registered in the SAME critical section as the Del above — not after
 	// the maxCost check/tryAdmitRunWg/replay setup that used to follow it.
 	// That gap let cancelCacheKeepAlive/CancelAll observe a window where
@@ -232,8 +296,8 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	// cancelCacheKeepAlive/CancelAll consume it under this same mutex, so
 	// a cancel landing anywhere before the rearm critical section is
 	// observable there as "my registration is gone".
-	a.cacheKeepAliveInFlight.Set(sessionID, cacheKeepAliveInFlightEntry{generation: gen, cancel: cancel})
-	a.cacheKeepAliveMu.Unlock()
+	k.cacheKeepAliveInFlight.Set(sessionID, cacheKeepAliveInFlightEntry{generation: gen, cancel: cancel})
+	k.cacheKeepAliveMu.Unlock()
 
 	// Test-only seam: fires right after the atomic registration above, before
 	// the maxCost check/tryAdmitRunWg/replay call below — lets a test land a
@@ -245,13 +309,13 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	}
 
 	defer func() {
-		a.releaseCacheKeepAliveInFlight(sessionID, gen)
+		k.releaseCacheKeepAliveInFlight(sessionID, gen)
 		cancel()
 	}()
 
 	if maxCost > 0 {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		budget, err := a.sessions.SubtreeBudget(checkCtx, sessionID)
+		budget, err := h.cacheKeepAliveSessions().SubtreeBudget(checkCtx, sessionID)
 		checkCancel()
 		if err != nil {
 			slog.Debug("cache keep-alive: failed to load session budget for max-cost check", "session_id", sessionID, "err", err)
@@ -263,17 +327,18 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 		}
 	}
 
-	if a.coord != nil {
-		if err := a.coord.checkLivePeakHours(model.Model.Provider()); err != nil {
+	if checker := h.cacheKeepAlivePeakHours(); checker != nil {
+		if err := checker.checkLivePeakHours(model.Model.Provider()); err != nil {
 			// Detached background work has no caller to notify; refuse quietly.
 			return
 		}
 	}
 
-	if !a.tryAdmitRunWg() {
+	done, ok := h.tryAdmitRun()
+	if !ok {
 		return
 	}
-	defer a.runWg.Done()
+	defer done()
 
 	// Tool DEFINITIONS must stay (WithTools(tools...)) — they are part of the
 	// cached prompt prefix, and dropping them would itself invalidate the
@@ -324,7 +389,7 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	// A successful replay has already incurred provider cost. Record it even
 	// when this charge crosses maxCost; the cap prevents future calls, not
 	// accounting for a response already paid for.
-	if !a.recordCacheKeepAliveCost(ctx, sessionID, model, result, maxCost) {
+	if !k.recordCacheKeepAliveCost(h, ctx, sessionID, model, result, maxCost) {
 		// The charge could not be persisted; do not rearm and risk further
 		// unaccounted provider spend.
 		return
@@ -332,7 +397,7 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 
 	if maxCost > 0 {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		budget, err := a.sessions.SubtreeBudget(checkCtx, sessionID)
+		budget, err := h.cacheKeepAliveSessions().SubtreeBudget(checkCtx, sessionID)
 		checkCancel()
 		if err != nil || budget >= maxCost {
 			// The response has been charged above, but don't schedule another
@@ -366,8 +431,8 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 		cacheKeepAliveRearmSeam()
 	}
 
-	a.cacheKeepAliveMu.Lock()
-	defer a.cacheKeepAliveMu.Unlock()
+	k.cacheKeepAliveMu.Lock()
+	defer k.cacheKeepAliveMu.Unlock()
 	// K-1: cancellation must be visible to the rearm decision atomically,
 	// under the same mutex the cancel path takes. This fire's in-flight
 	// registration (set when the replay started, still held now) is that
@@ -377,14 +442,14 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	// ours, this fire was cancelled or superseded after the ctx.Err() check
 	// above passed — rearming now would arm a stale timer on top of whatever
 	// cancelled us (e.g. a brand-new turn), so stop here.
-	if infl, ok := a.cacheKeepAliveInFlight.Get(sessionID); !ok || infl.generation != gen {
+	if infl, ok := k.cacheKeepAliveInFlight.Get(sessionID); !ok || infl.generation != gen {
 		return
 	}
 	// A concurrent schedule may have landed while the replay call was in
 	// flight — only re-arm if this fire's generation is still the pending
 	// map's current occupant (i.e. nothing newer has since claimed the
 	// session).
-	if current, ok := a.cacheKeepAlive.Get(sessionID); ok && current.generation != gen {
+	if current, ok := k.cacheKeepAlive.Get(sessionID); ok && current.generation != gen {
 		return
 	}
 	// In-flight -> pending transition, atomically with the checks above: the
@@ -392,13 +457,13 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 	// could see cancels; once the decision is made, hand the session back to
 	// the pending map (the deferred releaseCacheKeepAliveInFlight becomes a
 	// no-op since the entry is already gone).
-	a.cacheKeepAliveInFlight.Del(sessionID)
-	newGen := a.cacheKeepAliveGen.Add(1)
+	k.cacheKeepAliveInFlight.Del(sessionID)
+	newGen := k.cacheKeepAliveGen.Add(1)
 	entry := &cacheKeepAliveEntry{extension: extension + 1, generation: newGen}
 	entry.timer = time.AfterFunc(cacheKeepAliveIntervalFor(model.Model.Provider()), func() {
-		a.fireCacheKeepAliveHB(hb, sessionID, model, messages, tools, providerOptions, extension+1, newGen, maxCost)
+		k.fireCacheKeepAliveHB(h, hb, sessionID, model, messages, tools, providerOptions, extension+1, newGen, maxCost)
 	})
-	a.cacheKeepAlive.Set(sessionID, entry)
+	k.cacheKeepAlive.Set(sessionID, entry)
 }
 
 // recordCacheKeepAliveCost bills a successful replay's usage to the session,
@@ -415,7 +480,11 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 // so the caller must not keep firing unbilled replays against it. A successful
 // response is always charged even if it crosses maxCost: maxCost gates future
 // replays, but cannot erase the cost of a provider response already received.
-func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID string, model Model, result *fantasy.AgentResult, _ float64) bool {
+func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID string, model Model, result *fantasy.AgentResult, maxCost float64) bool {
+	return a.cacheKeepAliveComponent.recordCacheKeepAliveCost(a, ctx, sessionID, model, result, maxCost)
+}
+
+func (k *cacheKeepAliveComponent) recordCacheKeepAliveCost(h cacheKeepAliveHost, ctx context.Context, sessionID string, model Model, result *fantasy.AgentResult, _ float64) bool {
 	if result == nil {
 		return true
 	}
@@ -423,7 +492,7 @@ func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID s
 
 	var openrouterCost *float64
 	for _, step := range result.Steps {
-		stepCost := a.openrouterCost(step.ProviderMetadata)
+		stepCost := h.openrouterCost(step.ProviderMetadata)
 		if stepCost != nil {
 			newCost := *stepCost
 			if openrouterCost != nil {
@@ -458,7 +527,7 @@ func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID s
 	// that has already completed is always recorded, even if a concurrent
 	// charge crosses the cap. This post-charge check prevents rearming once
 	// the subtree budget reaches the cap.
-	sess, err := a.sessions.IncrementCost(ctx, sessionID, cost)
+	sess, err := h.cacheKeepAliveSessions().IncrementCost(ctx, sessionID, cost)
 	if err != nil {
 		slog.Error("cache keep-alive: failed to accrue replay cost", "session_id", sessionID, "err", err)
 		return false
@@ -475,10 +544,14 @@ func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID s
 // fireCacheKeepAlive. A blind Del here could otherwise drop a NEWER fire's
 // registration and make that replay uncancellable.
 func (a *sessionAgent) releaseCacheKeepAliveInFlight(sessionID string, gen int64) {
-	a.cacheKeepAliveMu.Lock()
-	defer a.cacheKeepAliveMu.Unlock()
-	if infl, ok := a.cacheKeepAliveInFlight.Get(sessionID); ok && infl.generation == gen {
-		a.cacheKeepAliveInFlight.Del(sessionID)
+	a.cacheKeepAliveComponent.releaseCacheKeepAliveInFlight(sessionID, gen)
+}
+
+func (k *cacheKeepAliveComponent) releaseCacheKeepAliveInFlight(sessionID string, gen int64) {
+	k.cacheKeepAliveMu.Lock()
+	defer k.cacheKeepAliveMu.Unlock()
+	if infl, ok := k.cacheKeepAliveInFlight.Get(sessionID); ok && infl.generation == gen {
+		k.cacheKeepAliveInFlight.Del(sessionID)
 	}
 }
 
@@ -493,16 +566,20 @@ func (a *sessionAgent) releaseCacheKeepAliveInFlight(sessionID string, gen int64
 // is what makes the cancel visible to a fire that is between its ctx.Err()
 // check and its rearm critical section.
 func (a *sessionAgent) cancelCacheKeepAlive(sessionID string) {
+	a.cacheKeepAliveComponent.cancelCacheKeepAlive(sessionID)
+}
+
+func (k *cacheKeepAliveComponent) cancelCacheKeepAlive(sessionID string) {
 	// Both maps checked under ONE lock hold, not two separate cycles: since
 	// fireCacheKeepAlive now moves an entry from "pending" to "in-flight"
 	// atomically (see its own comment), a single hold here is guaranteed to
 	// see a consistent snapshot — the pending entry, the in-flight cancel, or
 	// neither (genuinely idle / already fully finished), never a torn state
 	// in between.
-	a.cacheKeepAliveMu.Lock()
-	entry, hasPending := a.cacheKeepAlive.Take(sessionID)
-	inFlight, hasInFlight := a.cacheKeepAliveInFlight.Take(sessionID)
-	a.cacheKeepAliveMu.Unlock()
+	k.cacheKeepAliveMu.Lock()
+	entry, hasPending := k.cacheKeepAlive.Take(sessionID)
+	inFlight, hasInFlight := k.cacheKeepAliveInFlight.Take(sessionID)
+	k.cacheKeepAliveMu.Unlock()
 
 	if hasPending {
 		entry.timer.Stop()
@@ -510,4 +587,26 @@ func (a *sessionAgent) cancelCacheKeepAlive(sessionID string) {
 	if hasInFlight {
 		inFlight.cancel()
 	}
+}
+
+func (k *cacheKeepAliveComponent) cancelAll() {
+	// Stop every pending cache keep-alive timer AND cut off any replay
+	// already in flight (bounded only by cacheKeepAliveCallTimeout, 30s,
+	// otherwise) — defense in depth on top of tryAdmitRunWg's gate inside
+	// fireCacheKeepAlive itself, so no new replay call is even attempted
+	// once shutdown begins. Both maps swept under ONE cacheKeepAliveMu hold,
+	// matching cancelCacheKeepAlive's own reasoning: fireCacheKeepAlive
+	// moves an entry from "pending" to "in-flight" atomically, so a single
+	// hold here sees a consistent snapshot instead of two separate looks
+	// that could straddle that transition.
+	k.cacheKeepAliveMu.Lock()
+	for sessionID, entry := range k.cacheKeepAlive.Seq2() {
+		entry.timer.Stop()
+		k.cacheKeepAlive.Del(sessionID)
+	}
+	for sessionID, inFlight := range k.cacheKeepAliveInFlight.Seq2() {
+		inFlight.cancel()
+		k.cacheKeepAliveInFlight.Del(sessionID)
+	}
+	k.cacheKeepAliveMu.Unlock()
 }

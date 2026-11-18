@@ -1,4 +1,4 @@
-package agent
+package responsesws
 
 import (
 	"bytes"
@@ -101,11 +101,11 @@ func TestPublicResponsesBridgeExactOutputDeltaAndMissingParentRecoversWithFullFr
 	client := &publicResponsesClient{
 		manager:  manager,
 		endpoint: strings.Replace(server.URL, "http://", "ws://", 1),
-		current: func(context.Context) (publicResponsesPolicy, error) {
-			return publicResponsesPolicy{
-				apiKey: "public-test-key", network: nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone}),
-				transport: config.ResponsesTransportAuto,
-				client:    &http.Client{Transport: responsesDeltaNoHTTP{calls: &httpFallbacks}},
+		current: func(context.Context) (PublicResponsesPolicy, error) {
+			return PublicResponsesPolicy{
+				APIKey: "public-test-key", Network: nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone}),
+				Transport: config.ResponsesTransportAuto,
+				Client:    &http.Client{Transport: responsesDeltaNoHTTP{calls: &httpFallbacks}},
 			}, nil
 		},
 	}

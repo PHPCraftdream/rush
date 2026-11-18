@@ -1,4 +1,4 @@
-package agent
+package responsesws
 
 import (
 	"context"
@@ -36,8 +36,8 @@ func TestPublicResponsesWebSocketDeclinedFinishForcesReconnect(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
+	model := publicResponsesTestModel(t, server, func(context.Context) (PublicResponsesPolicy, error) {
+		return PublicResponsesPolicy{APIKey: "public-test-key", Client: publicResponsesLocalClient(server)}, nil
 	})
 	ctx, cancel := context.WithTimeout(publicResponsesTestContext(t), 4*time.Second)
 	defer cancel()
@@ -82,8 +82,8 @@ func TestPublicResponsesWebSocketIncompleteCannotSeedNextExchange(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-		return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
+	model := publicResponsesTestModel(t, server, func(context.Context) (PublicResponsesPolicy, error) {
+		return PublicResponsesPolicy{APIKey: "public-test-key", Client: publicResponsesLocalClient(server)}, nil
 	})
 	ctx, cancel := context.WithTimeout(publicResponsesTestContext(t), 4*time.Second)
 	defer cancel()
@@ -134,8 +134,8 @@ func TestPublicResponsesObjectFinishAcceptanceOwnsReuse(t *testing.T) {
 			defer server.Close()
 			ctx, cancel := context.WithTimeout(publicResponsesTestContext(t), 4*time.Second)
 			defer cancel()
-			model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {
-				return publicResponsesPolicy{apiKey: "public-test-key", client: publicResponsesLocalClient(server)}, nil
+			model := publicResponsesTestModel(t, server, func(context.Context) (PublicResponsesPolicy, error) {
+				return PublicResponsesPolicy{APIKey: "public-test-key", Client: publicResponsesLocalClient(server)}, nil
 			})
 			objectStream, err := model.StreamObject(ctx, fantasy.ObjectCall{
 				Schema: fantasy.Schema{Type: "object", Properties: map[string]*fantasy.Schema{"x": {Type: "integer"}}},

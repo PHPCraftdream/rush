@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -292,21 +293,24 @@ func coordinatorReplayPublicModel(t *testing.T, coord *coordinator, server *http
 	manager := nettransport.NewResponsesWSManager(t.Context(), 2)
 	coord.responsesWS = manager
 	t.Cleanup(func() { _ = manager.Close() })
-	bridge := &publicResponsesClient{
-		manager:  manager,
-		endpoint: strings.Replace(server.URL, "http://", "ws://", 1),
-		current: func(context.Context) (publicResponsesPolicy, error) {
-			return publicResponsesPolicy{
-				apiKey:  "local-only-test-key",
-				network: nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone}),
-				client:  publicResponsesLocalClient(server),
+	endpoint := strings.Replace(server.URL, "http://", "ws://", 1)
+	provider, err := responsesws.NewPublicResponsesProvider(
+		"https://api.openai.com/v1",
+		"local-only-test-key",
+		nil,
+		manager,
+		endpoint,
+		func(context.Context) (responsesws.PublicResponsesPolicy, error) {
+			return responsesws.PublicResponsesPolicy{
+				APIKey:  "local-only-test-key",
+				Network: nettransport.ResolveNetworkConfig(nil, &config.NetworkConfig{Proxy: config.ProxyNone}),
+				Client:  publicResponsesLocalClient(server),
 			}, nil
 		},
-	}
-	provider, err := newPublicResponsesSDKProvider("https://api.openai.com/v1", "local-only-test-key", nil, bridge)
+		nil,
+	)
 	require.NoError(t, err)
-	public := &publicResponsesProvider{Provider: provider}
-	model, err := public.LanguageModel(t.Context(), "gpt-5.4")
+	model, err := provider.LanguageModel(t.Context(), "gpt-5.4")
 	require.NoError(t, err)
 	return model
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // awaitTaskSummary names the awaited tasks compactly for the wake message.
@@ -33,27 +34,11 @@ func awaitTaskSummary(refs []tools.AwaitTaskRef) string {
 // (Cancel). Errors are logged, never fatal: the sleep flag itself is
 // already cleared by the time the cancel runs.
 func (c *coordinator) clearSleepAll(sessionID string) {
-	c.cancelAwaitTimer(sessionID, c.arb.clearSleepAll(sessionID))
+	(&batchRehomeRuntimeComponent{host: c}).clearSleepAll(sessionID)
 }
 
 func (c *coordinator) cancelAwaitTimer(sessionID, id string) {
-	if id == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	sched, err := c.wakeSchedulerFor()
-	if err == nil {
-		// Internal cleanup is idempotent, unlike the model-facing tool.
-		err = sched.store.CancelSchedule(ctx, sessionID, id, sched.now())
-		if err == nil {
-			sched.Notify()
-		}
-	}
-	if err != nil {
-		slog.Warn("await_tasks: failed to cancel the max_wait schedule",
-			"session_id", sessionID, "schedule_id", id, "err", err)
-	}
+	(&batchRehomeRuntimeComponent{host: c}).cancelAwaitTimer(sessionID, id)
 }
 
 // bgShellRowCancelled reports whether a stop control has already cancelled
@@ -75,11 +60,55 @@ func (c *coordinator) cancelAwaitTimer(sessionID, id string) {
 // all. Absence from the manager is therefore this build's only honest fact
 // of "cancelled by a stop control".
 func (c *coordinator) bgShellRowCancelled(sessionID, shellID string) bool {
-	if c.background == nil {
+	return (&batchRehomeRuntimeComponent{host: c}).bgShellRowCancelled(sessionID, shellID)
+}
+
+type batchRehomeRuntimeHost interface {
+	arbClearSleepAll(sessionID string) string
+	wakeSchedulerFor() (*wakeScheduler, error)
+	bgShellManager() *shell.BackgroundShellManager
+}
+
+type batchRehomeRuntimeComponent struct{ host batchRehomeRuntimeHost }
+
+func (w *batchRehomeRuntimeComponent) clearSleepAll(sessionID string) {
+	w.cancelAwaitTimer(sessionID, w.host.arbClearSleepAll(sessionID))
+}
+
+func (w *batchRehomeRuntimeComponent) cancelAwaitTimer(sessionID, id string) {
+	if id == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sched, err := w.host.wakeSchedulerFor()
+	if err == nil {
+		// Internal cleanup is idempotent, unlike the model-facing tool.
+		err = sched.store.CancelSchedule(ctx, sessionID, id, sched.now())
+		if err == nil {
+			sched.Notify()
+		}
+	}
+	if err != nil {
+		slog.Warn("await_tasks: failed to cancel the max_wait schedule",
+			"session_id", sessionID, "schedule_id", id, "err", err)
+	}
+}
+
+func (w *batchRehomeRuntimeComponent) bgShellRowCancelled(sessionID, shellID string) bool {
+	if w.host.bgShellManager() == nil {
 		return false
 	}
-	_, ok := c.background.GetOwned(sessionID, shellID)
+	_, ok := w.host.bgShellManager().GetOwned(sessionID, shellID)
 	return !ok
+}
+
+func (c *coordinator) arbClearSleepAll(sessionID string) string {
+	return c.arb.clearSleepAll(sessionID)
+}
+
+func (c *coordinator) bgShellManager() *shell.BackgroundShellManager {
+	return c.background
 }
 
 // stallToolStalled is the stall-clock's tool-phase hook. The stall-DETACH

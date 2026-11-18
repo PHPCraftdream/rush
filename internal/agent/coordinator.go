@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -98,9 +99,9 @@ type coordinator struct {
 	driverHints *batchDriverHints
 	// supervision is the per-root supervision countdown registry; timeouts
 	// is the single per-process deadline timer supervision arms through.
-	// See supervision.go / timeout_service.go.
+	// See supervision.go / runtime/exec/watchdog/timeout_service.go.
 	supervision *supervisionRegistry
-	timeouts    *timeoutService
+	timeouts    *watchdog.TimeoutService
 	// noticeStore is the retained session_notices writer the completion
 	// notice paths use (supervision tick, reaction-chain marker, bg-shell
 	// done, held child question); bound via SetCoordinatorSessionNoticeStore.
@@ -297,6 +298,8 @@ type SessionExecutionCapabilities struct {
 	ExecReqs coresession.SessionExecutionRequirementStore
 	CredReqs coresession.SessionCredentialRequirementStore
 }
+
+func newTimeoutService() *watchdog.TimeoutService { return watchdog.NewTimeoutService() }
 
 // NewCoordinator wires the agent coordinator. Async work is batch-only: the
 // jobbatch engine (batch_nodes + the batch outbox) decides every outcome; the

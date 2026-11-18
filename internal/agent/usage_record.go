@@ -52,6 +52,33 @@ func (a *sessionAgent) recordMessageUsage(
 	costDelta float64,
 	estimated bool,
 ) {
+	newMessageUsageComponent(a).recordMessageUsage(ctx, messageID, model, usage, costDelta, estimated)
+}
+
+type messageUsageStore interface {
+	SetUsage(context.Context, string, message.TokenUsage) error
+}
+
+type messageUsageHost interface {
+	recordMessageUsageStore() messageUsageStore
+}
+
+func (a *sessionAgent) recordMessageUsageStore() messageUsageStore { return a.messages }
+
+type messageUsageComponent struct{ host messageUsageHost }
+
+func newMessageUsageComponent(host messageUsageHost) *messageUsageComponent {
+	return &messageUsageComponent{host: host}
+}
+
+func (m *messageUsageComponent) recordMessageUsage(
+	ctx context.Context,
+	messageID string,
+	model Model,
+	usage fantasy.Usage,
+	costDelta float64,
+	estimated bool,
+) {
 	if messageID == "" {
 		return
 	}
@@ -92,7 +119,7 @@ func (a *sessionAgent) recordMessageUsage(
 	// statistics for exactly the turns whose accounting matters most — the
 	// same failure mode as the cost-transfer bug fixed earlier in
 	// coordinator.go.
-	if err := a.messages.SetUsage(context.WithoutCancel(ctx), messageID, tu); err != nil {
+	if err := m.host.recordMessageUsageStore().SetUsage(context.WithoutCancel(ctx), messageID, tu); err != nil {
 		slog.Warn(
 			"agent: failed to record per-message usage",
 			"messageID", messageID,

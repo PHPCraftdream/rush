@@ -41,20 +41,31 @@ func finalizationQueueAdmissionError(err error) error {
 }
 
 func (c *coordinator) RunFinalizationQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (*fantasy.AgentResult, error) {
-	return c.runFinalizationQueuedCall(ctx, rowID, data, c.RebuildSessionAgentCall, c.RunSessionAgentCall)
+	return newFinalizationQueueComponent(c).runQueuedCall(ctx, rowID, data)
+}
+
+func (p finalizationQueueComponent) runQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (*fantasy.AgentResult, error) {
+	return p.runFinalizationQueuedCall(ctx, rowID, data, p.host.rebuildSessionAgentCall(), p.host.runSessionAgentCall())
 }
 
 func (c *coordinator) runFinalizationQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData,
 	rebuild func(context.Context, string, session.SessionAgentCallData) (SessionAgentCall, error),
 	run func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error),
 ) (*fantasy.AgentResult, error) {
+	return newFinalizationQueueComponent(c).runFinalizationQueuedCall(ctx, rowID, data, rebuild, run)
+}
+
+func (p finalizationQueueComponent) runFinalizationQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData,
+	rebuild func(context.Context, string, session.SessionAgentCallData) (SessionAgentCall, error),
+	run func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error),
+) (*fantasy.AgentResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := c.readyWg.Wait(); err != nil {
+	if err := p.host.readyWait(); err != nil {
 		return nil, err
 	}
-	store, ok := c.sessions.(session.AgentFinalizationQueuePreparer)
+	store, ok := p.host.sessionsService().(session.AgentFinalizationQueuePreparer)
 	if !ok || data.FinalizationRequirement == nil {
 		return nil, &ErrCallAlreadyAttempted{Err: session.ErrAgentFinalizationChanged}
 	}
@@ -64,7 +75,7 @@ func (c *coordinator) runFinalizationQueuedCall(ctx context.Context, rowID strin
 	if err != nil {
 		return nil, finalizationQueueAdmissionError(err)
 	}
-	driver, generation, err := c.selectFinalizationQueueDriver(data.SessionID, data.LogicalCallID, prepared.Requirement(), prepared.RequiresManagedDriver())
+	driver, generation, err := p.selectFinalizationQueueDriver(data.SessionID, data.LogicalCallID, prepared.Requirement(), prepared.RequiresManagedDriver())
 	if err != nil || driver == nil {
 		return nil, &ErrCallAlreadyAttempted{Err: session.ErrAgentFinalizationDriverUnavailable}
 	}
@@ -136,7 +147,11 @@ func (c *coordinator) runFinalizationQueuedCall(ctx context.Context, rowID strin
 }
 
 func (c *coordinator) finalizationQueueDriverForRun(ctx context.Context, call SessionAgentCall) (SessionAgent, error) {
-	driver, generation, err := c.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.FinalizationAuthorities.Requirement(), call.FinalizationAuthorities.RequiresManagedDriver())
+	return newFinalizationQueueComponent(c).finalizationQueueDriverForRun(ctx, call)
+}
+
+func (p finalizationQueueComponent) finalizationQueueDriverForRun(ctx context.Context, call SessionAgentCall) (SessionAgent, error) {
+	driver, generation, err := p.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.FinalizationAuthorities.Requirement(), call.FinalizationAuthorities.RequiresManagedDriver())
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +163,36 @@ func (c *coordinator) finalizationQueueDriverForRun(ctx context.Context, call Se
 		return nil, session.ErrAgentFinalizationDriverUnavailable
 	}
 	return driver, nil
+}
+
+type finalizationQueueComponent struct {
+	host finalizationQueueComponentHost
+}
+
+type finalizationQueueComponentHostAdapter struct{ coordinator *coordinator }
+
+func (h finalizationQueueComponentHostAdapter) sessionsService() session.Service {
+	return h.coordinator.sessions
+}
+
+func (h finalizationQueueComponentHostAdapter) currentAgent() SessionAgent {
+	return h.coordinator.currentAgent
+}
+
+func (h finalizationQueueComponentHostAdapter) subAgentDrivers() *subAgentDriverRegistry {
+	return h.coordinator.subAgentDrivers
+}
+
+func (h finalizationQueueComponentHostAdapter) rebuildSessionAgentCall() func(context.Context, string, session.SessionAgentCallData) (SessionAgentCall, error) {
+	return h.coordinator.RebuildSessionAgentCall
+}
+
+func (h finalizationQueueComponentHostAdapter) runSessionAgentCall() func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error) {
+	return h.coordinator.RunSessionAgentCall
+}
+
+func (h finalizationQueueComponentHostAdapter) readyWait() error {
+	return h.coordinator.readyWg.Wait()
 }
 
 var _ FinalizationQueueCoordinator = (*coordinator)(nil)

@@ -4,44 +4,34 @@ import (
 	"context"
 	"slices"
 
+	"charm.land/fantasy"
+
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func (c *coordinator) restoreFinalizationQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (session.AgentFinalizationContext, error) {
-	accepted, _ := ctx.Value(finalizationQueueAcceptedKey{}).(*finalizationQueueAccepted)
-	if accepted != nil {
-		payload, err := finalizationQueuePayload(data)
-		if err != nil {
-			return session.AgentFinalizationContext{}, err
-		}
-		if accepted.rowID != rowID || accepted.payload != payload || accepted.sessionID != data.SessionID || accepted.logicalID != data.LogicalCallID {
-			return session.AgentFinalizationContext{}, session.ErrAgentFinalizationChanged
-		}
-		return accepted.snapshot, nil
-	}
-	store, ok := c.sessions.(session.AgentFinalizationQueueService)
-	if !ok {
-		if data.FinalizationRequirement != nil {
-			return session.AgentFinalizationContext{}, session.ErrAgentFinalizationChanged
-		}
-		return session.AgentFinalizationContext{}, nil
-	}
-	guardCtx, cancel := context.WithTimeout(ctx, sessionPreambleMaxDurationDefault)
-	defer cancel()
-	return store.RestoreAgentFinalizationQueue(guardCtx, rowID, data)
+	return newFinalizationQueueComponent(c).restoreFinalizationQueuedCall(ctx, rowID, data)
 }
 
-// A durable child continuation cannot silently become a root-agent run.
 func (c *coordinator) finalizationQueueDriver(call SessionAgentCall) (SessionAgent, error) {
-	driver, _, err := c.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.FinalizationAuthorities.Requirement(), call.FinalizationAuthorities.RequiresManagedDriver())
-	return driver, err
+	return newFinalizationQueueComponent(c).finalizationQueueDriver(call)
 }
 
 func (c *coordinator) selectFinalizationQueueDriver(sessionID, logicalID string, requirement *session.AgentFinalizationRequirement, managed bool) (SessionAgent, uint64, error) {
+	return newFinalizationQueueComponent(c).selectFinalizationQueueDriver(sessionID, logicalID, requirement, managed)
+}
+
+// A durable child continuation cannot silently become a root-agent run.
+func (p finalizationQueueComponent) finalizationQueueDriver(call SessionAgentCall) (SessionAgent, error) {
+	driver, _, err := p.selectFinalizationQueueDriver(call.SessionID, call.LogicalCallID, call.FinalizationAuthorities.Requirement(), call.FinalizationAuthorities.RequiresManagedDriver())
+	return driver, err
+}
+
+func (p finalizationQueueComponent) selectFinalizationQueueDriver(sessionID, logicalID string, requirement *session.AgentFinalizationRequirement, managed bool) (SessionAgent, uint64, error) {
 	if requirement == nil {
-		return c.currentAgent, 0, nil
+		return p.host.currentAgent(), 0, nil
 	}
-	if driver, ok := c.subAgentDrivers.get(sessionID); ok && driver.agent != nil {
+	if driver, ok := p.host.subAgentDrivers().get(sessionID); ok && driver.agent != nil {
 		stored := driver.FinalizationAuthorities.Requirement()
 		if driver.call.SessionID != sessionID || driver.call.LogicalCallID != logicalID || stored == nil ||
 			stored.Version != requirement.Version || !slices.Equal(stored.Authorities, requirement.Authorities) {
@@ -56,7 +46,44 @@ func (c *coordinator) selectFinalizationQueueDriver(sessionID, logicalID string,
 	if identity.SessionID != sessionID || identity.LogicalCallID != logicalID || identity.NodeID != "" {
 		return nil, 0, session.ErrAgentFinalizationDriverUnavailable
 	}
-	return c.currentAgent, 0, nil
+	return p.host.currentAgent(), 0, nil
+}
+
+func (p finalizationQueueComponent) restoreFinalizationQueuedCall(ctx context.Context, rowID string, data session.SessionAgentCallData) (session.AgentFinalizationContext, error) {
+	accepted, _ := ctx.Value(finalizationQueueAcceptedKey{}).(*finalizationQueueAccepted)
+	if accepted != nil {
+		payload, err := finalizationQueuePayload(data)
+		if err != nil {
+			return session.AgentFinalizationContext{}, err
+		}
+		if accepted.rowID != rowID || accepted.payload != payload || accepted.sessionID != data.SessionID || accepted.logicalID != data.LogicalCallID {
+			return session.AgentFinalizationContext{}, session.ErrAgentFinalizationChanged
+		}
+		return accepted.snapshot, nil
+	}
+	store, ok := p.host.sessionsService().(session.AgentFinalizationQueueService)
+	if !ok {
+		if data.FinalizationRequirement != nil {
+			return session.AgentFinalizationContext{}, session.ErrAgentFinalizationChanged
+		}
+		return session.AgentFinalizationContext{}, nil
+	}
+	guardCtx, cancel := context.WithTimeout(ctx, sessionPreambleMaxDurationDefault)
+	defer cancel()
+	return store.RestoreAgentFinalizationQueue(guardCtx, rowID, data)
+}
+
+type finalizationQueueComponentHost interface {
+	sessionsService() session.Service
+	currentAgent() SessionAgent
+	subAgentDrivers() *subAgentDriverRegistry
+	readyWait() error
+	rebuildSessionAgentCall() func(context.Context, string, session.SessionAgentCallData) (SessionAgentCall, error)
+	runSessionAgentCall() func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
+}
+
+func newFinalizationQueueComponent(c *coordinator) finalizationQueueComponent {
+	return finalizationQueueComponent{host: finalizationQueueComponentHostAdapter{coordinator: c}}
 }
 
 func enqueueFinalizationCall(ctx context.Context, sessions session.Service, rowID string, call SessionAgentCall, raw []byte) error {
