@@ -12,8 +12,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	"github.com/PHPCraftdream/rush/internal/store/message"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // newDrainCall is the SINGLE constructor for a Drain call: the only place

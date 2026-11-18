@@ -22,8 +22,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/session"
-	"github.com/PHPCraftdream/rush/internal/store/db"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
