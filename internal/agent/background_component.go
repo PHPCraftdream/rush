@@ -62,9 +62,6 @@ func newBackgroundComponent(c *coordinator) *backgroundComponent {
 
 func (h coordinatorBackgroundHost) coordinatorIsNil() bool { return h.coordinator == nil }
 func (h coordinatorBackgroundHost) cfg() *config.ConfigStore {
-	if h.coordinator == nil {
-		return nil
-	}
 	return h.coordinator.cfg
 }
 
@@ -205,8 +202,8 @@ func (c *backgroundComponent) notifyAsyncCompletion(completion AsyncCompletion) 
 	}
 	go func() {
 		defer c.host.notifyWG().Done()
-		if hook := c.host.notifyCallbackHook(); hook != nil {
-			hook(ctx)
+		if c.host.notifyCallbackHook() != nil {
+			c.host.notifyCallbackHook()(ctx)
 		}
 		// Re-check trigger (ii)/(iv): this goroutine IS the delivery that
 		// the completed job woke -- either directly (mailbox was idle) or
@@ -329,11 +326,11 @@ func (c *backgroundComponent) notifyBackgroundJobDone(sessionID string, sh *shel
 	c.host.noteSubAgentChildRunEnded(sessionID)
 }
 
-func (c *backgroundComponent) IsBusy() bool {
+func (c *backgroundComponent) isBusy() bool {
 	return c.host.currentAgent().IsBusy()
 }
 
-func (c *backgroundComponent) IsSessionBusy(sessionID string) bool {
+func (c *backgroundComponent) isSessionBusy(sessionID string) bool {
 	return c.host.currentAgent().IsSessionBusy(sessionID)
 }
 

@@ -2,7 +2,7 @@
 // port. Bodies moved from coordinator_subagents.go (the drainComponent/wake
 // Component host pattern: the component never holds the raw *coordinator,
 // only the subAgentHost port); coordinator_subagents.go keeps the thin
-// coordinator delegates. Driver-registry types live in
+// coordinator delegates and the concrete host adapter. Driver-registry types live in
 // subagent_drivers_component.go.
 package agent
 
@@ -56,103 +56,7 @@ type subAgentHost interface {
 	rebuiltChildQuestionState(ctx context.Context, sessionID string) (*batchChildQuestionState, error)
 }
 
-type (
-	subagentsComponent      struct{ host subAgentHost }
-	coordinatorSubAgentHost struct{ coordinator *coordinator }
-)
-
-func newSubagentsComponent(c *coordinator) *subagentsComponent {
-	return &subagentsComponent{host: coordinatorSubAgentHost{coordinator: c}}
-}
-
-func (h coordinatorSubAgentHost) readyWg() *readyGate { return &h.coordinator.readyWg }
-func (h coordinatorSubAgentHost) sessions() core.Service {
-	return h.coordinator.sessions
-}
-func (h coordinatorSubAgentHost) cfg() *config.ConfigStore { return h.coordinator.cfg }
-func (h coordinatorSubAgentHost) permissions() permission.Service {
-	return h.coordinator.permissions
-}
-
-func (h coordinatorSubAgentHost) notify() pubsub.Publisher[notify.Notification] {
-	return h.coordinator.notify
-}
-
-func (h coordinatorSubAgentHost) subAgentDrivers() *subAgentDriverRegistry {
-	return h.coordinator.subAgentDrivers
-}
-
-func (h coordinatorSubAgentHost) currentAgent() SessionAgent {
-	return h.coordinator.currentAgent
-}
-
-func (h coordinatorSubAgentHost) resolveRequestedDelegationModel(ctx context.Context, cfg *config.Config, parentID string, role RequestedModelRole) (delegationRoleModel, error) {
-	return h.coordinator.resolveRequestedDelegationModel(ctx, cfg, parentID, role)
-}
-
-func (h coordinatorSubAgentHost) batchHeldQuestionResumeHint(ctx context.Context, owner string) string {
-	return h.coordinator.batchHeldQuestionResumeHint(ctx, owner)
-}
-
-func (h coordinatorSubAgentHost) batchHeldQuestionResumeRefusal(ctx context.Context, owner, child string) string {
-	return h.coordinator.batchHeldQuestionResumeRefusal(ctx, owner, child)
-}
-
-func (h coordinatorSubAgentHost) resetConsecutiveResume(sessionID string) {
-	h.coordinator.resetConsecutiveResume(sessionID)
-}
-
-func (h coordinatorSubAgentHost) buildModelsFromCfg(ctx context.Context, cfg *config.Config, smartModelCfg, fastModelCfg config.SelectedModel, isSubAgent bool) (Model, Model, error) {
-	return h.coordinator.buildModelsFromCfg(ctx, cfg, smartModelCfg, fastModelCfg, isSubAgent)
-}
-
-func (h coordinatorSubAgentHost) buildCredentialModel(ctx context.Context, cfg *config.Config, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error) {
-	return h.coordinator.buildCredentialModel(ctx, cfg, creds, choice)
-}
-
-func (h coordinatorSubAgentHost) resolveSubAgentModelOverride(ctx context.Context, sessionID string) (*Model, error) {
-	return h.coordinator.resolveSubAgentModelOverride(ctx, sessionID)
-}
-
-func (h coordinatorSubAgentHost) workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool {
-	return h.coordinator.workerSubAgentActiveForCall(ctx, cfg)
-}
-
-func (h coordinatorSubAgentHost) refreshSubAgentSlotModel(ctx context.Context, cfg *config.Config, role config.SelectedModelType, model Model) (Model, bool) {
-	return h.coordinator.refreshSubAgentSlotModel(ctx, cfg, role, model)
-}
-
-func (h coordinatorSubAgentHost) rebuildInputs(providerID string) (*config.Config, config.ProviderConfig, error) {
-	return h.coordinator.rebuildInputs(providerID)
-}
-
-func (h coordinatorSubAgentHost) rebuildPinnedModel(ctx context.Context, cfg *config.Config, model Model, providerCfg config.ProviderConfig, isSubAgent bool) (Model, error) {
-	return h.coordinator.rebuildPinnedModel(ctx, cfg, model, providerCfg, isSubAgent)
-}
-
-func (h coordinatorSubAgentHost) refreshOAuth2Token(ctx context.Context, providerCfg config.ProviderConfig) error {
-	return h.coordinator.refreshOAuth2Token(ctx, providerCfg)
-}
-
-func (h coordinatorSubAgentHost) runAwaitingAdmission(ctx context.Context, agent SessionAgent, call SessionAgentCall) (result *fantasy.AgentResult, err error, queued bool) {
-	return h.coordinator.runAwaitingAdmission(ctx, agent, call)
-}
-
-func (h coordinatorSubAgentHost) runWithUnauthorizedRetry(ctx context.Context, providerCfg config.ProviderConfig, fn func() error, rebuildCall func() error) error {
-	return h.coordinator.runWithUnauthorizedRetry(ctx, providerCfg, fn, rebuildCall)
-}
-
-func (h coordinatorSubAgentHost) isUnauthorized(err error) bool {
-	return h.coordinator.isUnauthorized(err)
-}
-
-func (h coordinatorSubAgentHost) childQuestionPreamble(childSessionID string) string {
-	return h.coordinator.childQuestionPreamble(childSessionID)
-}
-
-func (h coordinatorSubAgentHost) rebuiltChildQuestionState(ctx context.Context, sessionID string) (*batchChildQuestionState, error) {
-	return h.coordinator.rebuiltChildQuestionState(ctx, sessionID)
-}
+type subagentsComponent struct{ host subAgentHost }
 
 // subAgentParams holds the parameters for running a sub-agent.
 type subAgentParams struct {

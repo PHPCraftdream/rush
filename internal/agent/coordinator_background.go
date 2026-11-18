@@ -19,11 +19,11 @@ func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.Backgr
 }
 
 func (c *coordinator) IsBusy() bool {
-	return newBackgroundComponent(c).IsBusy()
+	return newBackgroundComponent(c).isBusy()
 }
 
 func (c *coordinator) IsSessionBusy(sessionID string) bool {
-	return newBackgroundComponent(c).IsSessionBusy(sessionID)
+	return newBackgroundComponent(c).isSessionBusy(sessionID)
 }
 
 func (c *coordinator) delegatedChildDriven(ctx context.Context, sessionID string) (bool, error) {
