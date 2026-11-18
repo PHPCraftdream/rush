@@ -50,7 +50,7 @@ import (
 // for the captured failure output.
 //
 // Since task #340 ROUND 3, startDetachedRun durably enqueues the call rather
-// than running it inline, so this test also starts a runq.1
+// than running it inline, so this test also starts a runq.RunQueuePump
 // (fast TestTick) — without one, the enqueued call would never be drained
 // and the test would time out for an unrelated reason (no pump, not P0-B).
 func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
@@ -143,12 +143,12 @@ func TestCoordinator_InterruptAndSend_IdleSession_ActuallyRuns(t *testing.T) {
 	}
 
 	// Since task #340 ROUND 3, startDetachedRun durably enqueues the call
-	// instead of executing it inline — a runq.1 is the only
+	// instead of executing it inline — a runq.RunQueuePump is the only
 	// thing that drains that queue (mirroring what App.New() wires in
 	// production). Without one running here the enqueued call would sit
 	// pending forever and the request would never reach the provider.
 	pumpCoord := &pumpTestCoordinator{sessionAgent: sa, dataDir: dataDir}
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    pumpCoord,
 		PumpInstanceID: "test-pump-p0b-idle",

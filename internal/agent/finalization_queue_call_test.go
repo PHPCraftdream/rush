@@ -46,7 +46,7 @@ func TestQueuedFinalizationRefusesBeforeModelConstructionWithoutLeaseProof(t *te
 			}
 			// No config/model/provider exists: rejection must precede all rebuilds.
 			coordinator := &coordinator{sessions: coresession.NewService(db.New(fixture.conn), fixture.conn)}
-			_, err := coordinator.RebuildSessionAgentCall(runq.1(context.Background(), "forged-row"), "forged-row", data)
+			_, err := coordinator.RebuildSessionAgentCall(runq.WithRunQueueRowID(context.Background(), "forged-row"), "forged-row", data)
 			require.ErrorIs(t, err, coresession.ErrAgentFinalizationChanged)
 			var attempted *ErrCallAlreadyAttempted
 			require.ErrorAs(t, err, &attempted)

@@ -84,12 +84,12 @@ func TestFinalizationReservationOldCancelHandleCancelsNewRun(t *testing.T) {
 		observedDeadline, hasDeadline = ctx.Deadline()
 		return driver.Run(ctx, call)
 	}}
-	pump := runq.1(runq.1{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
 	defer pump.Stop()
 	deadline := time.Now().Add(5 * time.Minute)
 	operation, stop := context.WithDeadline(context.Background(), deadline)
 	finished := make(chan struct{})
-	var outcome runq.1
+	var outcome runq.DrainResult
 	go func() {
 		defer close(finished)
 		outcome, _ = pump.DrainSessionNow(operation, data.SessionID)
@@ -151,7 +151,7 @@ func TestFinalizationReservationOldCancelHandleCancelsNewRun(t *testing.T) {
 	case <-wait.Done():
 		t.Fatal("cancelled reserved Run did not release its era")
 	}
-	require.NotEqual(t, runq.1, outcome)
+	require.NotEqual(t, runq.DrainComplete, outcome)
 	require.EqualValues(t, 1, requests.Load())
 	require.EqualValues(t, 1, probe.builds.Load())
 	require.EqualValues(t, 1, probe.runs.Load())

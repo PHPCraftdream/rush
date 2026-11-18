@@ -21,7 +21,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
-trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -30,7 +30,7 @@ trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 
 // stopRunQueuePumpForTest stops a test RunQueuePump at cleanup and fails the
 // test if shutdown remains forced after one cancellation/unblock retry.
-func stopRunQueuePumpForTest(t *testing.T, pump *runq.1, env fakeEnv, unblock func()) {
+func stopRunQueuePumpForTest(t *testing.T, pump *runq.RunQueuePump, env fakeEnv, unblock func()) {
 	t.Helper()
 	env.cleanupSafe.Store(false)
 	t.Cleanup(func() {
@@ -92,7 +92,7 @@ func TestRunQueuePumpCleanup_JoinsOutcomeBeforeDatabaseRelease(t *testing.T) {
 	ackDone := make(chan struct{})
 	ackService := &runQueueJoinAckService{Service: env.sessions, execCtx: execCtx, ackDone: ackDone}
 	coord := &runQueueJoinTestCoordinator{entered: entered, unblock: unblock, execCtx: execCtx}
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       ackService,
 		Coordinator:    coord,
 		PumpInstanceID: "test-pump-cleanup-join",
@@ -225,7 +225,7 @@ func TestReleaseGate_2_OSLockHeldPastRetryWindow(t *testing.T) {
 
 	// PHASE 2: PROVE AUTONOMOUS EXECUTION
 	// Start pump BEFORE releasing lock - pump will poll but can't acquire lock yet.
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    &p0338PumpCoordinator{sessionAgent: sa},
 		PumpInstanceID: "release-gate-2-pump",
@@ -296,7 +296,7 @@ func TestReleaseGate_2_OSLockHeldPastRetryWindow(t *testing.T) {
 // its enqueue step", not "the test manually executed the work". What the
 // test does NOT do is call Run()/tick()/executeEntry as a manual trigger
 // for EXECUTION — that part is left entirely to the autonomous
-// runq.1 started below, on its own TestTick.
+// runq.RunQueuePump started below, on its own TestTick.
 //
 // One correction from an earlier version of this doc comment: it used to
 // describe a revert-check targeting coordinator.go's
@@ -420,7 +420,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 	require.Len(t, pendingEntries, 1, "call should be enqueued in durable run queue")
 
 	// Start pump - it will AUTONOMOUSLY process the queued call.
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    &p0338PumpCoordinator{sessionAgent: sa},
 		PumpInstanceID: "release-gate-3-pump",
@@ -640,7 +640,7 @@ func TestReleaseGate_9_DoubleFailureNoDuplicate(t *testing.T) {
 		"mb.submitted should be empty - no double registration")
 
 	// Start pump with TestTick - it will AUTONOMOUSLY execute the queued call.
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    &p0338PumpCoordinator{sessionAgent: sa},
 		PumpInstanceID: "release-gate-9-pump",

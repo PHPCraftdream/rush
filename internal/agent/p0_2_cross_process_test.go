@@ -137,7 +137,7 @@ func TestP0_2_CrossProcessInterrupt_RowRecreatedOnFailure(t *testing.T) {
 		done:   done,
 		prompt: prompt,
 	}
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions: env.sessions, Coordinator: mockCoord,
 		PumpInstanceID: "test-pump-p0-2-cross",
 		TestTick:       func() time.Duration { return 100 * time.Millisecond },

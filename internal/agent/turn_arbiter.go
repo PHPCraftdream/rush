@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 )
 
 // LaunchSite names where a launch decision is asked from. The site is part of

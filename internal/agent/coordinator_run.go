@@ -201,9 +201,9 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	callResult := callResultRecorderFrom(ctx)
 	callResult.BeginCall()
 	callResultRecord := callResult.Capture()
-	executionIdentityRecord := runq.1(ctx)
+	executionIdentityRecord := runq.ExecutionAssistantIdentityRecorder(ctx)
 	ctx = withoutCallResultRecorder(ctx)
-	ctx = runq.1(ctx)
+	ctx = runq.WithoutExecutionAssistantIdentity(ctx)
 
 	model := pinned.smart
 
@@ -925,9 +925,9 @@ func (c *coordinator) RunWithReservedOwnership(ctx context.Context, sessionID, p
 	callResult := callResultRecorderFrom(ctx)
 	callResult.BeginCall()
 	callResultRecord := callResult.Capture()
-	executionIdentityRecord := runq.1(ctx)
+	executionIdentityRecord := runq.ExecutionAssistantIdentityRecorder(ctx)
 	ctx = withoutCallResultRecorder(ctx)
-	ctx = runq.1(ctx)
+	ctx = runq.WithoutExecutionAssistantIdentity(ctx)
 
 	// R12-H2a round 2: resolution builds this call's toolset into the
 	// trusted call state's build-resource scope before the reserved run

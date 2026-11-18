@@ -10,7 +10,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/session"
-trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -97,14 +97,14 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 	require.NoError(t, precheck.Release())
 
 	// Since task #340 ROUND 3, restartOrphaned durably enqueues the call
-	// instead of running it inline — a runq.1 is the only
+	// instead of running it inline — a runq.RunQueuePump is the only
 	// thing that drains that queue. The pump's own execution still goes
 	// through sa.Run, which still acquires a fresh OS lock, so the "lock
 	// held while restart is in flight" assertion below remains valid; it
 	// just now happens via the pump instead of directly inside
 	// restartOrphaned's goroutine.
 	pumpCoord := &pumpTestCoordinator{sessionAgent: sa, dataDir: dataDir}
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    pumpCoord,
 		PumpInstanceID: "test-pump-restart-orphaned",
@@ -256,7 +256,7 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 	// pump here still preserves this test's "fresh lock held while in
 	// flight" assertion.
 	pumpCoord := &pumpTestCoordinator{sessionAgent: sa, dataDir: dataDir}
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       env.sessions,
 		Coordinator:    pumpCoord,
 		PumpInstanceID: "test-pump-restart-orphaned-fullpath",

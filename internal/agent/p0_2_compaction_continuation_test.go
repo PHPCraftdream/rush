@@ -89,7 +89,7 @@ func (a *ackObservingSessionService) AckRunQueueEntry(ctx context.Context, id, l
 //     exit and before the pump's Ack can fire.
 //
 // This test drives the real components: a durable session_run_queue row,
-// runq.1 leasing and executing it through the production
+// runq.NewRunQueuePump leasing and executing it through the production
 // Coordinator-shaped adapter (mirrors coordinator.RebuildSessionAgentCall's
 // FromDurableQueue=true wiring, same as TestP0_2_RetryExhaustion_QueuesCall
 // in p0_2_regression_test.go), and a real sessionAgent.Run/runTurn/
@@ -267,7 +267,7 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 			inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget),
 			sessionAgent.disableAutoSummarize)
 	}
-	pump := runq.1(runq.1{
+	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
 		Sessions:       ackObserver,
 		Coordinator:    mockCoord,
 		PumpInstanceID: "test-pump-p0-2-compaction",

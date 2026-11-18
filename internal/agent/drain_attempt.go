@@ -20,7 +20,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/session"
-trunq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 )
 
 // drainOutcome says how far a Drain leg got.
@@ -261,7 +261,7 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt
 	// runOwned ownership refusal is visible from here -- the DB half of the
 	// facts holds no workspace column. Stamping it here is what makes
 	// decideAccount defer that leg without pacing or settling anything.
-	facts.Session.ForeignWorkspace = errors.Is(turnErr, runq.1)
+	facts.Session.ForeignWorkspace = errors.Is(turnErr, runq.ErrForeignWorkspace)
 	switch att.outcome {
 	case drainNotAttempted:
 		if turnErr == nil || operatorStop(turnErr, turnCtxDone) {

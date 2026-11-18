@@ -142,7 +142,7 @@ func TestRun_ForeignSessionIsRefusedBeforeAnyTurnAndLeavesNoLock(t *testing.T) {
 	})
 	require.Error(t, runErr, "Run must refuse a session this process does not own")
 	assert.Nil(t, result)
-	require.ErrorIs(t, runErr, runq.1,
+	require.ErrorIs(t, runErr, runq.ErrForeignWorkspace,
 		"the refusal must stay typed: the pump nacks a foreign row without penalty on it")
 	assert.Contains(t, runErr.Error(), wsForeignRoot, "the message names the owning workspace")
 	assert.Contains(t, runErr.Error(), "feature-x", "the message names that checkout's branch")
@@ -197,7 +197,7 @@ func TestRun_ForeignSessionIsRefusedOnEveryRunEntryPoint(t *testing.T) {
 	}, epoch, cancel, nil)
 	require.Error(t, runErr)
 	assert.Nil(t, result)
-	require.ErrorIs(t, runErr, runq.1)
+	require.ErrorIs(t, runErr, runq.ErrForeignWorkspace)
 	require.Equal(t, 1, svc.gets)
 	select {
 	case <-svc.block2:
@@ -246,7 +246,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 		a.config = store
 
 		_, runErr := a.Run(context.Background(), SessionAgentCall{SessionID: wsForeignSession, Prompt: "p"})
-		require.ErrorIs(t, runErr, runq.1)
+		require.ErrorIs(t, runErr, runq.ErrForeignWorkspace)
 		assert.Contains(t, runErr.Error(), wsForeignRoot)
 	})
 
@@ -277,7 +277,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 		select {
 		case runErr := <-runErrCh:
 			require.Error(t, runErr)
-			assert.NotErrorIs(t, runErr, runq.1,
+			assert.NotErrorIs(t, runErr, runq.ErrForeignWorkspace,
 				"a git checkout is a home process until SD-D: its legacy history stays drivable")
 		case <-time.After(3 * time.Second):
 			t.Fatal("timed out waiting for Run to return")
@@ -291,7 +291,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 		a.wsHomeOverride = &sharedFromLinked
 
 		_, runErr := a.Run(context.Background(), SessionAgentCall{SessionID: wsForeignSession, Prompt: "p"})
-		require.ErrorIs(t, runErr, runq.1,
+		require.ErrorIs(t, runErr, runq.ErrForeignWorkspace,
 			"a shared-from-linked process must not drive a legacy unbound row")
 	})
 
@@ -330,7 +330,7 @@ func TestRun_LinkedProcessRefusesForeignAndLegacyRows(t *testing.T) {
 		select {
 		case runErr := <-runErrCh:
 			require.Error(t, runErr)
-			assert.NotErrorIs(t, runErr, runq.1,
+			assert.NotErrorIs(t, runErr, runq.ErrForeignWorkspace,
 				"a row bound to this process's workspace must not be refused")
 		case <-time.After(3 * time.Second):
 			t.Fatal("timed out waiting for Run to return")
@@ -381,7 +381,7 @@ func TestRun_LegacySessionIsDrivenPastTheGuard(t *testing.T) {
 	select {
 	case runErr := <-runErrCh:
 		require.Error(t, runErr)
-		assert.NotErrorIs(t, runErr, runq.1,
+		assert.NotErrorIs(t, runErr, runq.ErrForeignWorkspace,
 			"a legacy row is owned by the home process and must not be refused")
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for Run to return")
@@ -422,7 +422,7 @@ func TestRun_UnreadableSessionIsNotAWorkspaceRefusal(t *testing.T) {
 	select {
 	case runErr := <-runErrCh:
 		require.Error(t, runErr)
-		assert.NotErrorIs(t, runErr, runq.1,
+		assert.NotErrorIs(t, runErr, runq.ErrForeignWorkspace,
 			"an unreadable session is not a workspace refusal")
 		assert.False(t, strings.Contains(runErr.Error(), "belongs to"),
 			"an unreadable session must not produce the WS-1 message")

@@ -446,14 +446,14 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		record := recorder.Capture()
 		call.OnAssistantMessageCreated = func(id string) {
 			record(id)
-			runq.1(ctx, id)
+			runq.RecordExecutionAssistantIdentity(ctx, id)
 			if originalOnAssistantMessageCreated != nil {
 				originalOnAssistantMessageCreated(id)
 			}
 		}
 	} else {
 		call.OnAssistantMessageCreated = func(id string) {
-			runq.1(ctx, id)
+			runq.RecordExecutionAssistantIdentity(ctx, id)
 			if originalOnAssistantMessageCreated != nil {
 				originalOnAssistantMessageCreated(id)
 			}
