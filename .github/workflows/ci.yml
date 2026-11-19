@@ -219,7 +219,15 @@ jobs:
         run: go mod tidy -diff
       - name: install sqlc (pinned, matches sqlc.yaml / the ASCII guard's target version)
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+        run: |
+          # The Go module proxy sometimes aborts a large download mid-stream
+          # (stream error ... INTERNAL_ERROR); retry instead of failing the job.
+          for attempt in 1 2 3; do
+            go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0 && exit 0
+            echo "sqlc install attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 15))
+          done
+          exit 1
       - name: sqlc generate produces no diff (committed internal/store/db/*.sql.go matches internal/store/db/sql/*.sql)
         if: runner.os == 'Linux' && needs.plan.outputs.heavy_allowed == 'true'
         run: |
