@@ -1,4 +1,4 @@
-package agent
+package toolwrap
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -109,11 +110,12 @@ func TestLoggedTool_FatalErrorIsLoggedAtError(t *testing.T) {
 // them per day were logged at ERROR next to real failures (A44). It is a
 // protocol pause: INFO, still greppable by level_kind=pause.
 //
-// Revert-check: drop the errAwaitingAnswer case and this goes red (ERROR).
+// Revert-check: drop the agentcall.ErrAwaitingAnswer case and this goes red
+// (ERROR).
 func TestLoggedTool_AwaitingAnswerIsAPauseNotAnError(t *testing.T) {
 	recs := runWrapped(t, stubTool{
 		name: "ask_question",
-		err:  &AwaitingAnswerError{Question: "create the .rush directory?", SessionID: "child-1"},
+		err:  &agentcall.AwaitingAnswerError{Question: "create the .rush directory?", SessionID: "child-1"},
 	})
 
 	require.Len(t, recs, 1)
@@ -190,37 +192,9 @@ func TestTruncateForLog_NeverSplitsARune(t *testing.T) {
 	require.Equal(t, 41, utf8.RuneCountInString(strings.Split(got, "…")[0]))
 }
 
-// Wrapping happens at the doors into a sessionAgent, not at the places a
-// tool slice is assembled. That is the whole point: the wrapper was first
-// applied at the buildTools call site, and agentic_fetch — which builds its
-// own six tools and never goes through buildTools — was silently left out.
-// These two tests fail if either door stops wrapping, which is what makes
-// "every tool, every path" checkable instead of a promise in a comment.
-func TestSessionAgent_ConstructorWrapsToolsForLogging(t *testing.T) {
-	agent := NewSessionAgent(SessionAgentOptions{
-		Tools: []fantasy.AgentTool{stubTool{name: "view"}, stubTool{name: "bash"}},
-	}).(*sessionAgent)
-
-	for _, tool := range agent.tools.Copy() {
-		require.IsType(t, &loggedTool{}, tool,
-			"a tool handed to NewSessionAgent must be wrapped; agentic_fetch reaches "+
-				"the agent this way and no other")
-	}
-}
-
-func TestSessionAgent_SetToolsWrapsToolsForLogging(t *testing.T) {
-	agent := NewSessionAgent(SessionAgentOptions{}).(*sessionAgent)
-	agent.SetTools([]fantasy.AgentTool{stubTool{name: "view"}})
-
-	tools := agent.tools.Copy()
-	require.Len(t, tools, 1)
-	require.IsType(t, &loggedTool{}, tools[0],
-		"the coordinator installs its tools through SetTools, not the constructor")
-}
-
-// Wrapping twice must not log twice. Both doors call the wrapper, so a
-// slice that passes through the constructor and then SetTools — or a caller
-// that wraps defensively — would otherwise double every record.
+// Wrapping twice must not log twice. Both doors call the wrapper, so a slice
+// that passes through the constructor and then SetTools — or a caller that
+// wraps defensively — would otherwise double every record.
 func TestWrapToolsWithErrorLogging_IsIdempotent(t *testing.T) {
 	once := wrapToolsWithErrorLogging([]fantasy.AgentTool{stubTool{
 		name: "write",

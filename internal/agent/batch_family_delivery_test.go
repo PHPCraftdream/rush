@@ -197,31 +197,34 @@ func TestBatchWorkFamilyDeliveryArming(t *testing.T) {
 			built, err := newBatchWorkToolBuild(bind, batchTestTools(names...), newBuildResourceScope(), deferred)
 			require.NoError(t, err)
 			armed := map[string]*batchIngressTool{}
-			for _, tool := range built.tools {
+			for _, tool := range built.Tools {
 				if ing, ok := tool.(*batchIngressTool); ok {
 					armed[tool.Info().Name] = ing
 				}
 			}
 			bash := armed[tools.BashToolName]
 			require.NotNil(t, bash, "bash must be armed")
-			require.Equal(t, batchDeliverySync, bash.inv.Delivery.Mode)
-			require.Equal(t, batchEscapeAuto, bash.inv.BackgroundEscape)
-			require.Equal(t, inlineWindow.String(), bash.inv.Delivery.Window)
+			bashInv := bash.Inv.(batchInvocationSpec).inv
+			require.Equal(t, batchDeliverySync, bashInv.Delivery.Mode)
+			require.Equal(t, batchEscapeAuto, bashInv.BackgroundEscape)
+			require.Equal(t, inlineWindow.String(), bashInv.Delivery.Window)
 
 			// FIRST assertion: the delegation families are DETACHED.
 			for _, name := range []string{AgentToolName, tools.AgenticFetchToolName} {
 				ing := armed[name]
 				require.NotNil(t, ing, "%s must be armed", name)
-				require.Equal(t, batchDeliveryDetached, ing.inv.Delivery.Mode,
+				inv := ing.Inv.(batchInvocationSpec).inv
+				require.Equal(t, batchDeliveryDetached, inv.Delivery.Mode,
 					"%s must be detached: sync reintroduces the parent-turn deadlock", name)
-				require.Equal(t, batchEscapeNever, ing.inv.BackgroundEscape)
-				require.Empty(t, ing.inv.Delivery.Window)
+				require.Equal(t, batchEscapeNever, inv.BackgroundEscape)
+				require.Empty(t, inv.Delivery.Window)
 			}
 			view := armed["view"]
 			require.NotNil(t, view, "view must be armed")
-			require.Equal(t, batchDeliverySync, view.inv.Delivery.Mode)
-			require.Equal(t, batchEscapeNever, view.inv.BackgroundEscape)
-			require.Empty(t, view.inv.Delivery.Window)
+			viewInv := view.Inv.(batchInvocationSpec).inv
+			require.Equal(t, batchDeliverySync, viewInv.Delivery.Mode)
+			require.Equal(t, batchEscapeNever, viewInv.BackgroundEscape)
+			require.Empty(t, viewInv.Delivery.Window)
 		})
 	}
 }

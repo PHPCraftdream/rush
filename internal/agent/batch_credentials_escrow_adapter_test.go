@@ -11,7 +11,7 @@ import (
 
 func TestBatchLeafRegistryCredentialsAreStoreLocal(t *testing.T) {
 	leaf := &installCredentialTestTool{}
-	registry := newPolicyToolBuild([]fantasy.AgentTool{leaf}).leaves
+	registry := newPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves
 	one, two := NewBatchLeafRegistryStore(), NewBatchLeafRegistryStore()
 	require.NoError(t, one.Register("r", registry))
 	require.NoError(t, two.Register("r", registry))
@@ -19,12 +19,18 @@ func TestBatchLeafRegistryCredentialsAreStoreLocal(t *testing.T) {
 	require.NoError(t, err)
 	second, err := two.Resolve("r")
 	require.NoError(t, err)
-	firstLeaf, ok := first.entries["agent"].tool.(*batchCredentialLeaf)
+	firstLeaf, resolveErr := first.Resolve("agent")
+	require.NoError(t, resolveErr)
+	secondLeaf, resolveErr := second.Resolve("agent")
+	require.NoError(t, resolveErr)
+	firstCredential, ok := firstLeaf.(*batchCredentialLeaf)
 	require.True(t, ok)
-	secondLeaf, ok := second.entries["agent"].tool.(*batchCredentialLeaf)
+	secondCredential, ok := secondLeaf.(*batchCredentialLeaf)
 	require.True(t, ok)
-	require.NotSame(t, firstLeaf.escrow, secondLeaf.escrow)
-	require.Same(t, leaf, registry.entries["agent"].tool)
+	require.NotSame(t, firstCredential.escrow, secondCredential.escrow)
+	registryLeaf, resolveErr := registry.Resolve("agent")
+	require.NoError(t, resolveErr)
+	require.Same(t, leaf, registryLeaf)
 }
 
 type installCredentialTestTool struct{ fantasy.AgentTool }

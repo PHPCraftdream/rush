@@ -95,7 +95,7 @@ func newRound2DriverScopeInstall(t *testing.T) *round2DriverScopeInstall {
 	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{stub})
 	registryID := "r2reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()
-	require.NoError(t, registries.Register(registryID, newPolicyToolBuild([]fantasy.AgentTool{stub}).leaves))
+	require.NoError(t, registries.Register(registryID, newPolicyToolBuild([]fantasy.AgentTool{stub}).Leaves))
 	stub.caps = bindings
 	probeConstructionRegistryID = registryID
 	pinTestConstruction(t, bindings, registryID)

@@ -13,6 +13,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,13 +30,20 @@ func TestDeferredRepinAfterPruneReconstructsIndexEntry(t *testing.T) {
 
 	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
 	require.NoError(t, err)
-	bind := &batchCoordinatorBinding{ingress: ingress, diskBindings: env.install.DiskBindings}
+	// Pin recorder: the minted pin identities are observed through the
+	// ingress PinLeafRegistry seam (the production pin path), so the test
+	// reads no internal pin-once tool state. All other ingress methods
+	// (Registry probe, ResolveLeaf, Invoke) pass through unchanged.
+	var pinMu sync.Mutex
+	var pinnedIDs []string
+	rec := &pinRecordingIngress{BatchWorkIngress: ingress, mu: &pinMu, ids: &pinnedIDs}
+	bind := &batchCoordinatorBinding{ingress: rec, diskBindings: env.install.DiskBindings}
 
 	scope := newBuildResourceScope()
 	built, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{env.leaf}, scope, true)
 	require.NoError(t, err)
 	var armed fantasy.AgentTool
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		if tool.Info().Name == "fs_write" {
 			armed = tool
 			break
@@ -44,7 +52,7 @@ func TestDeferredRepinAfterPruneReconstructsIndexEntry(t *testing.T) {
 	require.NotNil(t, armed, "the shared build must arm its work tool")
 	ingressTool, ok := armed.(*batchIngressTool)
 	require.True(t, ok, "the armed tool must be a batchIngressTool")
-	require.NotNil(t, ingressTool.bind, "the deferred build must carry the binding")
+	require.NotNil(t, ingressTool.Bind, "the deferred build must carry the binding")
 
 	// Dispatch 1: pins lazily, holds the construction, and runs the real
 	// executor end to end (the leaf completes; nothing is gated).
@@ -68,9 +76,10 @@ func TestDeferredRepinAfterPruneReconstructsIndexEntry(t *testing.T) {
 	// The pinned identity survived in the TOOL but not in the index: the
 	// prune deleted the identity-index entry together with the construction
 	// record. This is the defect precondition, proven.
-	ingressTool.mu.Lock()
-	firstID := ingressTool.id
-	ingressTool.mu.Unlock()
+	pinMu.Lock()
+	require.Len(t, pinnedIDs, 1, "dispatch 1 pins exactly once")
+	firstID := pinnedIDs[0]
+	pinMu.Unlock()
 	require.NotEmpty(t, firstID, "the deferred tool keeps its minted pin-once identity")
 	_, err = env.registries.Resolve(firstID)
 	require.Error(t, err, "the prune deleted the identity-index entry the tool still names")
@@ -83,9 +92,10 @@ func TestDeferredRepinAfterPruneReconstructsIndexEntry(t *testing.T) {
 	call = fantasy.ToolCall{ID: "call-repin-2", Name: "fs_write", Input: `{"path":"` + env.targetPath + `"}`}
 	_, err = armed.Run(ctx, call)
 	require.NoError(t, err, "the repair must re-pin and dispatch despite the stale index")
-	ingressTool.mu.Lock()
-	secondID := ingressTool.id
-	ingressTool.mu.Unlock()
+	pinMu.Lock()
+	require.Len(t, pinnedIDs, 2, "dispatch 2 re-pins exactly once (holdPinned repair)")
+	secondID := pinnedIDs[1]
+	pinMu.Unlock()
 	require.NotEmpty(t, secondID)
 	require.NotEqual(t, firstID, secondID, "the tool must re-pin under a fresh identity")
 	// The re-pinned identity may already be pruned once dispatch 2 settled
@@ -101,4 +111,22 @@ func TestDeferredRepinAfterPruneReconstructsIndexEntry(t *testing.T) {
 			env.install.Runtime.RegistryCount() == 0
 	}, 10*time.Second, 10*time.Millisecond,
 		"the re-pinned identity must return the manager and index exactly to zero")
+}
+
+// pinRecordingIngress records every PinLeafRegistry identity minted through
+// the production pin path and delegates everything else.
+type pinRecordingIngress struct {
+	BatchWorkIngress
+	mu  *sync.Mutex
+	ids *[]string
+}
+
+func (r pinRecordingIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string, error) {
+	id, err := r.BatchWorkIngress.PinLeafRegistry(registry)
+	if err == nil {
+		r.mu.Lock()
+		*r.ids = append(*r.ids, id)
+		r.mu.Unlock()
+	}
+	return id, err
 }

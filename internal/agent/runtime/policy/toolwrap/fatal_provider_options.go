@@ -1,11 +1,90 @@
-package agent
+package toolwrap
 
 import (
 	"context"
 	"slices"
+	"sync"
 
 	"charm.land/fantasy"
 )
+
+// This file consolidates the two per-call tool layers (DM4 chunk 2): the
+// fatal-error interception wrapper and the per-call provider-options wrapper.
+
+// Rush relies on a tool's non-nil Go error ending the turn and coming back
+// from agent.Stream (ask_question, peak-hours and cancellation paths, every
+// "fatal" tool failure). fantasy v0.45.3+ instead turns that error into an
+// ordinary error result and keeps the loop going. fatalToolTool restores the
+// contract at the one boundary Rush owns: the error is recorded, the step
+// stops the turn via StopTurn, and runTurn returns the recorded error.
+
+// FatalToolCollector keeps the first fatal tool error of one turn. This is
+// the only exported concrete type of the wrapper layer: the staying turn
+// wiring in package agent holds and drains it directly (field type and
+// Take()).
+type FatalToolCollector struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (c *FatalToolCollector) Record(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		c.err = err
+	}
+}
+
+// Take returns and clears the recorded error, so a stall-retried attempt
+// starts clean.
+func (c *FatalToolCollector) Take() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	err := c.err
+	c.err = nil
+	return err
+}
+
+type fatalToolTool struct {
+	inner     fantasy.AgentTool
+	collector *FatalToolCollector
+}
+
+func (t *fatalToolTool) Info() fantasy.ToolInfo { return t.inner.Info() }
+
+func (t *fatalToolTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	resp, err := t.inner.Run(ctx, call)
+	if err == nil {
+		return resp, nil
+	}
+	t.collector.Record(err)
+	stop := fantasy.NewTextErrorResponse(err.Error())
+	stop.Metadata = resp.Metadata
+	stop.StopTurn = true
+	return stop, nil
+}
+
+func (t *fatalToolTool) ProviderOptions() fantasy.ProviderOptions { return t.inner.ProviderOptions() }
+
+func (t *fatalToolTool) SetProviderOptions(opts fantasy.ProviderOptions) {
+	t.inner.SetProviderOptions(opts)
+}
+
+// WithFatalToolErrors returns a copy of tools whose Go errors end the turn
+// and are recorded in c. The shared tool objects are never mutated.
+func WithFatalToolErrors(tools []fantasy.AgentTool, c *FatalToolCollector) []fantasy.AgentTool {
+	if len(tools) == 0 || c == nil {
+		return tools
+	}
+	out := slices.Clone(tools)
+	for i, tool := range out {
+		out[i] = &fatalToolTool{inner: tool, collector: c}
+	}
+	return out
+}
 
 // providerOptionsTool attaches a per-CALL fantasy.ProviderOptions value to a
 // tool without touching the tool object itself.
@@ -49,7 +128,7 @@ func (t *providerOptionsTool) ProviderOptions() fantasy.ProviderOptions { return
 // call/step and never shared, so this write has a single owner.
 func (t *providerOptionsTool) SetProviderOptions(opts fantasy.ProviderOptions) { t.opts = opts }
 
-// withProviderOptionsOnLast returns a copy of tools whose LAST element carries
+// WithProviderOptionsOnLast returns a copy of tools whose LAST element carries
 // opts, leaving every shared tool object untouched. Empty/absent options and
 // an empty tool list are both no-ops, so callers can hand the result straight
 // to fantasy.WithTools.
@@ -57,7 +136,7 @@ func (t *providerOptionsTool) SetProviderOptions(opts fantasy.ProviderOptions) {
 // "Last tool" is the provider contract this implements: Anthropic caches the
 // tool definitions block up to and including the last cache_control marker, so
 // marking the final tool caches the whole block.
-func withProviderOptionsOnLast(tools []fantasy.AgentTool, opts fantasy.ProviderOptions) []fantasy.AgentTool {
+func WithProviderOptionsOnLast(tools []fantasy.AgentTool, opts fantasy.ProviderOptions) []fantasy.AgentTool {
 	if len(tools) == 0 || len(opts) == 0 {
 		return tools
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -52,7 +53,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		pinnedStepTools = ts.a.tools.Copy()
 	}
 	if roleToolsConstrained(callContext) {
-		pinnedStepTools = filterRoleContractTools(callContext, pinnedStepTools)
+		pinnedStepTools = toolwrap.FilterRoleContractTools(callContext, pinnedStepTools)
 	}
 	prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, ts.a.getCacheControlOptions())
 

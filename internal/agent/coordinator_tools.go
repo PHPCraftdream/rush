@@ -10,6 +10,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -298,7 +299,7 @@ func (c *coordinator) buildTools(ctx context.Context, cfg *config.Config, agent 
 	return newToolsComponent(c).buildTools(ctx, cfg, agent, isSubAgent)
 }
 
-func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (policyToolBuild, error) {
+func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (toolwrap.PolicyToolBuild, error) {
 	return newToolsComponent(c).buildPolicyTools(ctx, cfg, agent, isSubAgent)
 }
 

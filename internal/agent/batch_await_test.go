@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -586,4 +587,166 @@ func TestBatchScopeIndependentOnceWake(t *testing.T) {
 	})
 	require.True(t, f.Complete)
 	require.False(t, f.WorkOpen, "an open once wake alone must not open WorkOpen")
+}
+
+// ---- merged verbatim from batch_cutover_await_c_test.go (DM4 file-cap normalization): ----
+
+// ---- AW-a4: Mode ALL stays asleep while another captured root is live. ----
+
+func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
+	viewLeaf := newGatedLeaf("view")
+	argvLeaf := newGatedLeaf("run_command")
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, viewLeaf, argvLeaf)
+	releaseAllAt(t, viewLeaf, argvLeaf)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
+	env.invokeDetached("call-a4-r", "view", viewLeaf)
+	viewLeaf.waitStarted(t, "call-a4-r")
+	rootR := env.rootID("call-a4-r")
+	env.invokeDetached("call-a4-b", "run_command", argvLeaf)
+	argvLeaf.waitStarted(t, "call-a4-b")
+	rootB := env.rootID("call-a4-b")
+
+	// The PRODUCTION top-level ALL arm: both live roots reported, sleepAll
+	// set on the arbiter.
+	res := armSleepAll(t, coord, env)
+	require.Len(t, res.WaitingFor, 2, "both live roots reported")
+	facts := readFactsON(t, coord, env)
+	require.True(t, facts.Session.SleepAll, "AwaitTasks all armed the sleep")
+	require.GreaterOrEqual(t, facts.Session.RunningOwnJobs, 2, "both roots live")
+
+	// Secondary assertion: the BatchAwaitWorker ALL mode stays asleep while
+	// B is live (NotifyAll semantics over real reads). Capture BEFORE R
+	// settles so both live roots are in the set.
+	captured := env.capture()
+	require.Len(t, captured.Refs(), 2)
+	resCh := env.awaitAsync(batchAwaitModeAll, captured, true, 600*time.Millisecond)
+
+	// While B is live, root debt on R would defer with the armed-sleep
+	// reason: settle R and assert the production 4b defer.
+	viewLeaf.letGo("call-a4-r")
+	require.Equal(t, "completed", env.rootTerminal(rootR))
+	require.Eventually(t, func() bool { return env.debtExists() },
+		5*time.Second, 5*time.Millisecond, "R's root debt")
+	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainDeferred, pv.kind)
+	require.Equal(t, "sleeping until all tasks finish", pv.reason,
+		"top-level ALL defers while another root is live")
+
+	select {
+	case out := <-resCh:
+		t.Logf("AW-a4 await mode=%s timedOut=%v finished=%d remaining=%d", out.Mode, out.TimedOut, out.FinishedCount, len(out.Remaining))
+		require.True(t, out.TimedOut, "ALL must stay asleep while another root is live")
+		require.Equal(t, 1, out.FinishedCount, "R is finished but ALL is not satisfied")
+		require.Len(t, out.Remaining, 1)
+		require.Equal(t, rootB, out.Remaining[0].Ref.RootID)
+		require.True(t, cutoverStateLive(env.nodeState(rootB)), "the other root is untouched")
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not report its timeout")
+	}
+
+	// Settle B: the production 4b hold lifts (allow) and ALL's wait is over.
+	argvLeaf.letGo("call-a4-b")
+	require.Equal(t, "completed", env.rootTerminal(rootB))
+	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainAllow, pv.kind, "the hold lifted with the last live root")
+	t.Logf("AW-a4 both settled r=%s b=%s kind=%v", env.nodeState(rootR), env.nodeState(rootB), pv.kind)
+	env.logDebtRows(t)
+	env.logNodeRows(t, rootR, rootB)
+}
+
+// ---- AW-a5: a pending child-question debt breaks the armed sleep without
+// settling the question. ----
+
+func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
+	leaf := newGatedLeaf("view")
+	fast := &countingTool{name: "grep"}
+	env := newCutoverEnv(t, jobbatch.Limits{MaxConcurrent: 8, MaxDepth: 8, MaxNodes: 64}, leaf, fast)
+	releaseAllAt(t, leaf)
+	coord := newCutoverCoordinator(t, env)
+	cutoverBindFacts(t, coord, env)
+	// A completed detached root (completion debt, delivery held) plus a live
+	// root. The plain completion leaf is "grep" (admissible) because "view"
+	// is the gated leaf's pinned name.
+	env.invokeDetached("call-a5-done", "grep", fast)
+	doneRoot := env.rootID("call-a5-done")
+	require.Eventually(t, func() bool { return env.debtExists() },
+		5*time.Second, 5*time.Millisecond, "completion debt after the detached root settles")
+	env.invokeDetached("call-a5-live", "view", leaf)
+	leaf.waitStarted(t, "call-a5-live")
+	liveRoot := env.rootID("call-a5-live")
+
+	// Arm the sleep through the PRODUCTION top-level ALL path first, so the
+	// hold/break below is the production 4b.
+	armSleepAll(t, coord, env)
+
+	debt := func(context.Context) (session.BatchPendingDebt, error) {
+		return env.store.BatchReactionPendingInclusiveDebtRows(env.ctx, env.sessionID)
+	}
+	live := func(context.Context) session.BatchLiveResult {
+		return env.live.BatchLiveForOwner(env.ctx, env.sessionID)
+	}
+	facts, err := ReadBatchArbiterFacts(env.ctx, BatchArbiterDeps{Live: live, Debt: debt})
+	require.NoError(t, err)
+	t.Logf("AW-a5 facts before question: liveRoots=%v debt=%v completionOnly=%v",
+		facts.LiveRoots, facts.DebtPendingIncl, facts.CompletionOnly)
+	require.True(t, facts.LiveRoots, "the live root keeps the hold")
+	require.True(t, facts.DebtPendingIncl)
+	require.True(t, facts.CompletionOnly, "selected completions are completion-class")
+	require.True(t, facts.SleepHolds(true, BatchSleepBreakers{}), "rule 4b holds on completions only")
+	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainDeferred, pv.kind)
+	require.Equal(t, "sleeping until all tasks finish", pv.reason, "the armed sleep defers")
+
+	// Publish the question through the PRODUCTION publisher path: the live
+	// TASK CHILD's token fences the incarnation (admission assigns tokens
+	// to leaves only; the root token stays 0), and BatchPublishQuestion
+	// requires the token of the EXACT node -- so publish against the child
+	// node id, not the root.
+	var childNodeID string
+	var token int64
+	require.NoError(t, env.conn.QueryRowContext(env.ctx,
+		`SELECT node_id, token FROM batch_nodes WHERE root_id = ?1 AND node_id != root_id AND state IN ('pending','starting','running','cancelling') ORDER BY ordinal LIMIT 1`,
+		liveRoot).Scan(&childNodeID, &token))
+	require.Greater(t, token, int64(0), "the live task child carries an incarnation token")
+	publisher := batchCoordinatorQuestionPublisher{store: env.store}
+	require.NoError(t, publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+		Owner: env.sessionID, ChildSessionID: "sess-child-a5", NodeID: childNodeID,
+		Token: uint64(token), Depth: 1, Sequence: 1, Question: "continue?",
+	}))
+
+	facts, err = ReadBatchArbiterFacts(env.ctx, BatchArbiterDeps{Live: live, Debt: debt})
+	require.NoError(t, err)
+	t.Logf("AW-a5 facts after question: completionOnly=%v", facts.CompletionOnly)
+	require.False(t, facts.CompletionOnly, "a question is not completion-class")
+	require.False(t, facts.SleepHolds(true, BatchSleepBreakers{}), "the question breaks the armed sleep")
+	// Production 4b: CompletionOnly false falls through rule 4b; with no
+	// other gate on the fresh fixture the launch is ADMITTED (the answer/
+	// inject path would run).
+	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
+	require.Equal(t, drainAllow, pv.kind,
+		"the question broke the sleep: one eligible launch (answer admitted)")
+
+	// The question is NOT settled by the wake: still pending and unreacted.
+	// ACCEPTANCE SEAM (round 5): the production answer path IS now asserted
+	// end to end by TestAWa5AgentChildAnswerViaRunnerInject
+	// (batch_answer_inject_test.go): a REAL agent-kind child parks in
+	// host.Ask, the production publisher writes this durable notice, and
+	// Runner.Inject(node, {"depth":d,...}) is ACCEPTED into the SAME
+	// incarnation; the answered node settles completed. THIS test keeps
+	// asserting the admission half: a published question breaks the armed
+	// sleep and the answer launch is admitted, and the notice itself stays
+	// pending/unreacted (acceptance answers the in-memory hold; the
+	// durable notice is consumed only by the owner's notice pull).
+	var delivery string
+	var reacted int64
+	require.NoError(t, env.conn.QueryRowContext(env.ctx,
+		`SELECT delivery, reacted FROM session_notices WHERE owner = ?1 AND kind = ?2`,
+		env.sessionID, session.NoticeKindChildQuestion).Scan(&delivery, &reacted))
+	require.Equal(t, "pending", delivery)
+	require.EqualValues(t, 0, reacted)
+	require.True(t, cutoverStateLive(env.nodeState(liveRoot)), "the live root is untouched")
+	require.Zero(t, env.asyncJobsCount())
+	env.logDebtRows(t)
+	env.logNodeRows(t, doneRoot, liveRoot)
 }

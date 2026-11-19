@@ -13,6 +13,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -299,8 +300,8 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 		t.Cleanup(options.BuildScope.Close)
 		built, buildErr := coord.buildPolicyTools(policyCtx, cfg.Config(), base, false)
 		require.NoError(t, buildErr)
-		require.Equal(t, []string{"view"}, pinnedToolNames(built.tools), "live removal of the role tools field cannot widen its durable ceiling")
-		view, resolveErr := built.leaves.resolve("view")
+		require.Equal(t, []string{"view"}, pinnedToolNames(built.Tools), "live removal of the role tools field cannot widen its durable ceiling")
+		view, resolveErr := built.Leaves.Resolve("view")
 		require.NoError(t, resolveErr)
 		viewInput, marshalErr := json.Marshal(map[string]string{"file_path": proofPath})
 		require.NoError(t, marshalErr)
@@ -310,15 +311,15 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 		require.False(t, viewResponse.IsError, "%s", viewResponse.Content)
 		require.Contains(t, viewResponse.Content, "durable role process dispatch")
 
-		_, resolveErr = built.leaves.resolve("write")
+		_, resolveErr = built.Leaves.Resolve("write")
 		require.Error(t, resolveErr, "inherited role intersections must deny the native write leaf")
-		_, resolveErr = built.leaves.resolve("grep")
+		_, resolveErr = built.Leaves.Resolve("grep")
 		require.Error(t, resolveErr, "the original role tool list must continue to deny grep")
 		unrestricted, buildErr := coord.buildPolicyTools(context.Background(), cfg.Config(), base, false)
 		require.NoError(t, buildErr)
-		writeLeaf, resolveErr := unrestricted.leaves.resolve("write")
+		writeLeaf, resolveErr := unrestricted.Leaves.Resolve("write")
 		require.NoError(t, resolveErr)
-		guardedWrite := roleGuardTool{AgentTool: writeLeaf, contracts: []*session.RoleContract{childContract}}
+		guardedWrite := toolwrap.NewRoleGuardTool(writeLeaf, []*session.RoleContract{childContract})
 		deniedInput, marshalErr := json.Marshal(map[string]string{
 			"file_path": filepath.Join(workDir, "forbidden-role-write.txt"),
 			"content":   "this must not be written",

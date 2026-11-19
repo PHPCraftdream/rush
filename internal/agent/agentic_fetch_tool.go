@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 
@@ -18,40 +19,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 )
-
-//go:embed templates/agentic_fetch.md
-var agenticFetchToolDescription string
-
-// agenticFetchValidationResult holds the validated parameters from the tool call context.
-type agenticFetchValidationResult struct {
-	SessionID      string
-	AgentMessageID string
-}
-
-// validateAgenticFetchParams validates the tool call parameters and extracts required context values.
-func validateAgenticFetchParams(ctx context.Context, params tools.AgenticFetchParams) (agenticFetchValidationResult, error) {
-	if params.Prompt == "" {
-		return agenticFetchValidationResult{}, errors.New("prompt is required")
-	}
-
-	sessionID := tools.GetSessionFromContext(ctx)
-	if sessionID == "" {
-		return agenticFetchValidationResult{}, errors.New("session id missing from context")
-	}
-
-	agentMessageID := tools.GetMessageFromContext(ctx)
-	if agentMessageID == "" {
-		return agenticFetchValidationResult{}, errors.New("agent message id missing from context")
-	}
-
-	return agenticFetchValidationResult{
-		SessionID:      sessionID,
-		AgentMessageID: agentMessageID,
-	}, nil
-}
-
-//go:embed templates/agentic_fetch_prompt.md.tpl
-var agenticFetchPromptTmpl []byte
 
 func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (fantasy.AgentTool, error) {
 	if client == nil {
@@ -66,7 +33,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 
 	return fantasy.NewParallelAgentTool(
 		tools.AgenticFetchToolName,
-		agenticFetchToolDescription,
+		toolwrap.AgenticFetchToolDescription(),
 		func(ctx context.Context, params tools.AgenticFetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			remaining, depthErr := MaxAgentDepthFrom(ctx)
 			if depthErr != nil {
@@ -88,7 +55,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			if ingress := coordinatorPrivateFetchIngress(c); ingress != nil {
 				childCtx = context.WithValue(childCtx, privateFetchIngressKey{}, ingress)
 			}
-			validationResult, err := validateAgenticFetchParams(childCtx, params)
+			validationResult, err := toolwrap.ValidateAgenticFetchParams(childCtx, params)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
@@ -179,7 +146,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				prompt.WithWorkingDir(tmpDir),
 			}
 
-			promptTemplate, err := prompt.NewPrompt("agentic_fetch", string(agenticFetchPromptTmpl), promptOpts...)
+			promptTemplate, err := prompt.NewPrompt("agentic_fetch", string(toolwrap.AgenticFetchPromptTmpl()), promptOpts...)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating prompt: %s", err)
 			}
@@ -255,7 +222,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				Sessions:       c.sessions,
 				Messages:       c.messages,
 				Config:         c.cfg,
-				Tools:          fetchBuild.tools,
+				Tools:          fetchBuild.Tools,
 				RestrictedRuns: restrictedRunAuthorizer(c.permissions),
 			})
 

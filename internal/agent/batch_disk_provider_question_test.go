@@ -547,9 +547,9 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{leaf})
 	registryID := "q8-reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()
-	require.NoError(t, registries.Register(registryID, &policyLeafRegistry{
-		entries: map[string]policyLeafEntry{"agent": {layers: []string{"tool"}, tool: leaf}},
-	}))
+	require.NoError(t, registries.Register(registryID, newTestPolicyLeafRegistry(map[string]testPolicyLeaf{
+		"agent": {Layers: []string{"tool"}, Tool: leaf},
+	})))
 	// R12-H2 §1.2: the executor's Execution owner names the pinned
 	// registry's construction record; hold its Construction owner exactly as
 	// the trusted call state's build scope does (released explicitly before

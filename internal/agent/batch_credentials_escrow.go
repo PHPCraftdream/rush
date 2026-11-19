@@ -33,6 +33,18 @@ type batchCredentialLeaf struct {
 
 func (l *batchCredentialLeaf) credentialEscrow() *batchCredentialEscrow { return l.escrow }
 
+// PolicyLeafTool is the production role-introspection seam: HEAD role
+// introspection unwraps this wrapper to reach the leaf tool underneath.
+func (l *batchCredentialLeaf) PolicyLeafTool() fantasy.AgentTool { return l.AgentTool }
+
+// UnwrapCapturedCredentialLeaf is the narrow credential-escrow capability the
+// moved captured walk (toolwrap.CapturedToolFrom) uses: BatchLeafRegistryStore
+// .Register wraps every agent leaf, so the executor-side captured lookup must
+// see through this exact wrapper.
+func (l *batchCredentialLeaf) UnwrapCapturedCredentialLeaf() fantasy.AgentTool {
+	return l.AgentTool
+}
+
 func newBatchCredentialEscrow() *batchCredentialEscrow {
 	return &batchCredentialEscrow{entries: make(map[batchCredentialKey]*batchCredentialEntry)}
 }

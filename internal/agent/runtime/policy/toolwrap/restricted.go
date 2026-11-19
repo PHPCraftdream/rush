@@ -1,4 +1,4 @@
-package agent
+package toolwrap
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 )
 
 // Native batch controls classify like the legacy names they replace;
@@ -59,12 +60,20 @@ var restrictedToolActions = map[string]string{
 	"write":                      "write",
 }
 
-func restrictedRunAuthorizer(service permission.Service) permission.RestrictedRunAuthorizer {
+func RestrictedRunAuthorizer(service permission.Service) permission.RestrictedRunAuthorizer {
 	if service == nil {
 		return nil
 	}
 	authorizer, _ := service.(permission.RestrictedRunAuthorizer)
 	return authorizer
+}
+
+// RestrictedToolAction is the narrow lookup the staying package agent uses
+// for restricted dispatch metadata (step_progress.go and the dispatch
+// tests); comma-ok keeps unknown tools distinguishable from "read".
+func RestrictedToolAction(name string) (string, bool) {
+	action, ok := restrictedToolActions[name]
+	return action, ok
 }
 
 // restrictedTool is the final dispatch gate for a run-scoped allowlist. It
@@ -132,7 +141,7 @@ func (t restrictedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy
 	if !ok {
 		return t.AgentTool.Run(ctx, call)
 	}
-	action := restrictedToolActions[call.Name]
+	action, _ := RestrictedToolAction(call.Name)
 	if action == "" {
 		if provider, ok := t.AgentTool.(interface{ RestrictedRunAction() string }); ok {
 			action = provider.RestrictedRunAction()
@@ -173,4 +182,15 @@ func restrictedCommandParams(toolName, input string) (any, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// Narrow exports for the staying package agent root (DM4 chunk 2 bridge,
+// internal/agent/toolwrap_bridge.go): thin delegates over the unexported
+// wrappers. Removed together with the bridge once the root callers move.
+func WrapToolsWithHooks(tools []fantasy.AgentTool, runner *hooks.Runner, isSubAgent bool) []fantasy.AgentTool {
+	return wrapToolsWithHooks(tools, runner, isSubAgent)
+}
+
+func WrapToolsWithRestrictedRun(tools []fantasy.AgentTool, authorizer permission.RestrictedRunAuthorizer) []fantasy.AgentTool {
+	return wrapToolsWithRestrictedRun(tools, authorizer)
 }

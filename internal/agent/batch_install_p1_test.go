@@ -105,7 +105,7 @@ func newBatchP1Env(t *testing.T, leaf fantasy.AgentTool, extraLeaves ...fantasy.
 	built := newPolicyToolBuild(append([]fantasy.AgentTool{leaf}, extraLeaves...))
 	registries := NewBatchLeafRegistryStore()
 	registryID := uuid.NewString()
-	if err := registries.Register(registryID, built.leaves); err != nil {
+	if err := registries.Register(registryID, built.Leaves); err != nil {
 		t.Fatalf("register registry: %v", err)
 	}
 	profile, err := NewBatchProfileDefault()
@@ -393,8 +393,8 @@ func TestBatchAgentRouterDispatchesByRecordedTool(t *testing.T) {
 func TestCoordinatorBridgeBindsToStampedInvocation(t *testing.T) {
 	leafA := &countingTool{name: "view"}
 	leafB := &countingTool{name: "view"}
-	regA := newPolicyToolBuild([]fantasy.AgentTool{leafA}).leaves
-	regB := newPolicyToolBuild([]fantasy.AgentTool{leafB}).leaves
+	regA := newPolicyToolBuild([]fantasy.AgentTool{leafA}).Leaves
+	regB := newPolicyToolBuild([]fantasy.AgentTool{leafB}).Leaves
 	registries := NewBatchLeafRegistryStore()
 	if err := registries.Register("reg-A", regA); err != nil {
 		t.Fatalf("register A: %v", err)
@@ -503,7 +503,7 @@ func (f *bridgeTestIngress) ResolveLeaf(registryID, name string) (fantasy.AgentT
 	if err != nil {
 		return nil, err
 	}
-	return reg.resolve(name)
+	return reg.Resolve(name)
 }
 
 func (f *bridgeTestIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
@@ -531,7 +531,7 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 	}
 	reg := newPolicyToolBuild([]fantasy.AgentTool{probe})
 	registries := NewBatchLeafRegistryStore()
-	if err := registries.Register("reg-policy", reg.leaves); err != nil {
+	if err := registries.Register("reg-policy", reg.Leaves); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	// R12-H2 §1.2: Start acquires an Execution owner for the payload's

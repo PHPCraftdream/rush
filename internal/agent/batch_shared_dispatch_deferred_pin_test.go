@@ -46,7 +46,7 @@ func TestSharedToolsetBuildPublishesNothingAndDispatchPinsLazily(t *testing.T) {
 	scope.Close()
 
 	// Oracle 1: the build published NOTHING.
-	require.Empty(t, built.registryID, "a deferred build must not publish a registry identity")
+	require.Empty(t, built.RegistryID, "a deferred build must not publish a registry identity")
 	require.Zero(t, env.install.Runtime.RegistryCount(), "no registry identity may be published at build time")
 	owners, constructions, registries := env.install.DiskBindings.OwnerDiagnostics()
 	require.Zero(t, owners, "no owner may exist after an undispatched shared build")
@@ -55,7 +55,7 @@ func TestSharedToolsetBuildPublishesNothingAndDispatchPinsLazily(t *testing.T) {
 
 	// Find the armed work tool.
 	var armed fantasy.AgentTool
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		if tool.Info().Name == "fs_write" {
 			armed = tool
 			break
@@ -64,7 +64,7 @@ func TestSharedToolsetBuildPublishesNothingAndDispatchPinsLazily(t *testing.T) {
 	require.NotNil(t, armed, "the shared build must arm its work tool")
 	ingressTool, ok := armed.(*batchIngressTool)
 	require.True(t, ok, "the armed tool must be a batchIngressTool")
-	require.NotNil(t, ingressTool.bind, "the shared build's tool must carry the deferred-pin binding")
+	require.NotNil(t, ingressTool.Bind, "the shared build's tool must carry the deferred-pin binding")
 
 	// Dispatch ONCE through the armed tool with its own session identity
 	// (distinct session id: no cross-test attach).

@@ -37,7 +37,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +64,7 @@ func TestModelControlRunAddInheritance(t *testing.T) {
 	// leaf run count.
 	counters := &inventoryCounters{}
 	env := newH2aGatedInstallWithLeafWrap(t, func(inner fantasy.AgentTool) fantasy.AgentTool {
-		restricted := restrictedTool{AgentTool: inner, authorizer: inventoryPermAuthorizer{c: counters}}
+		restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{inner}, inventoryPermAuthorizer{c: counters})[0]
 		return inventoryHookLeaf{AgentTool: restricted, c: counters}
 	})
 	env.fake.arm()

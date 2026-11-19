@@ -74,7 +74,7 @@ func TestBatchDenyExecPolicyHelper(t *testing.T) {
 	wd := t.TempDir()
 	bash := tools.NewBashTool(perms, wd, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
 	argv := tools.NewRunCommandTool(perms, wd)
-	registry := newPolicyToolBuild([]fantasy.AgentTool{bash, argv}).leaves
+	registry := newPolicyToolBuild([]fantasy.AgentTool{bash, argv}).Leaves
 	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}
 	for _, tc := range []struct {
 		family, tool        string

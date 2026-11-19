@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/fantasy"
@@ -81,7 +83,7 @@ type subAgentParams struct {
 	// may be refreshed at dispatch time; agentic_fetch's fast-built child
 	// and any other caller are exempt.
 	slotModel  bool
-	pctHandoff *pctDelegationHandoff // pct: admission-held child construction refs.
+	pctHandoff *toolwrap.PctDelegationHandoff // pct: admission-held child construction refs.
 }
 
 func loadChildRoleContract(ctx context.Context, sessions core.Service, childID string) (*core.RoleContract, error) {
@@ -108,7 +110,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	var pctDriverTransferred bool
 	defer func() {
 		if !pctDriverTransferred {
-			pctReleaseScopeRefs(pctReleases)
+			toolwrap.ReleaseScopeRefs(pctReleases)
 		}
 	}()
 	lifecycle, lifecycleBound := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
@@ -567,7 +569,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 		return fantasy.ToolResponse{}, err
 	}
 	if params.pctHandoff != nil {
-		pctReleases = params.pctHandoff.pctClaimDriver()
+		pctReleases = params.pctHandoff.ClaimDriver()
 	}
 	generation := c.host.subAgentDrivers().register(session.ID, subAgentDriver{
 		agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID,
@@ -576,7 +578,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	})
 	pctDriverTransferred = generation != 0
 	if !pctDriverTransferred {
-		pctReleaseScopeRefs(pctReleases)
+		toolwrap.ReleaseScopeRefs(pctReleases)
 	}
 	// R1-1: inherit the parent run's per-session restricted-run gate too, so
 	// a delegated sub-agent's tool calls are judged by its own run's policy

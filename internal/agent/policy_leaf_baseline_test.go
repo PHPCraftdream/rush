@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"charm.land/fantasy"
@@ -76,15 +77,51 @@ func TestPolicyLeafConstructionBaseline(t *testing.T) {
 	}
 }
 
+// toolwrapPkgPath pins the exact package of the known wrapper types so the
+// name match below can never collide with same-named types elsewhere.
+const toolwrapPkgPath = "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
+// policyLeafBaselineStack derives the wrapper stack independently of the
+// registry entry via scoped, safe reflection (no unsafe, no .Interface on
+// unexported fields): each toolwrap wrapper type is recognized by its exact
+// PkgPath/Name and recursed through its single inner AgentTool field using
+// only reflect.Value operations (FieldByName/Kind/Elem are all legal on
+// unexported fields). Unknown types are leaves, so a new wrapper type fails
+// the baseline loudly instead of hiding.
 func policyLeafBaselineStack(tool fantasy.AgentTool) []string {
-	switch tool := tool.(type) {
-	case *loggedTool:
-		return append([]string{"logging"}, policyLeafBaselineStack(tool.inner)...)
-	case *hookedTool:
-		return append([]string{"hooks"}, policyLeafBaselineStack(tool.inner)...)
-	case restrictedTool:
-		return append([]string{"restricted"}, policyLeafBaselineStack(tool.AgentTool)...)
-	default:
-		return []string{"tool"}
+	return policyLeafBaselineStackValue(reflect.ValueOf(tool))
+}
+
+func policyLeafBaselineStackValue(v reflect.Value) []string {
+	for {
+		switch v.Kind() {
+		case reflect.Pointer, reflect.Interface:
+			if v.IsNil() {
+				return []string{"tool"}
+			}
+			v = v.Elem()
+			continue
+		case reflect.Struct:
+			t := v.Type()
+			var field, layer string
+			if t.PkgPath() == toolwrapPkgPath {
+				switch t.Name() {
+				case "loggedTool":
+					field, layer = "inner", "logging"
+				case "hookedTool":
+					field, layer = "inner", "hooks"
+				case "restrictedTool":
+					field, layer = "AgentTool", "restricted"
+				case "roleGuardTool":
+					field, layer = "AgentTool", "role"
+				}
+			}
+			if field == "" {
+				return []string{"tool"}
+			}
+			return append([]string{layer}, policyLeafBaselineStackValue(v.FieldByName(field))...)
+		default:
+			return []string{"tool"}
+		}
 	}
 }

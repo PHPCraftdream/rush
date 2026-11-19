@@ -70,7 +70,7 @@ func (f *fakeBatchIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTo
 	if !ok {
 		return nil, errors.New("unknown registry")
 	}
-	return reg.resolve(name)
+	return reg.Resolve(name)
 }
 
 func (f *fakeBatchIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
@@ -159,7 +159,7 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	}
 
 	seen := map[string]fantasy.AgentTool{}
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		seen[tool.Info().Name] = tool
 	}
 	if len(seen) != len(list) {
@@ -170,7 +170,7 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: not armed through the batch ingress (%T)", name, seen[name])
 		}
-		if armed.registry != fake.reg {
+		if armed.Registry != fake.reg {
 			t.Fatalf("%s: armed against a foreign registry", name)
 		}
 		if _, ok := seen[name].(*batchIngressTool); !ok {
@@ -198,17 +198,18 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 		"view":            {batchEscapeNever, "", batchDeliverySync},
 	} {
 		armed := seen[name].(*batchIngressTool)
-		if armed.inv.BackgroundEscape != want.escape {
-			t.Fatalf("%s: escape %q want %q", name, armed.inv.BackgroundEscape, want.escape)
+		inv := armed.Inv.(batchInvocationSpec).inv
+		if inv.BackgroundEscape != want.escape {
+			t.Fatalf("%s: escape %q want %q", name, inv.BackgroundEscape, want.escape)
 		}
-		if armed.inv.Delivery.Mode != want.mode {
-			t.Fatalf("%s: mode %q want %q", name, armed.inv.Delivery.Mode, want.mode)
+		if inv.Delivery.Mode != want.mode {
+			t.Fatalf("%s: mode %q want %q", name, inv.Delivery.Mode, want.mode)
 		}
-		if armed.inv.Delivery.Window != want.window {
-			t.Fatalf("%s: window %q want %q", name, armed.inv.Delivery.Window, want.window)
+		if inv.Delivery.Window != want.window {
+			t.Fatalf("%s: window %q want %q", name, inv.Delivery.Window, want.window)
 		}
-		if armed.inv.WaiterRank != batchGroupRanks[batchGroupIO] {
-			t.Fatalf("%s: waiter rank %d", name, armed.inv.WaiterRank)
+		if inv.WaiterRank != batchGroupRanks[batchGroupIO] {
+			t.Fatalf("%s: waiter rank %d", name, inv.WaiterRank)
 		}
 	}
 }
@@ -226,28 +227,23 @@ func TestUnboundCoordinatorArmsNoBatchTools(t *testing.T) {
 		t.Fatalf("finishToolAssembly: %v", err)
 	}
 	byName := map[string]fantasy.AgentTool{}
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		byName[tool.Info().Name] = tool
 	}
-	if entry, ok := built.leaves.entries["bash"]; ok {
-		if batchLayersContain(entry.layers, "async") || batchLayersContain(entry.layers, "stall") {
-			t.Fatalf("bash leaf layers %v carry a deleted wrapper layer", entry.layers)
-		}
+	// The async/stall wrapper layers are DELETED types: re-adding them is a
+	// compile error, so the wrapper-layer assertion is structural. What
+	// remains behavioral here is that bash kept a direct pinned leaf on the
+	// unbound path; exact wrapper-stack assertions live in the toolwrap
+	// lower suite (TestPolicyLeafWrapperStackExact).
+	resolvedLeaf, resolveErr := built.Leaves.Resolve("bash")
+	if resolveErr != nil || resolvedLeaf == nil {
+		t.Fatalf("bash must keep its pinned leaf: %v", resolveErr)
 	}
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		if _, ok := tool.(*batchIngressTool); ok {
 			t.Fatalf("unbound coordinator produced a batch-armed tool")
 		}
 	}
-}
-
-func batchLayersContain(layers []string, want string) bool {
-	for _, layer := range layers {
-		if layer == want {
-			return true
-		}
-	}
-	return false
 }
 
 // TestNoRawAgentFamilyFactory is acceptance item (d), R11F round-2 P1-7
@@ -302,7 +298,7 @@ func TestAgentDriverRunsPinnedLeaf(t *testing.T) {
 	fake := &fakeBatchIngress{leafRuns: map[string]int{}}
 	list := batchTestTools("agent")
 	built := newPolicyToolBuild(list)
-	if _, err := fake.PinLeafRegistry(built.leaves); err != nil {
+	if _, err := fake.PinLeafRegistry(built.Leaves); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
 	restore := processBatchBinding.Swap(&batchCoordinatorBinding{ingress: fake})
@@ -366,7 +362,7 @@ func TestMCPKindRoutingAndBridgeFallback(t *testing.T) {
 	list := batchTestTools("view", "bash", "mcp_files__read")
 	built := newPolicyToolBuild(list)
 	bind := &batchCoordinatorBinding{ingress: fake}
-	if _, err := bind.pin(built.leaves); err != nil {
+	if _, err := bind.pin(built.Leaves); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
 	restore := processBatchBinding.Swap(bind)
@@ -436,12 +432,12 @@ func TestPrivateFetchArmsThroughIngress(t *testing.T) {
 	list := batchTestTools("view", "grep")
 	ctx := withPrivateFetchBuildIngress(context.Background(), ingress)
 	built := buildPrivateFetchTools(ctx, list, nil, newBuildResourceScope())
-	for i, tool := range built.tools {
+	for i, tool := range built.Tools {
 		if _, ok := tool.(*privateFetchIngressTool); !ok {
 			t.Fatalf("private tool %d not ingress-armed (%T)", i, tool)
 		}
 	}
-	resp, err := built.tools[0].Run(batchCallCtx(env.sessionID), fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
+	resp, err := built.Tools[0].Run(batchCallCtx(env.sessionID), fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -469,7 +465,7 @@ func TestPrivateFetchArmsThroughIngress(t *testing.T) {
 	// record is deleted and the pinned registry identity is unresolvable.
 	caps.releaseResidualConstructions()
 	require.Eventually(t, func() bool {
-		_, err := env.registries.Resolve(built.registryID)
+		_, err := env.registries.Resolve(built.RegistryID)
 		return err != nil
 	}, 5*time.Second, time.Millisecond,
 		"the construction record must die once no owner names its registry")
@@ -509,12 +505,12 @@ func TestPrivateFetchCustomProviderPassesExecutorAdmission(t *testing.T) {
 	ctx := WithCallOptions(withPrivateFetchBuildIngress(batchCallCtx(env.sessionID), ingress), opts)
 
 	built := buildPrivateFetchTools(ctx, batchTestTools("view"), nil, EnsureCallBuildScope(opts))
-	for i, tool := range built.tools {
+	for i, tool := range built.Tools {
 		if _, ok := tool.(*privateFetchIngressTool); !ok {
 			t.Fatalf("private tool %d not ingress-armed (%T)", i, tool)
 		}
 	}
-	resp, runErr := built.tools[0].Run(ctx, fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
+	resp, runErr := built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "c1", Name: "view", Input: `{}`})
 	require.NoError(t, runErr, "the custom-provider private payload must pass executor admission")
 	require.False(t, resp.IsError, "leaf response: %s", resp.Content)
 	require.Positive(t, runner.submitsBound, "the binding-carrying payload submitted through SubmitBound")

@@ -22,9 +22,11 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -72,7 +74,7 @@ func (a inventoryPermAuthorizer) AuthorizeRestrictedTool(permission.CreatePermis
 // counting authorizer) inside, the counting executor leaf innermost.
 func inventoryWrappedLeaf(tool string, c *inventoryCounters) fantasy.AgentTool {
 	inner := &countingTool{name: tool}
-	restricted := restrictedTool{AgentTool: inner, authorizer: inventoryPermAuthorizer{c: c}}
+	restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{inner}, inventoryPermAuthorizer{c: c})[0]
 	return inventoryHookLeaf{AgentTool: restricted, c: c}
 }
 
@@ -117,7 +119,7 @@ func newBatchInventoryEnvWithExecutor(t *testing.T, tool string, executor jobbat
 	built := newPolicyToolBuild([]fantasy.AgentTool{leaf})
 	registries := NewBatchLeafRegistryStore()
 	registryID := uuid.NewString()
-	if err := registries.Register(registryID, built.leaves); err != nil {
+	if err := registries.Register(registryID, built.Leaves); err != nil {
 		t.Fatalf("register registry: %v", err)
 	}
 	profile, err := NewBatchProfileDefault()

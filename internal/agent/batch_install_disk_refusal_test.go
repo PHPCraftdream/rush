@@ -257,7 +257,7 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 			case "coordinator":
 				built, buildErr := newBatchWorkToolBuild(processCoordinatorBatchBinding(), []fantasy.AgentTool{env.leaf}, newBuildResourceScope(), false)
 				require.NoError(t, buildErr)
-				resp, err = built.tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
+				resp, err = built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			case "cli_bridge":
 				stamped := withBatchBridgeInvocation(ctx, batchBridgeInvocation{RegistryID: env.registryID, MessageID: "msg-disk"})
 				bridge := coordinatorBridgeFallback(stamped)
@@ -265,7 +265,7 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 				resp, err = bridge.Call(stamped, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{"path":"x"}`})
 			case "agentic_fetch":
 				built := armPrivateFetchIngress(ctx, newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), processCoordinatorBatchBinding().ingress, newBuildResourceScope())
-				resp, err = built.tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
+				resp, err = built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			}
 			require.NoError(t, err)
 			require.False(t, resp.IsError, "route %s response: %s", route, resp.Content)

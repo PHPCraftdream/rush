@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -438,10 +439,10 @@ func (p *toolsComponent) buildTools(ctx context.Context, cfg *config.Config, age
 		defer opts.BuildScope.Close()
 	}
 	built, err := p.buildPolicyTools(ctx, cfg, agent, isSubAgent)
-	return built.tools, err
+	return built.Tools, err
 }
 
-func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (policyToolBuild, error) {
+func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) (toolwrap.PolicyToolBuild, error) {
 	if opts := callOptionsFrom(ctx); opts != nil {
 		if opts.RoleContract != nil {
 			ctx = WithParentRoleConfigSnapshot(ctx, cfg)
@@ -524,7 +525,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 		} else {
 			agentTool, err := p.host.agentTool(ctx)
 			if err != nil {
-				return policyToolBuild{}, err
+				return toolwrap.PolicyToolBuild{}, err
 			}
 			allTools = append(allTools, agentTool)
 		}
@@ -533,7 +534,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
 		agenticFetchTool, err := p.host.agenticFetchTool(ctx, fetchClient(30*time.Second))
 		if err != nil {
-			return policyToolBuild{}, err
+			return toolwrap.PolicyToolBuild{}, err
 		}
 		allTools = append(allTools, agenticFetchTool)
 	}
@@ -651,7 +652,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 	}
 
 	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
-	allowedControls = filterRoleToolNames(ctx, allowedControls)
+	allowedControls = toolwrap.FilterRoleToolNames(ctx, allowedControls)
 	{
 		if bind := coordinatorBatchBindingFor(p.host.coord()); bind != nil && bind.controls != nil {
 			for _, name := range allowedControls {
@@ -692,7 +693,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
 	}
-	filteredTools = filterRoleContractTools(ctx, filteredTools)
+	filteredTools = toolwrap.FilterRoleContractTools(ctx, filteredTools)
 	admitMCPOutputSources(outputAccess, filteredTools)
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
@@ -709,7 +710,7 @@ func (p *toolsComponent) sharedBuildScopeFor() *buildResourceScope {
 	return p.host.sharedBuildScope()
 }
 
-func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string, configs ...*config.Config) (policyToolBuild, error) {
+func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string, configs ...*config.Config) (toolwrap.PolicyToolBuild, error) {
 	var cfg *config.Config
 	if len(configs) > 0 {
 		cfg = configs[0]
@@ -717,17 +718,17 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 	if bind := coordinatorBatchBindingFor(p.host.coord()); bind != nil {
 		allowedControls := allowed
 		if roleToolsConstrained(ctx) {
-			allowedControls = filterRoleToolNames(ctx, allowed)
+			allowedControls = toolwrap.FilterRoleToolNames(ctx, allowed)
 		}
 		filteredTools = withoutBatchControlPlaceholders(filteredTools)
 		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
-		filteredTools = filterRoleContractTools(ctx, filteredTools)
+		filteredTools = toolwrap.FilterRoleContractTools(ctx, filteredTools)
 		buildCtx := ctx
 		if current := roleContractFromContext(ctx); current != nil {
 			buildCtx = withRoleToolContract(buildCtx, current)
 		}
 		inheritedContracts := roleContractsForTools(filteredTools)
-		if current := roleContractFromContext(buildCtx); current != nil && !hasRoleContract(inheritedContracts, current) {
+		if current := roleContractFromContext(buildCtx); current != nil && !toolwrap.HasRoleContract(inheritedContracts, current) {
 			inheritedContracts = append(inheritedContracts, current.Clone())
 		}
 		roleContract := roleContractForToolBuild(buildCtx, filteredTools)
@@ -737,7 +738,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 		scope := callBuildScopeFrom(ctx)
 		if scope == nil {
 			if opts := callOptionsFrom(ctx); opts != nil && tools.IsCustomDiskProvider(opts.DiskProvider) {
-				return policyToolBuild{}, ErrDiskProviderUnavailable
+				return toolwrap.PolicyToolBuild{}, ErrDiskProviderUnavailable
 			}
 		}
 		shared := scope == nil
@@ -745,26 +746,26 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 			scope = newBuildResourceScope()
 			defer scope.Close()
 		}
-		failBuildScope := func(err error) (policyToolBuild, error) {
+		failBuildScope := func(err error) (toolwrap.PolicyToolBuild, error) {
 			if !shared {
 				scope.Close()
 			}
-			return policyToolBuild{}, err
+			return toolwrap.PolicyToolBuild{}, err
 		}
-		var built policyToolBuild
+		var built toolwrap.PolicyToolBuild
 		if shared {
-			built = newPolicyToolBuildForContext(buildCtx, filteredTools)
-			fingerprint := batchToolsetFingerprint(built.tools)
-			for i := 0; i < len(built.tools); i++ {
-				tool := built.tools[i]
+			built = toolwrap.NewPolicyToolBuildForContext(buildCtx, filteredTools)
+			fingerprint := batchToolsetFingerprint(built.Tools)
+			for i := 0; i < len(built.Tools); i++ {
+				tool := built.Tools[i]
 				name := tool.Info().Name
 				if !roleContractAllowsName(roleContract, name) {
-					built.tools = append(built.tools[:i], built.tools[i+1:]...)
+					built.Tools = append(built.Tools[:i], built.Tools[i+1:]...)
 					i--
 					continue
 				}
 				if name == tools.AskQuestionToolName {
-					built.tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
+					built.Tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
 					continue
 				}
 				if !batchWorkTarget(name) {
@@ -779,7 +780,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 						inv.Delivery.Window = inlineWindow.String()
 					}
 				}
-				built.tools[i] = &batchIngressTool{AgentTool: tool, registry: built.leaves, ingress: bind.ingress, inv: inv, bind: bind}
+				built.Tools[i] = newBatchIngressShell(tool, built.Leaves, bind, inv, true)
 			}
 		} else {
 			var err error
@@ -802,18 +803,18 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 				}
 			}
 			if len(effectiveControls) > 0 {
-				registry, err := bind.ingress.Registry(built.registryID)
+				registry, err := bind.ingress.Registry(built.RegistryID)
 				if err != nil {
 					return failBuildScope(err)
 				}
 				inv := BatchInvocation{
-					RegistryID:       built.registryID,
+					RegistryID:       built.RegistryID,
 					Origin:           "coordinator",
 					Delivery:         batchDeliveryChoice{Mode: batchDeliveryDetached},
 					BackgroundEscape: batchEscapeNever,
 					WorkerStopScope:  isSubAgent,
 					roleConfig:       cfg,
-					Policy:           batchLeafPolicyContext{RegistryID: built.registryID, RestrictedToolset: batchToolsetFingerprint(built.tools), RoleContract: cloneRoleContractForCall(roleContract)},
+					Policy:           batchLeafPolicyContext{RegistryID: built.RegistryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: cloneRoleContractForCall(roleContract)},
 				}
 				inv.SessionID, inv.MessageID = tools.GetSessionFromContext(ctx), tools.GetMessageFromContext(ctx)
 				inv.AgentDepth, inv.AgentDepthSet = DefaultAgentDepth, true
@@ -835,18 +836,18 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 					if name == tools.AwaitTasksToolName || !slices.Contains(requiredControls, name) {
 						continue
 					}
-					controlContracts := cloneRoleToolContracts(inheritedContracts)
-					if roleContract != nil && !hasRoleContract(controlContracts, roleContract) {
+					controlContracts := toolwrap.CloneRoleToolContracts(inheritedContracts)
+					if roleContract != nil && !toolwrap.HasRoleContract(controlContracts, roleContract) {
 						controlContracts = append(controlContracts, roleContract.Clone())
 					}
-					guard := roleGuardTool{AgentTool: control, contracts: controlContracts}
-					built.tools = append(built.tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{guard}, restrictedRunAuthorizer(p.host.permissions())), hookRunner, isSubAgent)[0])
+					guard := toolwrap.NewRoleGuardTool(control, controlContracts)
+					built.Tools = append(built.Tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{guard}, restrictedRunAuthorizer(p.host.permissions())), hookRunner, isSubAgent)[0])
 				}
 			}
-			built.tools = filterRoleContractTools(buildCtx, built.tools)
+			built.Tools = toolwrap.FilterRoleContractTools(buildCtx, built.Tools)
 			for _, name := range requiredControls {
 				present := false
-				for _, tool := range built.tools {
+				for _, tool := range built.Tools {
 					if tool.Info().Name == name {
 						present = true
 						break
@@ -859,7 +860,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 		}
 		// Controls are installed after leaf admission; canonicalize the final
 		// model-facing set, not just the earlier placeholder/leaf inventory.
-		slices.SortStableFunc(built.tools, func(a, b fantasy.AgentTool) int {
+		slices.SortStableFunc(built.Tools, func(a, b fantasy.AgentTool) int {
 			return strings.Compare(a.Info().Name, b.Info().Name)
 		})
 		return built, nil
@@ -869,7 +870,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
 	// applied outside this wrapper below so PreToolUse runs first.
 	filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
-	filteredTools = filterRoleContractTools(ctx, filteredTools)
+	filteredTools = toolwrap.FilterRoleContractTools(ctx, filteredTools)
 	// The outer role guard must run before hooks and every other policy layer.
 	return newPolicyToolBuild(filteredTools), nil
 }

@@ -122,8 +122,8 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 	cfg.Runner = runner
 	cfg.Delivery = newFakeDelivery(fantasy.ToolResponse{})
 	toolInA, toolInB := newTestLeaf("view"), newTestLeaf("view")
-	leafA := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {tool: toolInA}}}
-	leafB := &policyLeafRegistry{entries: map[string]policyLeafEntry{"view": {tool: toolInB}}}
+	leafA := newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"view": {Tool: toolInA}})
+	leafB := newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"view": {Tool: toolInB}})
 	cfg.Leaves = func(registryID string) (*policyLeafRegistry, error) {
 		if registryID == "reg-a" {
 			return leafA, nil

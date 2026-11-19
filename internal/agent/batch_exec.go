@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -78,7 +79,7 @@ type batchLeafTimeoutSpec struct {
 type batchLeafEnv struct {
 	OutputCache *batchOutputCache
 	// Leaves resolves a pinned policy-leaf registry by identity.
-	Leaves       func(sessionID string) (*policyLeafRegistry, error)
+	Leaves       func(sessionID string) (*toolwrap.PolicyLeafRegistry, error)
 	DiskBindings *DiskProviderRegistry
 	// Ingress lazily resolves the App-owned BatchWorkIngress (R12-H2 P1-4):
 	// the agent family passes it onto the run request so the driver resolves
@@ -182,7 +183,7 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 		dispatchCtx = withRoleToolContract(dispatchCtx, p.Policy.RoleContract)
 	}
 	if !roleToolAllowed(dispatchCtx, p.Tool) {
-		return nil, &batchStartError{batchCodeNoLeaf, guardRoleContractError(p.Tool)}
+		return nil, &batchStartError{batchCodeNoLeaf, toolwrap.GuardRoleContractError(p.Tool)}
 	}
 	// A required provider dependency is never accepted with only the
 	// legacy boolean/free-text marker; this avoids OS-disk promotion.
@@ -219,14 +220,14 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 		execRelease = func() { once.Do(func() { e.env.DiskBindings.release(execKey) }) }
 		if bindingID != "" {
 			registry, err := e.env.Leaves(p.RegistryID)
-			if err != nil || registry == nil || !registry.hasToolset(p.Policy.RestrictedToolset) {
+			if err != nil || registry == nil || !registry.HasToolset(p.Policy.RestrictedToolset) {
 				if err == nil {
 					err = ErrDiskProviderUnavailable
 				}
 				execRelease()
 				return nil, &batchStartError{batchCodeNoBinding, err}
 			}
-			leaf, err := registry.resolve(p.Tool)
+			leaf, err := registry.Resolve(p.Tool)
 			if err != nil {
 				execRelease()
 				return nil, &batchStartError{batchCodeNoBinding, err}
@@ -281,7 +282,7 @@ func (env batchLeafEnv) resolveLeaf(p batchLeafPayload) (fantasy.AgentTool, erro
 	if err != nil {
 		return nil, &batchStartError{batchCodeNoLeaf, err}
 	}
-	tool, err := registry.resolve(p.Tool)
+	tool, err := registry.Resolve(p.Tool)
 	if err != nil {
 		return nil, &batchStartError{batchCodeNoLeaf, err}
 	}

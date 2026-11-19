@@ -19,7 +19,7 @@ import (
 func batchShellEnv(t *testing.T) batchLeafEnv {
 	env := testEnv(t)
 	tool := tools.NewBashTool(env.permissions, env.workingDir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
-	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).leaves
+	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
 	return batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}
 }
 
@@ -272,7 +272,7 @@ func TestBatchShellEarlyStopPolicyGateStartsNoProcess(t *testing.T) {
 		<-release
 		return underlying.Run(ctx, call)
 	})
-	registry := newPolicyToolBuild([]fantasy.AgentTool{leaf}).leaves
+	registry := newPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves
 	e, reports := batchShellStart(t, t.Context(), batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}, "echo must-not-spawn")
 	<-entered
 	require.NoError(t, e.Stop(t.Context()))

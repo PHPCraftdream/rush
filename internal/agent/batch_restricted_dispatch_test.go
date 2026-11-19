@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
@@ -57,7 +58,7 @@ func TestBatchNativeControlsRestrictedRunPolicyDispatch(t *testing.T) {
 	t.Parallel()
 
 	for _, control := range batchInventoryNativeControls {
-		action := restrictedToolActions[control]
+		action, _ := toolwrap.RestrictedToolAction(control)
 		require.NotEmpty(t, action,
 			"precondition: native control %q must be classified for restricted dispatch", control)
 		allow := control + ":" + action
@@ -72,7 +73,7 @@ func TestBatchNativeControlsRestrictedRunPolicyDispatch(t *testing.T) {
 			})
 			require.NoError(t, err)
 			svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-			restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
+			restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
 			resp, err := restricted.Run(
 				context.WithValue(t.Context(), tools.SessionIDContextKey, "session"),
 				fantasy.ToolCall{ID: "allow-" + control, Name: control},
@@ -92,7 +93,7 @@ func TestBatchNativeControlsRestrictedRunPolicyDispatch(t *testing.T) {
 			})
 			require.NoError(t, err)
 			svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-			restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
+			restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
 			resp, err := restricted.Run(
 				context.WithValue(t.Context(), tools.SessionIDContextKey, "session"),
 				fantasy.ToolCall{ID: "deny-" + control, Name: control},
@@ -116,7 +117,7 @@ func TestBatchNativeControlsRestrictedRunPolicyDispatch(t *testing.T) {
 			})
 			require.NoError(t, err)
 			svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-			restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
+			restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
 			resp, err := restricted.Run(
 				context.WithValue(t.Context(), tools.SessionIDContextKey, "session"),
 				fantasy.ToolCall{ID: "action-deny-" + control, Name: control},

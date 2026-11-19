@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,7 @@ func TestReadonlySessionToolsExistAndAreReadOnlyInProductionRegistry(t *testing.
 			_, exists := registered[name]
 			require.Truef(t, exists, "readonly policy tool %q is absent from production buildTools registry", name)
 		}
-		action, hasAction := restrictedToolActions[name]
+		action, hasAction := toolwrap.RestrictedToolAction(name)
 		require.Truef(t, hasAction, "readonly policy tool %q has no restricted action metadata", name)
 		require.Containsf(t, []string{"read", "list"}, action, "readonly policy tool %q has non-read action %q", name, action)
 	}

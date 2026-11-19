@@ -330,9 +330,9 @@ func newLifecycleInstall(t *testing.T) *lifecycleInstall {
 	binding, err := deps.DiskBindings.RegisterProvider(fake)
 	require.NoError(t, err)
 	registries := deps.Registries
-	require.NoError(t, registries.Register(lifecycleRegistry, &policyLeafRegistry{
-		entries: map[string]policyLeafEntry{"fs_write": {layers: []string{"tool"}, tool: leaf}},
-	}))
+	require.NoError(t, registries.Register(lifecycleRegistry, newTestPolicyLeafRegistry(map[string]testPolicyLeaf{
+		"fs_write": {Layers: []string{"tool"}, Tool: leaf},
+	})))
 	// R12-H2 §1.2: the executor's Execution owner (and the root lease) name
 	// the pinned registry's construction record. Hold its Construction owner
 	// exactly as the trusted call state's build scope does; tests release it

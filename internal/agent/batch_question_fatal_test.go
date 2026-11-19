@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,8 +20,8 @@ func TestBatchQuestionRuntimeFailureEndsTurn(t *testing.T) {
 	response, err := tool.Run(ctx, call)
 	tl.addf("runtime ask failure: err=%v is_error=%v", err, response.IsError)
 	require.ErrorIs(t, err, failure)
-	collector := &fatalToolCollector{}
-	wrapped := &fatalToolTool{inner: tool, collector: collector}
+	collector := &toolwrap.FatalToolCollector{}
+	wrapped := toolwrap.WithFatalToolErrors([]fantasy.AgentTool{tool}, collector)[0]
 	response, err = wrapped.Run(ctx, call)
 	tl.addf("fatal wrapper: err=%v is_error=%v stop_turn=%v", err, response.IsError, response.StopTurn)
 	require.NoError(t, err)

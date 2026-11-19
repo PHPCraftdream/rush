@@ -44,7 +44,7 @@ func (i escrowTestIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTo
 	if err != nil {
 		return nil, err
 	}
-	return registry.resolve(name)
+	return registry.Resolve(name)
 }
 
 func (i escrowTestIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
@@ -146,7 +146,7 @@ func TestBatchCredentialDriverRejectsMissingEscrow(t *testing.T) {
 		}
 	})
 	store := NewBatchLeafRegistryStore()
-	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).leaves
+	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
 	require.NoError(t, store.Register("registry", registry))
 	req := batchAgentRunRequest{
 		NodeID: "root.1", SessionID: "session", MessageID: "message", ToolCallID: "call",
@@ -174,7 +174,7 @@ func TestBatchCredentialSubmitAddDriverLifecycle(t *testing.T) {
 	defer cancel()
 	store := NewBatchLeafRegistryStore()
 	tool := &escrowTestTool{started: make(chan context.Context, 3), release: make(chan struct{})}
-	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).leaves
+	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
 	require.NoError(t, store.Register("registry", registry))
 	ingress := escrowTestIngress{store: store}
 	executor := &escrowAgentExecutor{deps: CoordinatorBatchAgentDeps(), ingress: ingress, launched: make(chan struct{}, 2)}

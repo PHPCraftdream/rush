@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -24,7 +25,7 @@ type BatchCLITask struct {
 }
 
 type batchCLIBinding struct {
-	registry     *policyLeafRegistry
+	registry     *toolwrap.PolicyLeafRegistry
 	id           string
 	session      string
 	message      string
@@ -106,7 +107,7 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 		scope.Close()
 		return batchCLIBinding{}, err
 	}
-	id := built.registryID
+	id := built.RegistryID
 	if id == "" {
 		scope.Close()
 		return batchCLIBinding{}, errors.New("batch CLI: policy tool construction did not acquire an owner")
@@ -122,7 +123,7 @@ func (b *BatchCLIBuilder) bind(ctx context.Context, sessionID, messageID string)
 		folder = &copy
 	}
 	return batchCLIBinding{
-		registry: built.leaves, id: id, session: sessionID, message: messageID,
+		registry: built.Leaves, id: id, session: sessionID, message: messageID,
 		allow: allow, scope: scope, folder: folder, roleContract: cloneRoleContractForCall(parentRoleContractFrom(ctx)), config: cfg,
 	}, nil
 }
@@ -167,7 +168,7 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 		} else if task.SelectedRoleContract != nil {
 			return jobbatch.Spec{}, fmt.Errorf("%w: selected role snapshot on non-agent leaf", ErrAgentRoleMismatch)
 		}
-		leaf, err := bind.registry.resolve(task.Tool)
+		leaf, err := bind.registry.Resolve(task.Tool)
 		if err != nil {
 			return jobbatch.Spec{}, fmt.Errorf("batch CLI: tool %q is not in configured pinned policy toolset: %w", task.Tool, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -45,11 +46,11 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		return nil, err
 	}
 
-	agentCtx, childScope := pctChildToolBuildContext(ctx) // pct: isolate this child's captured tool build scope.
+	agentCtx, childScope := toolwrap.ChildToolBuildContext(ctx) // pct: isolate this child's captured tool build scope.
 	agent, err := c.buildAgent(agentCtx, prompt, agentCfg, true)
 	if err != nil {
 		if childScope != nil {
-			childScope.pctRelease()
+			childScope.Release()
 		}
 		return nil, err
 	}
@@ -82,7 +83,7 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 			if depthErr != nil {
 				return fantasy.ToolResponse{}, depthErr
 			}
-			handoff := pctHandoffFrom(childCtx)
+			handoff := toolwrap.HandoffFrom(childCtx)
 			return c.runSubAgent(childCtx, subAgentParams{
 				Agent:              agent,
 				SessionID:          sessionID,

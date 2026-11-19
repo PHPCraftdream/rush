@@ -7,6 +7,8 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 )
 
 // stepCallClass and its constants alias the leaf classifier's verdict type
@@ -155,7 +157,7 @@ type stepClassifyCtx struct {
 // (nil seen) as fresh windows.
 func (cx stepClassifyCtx) seam() turnstep.StepClassifyCtx {
 	return turnstep.StepClassifyCtx{
-		RestrictedAction: func(toolName string) string { return restrictedToolActions[toolName] },
+		RestrictedAction: func(toolName string) string { action, _ := toolwrap.RestrictedToolAction(toolName); return action },
 		CoveredWindows: func(call fantasy.ToolCallContent) (int, bool) {
 			spans := turnstep.ReadSpans(call)
 			if len(spans) == 0 {

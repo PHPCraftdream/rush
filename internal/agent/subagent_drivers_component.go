@@ -9,6 +9,8 @@ package agent
 import (
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
@@ -108,7 +110,7 @@ func newSubAgentDriverRegistry() *subAgentDriverRegistry {
 // since register always assigns >= 1).
 func (r *subAgentDriverRegistry) register(childSessionID string, driver subAgentDriver) uint64 {
 	if r == nil || childSessionID == "" {
-		pctReleaseScopeRefs(driver.pctReleases) // pct: release retained refs if registration cannot be stored.
+		toolwrap.ReleaseScopeRefs(driver.pctReleases) // pct: release retained refs if registration cannot be stored.
 		return 0
 	}
 	r.mu.Lock()
@@ -162,7 +164,7 @@ func (r *subAgentDriverRegistry) releaseIfCurrent(childSessionID string, g uint6
 	defer r.mu.Unlock()
 	if current, ok := r.byChild[childSessionID]; ok && current.generation == g {
 		delete(r.byChild, childSessionID)
-		pctReleaseScopeRefs(current.pctReleases) // pct: release generation-owned refs only on current closure.
+		toolwrap.ReleaseScopeRefs(current.pctReleases) // pct: release generation-owned refs only on current closure.
 		return true
 	}
 	return false
@@ -201,7 +203,7 @@ func (r *subAgentDriverRegistry) allDriverAgents() []SessionAgent {
 		}
 		driverAgent := d.agent
 		if len(allReleases) != 0 {
-			driverAgent = &pctDriverDisposer{SessionAgent: d.agent, releases: allReleases}
+			driverAgent = toolwrap.NewDriverDisposer(d.agent, allReleases)
 		}
 		out = append(out, driverAgent)
 	}

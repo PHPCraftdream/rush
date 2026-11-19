@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
@@ -29,7 +30,7 @@ type batchAgentRunRequest struct {
 	DiskBindingID        string
 	Policy               *batchLeafPolicyContext
 	SelectedRoleContract *core.RoleContract
-	pctHandoff           *pctDelegationHandoff // pct: owned by the executor through confirmed disposal.
+	pctHandoff           *toolwrap.PctDelegationHandoff // pct: owned by the executor through confirmed disposal.
 	CallCredentials      bool
 	// QuestionRoute is carried verbatim from the durable payload; false
 	// means the incarnation must never hold or publish questions.
@@ -187,7 +188,7 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 			}
 			return DefaultAgentDepth
 		}(),
-		pctHandoff: pctClaimCapturedHandoff(env, p), // pct: claim the captured outer handoff once at executor start.
+		pctHandoff: pctClaimCapturedHandoffViaIngress(env, p), // pct: claim the captured outer handoff once at executor start.
 		Ingress:    callIngress(env),
 	}
 	e := &batchAgentExecution{
@@ -209,7 +210,7 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
 		cancel()
 		if e.pctHandoff != nil {
-			e.pctHandoff.pctRelease()
+			e.pctHandoff.Release()
 		}
 		return nil, ErrDiskProviderUnavailable
 	}
@@ -248,13 +249,13 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	}
 	if e.pctHandoff != nil {
 		// pct: carry this executor's handoff into the child agent run context.
-		runCtx = context.WithValue(runCtx, pctDelegationHandoffKey{}, e.pctHandoff)
+		runCtx = toolwrap.WithDelegationHandoff(runCtx, e.pctHandoff)
 	}
 	turn, err := e.launch(runCtx)
 	if err != nil {
 		cancel()
 		if e.pctHandoff != nil {
-			e.pctHandoff.pctRelease()
+			e.pctHandoff.Release()
 		}
 		return nil, err
 	}
@@ -330,7 +331,7 @@ type batchAgentExecution struct {
 	content          []byte
 	result           jobbatch.Result
 	reported         bool
-	pctHandoff       *pctDelegationHandoff
+	pctHandoff       *toolwrap.PctDelegationHandoff
 	driverDone       chan struct{} // Driver goroutine exit: late kill barrier.
 	watcherDone      chan struct{}
 	finished         chan struct{}  // Closed once, when the scope result is fixed.
@@ -601,7 +602,7 @@ func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	e.content = nil
 	if e.pctHandoff != nil {
 		// pct: release the executor-owned handoff on confirmed disposal.
-		e.pctHandoff.pctRelease()
+		e.pctHandoff.Release()
 	}
 	return nil
 }
@@ -664,4 +665,32 @@ func pscRefreshedTurnResult(facts BatchChildReactionFacts, req batchAgentRunRequ
 	// initial turn's task_outcome declaration is not carried over — the
 	// child's final turn supersedes it.
 	return batchAgentTurnResult{Response: fantasy.ToolResponse{Content: refreshed.Content, IsError: refreshed.IsError}}
+}
+
+// pctClaimCapturedHandoffViaIngress defers the batch-inst-only callIngress
+// registry resolution into the toolwrap claim: callIngress/Registry/resolve
+// run only when toolwrap.ClaimCapturedHandoff invokes the resolver, and the
+// unwrapping stays the exact pctCapturedToolFrom traversal in package agent.
+func pctClaimCapturedHandoffViaIngress(env batchLeafEnv, p batchLeafPayload) *toolwrap.PctDelegationHandoff {
+	return toolwrap.ClaimCapturedHandoff(func() (toolwrap.CapturedClaimer, error) {
+		ingress := callIngress(env)
+		if ingress == nil {
+			return nil, nil
+		}
+		registry, err := ingress.Registry(p.RegistryID)
+		if err != nil {
+			return nil, nil
+		}
+		leaf, err := registry.Resolve(p.Tool)
+		if err != nil {
+			return nil, nil
+		}
+		captured := pctCapturedAgentToolFromTool(leaf)
+		if captured == nil {
+			// explicit nil: a typed-nil *pctCapturedAgentTool must not become
+			// a non-nil CapturedClaimer interface value.
+			return nil, nil
+		}
+		return captured, nil
+	}, p.SessionID, p.ToolCallID)
 }
