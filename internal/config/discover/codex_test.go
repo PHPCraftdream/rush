@@ -219,8 +219,8 @@ func TestCodexClientVersionOverrideAndReset(t *testing.T) {
 func TestApplyCodexConfigAndCatalogIdentity(t *testing.T) {
 	t.Cleanup(func() { SetCodexClientVersion("") })
 	require.Equal(t, CodexBaseURL, ApplyCodexConfig(nil))
-	require.Equal(t, "acct", CodexCatalogIdentity("acct", "tok"))
-	require.Equal(t, "tok", CodexCatalogIdentity("", "tok"))
+	require.Equal(t, "acct@"+DefaultCodexClientVersion, CodexCatalogIdentity("acct", "tok"))
+	require.Equal(t, "tok@"+DefaultCodexClientVersion, CodexCatalogIdentity("", "tok"))
 
 	require.Equal(t, CodexBaseURL, ApplyCodexConfig(map[string]string{"version": "0.170.0"}))
 	require.Equal(t, "0.170.0", CodexClientVersion())
