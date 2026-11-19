@@ -49,14 +49,11 @@ func ApplyCodexConfig(extraHeaders map[string]string) string {
 	return CodexBaseURL
 }
 
-// CodexCatalogIdentity keys the cached account catalog; a version override gets its own
-// entry because the backend lists different models per client version.
+// CodexCatalogIdentity keys the cached account catalog by the effective client version: the
+// backend lists different models per version, and a catalog fetched under an older default
+// (0.159.0 hid gpt-6.2-*) must not be served after the default moves.
 func CodexCatalogIdentity(accountID, accessToken string) string {
-	id := cmp.Or(accountID, accessToken)
-	if v := CodexClientVersion(); v != DefaultCodexClientVersion {
-		id += "@" + v
-	}
-	return id
+	return cmp.Or(accountID, accessToken) + "@" + CodexClientVersion()
 }
 
 // CodexClientVersion is the version sent as client_version and the version header: the configured
