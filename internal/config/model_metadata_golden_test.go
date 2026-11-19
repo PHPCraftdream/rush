@@ -66,7 +66,7 @@ func TestModelMetadataGolden(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
 
-	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, "chatgpt-account", []catwalk.Model{
+	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, discover.CodexCatalogIdentity("chatgpt-account", "rush-access-token"), []catwalk.Model{
 		{
 			ID:                     "gpt-6-luna",
 			Name:                   "GPT-6 Luna",

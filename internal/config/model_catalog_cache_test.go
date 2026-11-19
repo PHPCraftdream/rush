@@ -135,6 +135,44 @@ func TestCachedProviderModelsServesRawEntriesAndOverlayRaises(t *testing.T) {
 	}
 }
 
+// A catalog fetched while the default client version hid gpt-6.2-* was keyed by the bare account
+// id; after the default moved it must be refetched, not served for the rest of its seven days.
+func TestCodexCatalogCachedUnderOldVersionIsRefetched(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Cleanup(func() { discover.SetCodexClientVersion("") })
+	endpoint := "https://chatgpt.com/backend-api/codex"
+	stale := cachedModelCatalog{
+		Fingerprint: modelCatalogFingerprint("openai-codex", endpoint, "account-a"),
+		FetchedAt:   time.Now(),
+		Models:      []catwalk.Model{{ID: "gpt-6.1-sol", ContextWindow: 272000, DefaultMaxTokens: 128000}},
+	}
+	data, err := json.Marshal(stale)
+	require.NoError(t, err)
+	path := modelCatalogPath("openai-codex")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, atomicWriteFile(path, data, 0o600))
+
+	fetchCalls := 0
+	fetch := func(context.Context) ([]catwalk.Model, error) {
+		fetchCalls++
+		return []catwalk.Model{{ID: "gpt-6.1-sol"}, {ID: "gpt-6.2-sol"}}, nil
+	}
+	identity := discover.CodexCatalogIdentity("account-a", "token")
+	models, err := cachedProviderModels(t.Context(), "openai-codex", endpoint, identity, fetch)
+	require.NoError(t, err)
+	require.Equal(t, 1, fetchCalls, "the old-version cache entry must not be served")
+	require.Contains(t, modelIDs(models), "gpt-6.2-sol")
+
+	_, err = cachedProviderModels(t.Context(), "openai-codex", endpoint, identity, fetch)
+	require.NoError(t, err)
+	require.Equal(t, 1, fetchCalls, "the refetched catalog is cached under the new key")
+
+	discover.SetCodexClientVersion("9.9.9")
+	_, err = cachedProviderModels(t.Context(), "openai-codex", endpoint, discover.CodexCatalogIdentity("account-a", "token"), fetch)
+	require.NoError(t, err)
+	require.Equal(t, 2, fetchCalls, "a different client version gets its own catalog")
+}
+
 // modelIDs extracts model ids in order for the assertions above.
 func modelIDs(models []catwalk.Model) []string {
 	ids := make([]string, 0, len(models))
