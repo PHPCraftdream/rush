@@ -227,6 +227,8 @@ func wrapProgressGuard(tools []fantasy.AgentTool, guard stepGuard) []fantasy.Age
 	return out
 }
 
+func (t *progressGuardTool) PolicyLeafTool() fantasy.AgentTool { return t.inner }
+
 func (t *progressGuardTool) Info() fantasy.ToolInfo {
 	return t.inner.Info()
 }

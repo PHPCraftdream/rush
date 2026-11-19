@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -59,7 +60,7 @@ func (c *installedBatchModelControl) InstallBatchModelControls(reg *BatchLeafReg
 	return newBatchModelTools(c, inv, reg), nil
 }
 
-func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocation, reg *policyLeafRegistry, raw batchModelSpec) (jobbatch.ID, error) {
+func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, raw batchModelSpec) (jobbatch.ID, error) {
 	if c.runner == nil || c.store == nil || c.delivery == nil {
 		return "", errors.New("batch runtime unavailable")
 	}
@@ -84,7 +85,7 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 	if err := inv.Validate(); err != nil {
 		return "", err
 	}
-	if inv.CallID == "" || reg == nil || inv.RegistryID != inv.Policy.RegistryID || !reg.hasToolset(inv.Policy.RestrictedToolset) {
+	if inv.CallID == "" || reg == nil || inv.RegistryID != inv.Policy.RegistryID || !reg.HasToolset(inv.Policy.RestrictedToolset) {
 		return "", errBatchMissingCallID
 	}
 	spec, err := modelBatchSpecForAdmission(raw, inv, reg, c.resolver)
@@ -304,7 +305,7 @@ func batchModelNodeInSnapshot(nodes []db.BatchNode, id, kind, root string) bool 
 	return false
 }
 
-func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *policyLeafRegistry, resolver batchMCPCapabilityResolver) ([]jobbatch.Spec, error) {
+func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver) ([]jobbatch.Spec, error) {
 	out := make([]jobbatch.Spec, 0, len(items))
 	for i, item := range items {
 		var spec jobbatch.Spec
@@ -378,7 +379,7 @@ func batchModelItemHasCustomRole(item batchModelItem) bool {
 	return input.Role != "" && !input.Role.Builtin()
 }
 
-func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, parent string, inv BatchInvocation, reg *policyLeafRegistry, items []batchModelItem) ([]jobbatch.ID, error) {
+func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, parent string, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, items []batchModelItem) ([]jobbatch.ID, error) {
 	if c.runner == nil || c.store == nil {
 		return nil, errors.New("batch runtime unavailable")
 	}

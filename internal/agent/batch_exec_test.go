@@ -54,7 +54,7 @@ func TestBatchExecutorRoutesByKindAndRejectsBadStarts(t *testing.T) {
 func TestBatchLeafResolutionFailsClosed(t *testing.T) {
 	// Mutation: resolving a tool that is not in the pinned set, or swallowing the provider error.
 	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
-		return newPolicyToolBuild(nil).leaves, nil
+		return newPolicyToolBuild(nil).Leaves, nil
 	}}
 	_, err := env.resolveLeaf(batchLeafPayload{Tool: "bash", SessionID: "s1"})
 	var coded interface{ Code() string }

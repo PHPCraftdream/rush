@@ -41,11 +41,11 @@ func (f *modelControlFake) Stop(context.Context, string, string, string) (any, e
 }
 
 func modelRegistry(names ...string) *policyLeafRegistry {
-	r := &policyLeafRegistry{entries: map[string]policyLeafEntry{}}
+	leaves := map[string]testPolicyLeaf{}
 	for _, n := range names {
-		r.entries[n] = policyLeafEntry{tool: batchTestTools(n)[0]}
+		leaves[n] = testPolicyLeaf{Tool: batchTestTools(n)[0]}
 	}
-	return r
+	return newTestPolicyLeafRegistry(leaves)
 }
 
 func TestModelBatchToolsRecursiveDefaultAndPinnedPolicy(t *testing.T) {

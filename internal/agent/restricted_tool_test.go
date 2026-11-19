@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
@@ -45,8 +46,8 @@ func TestHooksRunBeforeRestrictedDispatch(t *testing.T) {
 		t.Helper()
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-		restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{inner}, svc.(permission.RestrictedRunAuthorizer))[0]
-		return wrapToolsWithHooks([]fantasy.AgentTool{restricted}, runner, false)[0]
+		restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{inner}, svc.(permission.RestrictedRunAuthorizer))[0]
+		return toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{restricted}, runner, false)[0]
 	}
 	build := func(t *testing.T, spec permission.RunAllowlistSpec) permission.RunAllowlist {
 		allowlist, err := permission.BuildRunAllowlist(spec)
@@ -111,8 +112,8 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 	newBash := func(t *testing.T, svc permission.Service, runner *hooks.Runner) fantasy.AgentTool {
 		t.Helper()
 		bash := tools.NewBashTool(svc, t.TempDir(), &config.Attribution{}, "", nil)
-		restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{bash}, svc.(permission.RestrictedRunAuthorizer))[0]
-		return wrapToolsWithHooks([]fantasy.AgentTool{restricted}, runner, false)[0]
+		restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{bash}, svc.(permission.RestrictedRunAuthorizer))[0]
+		return toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{restricted}, runner, false)[0]
 	}
 	ctx := func(id string) context.Context {
 		return context.WithValue(t.Context(), tools.SessionIDContextKey, "session")
@@ -141,8 +142,8 @@ func TestRealBashHookApprovalReachesInnerRestrictedGate(t *testing.T) {
 		svc := permission.NewPermissionService(t.Context(), work, false, nil, nil)
 		arm(t, svc)
 		bash := tools.NewBashTool(svc, work, &config.Attribution{}, "", nil)
-		restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{bash}, svc.(permission.RestrictedRunAuthorizer))[0]
-		tool := wrapToolsWithHooks([]fantasy.AgentTool{restricted}, newRunner(t, `echo '{"decision":"allow"}'`), false)[0]
+		restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{bash}, svc.(permission.RestrictedRunAuthorizer))[0]
+		tool := toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{restricted}, newRunner(t, `echo '{"decision":"allow"}'`), false)[0]
 		resp, err := tool.Run(ctx("bash-gated"), fantasy.ToolCall{ID: "bash-gated", Name: tools.BashToolName, Input: `{"command":"mkdir hooked-dir"}`})
 		require.NoError(t, err)
 		require.False(t, resp.IsError)
@@ -359,8 +360,8 @@ func TestRestrictedRunGateUsesDynamicMCPActionProvider(t *testing.T) {
 			allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true, AllowTools: []string{test.allow}})
 			require.NoError(t, err)
 			svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-			restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
-			tool := wrapToolsWithHooks([]fantasy.AgentTool{restricted}, newRunner(t, `exit 0`), false)[0]
+			restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
+			tool := toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{restricted}, newRunner(t, `exit 0`), false)[0]
 			resp, err := tool.Run(context.WithValue(t.Context(), tools.SessionIDContextKey, "session"), fantasy.ToolCall{ID: "mcp-action", Name: "mcp_server_tool"})
 			require.NoError(t, err)
 			require.Equal(t, test.shouldRun, probe.called)
@@ -385,7 +386,7 @@ func TestRestrictedToolActionMetadataCoversBuiltIns(t *testing.T) {
 		if strings.HasPrefix(name, "mcp_") {
 			continue
 		}
-		_, declared := restrictedToolActions[name]
+		_, declared := toolwrap.RestrictedToolAction(name)
 		require.True(t, declared, "built-in %q from coordinator buildTools lacks restricted dispatch action metadata", name)
 	}
 }

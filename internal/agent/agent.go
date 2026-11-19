@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
@@ -496,7 +497,7 @@ func NewSessionAgent(
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
 		disableAutoSummarize: opts.DisableAutoSummarize,
-		tools:                csync.NewSliceFrom(decorateSessionTools(opts.Tools, opts.RestrictedRuns)),
+		tools:                csync.NewSliceFrom(toolwrap.DecorateSessionTools(opts.Tools, opts.RestrictedRuns)),
 		coord:                opts.Coord,
 		onSessionIdle:        opts.OnSessionIdle,
 		isYolo:               opts.IsYolo,
@@ -537,7 +538,7 @@ func (a *sessionAgent) SetModels(smart Model, fast Model) {
 // for error logging: these two are the only doors tools have into a
 // sessionAgent, so covering both means no assembly site can forget to.
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
-	a.tools.SetSlice(decorateSessionTools(tools, a.restrictedRuns))
+	a.tools.SetSlice(toolwrap.DecorateSessionTools(tools, a.restrictedRuns))
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

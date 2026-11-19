@@ -54,14 +54,14 @@ func pinnedBatchRegistryIDs(list []fantasy.AgentTool) []string {
 	seen := make(map[string]struct{}, len(list))
 	for _, tool := range list {
 		ingress, ok := tool.(*batchIngressTool)
-		if !ok || ingress.bind != nil || ingress.inv.RegistryID == "" {
+		if !ok || ingress.Bind != nil || ingress.Inv.RegistryID() == "" {
 			continue
 		}
-		if _, dup := seen[ingress.inv.RegistryID]; dup {
+		if _, dup := seen[ingress.Inv.RegistryID()]; dup {
 			continue
 		}
-		seen[ingress.inv.RegistryID] = struct{}{}
-		ids = append(ids, ingress.inv.RegistryID)
+		seen[ingress.Inv.RegistryID()] = struct{}{}
+		ids = append(ids, ingress.Inv.RegistryID())
 	}
 	return ids
 }

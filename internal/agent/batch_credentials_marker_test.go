@@ -181,7 +181,7 @@ func newMarkerModelControlEnv(t *testing.T) *markerModelControlEnv {
 	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = executor
 	registries := deps.Registries
-	require.NoError(t, registries.Register(markerModelRegistryID, newPolicyToolBuild(tools).leaves))
+	require.NoError(t, registries.Register(markerModelRegistryID, newPolicyToolBuild(tools).Leaves))
 	pinTestConstruction(t, deps.DiskBindings, markerModelRegistryID)
 	install, err := InstallBatchRuntime(context.Background(), deps)
 	require.NoError(t, err)

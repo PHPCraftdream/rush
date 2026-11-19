@@ -365,7 +365,7 @@ func TestBatchLeafRegistryStoreFailsClosed(t *testing.T) {
 	require.Error(t, err, "unknown identity fails closed")
 	require.Error(t, s.Register("", nil), "empty identity is refused")
 	require.Error(t, s.Register("reg-1", nil), "nil registry is refused")
-	registry := newPolicyToolBuild(nil).leaves
+	registry := newPolicyToolBuild(nil).Leaves
 	require.NoError(t, s.Register("reg-1", registry))
 	got, err := s.Resolve("reg-1")
 	require.NoError(t, err)

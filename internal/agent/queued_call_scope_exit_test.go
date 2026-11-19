@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -365,7 +367,7 @@ func TestQueuedCallScope_FourPolicyDecisionsReduced(t *testing.T) {
 		probe := &scopePolicyProbe{name: name}
 		svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 		svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
-		restricted := wrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
+		restricted := toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer))[0]
 		resp, err := restricted.Run(
 			context.WithValue(t.Context(), tools.SessionIDContextKey, "session"),
 			fantasy.ToolCall{ID: "probe-" + name, Name: name},

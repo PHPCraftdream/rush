@@ -55,25 +55,25 @@ func TestPolicyLeafPinnedDynamicMCPFiltering(t *testing.T) {
 	agentCfg := config.Agent{AllowedMCP: map[string][]string{serverName: {"kept"}}}
 	built, err := coord.buildPolicyTools(t.Context(), coord.cfg.Config(), agentCfg, false)
 	require.NoError(t, err)
-	leaf, err := built.leaves.resolve(kept)
+	leaf, err := built.Leaves.Resolve(kept)
 	require.NoError(t, err)
 	require.Equal(t, []string{"restricted", "tool"}, policyLeafBaselineStack(leaf))
-	missing, err := built.leaves.resolve(filtered)
+	missing, err := built.Leaves.Resolve(filtered)
 	require.Error(t, err)
 	require.Nil(t, missing)
 	// Changing the allowlist affects only a subsequent build, not this registry.
 	agentCfg.AllowedMCP[serverName] = []string{"filtered"}
 	next, err := coord.buildPolicyTools(t.Context(), coord.cfg.Config(), agentCfg, false)
 	require.NoError(t, err)
-	_, err = next.leaves.resolve(kept)
+	_, err = next.Leaves.Resolve(kept)
 	require.Error(t, err)
-	_, err = built.leaves.resolve(kept)
+	_, err = built.Leaves.Resolve(kept)
 	require.NoError(t, err)
 	scope := newFolderScope(t, env.workingDir, permission.FileOpRead)
 	scoped, err := coord.buildPolicyTools(WithCallOptions(t.Context(), &CallOptions{FolderScope: &scope}), coord.cfg.Config(), agentCfg, false)
 	require.NoError(t, err)
 	for _, name := range []string{kept, filtered} {
-		_, err := scoped.leaves.resolve(name)
+		_, err := scoped.Leaves.Resolve(name)
 		require.Error(t, err, "folder scope removes external MCP")
 	}
 }
@@ -169,8 +169,8 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 	base := config.Agent{AllowedTools: []string{"view", "write"}}
 	built, err := coord.buildPolicyTools(ctx, cfg, base, false)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"view", kept}, pinnedToolNames(built.tools))
-	bridge, err := newCLIToolBridgeForContext(ctx, built.leaves, testPinnedInvoke, definitions)
+	require.ElementsMatch(t, []string{"view", kept}, pinnedToolNames(built.Tools))
+	bridge, err := newCLIToolBridgeForContext(ctx, built.Leaves, testPinnedInvoke, definitions)
 	require.NoError(t, err)
 	var advertised []string
 	for _, tool := range bridge.Tools() {
@@ -195,7 +195,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 			if cli {
 				response, err = bridge.Call(ctx, call)
 			} else {
-				leaf, resolveErr := built.leaves.resolve(name)
+				leaf, resolveErr := built.Leaves.Resolve(name)
 				require.NoError(t, resolveErr)
 				response, err = leaf.Run(ctx, call)
 				forged, forgedErr := leaf.Run(ctx, fantasy.ToolCall{ID: "forged", Name: denied, Input: `{}`})
@@ -213,7 +213,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 		}
 	}
 	for _, name := range []string{"write", denied} {
-		_, err := built.leaves.resolve(name)
+		_, err := built.Leaves.Resolve(name)
 		require.Error(t, err, "rebuild cannot recover tools outside the durable ceiling")
 		_, err = bridge.Call(t.Context(), fantasy.ToolCall{Name: name, Input: `{}`})
 		require.Error(t, err, "lost invocation context cannot widen the pinned CLI bridge")
@@ -230,8 +230,8 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 	t.Cleanup(callBuildScopeFrom(scopedCtx).Close)
 	scoped, err := coord.buildPolicyTools(scopedCtx, cfg, base, false)
 	require.NoError(t, err)
-	require.Empty(t, scoped.tools, "folder-scope substitutions and MCP removal cannot widen a durable role cap")
-	scopedBridge, err := newCLIToolBridgeForContext(scopedCtx, scoped.leaves, testPinnedInvoke, definitions)
+	require.Empty(t, scoped.Tools, "folder-scope substitutions and MCP removal cannot widen a durable role cap")
+	scopedBridge, err := newCLIToolBridgeForContext(scopedCtx, scoped.Leaves, testPinnedInvoke, definitions)
 	require.NoError(t, err)
 	require.Empty(t, scopedBridge.Tools())
 	_, err = scopedBridge.Call(scopedCtx, fantasy.ToolCall{Name: kept, Input: `{}`})
@@ -264,8 +264,8 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 			t.Cleanup(callBuildScopeFrom(caseCtx).Close)
 			built, err := coord.buildPolicyTools(caseCtx, cfg, base, false)
 			require.NoError(t, err)
-			require.ElementsMatch(t, test.want, pinnedToolNames(built.tools))
-			bridge, err := newCLIToolBridgeForContext(caseCtx, built.leaves, testPinnedInvoke, definitions)
+			require.ElementsMatch(t, test.want, pinnedToolNames(built.Tools))
+			bridge, err := newCLIToolBridgeForContext(caseCtx, built.Leaves, testPinnedInvoke, definitions)
 			require.NoError(t, err)
 			var names []string
 			for _, tool := range bridge.Tools() {
@@ -284,8 +284,8 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 		limited := config.Agent{AllowedTools: []string{"view"}, AllowedMCP: map[string][]string{}}
 		built, err := coord.buildPolicyTools(caseCtx, cfg, limited, false)
 		require.NoError(t, err)
-		require.Equal(t, []string{"view"}, pinnedToolNames(built.tools))
-		bridge, err := newCLIToolBridgeForContext(caseCtx, built.leaves, testPinnedInvoke, definitions)
+		require.Equal(t, []string{"view"}, pinnedToolNames(built.Tools))
+		bridge, err := newCLIToolBridgeForContext(caseCtx, built.Leaves, testPinnedInvoke, definitions)
 		require.NoError(t, err)
 		require.Len(t, bridge.Tools(), 1)
 		require.Equal(t, "view", bridge.Tools()[0].CanonicalName)

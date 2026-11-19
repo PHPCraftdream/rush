@@ -42,7 +42,7 @@ func TestBatchExecutorRejectsRoleForbiddenGenericToolBeforeLeaf(t *testing.T) {
 		return fantasy.NewTextResponse("unexpected"), nil
 	}}
 	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
-		return &policyLeafRegistry{entries: map[string]policyLeafEntry{"bash": {tool: leaf}}}, nil
+		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"bash": {Tool: leaf}}), nil
 	}}
 	family := newBatchExecutor(env, map[string]batchLeafFamily{batchKindGeneric: newBatchGenericFamily()})
 	payload, err := json.Marshal(batchLeafPayload{Tool: "bash", SessionID: "s", Policy: &batchLeafPolicyContext{RoleContract: contract}})

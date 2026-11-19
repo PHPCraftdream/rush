@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -21,8 +22,9 @@ import (
 // binding the construction code takes the old branch untouched.
 
 // BatchLeafRegistry is the exported alias of the pinned policy-leaf registry
-// (policy_leaf.go). Hosts never build one; they only pin resolved builds.
-type BatchLeafRegistry = policyLeafRegistry
+// (toolwrap.PolicyLeafRegistry). Hosts never build one; they only pin resolved
+// builds.
+type BatchLeafRegistry = toolwrap.PolicyLeafRegistry
 
 type BatchModelControl interface {
 	batchModelControl
@@ -106,7 +108,7 @@ func (b *batchWorkIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTo
 	if err != nil {
 		return nil, err
 	}
-	return registry.resolve(name)
+	return registry.Resolve(name)
 }
 
 func (b *batchWorkIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
@@ -137,7 +139,7 @@ type batchCoordinatorBinding struct {
 	coord *coordinator
 }
 
-func (b *batchCoordinatorBinding) pin(registry *policyLeafRegistry) (string, error) {
+func (b *batchCoordinatorBinding) pin(registry *BatchLeafRegistry) (string, error) {
 	return b.ingress.PinLeafRegistry(registry)
 }
 
@@ -288,4 +290,82 @@ func BatchNonReentrantMCPResolver() BatchMCPCapabilityResolver {
 	return func(string, string) (batchMCPCapability, bool) {
 		return batchMCPCapability{}, true
 	}
+}
+
+// BatchLeafRegistryStore is the pinned R1 registry resolver keyed by the
+// invocation's registry identity. Registration is pinned-once: an identity
+// can never be replaced, so a live call's leaf set cannot change under it.
+// Lookup fails closed on an unknown identity.
+type BatchLeafRegistryStore struct {
+	mu          sync.RWMutex
+	registries  map[string]*BatchLeafRegistry
+	credentials *batchCredentialEscrow
+}
+
+func (s *BatchLeafRegistryStore) credentialEscrowLocked() *batchCredentialEscrow {
+	if s.credentials == nil {
+		s.credentials = newBatchCredentialEscrow()
+	}
+	return s.credentials
+}
+
+func (s *BatchLeafRegistryStore) credentialEscrow() *batchCredentialEscrow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.credentialEscrowLocked()
+}
+
+func NewBatchLeafRegistryStore() *BatchLeafRegistryStore {
+	return &BatchLeafRegistryStore{registries: make(map[string]*BatchLeafRegistry), credentials: newBatchCredentialEscrow()}
+}
+
+// Register pins one registry under its identity. Double registration of the
+// same identity is refused, whether the registry differs or not.
+func (s *BatchLeafRegistryStore) Register(registryID string, registry *BatchLeafRegistry) error {
+	if strings.TrimSpace(registryID) == "" {
+		return errors.New("batch leaf registry: empty registry identity")
+	}
+	if registry == nil {
+		return errors.New("batch leaf registry: nil registry")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.registries[registryID]; exists {
+		return fmt.Errorf("batch leaf registry: %q is already pinned", registryID)
+	}
+	copyRegistry := registry.CloneLeaves(func(name string, tool fantasy.AgentTool) fantasy.AgentTool {
+		if name == "agent" || name == "agentic_fetch" {
+			return &batchCredentialLeaf{AgentTool: tool, escrow: s.credentialEscrowLocked()}
+		}
+		return tool
+	})
+	s.registries[registryID] = copyRegistry
+	return nil
+}
+
+// Resolve returns the pinned registry of the identity; an unknown identity
+// fails closed (never an empty registry).
+func (s *BatchLeafRegistryStore) Resolve(registryID string) (*BatchLeafRegistry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	registry, ok := s.registries[registryID]
+	if !ok {
+		return nil, fmt.Errorf("batch leaf registry: unknown pinned registry identity %q", registryID)
+	}
+	return registry, nil
+}
+
+// Delete removes one registry identity from the index. It is invoked ONLY
+// by the capability manager when a construction record dies (no owner
+// names the registry any more); it is not an ownership operation.
+func (s *BatchLeafRegistryStore) Delete(registryID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.registries, registryID)
+}
+
+func (s *BatchLeafRegistryStore) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.registries)
 }

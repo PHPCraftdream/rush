@@ -19,7 +19,7 @@ func newRootLeaseTestManager(t *testing.T, caps *DiskProviderRegistry, registryI
 	t.Helper()
 	registries := NewBatchLeafRegistryStore()
 	caps.setRegistryDrop(registries.Delete)
-	rootRegistry := &policyLeafRegistry{entries: map[string]policyLeafEntry{}}
+	rootRegistry := newTestPolicyLeafRegistry(nil)
 	require.NoError(t, registries.Register(registryID, rootRegistry))
 	require.NoError(t, caps.acquireConstruction("", registryID, "construction-"+registryID))
 	store := newBatchRootLeaseStore(caps)

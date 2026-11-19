@@ -13,6 +13,8 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/stretchr/testify/require"
@@ -39,10 +41,10 @@ func pinnedIngressTool(registryID string) *batchIngressTool {
 	return &batchIngressTool{AgentTool: fantasy.NewAgentTool("pinned_probe", "pinned ingress probe",
 		func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.ToolResponse{}, nil
-		}), inv: BatchInvocation{
+		}), Inv: batchInvocationSpec{BatchInvocation{
 		RegistryID: registryID,
 		Policy:     batchLeafPolicyContext{RegistryID: registryID},
-	}}
+	}}}
 }
 
 // TestQueuedCallScope_PromotionKeepsConstructionUsable drives the REAL Run
@@ -268,7 +270,7 @@ func TestQueuedCallScope_NoRetentionGuards(t *testing.T) {
 	// A separate agent with no bound capability manager (no-caps case).
 	bare := &sessionAgent{}
 
-	deferredTool := &batchIngressTool{bind: &batchCoordinatorBinding{}}
+	deferredTool := &batchIngressTool{Bind: &toolwrap.DeferredBuild{}}
 
 	cases := []struct {
 		name string

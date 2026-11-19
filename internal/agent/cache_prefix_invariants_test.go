@@ -10,7 +10,9 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
+
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -151,7 +153,7 @@ func TestCachePrefix_ToolOrderStableAndMarkerPreservesPinnedSlices(t *testing.T)
 		pinnedForward[i] = &cachePrefixIdentityTool{AgentTool: tool}
 	}
 	original := slices.Clone(pinnedForward)
-	marked := withProviderOptionsOnLast(pinnedForward, cacheOpts())
+	marked := toolwrap.WithProviderOptionsOnLast(pinnedForward, cacheOpts())
 	require.Equal(t, pinnedToolNames(original), pinnedToolNames(marked))
 	for i := 0; i < len(marked)-1; i++ {
 		require.Empty(t, marked[i].ProviderOptions(), "only the final assembled tool may carry cache options")
@@ -171,7 +173,7 @@ func TestCachePrefix_ToolOrderStableAndMarkerPreservesPinnedSlices(t *testing.T)
 		&cachePrefixIdentityTool{AgentTool: newProviderOptionsTestTool("alpha-custom")},
 	}
 	customOriginal := slices.Clone(customOrder)
-	customMarked := withProviderOptionsOnLast(customOrder, cacheOpts())
+	customMarked := toolwrap.WithProviderOptionsOnLast(customOrder, cacheOpts())
 	require.Equal(t, []string{"zeta-custom", "alpha-custom"}, pinnedToolNames(customMarked), "marking must preserve intentional pinned order, not sort it")
 	require.Same(t, customOriginal[0], customOrder[0])
 	require.Same(t, customOriginal[1], customOrder[1])

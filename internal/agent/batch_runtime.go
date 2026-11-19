@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/google/uuid"
 )
@@ -78,7 +79,7 @@ type batchRuntimeConfig struct {
 	Resolver batchMCPCapabilityResolver
 	// Leaves resolves a pinned policy-leaf registry by REGISTRY identity,
 	// never by session. Wired into the executor's batchLeafEnv by R11F.
-	Leaves func(registryID string) (*policyLeafRegistry, error)
+	Leaves func(registryID string) (*toolwrap.PolicyLeafRegistry, error)
 	// Attach is the R11B live-attach store (required).
 	Attach batchAttachStore
 	// Delivery is the R11D seam; nil keeps the runtime dormant (Invoke

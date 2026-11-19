@@ -3,10 +3,15 @@ package agent
 import (
 	"testing"
 
-	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
 
+// TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections keeps
+// the root resolver/inherited-group API coverage. The merge semantics that
+// previously ran through the removed exported toolwrap.MergeRoleToolContracts
+// wrapper are preserved in the toolwrap lower suite
+// (TestRoleCapCollectionRetainsMalformedPolicyPoison, package toolwrap) via
+// the private mergeRoleToolContracts.
 func TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections(t *testing.T) {
 	contract, err := ResolveRoleContract(customRoleResolverConfig(), "analyst", nil)
 	require.NoError(t, err)
@@ -19,19 +24,15 @@ func TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections(t *testin
 	require.Equal(t, [][]string{{"view"}, {}, {"view", "grep"}}, inherited)
 	require.NotNil(t, inherited[1], "an explicit empty inherited cap must remain deny-all")
 
-	merged := mergeRoleToolContracts([]*session.RoleContract{contract})
-	require.Len(t, merged, 1)
-	require.NoError(t, merged[0].Validate())
-	require.Equal(t, [][]string{{"view", "grep"}, {"view"}, {}}, merged[0].Inherited)
-	require.False(t, RoleContractAllowsTool(merged[0], "view"))
-	require.False(t, RoleContractAllowsTool(merged[0], "bash"))
+	// The role-group API keeps the intersection deny-all for the collected
+	// ceilings: an explicit empty inherited cap denies every name.
+	require.False(t, RoleContractAllowsTool(contract, "view"))
+	require.False(t, RoleContractAllowsTool(contract, "bash"))
 
 	inherited[0][0] = "bash"
 	inherited[2][0] = "bash"
-	merged[0].Inherited[0][0] = "bash"
-	merged[0].Inherited[1][0] = "bash"
 	require.Equal(t, "view", (*contract.Tools)[0])
-	require.Equal(t, "view", contract.Inherited[0][0])
+	require.Equal(t, "view", contract.Inherited[0][0], "ceiling mutation must not alias the resolver output")
 
 	contract.Tools = nil
 	contract.Inherited = nil
@@ -39,13 +40,4 @@ func TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, inherited, "preserve the existing non-nil empty collection shape")
 	require.Empty(t, inherited)
-	require.Nil(t, mergeRoleToolContracts([]*session.RoleContract{contract}))
-}
-
-func TestRoleCapCollectionRetainsMalformedPolicyPoison(t *testing.T) {
-	for _, contract := range []*session.RoleContract{nil, {Version: 0}} {
-		merged := mergeRoleToolContracts([]*session.RoleContract{contract})
-		require.Len(t, merged, 1)
-		require.Error(t, merged[0].Validate(), "a malformed cap must not disappear into unrestricted policy")
-	}
 }

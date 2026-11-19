@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -121,10 +122,10 @@ func TestRunTurnAttachesRoleToolPolicyToEveryConstrainedTurn(t *testing.T) {
 			allTools := []fantasy.AgentTool{tool("view"), tool("write"), tool("captured-only"), tool("current-only")}
 			if tc.captured {
 				allTools = []fantasy.AgentTool{
-					roleGuardTool{AgentTool: tool("view"), contracts: []*session.RoleContract{capturedContract}},
-					roleGuardTool{AgentTool: tool("write"), contracts: []*session.RoleContract{capturedContract}},
-					roleGuardTool{AgentTool: tool("captured-only"), contracts: []*session.RoleContract{capturedContract}},
-					roleGuardTool{AgentTool: tool("current-only"), contracts: []*session.RoleContract{capturedContract}},
+					toolwrap.NewRoleGuardTool(tool("view"), []*session.RoleContract{capturedContract}),
+					toolwrap.NewRoleGuardTool(tool("write"), []*session.RoleContract{capturedContract}),
+					toolwrap.NewRoleGuardTool(tool("captured-only"), []*session.RoleContract{capturedContract}),
+					toolwrap.NewRoleGuardTool(tool("current-only"), []*session.RoleContract{capturedContract}),
 				}
 			}
 			agent := testSessionAgent(env, modelRef.Model, modelRef.Model, "policy-test", allTools...).(*sessionAgent)

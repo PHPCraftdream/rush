@@ -13,7 +13,7 @@ import (
 
 func task74AcceptanceTool(t *testing.T, built policyToolBuild, name string) fantasy.AgentTool {
 	t.Helper()
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		if tool.Info().Name == name {
 			return tool
 		}
@@ -117,7 +117,7 @@ func TestTask74InstalledControlFilteringIntersectsMultipleInheritedGroups(t *tes
 	allowed := []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}
 	built, err := coord.finishToolAssembly(ctx, task74AcceptanceTools(coord), nil, false, allowed)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"view", "batch_status"}, task74ToolNames(built.tools))
+	require.ElementsMatch(t, []string{"view", "batch_status"}, task74ToolNames(built.Tools))
 
 	status := task74AcceptanceTool(t, built, "batch_status")
 	response, err := status.Run(ctx, fantasy.ToolCall{

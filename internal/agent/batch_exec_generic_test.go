@@ -34,7 +34,7 @@ func (t *batchGenericTestTool) Run(ctx context.Context, c fantasy.ToolCall) (fan
 func batchGenericTestExecutor(tool fantasy.AgentTool) *batchExecutor {
 	family := newBatchGenericFamily()
 	return newBatchExecutor(batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
-		return &policyLeafRegistry{entries: map[string]policyLeafEntry{tool.Info().Name: {tool: tool}}}, nil
+		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{tool.Info().Name: {Tool: tool}}), nil
 	}}, map[string]batchLeafFamily{batchKindGeneric: family, batchKindMCP: family})
 }
 

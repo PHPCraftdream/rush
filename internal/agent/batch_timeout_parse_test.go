@@ -263,7 +263,7 @@ func TestBatchIngressInvalidCanonicalInputFailsClosed(t *testing.T) {
 // the single-authority contracts.
 func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	t.Parallel()
-	reg := newPolicyToolBuild([]fantasy.AgentTool{newTestLeaf("bash")}).leaves
+	reg := newPolicyToolBuild([]fantasy.AgentTool{newTestLeaf("bash")}).Leaves
 	inv := BatchInvocation{SessionID: "sess-1", CallID: "call-model", RegistryID: "reg-1"}
 
 	// Ambiguous: item timeout AND nested input timeout.

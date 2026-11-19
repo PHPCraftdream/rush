@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -31,8 +32,8 @@ type (
 		Batch   *batchModelSpec `json:"batch,omitempty"`
 	}
 	batchModelControl interface {
-		Run(context.Context, BatchInvocation, *policyLeafRegistry, batchModelSpec) (jobbatch.ID, error)
-		Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []batchModelItem) ([]jobbatch.ID, error)
+		Run(context.Context, BatchInvocation, *toolwrap.PolicyLeafRegistry, batchModelSpec) (jobbatch.ID, error)
+		Add(context.Context, string, string, string, BatchInvocation, *toolwrap.PolicyLeafRegistry, []batchModelItem) ([]jobbatch.ID, error)
 		StatusNode(context.Context, string, string, string) (any, error)
 		Output(context.Context, string, string, string, uint64) (any, error)
 		Stop(context.Context, string, string, string) (any, error)
@@ -113,7 +114,7 @@ func newBatchControlPlaceholder(name string) fantasy.AgentTool {
 	})
 }
 
-func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *policyLeafRegistry) []fantasy.AgentTool {
+func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) []fantasy.AgentTool {
 	mk := func(n, d string, run func(context.Context, batchModelParams, fantasy.ToolCall) (any, error)) fantasy.AgentTool {
 		return fantasy.NewAgentTool(n, d, func(ctx context.Context, p batchModelParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			v, e := run(ctx, p, call)
@@ -168,7 +169,7 @@ func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *policyLea
 	}
 }
 
-func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry) (jobbatch.Spec, error) {
+func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) (jobbatch.Spec, error) {
 	if !inv.AgentDepthSet {
 		inv.AgentDepth = DefaultAgentDepth
 		inv.AgentDepthSet = true
@@ -179,7 +180,7 @@ func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegi
 	return modelBatchSpecAt(raw, inv, reg, "", nil, false)
 }
 
-func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, resolver batchMCPCapabilityResolver) (jobbatch.Spec, error) {
+func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver) (jobbatch.Spec, error) {
 	if !inv.AgentDepthSet {
 		inv.AgentDepth = DefaultAgentDepth
 		inv.AgentDepthSet = true
@@ -190,7 +191,7 @@ func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *po
 	return modelBatchSpecAt(raw, inv, reg, "", resolver, true)
 }
 
-func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRegistry, path string, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
+func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, path string, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
 	inherited := inv.AgentDepth
 	if !inv.AgentDepthSet {
 		inherited = DefaultAgentDepth
@@ -268,7 +269,7 @@ func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *policyLeafRe
 		if batchControlTarget(it.Tool) {
 			return jobbatch.Spec{}, fmt.Errorf("control-plane tool %q cannot be a batch leaf", it.Tool)
 		}
-		leaf, e := reg.resolveForContext(withRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
+		leaf, e := reg.ResolveForContext(withRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
 		if e != nil || leaf == nil {
 			return jobbatch.Spec{}, fmt.Errorf("tool %q unavailable in calling pinned toolset", it.Tool)
 		}

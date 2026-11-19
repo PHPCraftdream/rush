@@ -87,7 +87,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	built, err := c.finishToolAssembly(ctx, tools, nil, false, granted)
 	require.NoError(t, err)
 	var names []string
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		names = append(names, tool.Info().Name)
 	}
 	for _, name := range []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"} {

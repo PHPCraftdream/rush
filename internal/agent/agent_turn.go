@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
@@ -82,7 +83,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		ctx = WithCallRoleContract(ctx, call.CallOptions.RoleContract)
 	}
 	if len(roleToolContractsFrom(ctx)) > 0 {
-		agentTools = filterRoleContractTools(ctx, agentTools)
+		agentTools = toolwrap.FilterRoleContractTools(ctx, agentTools)
 		call.Tools = agentTools
 	}
 	// Test-only seam: fires right after the snapshot above, before PrepareStep
@@ -645,7 +646,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		result, streamErr = agent.Stream(attemptCtx, ts.streamCall(attemptHistory, attemptFiles, maxOutputTokens))
 		attemptCancel()
 		// A tool's Go error ends the turn and is the turn's error.
-		if fatal := fatalTools.take(); fatal != nil {
+		if fatal := fatalTools.Take(); fatal != nil {
 			streamErr = fatal
 		}
 		return streamErr

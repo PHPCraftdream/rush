@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
@@ -25,22 +26,22 @@ import (
 // BEFORE any store probe or engine call: the dormant runtime never falls back
 // to the legacy async path.
 func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	pctHandoff := pctHandoffFrom(ctx)
+	pctHandoff := toolwrap.HandoffFrom(ctx)
 	if err := inv.Validate(); err != nil {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return fantasy.ToolResponse{}, err
 	}
 	if call.ID == "" {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return fantasy.ToolResponse{}, fmt.Errorf("%w", errBatchMissingCallID)
 	}
 	if leaf == nil {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return fantasy.ToolResponse{}, fmt.Errorf("%w: %q", errBatchNilLeaf, call.Name)
 	}
@@ -48,13 +49,13 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	// they are never generic batch targets.
 	if batchControlTarget(call.Name) {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return fantasy.ToolResponse{}, fmt.Errorf("%w: %q", errBatchControlPlaneLeaf, call.Name)
 	}
 	if err := ctx.Err(); err != nil {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return fantasy.ToolResponse{}, err
 	}
@@ -65,7 +66,7 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 		}
 		if inv.AgentDepth < 0 || inv.AgentDepth > MaxAgentDepthForResume {
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return fantasy.ToolResponse{}, errors.New("agent depth must be between 0 and 32")
 		}
@@ -76,14 +77,14 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	input, err := batchCanonicalInput(call.Input)
 	if err != nil {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
 	spec, err := batchOneItemSpec(inv, call, input)
 	if err != nil {
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		// A bad timeout is the model's own input: report it back so the turn
 		// goes on, instead of a Go error that ends the run.
@@ -95,8 +96,8 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	}
 	spec, err = stampBatchCallCredentials(ctx, spec)
 	if err != nil {
-		if h := pctHandoffFrom(ctx); h != nil {
-			h.pctReleasePending()
+		if h := toolwrap.HandoffFrom(ctx); h != nil {
+			h.ReleasePending()
 		}
 		return fantasy.ToolResponse{}, err
 	}
@@ -168,15 +169,15 @@ func (r *batchRuntime) invokeFresh(ctx context.Context, inv BatchInvocation, spe
 	}
 	root, attached, err := r.cfg.Attach.ProbeLive(ctx, probe)
 	if err != nil {
-		if handoff := pctHandoffFrom(ctx); handoff != nil {
-			handoff.pctRelease()
+		if handoff := toolwrap.HandoffFrom(ctx); handoff != nil {
+			handoff.Release()
 		}
 		return fantasy.ToolResponse{}, fmt.Errorf("batch attach: %w", err)
 	}
 	if attached && inv.Policy.DiskBindingID != "" {
 		if r.cfg.RootLeases == nil || !r.cfg.RootLeases.matches(root, inv.Policy.DiskBindingID, inv.RegistryID) {
-			if handoff := pctHandoffFrom(ctx); handoff != nil {
-				handoff.pctRelease()
+			if handoff := toolwrap.HandoffFrom(ctx); handoff != nil {
+				handoff.Release()
 			}
 			return fantasy.ToolResponse{}, ErrDiskProviderUnavailable
 		}
@@ -186,8 +187,8 @@ func (r *batchRuntime) invokeFresh(ctx context.Context, inv BatchInvocation, spe
 		if err != nil {
 			return fantasy.ToolResponse{}, err
 		}
-	} else if handoff := pctHandoffFrom(ctx); handoff != nil {
-		handoff.pctRelease()
+	} else if handoff := toolwrap.HandoffFrom(ctx); handoff != nil {
+		handoff.Release()
 	}
 	resp, err := r.cfg.Delivery.DeliverBatch(ctx, root, inv)
 	// Accepted physical work cannot be preempted by caller cancellation
@@ -213,8 +214,8 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 	root := batchRootID()
 	waiter := batchRankContext{Rank: inv.WaiterRank, Root: root}
 	if err := ValidateSubmit(r.cfg.Profile, waiter, nil, spec, r.cfg.MaxDepth, r.cfg.MaxNodes, r.cfg.Resolver); err != nil {
-		if handoff := pctHandoffFrom(ctx); handoff != nil {
-			handoff.pctRelease()
+		if handoff := toolwrap.HandoffFrom(ctx); handoff != nil {
+			handoff.Release()
 		}
 		return "", fmt.Errorf("%w: %w", errBatchSubmitBeforeInvalid, err)
 	}
@@ -223,23 +224,23 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 	// rejection below; a successful Submit keeps it and the Done watcher
 	// releases it when no further child can start.
 	rootOwned := false
-	pctHandoff := pctHandoffFrom(ctx)
+	pctHandoff := toolwrap.HandoffFrom(ctx)
 	if pctHandoff != nil {
-		if r.cfg.DiskBindings == nil || len(pctHandoff.releases) == 0 {
-			pctHandoff.pctRelease()
+		if r.cfg.DiskBindings == nil || pctHandoff.HasReleases() == 0 {
+			pctHandoff.Release()
 			return "", ErrDiskProviderUnavailable
 		}
 	}
 	if inv.RegistryID != "" {
 		if r.cfg.RootLeases == nil {
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", ErrDiskProviderUnavailable
 		}
 		if err := r.cfg.RootLeases.acquire(root, inv.SessionID, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", err
 		}
@@ -259,7 +260,7 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 		if !ok {
 			releaseRoot()
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", ErrDiskProviderUnavailable
 		}
@@ -270,14 +271,14 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 	if err != nil {
 		releaseRoot()
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return "", fmt.Errorf("batch submit: %w", err)
 	}
 	if id != root {
 		releaseRoot()
 		if pctHandoff != nil {
-			pctHandoff.pctRelease()
+			pctHandoff.Release()
 		}
 		return "", fmt.Errorf("batch submit: runner root %q differs from requested %q", id, root)
 	}
@@ -285,39 +286,39 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 		if batch == nil {
 			releaseRoot()
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", ErrDiskProviderUnavailable
 		}
 		if batch.ID() != root {
 			releaseRoot()
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", fmt.Errorf("batch submit: runner root %q differs from requested %q", batch.ID(), root)
 		}
 		release, ok := r.cfg.Runner.(batchReleaseHandle)
 		if !ok {
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", ErrDiskProviderUnavailable
 		}
 		if err := r.cfg.RootLeases.adopt(root, batch.Done(), inv.Policy.DiskBindingID, inv.RegistryID, release.Release); err != nil {
 			releaseRoot()
 			if pctHandoff != nil {
-				pctHandoff.pctRelease()
+				pctHandoff.Release()
 			}
 			return "", err
 		}
 	}
 	if pctHandoff != nil {
 		// pct: successful Submit transfers cleanup to the accepted-root Done watcher.
-		pctHandoff.pctAccepted()
+		pctHandoff.Accepted()
 		if batch != nil {
 			go func() {
 				<-batch.Done()
-				pctHandoff.pctReleaseUnstarted()
+				pctHandoff.ReleaseUnstarted()
 			}()
 		}
 	}

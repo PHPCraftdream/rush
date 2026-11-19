@@ -1,4 +1,4 @@
-package agent
+package toolwrap
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
@@ -125,7 +126,7 @@ func (l *loggedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.To
 	// The attribute is level_kind, not level: slog owns "level" in its own
 	// output, and a second one would emit a duplicate JSON key.
 	switch {
-	case err != nil && errors.Is(err, errAwaitingAnswer):
+	case err != nil && errors.Is(err, agentcall.ErrAwaitingAnswer):
 		// ask_question unwinds the loop on purpose (the turn stops cleanly and
 		// hands the question to the orchestrator/operator): a protocol step,
 		// not a failure, so not ERROR.
@@ -156,4 +157,10 @@ func (l *loggedTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.To
 	}
 
 	return resp, err
+}
+
+// Narrow export for the staying package agent root (DM4 chunk 2 bridge,
+// internal/agent/toolwrap_bridge.go). Removed together with the bridge.
+func WrapToolsWithErrorLogging(list []fantasy.AgentTool) []fantasy.AgentTool {
+	return wrapToolsWithErrorLogging(list)
 }

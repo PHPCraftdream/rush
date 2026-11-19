@@ -3,14 +3,34 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/google/uuid"
 )
 
 type privateFetchIngressKey struct{}
+
+// privateFetchIngressTool is the root compatibility alias over the moved
+// private fetch ingress shell
+// (internal/agent/runtime/policy/toolwrap/ingress.go); the ingress
+// assertions keep compiling until their files move.
+type privateFetchIngressTool = toolwrap.PrivateFetchIngressTool
+
+// newPrivateFetchIngressShell arms one private tool through the moved
+// shell: the root-owned pinned registry and the pre-built pinnedInvoke
+// pass through the shell's Registry/Invoke fields — no package-agent
+// identifiers cross into toolwrap.
+func newPrivateFetchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, invoke pinnedInvoke) *toolwrap.PrivateFetchIngressTool {
+	return &toolwrap.PrivateFetchIngressTool{
+		AgentTool: tool,
+		Registry:  leaves,
+		Invoke: func(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			return invoke(ctx, leaf, call)
+		},
+	}
+}
 
 func withPrivateFetchIngress(ctx context.Context, invoke pinnedInvoke) context.Context {
 	return context.WithValue(ctx, privateFetchIngressKey{}, invoke)
@@ -36,11 +56,11 @@ func buildPrivateFetchTools(ctx context.Context, list []fantasy.AgentTool, autho
 	if invoke == nil {
 		return built
 	}
-	ingressList := make([]fantasy.AgentTool, len(built.tools))
-	for i, tool := range built.tools {
-		ingressList[i] = &privateFetchIngressTool{AgentTool: tool, registry: built.leaves, invoke: invoke}
+	ingressList := make([]fantasy.AgentTool, len(built.Tools))
+	for i, tool := range built.Tools {
+		ingressList[i] = newPrivateFetchIngressShell(tool, built.Leaves, invoke)
 	}
-	built.tools = ingressList
+	built.Tools = ingressList
 	return built
 }
 
@@ -63,12 +83,12 @@ func privateFetchIngressFor(ctx context.Context) BatchWorkIngress {
 // R12-H2 §1.2: the pin takes a Construction owner released in the call's
 // build-resource scope; a missing manager or scope fails closed.
 func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress BatchWorkIngress, scope *buildResourceScope) policyToolBuild {
-	registryID, err := ingress.PinLeafRegistry(built.leaves)
+	registryID, err := ingress.PinLeafRegistry(built.Leaves)
 	if err == nil {
 		// Record the pinned identity on the build so owners of the build can
 		// observe the CONSTRUCTION they pin (the capability manager deletes
 		// the identity index entry when its last owner goes).
-		built.registryID = registryID
+		built.RegistryID = registryID
 		var caps *diskCapabilityManager
 		if bw, ok := ingress.(*batchWorkIngress); ok {
 			caps = bw.caps
@@ -86,8 +106,8 @@ func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress 
 		}
 	}
 	if err != nil {
-		for i, tool := range built.tools {
-			built.tools[i] = errBatchIngressTool{AgentTool: tool, err: err}
+		for i, tool := range built.Tools {
+			built.Tools[i] = errBatchIngressTool{AgentTool: tool, err: err}
 		}
 		return built
 	}
@@ -99,36 +119,13 @@ func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress 
 		// the comma-joined leaf names), not the registry ID — a
 		// provider-backed private payload must pass hasToolset at the
 		// executor without bypassing it.
-		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: batchToolsetFingerprint(built.tools), RoleContract: cloneRoleContractForCall(roleContractForToolBuild(ctx, built.tools))},
+		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: cloneRoleContractForCall(roleContractForToolBuild(ctx, built.Tools))},
 	}
 	invoke := batchPinnedInvoke(ingress, tpl)
-	ingressList := make([]fantasy.AgentTool, len(built.tools))
-	for i, tool := range built.tools {
-		ingressList[i] = &privateFetchIngressTool{AgentTool: tool, registry: built.leaves, invoke: invoke}
+	ingressList := make([]fantasy.AgentTool, len(built.Tools))
+	for i, tool := range built.Tools {
+		ingressList[i] = newPrivateFetchIngressShell(tool, built.Leaves, invoke)
 	}
-	built.tools = ingressList
+	built.Tools = ingressList
 	return built
-}
-
-type privateFetchIngressTool struct {
-	fantasy.AgentTool
-	registry *policyLeafRegistry
-	invoke   pinnedInvoke
-}
-
-func (t *privateFetchIngressTool) restrictedRunWrapped() {}
-
-func (t *privateFetchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	if err := guardRoleToolCall(ctx, t.Info().Name); err != nil {
-		return fantasy.NewTextErrorResponse(err.Error()), nil
-	}
-	if call.Name != "" && call.Name != t.Info().Name {
-		return fantasy.NewTextErrorResponse(fmt.Sprintf("%v: forged tool name %q does not match %q", ErrRoleToolDenied, call.Name, t.Info().Name)), nil
-	}
-	leaf, err := t.registry.resolveForContext(ctx, t.Info().Name)
-	if err != nil {
-		return fantasy.ToolResponse{}, err
-	}
-	call.Name = t.Info().Name
-	return t.invoke(ctx, leaf, call)
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -15,12 +17,12 @@ import (
 type pctScopeIngress struct {
 	mu       sync.Mutex
 	caps     *DiskProviderRegistry
-	regs     map[string]*policyLeafRegistry
+	regs     map[string]*BatchLeafRegistry
 	next     int
 	fail     bool
 	accepted bool
 	claim    bool
-	handoff  *pctDelegationHandoff
+	handoff  *toolwrap.PctDelegationHandoff
 }
 
 func (i *pctScopeIngress) PinLeafRegistry(r *BatchLeafRegistry) (string, error) {
@@ -29,7 +31,7 @@ func (i *pctScopeIngress) PinLeafRegistry(r *BatchLeafRegistry) (string, error) 
 	i.next++
 	id := fmt.Sprintf("pct-registry-%d", i.next)
 	if i.regs == nil {
-		i.regs = make(map[string]*policyLeafRegistry)
+		i.regs = make(map[string]*BatchLeafRegistry)
 	}
 	i.regs[id] = r
 	return id, nil
@@ -50,7 +52,7 @@ func (i *pctScopeIngress) ResolveLeaf(id, name string) (fantasy.AgentTool, error
 	if err != nil {
 		return nil, err
 	}
-	return r.resolve(name)
+	return r.Resolve(name)
 }
 
 // Invoke models delivery only: it is not the production batch Submit/executor.
@@ -69,7 +71,7 @@ func (i *pctScopeIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf 
 		return fantasy.ToolResponse{}, errors.New("simulated admission rejection")
 	}
 	if call.Name == AgentToolName {
-		h := pctHandoffFrom(ctx)
+		h := toolwrap.HandoffFrom(ctx)
 		if h == nil {
 			return fantasy.ToolResponse{}, errors.New("missing invocation handoff")
 		}
@@ -77,10 +79,10 @@ func (i *pctScopeIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf 
 		i.handoff = h
 		i.mu.Unlock()
 		if accepted {
-			h.pctAccepted()
+			h.Accepted()
 		}
 		if claim {
-			if pctCapturedToolFrom(leaf) == nil || pctCapturedToolFrom(leaf).pctClaim(pctInvocationKey(tools.GetSessionFromContext(ctx), call.ID)) != h {
+			if pctCapturedAgentToolFromTool(leaf) == nil || pctCapturedAgentToolFromTool(leaf).pctClaim(tools.GetSessionFromContext(ctx)+"\x00"+call.ID) != h {
 				return fantasy.ToolResponse{}, errors.New("captured handoff not claimable")
 			}
 		}
@@ -92,7 +94,7 @@ func (i *pctScopeIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf 
 type pctScopeFixture struct {
 	caps     *DiskProviderRegistry
 	ingress  *pctScopeIngress
-	child    *pctChildToolScope
+	child    *toolwrap.PctChildToolScope
 	parent   *buildResourceScope
 	view     *batchIngressTool
 	captured *pctCapturedAgentTool
@@ -111,26 +113,36 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 	})
 	bind := &batchCoordinatorBinding{ingress: ingress, diskBindings: caps}
 	parent := newBuildResourceScope()
-	child := pctNewChildToolScope()
-	parent.Register(child.pctProvisionalRelease())
+	// child scope built through the production constructor path: the fixture
+	// ctx carries the parent scope, ChildToolBuildContext registers the child's
+	// provisional release on it and isolates a fresh child build scope.
+	fixtureCtx := WithCallOptions(context.Background(), &CallOptions{BuildScope: parent})
+	// pct: test-only scaffolding — the captured invocation key format is the
+	// production sessionID + NUL + callID pair built in toolwrap's ingress
+	// dispatch (kept inline here; no export needed).
+	childCtx, child := toolwrap.ChildToolBuildContext(fixtureCtx)
+	// child's isolated build scope is carried on the returned ctx options.
+	childScope := agentcall.CallOptionsFrom(childCtx).BuildScope
+	require.NotNil(t, childScope)
+	require.NotSame(t, parent, childScope, "child build scope is isolated from the parent scope")
 	viewTool := &countingTool{name: "view"}
-	viewBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{viewTool}, child.scope, false)
+	viewBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{viewTool}, childScope, false)
 	require.NoError(t, err, "build the inner child tool")
-	require.NotEmpty(t, viewBuild.registryID, "inner tool registry is pinned")
-	view, ok := viewBuild.tools[0].(*batchIngressTool)
+	require.NotEmpty(t, viewBuild.RegistryID, "inner tool registry is pinned")
+	view, ok := viewBuild.Tools[0].(*batchIngressTool)
 	require.True(t, ok, "inner tool is armed through the batch ingress")
 	captured := &pctCapturedAgentTool{AgentTool: &countingTool{name: AgentToolName}, scope: child}
 	outerBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{captured}, parent, false)
 	require.NoError(t, err, "build outer tool through captured wrapper")
-	require.NotEmpty(t, outerBuild.registryID, "outer registry is pinned")
-	outer, ok := outerBuild.tools[0].(*batchIngressTool)
+	require.NotEmpty(t, outerBuild.RegistryID, "outer registry is pinned")
+	outer, ok := outerBuild.Tools[0].(*batchIngressTool)
 	require.True(t, ok, "outer tool is armed through the batch ingress")
-	require.Equal(t, child, outer.pctChildScope, "outer assembly captures the actual child scope")
+	require.Equal(t, child, outer.PctChildScope, "outer assembly captures the actual child scope")
 	t.Cleanup(func() { parent.Close() })
-	return &pctScopeFixture{caps: caps, ingress: ingress, child: child, parent: parent, view: view, captured: captured, outer: outer, registry: viewBuild.registryID}
+	return &pctScopeFixture{caps: caps, ingress: ingress, child: child, parent: parent, view: view, captured: captured, outer: outer, registry: viewBuild.RegistryID}
 }
 
-func (f *pctScopeFixture) pctStart(t *testing.T, id string) *pctDelegationHandoff {
+func (f *pctScopeFixture) pctStart(t *testing.T, id string) *toolwrap.PctDelegationHandoff {
 	t.Helper()
 	resp, err := f.outer.Run(batchCallCtx("pct-parent"), fantasy.ToolCall{ID: id, Name: AgentToolName, Input: `{}`})
 	require.NoError(t, err, "simulate outer agent admission")
@@ -152,7 +164,7 @@ func (f *pctScopeFixture) pctRunView(t *testing.T, id string) {
 func TestBatchChildToolScope_ParentCloseBeforeFirstTool(t *testing.T) {
 	f := pctNewScopeFixture(t, true, true)
 	h := f.pctStart(t, "start-before-first")
-	t.Cleanup(h.pctRelease)
+	t.Cleanup(h.Release)
 	f.parent.Close()
 	_, err := f.ingress.Registry(f.registry)
 	require.NoError(t, err, "outer execution lease preserves registry after parent close")
@@ -165,7 +177,7 @@ func TestBatchChildToolScope_ParentCloseBeforeFirstTool(t *testing.T) {
 func TestBatchChildToolScope_SecondReaction(t *testing.T) {
 	f := pctNewScopeFixture(t, true, true)
 	h := f.pctStart(t, "start-reactions")
-	t.Cleanup(h.pctRelease)
+	t.Cleanup(h.Release)
 	f.parent.Close()
 	f.pctRunView(t, "reaction-1")
 	f.pctRunView(t, "reaction-2")
@@ -187,8 +199,8 @@ func TestBatchChildToolScope_RejectedAdmissionAndFailedLaunch(t *testing.T) {
 	t.Run("handoff helper release", func(t *testing.T) {
 		f := pctNewScopeFixture(t, true, false)
 		h := f.pctStart(t, "launch-failed")
-		t.Cleanup(h.pctRelease)
-		h.pctRelease() // Unit helper only; this fake does not launch a child executor.
+		t.Cleanup(h.Release)
+		h.Release() // Unit helper only; this fake does not launch a child executor.
 		f.parent.Close()
 		_, count := f.caps.ownerCounts()
 		require.Zero(t, count, "explicit failed-launch cleanup releases the retained child reference")
@@ -198,10 +210,10 @@ func TestBatchChildToolScope_RejectedAdmissionAndFailedLaunch(t *testing.T) {
 func TestBatchChildToolScope_ClosureGeneration(t *testing.T) {
 	f := pctNewScopeFixture(t, true, true)
 	h := f.pctStart(t, "driver-generation")
-	t.Cleanup(h.pctRelease)
-	oldRelease := h.pctClaimDriver()
+	t.Cleanup(h.Release)
+	oldRelease := h.ClaimDriver()
 	require.Len(t, oldRelease, 1, "driver retain can be claimed before execution handoff release")
-	newRelease := f.child.pctRetain()
+	newRelease := f.child.Retain()
 	require.NotNil(t, newRelease)
 	f.parent.Close()
 	drivers := newSubAgentDriverRegistry()
@@ -214,7 +226,7 @@ func TestBatchChildToolScope_ClosureGeneration(t *testing.T) {
 	require.Len(t, driver.pctReleases, 2, "replacement preserves prior driver references")
 	require.True(t, drivers.releaseIfCurrent("child", currentGeneration))
 	require.False(t, drivers.releaseIfCurrent("child", currentGeneration), "generation release is idempotent")
-	h.pctRelease()
+	h.Release()
 	_, count := f.caps.ownerCounts()
 	require.Zero(t, count)
 }
@@ -224,8 +236,8 @@ func TestBatchChildToolScope_UnrelatedScope(t *testing.T) {
 	b := pctNewScopeFixture(t, true, true)
 	ha := a.pctStart(t, "unrelated-a")
 	hb := b.pctStart(t, "unrelated-b")
-	t.Cleanup(ha.pctRelease)
-	t.Cleanup(hb.pctRelease)
+	t.Cleanup(ha.Release)
+	t.Cleanup(hb.Release)
 	a.parent.Close()
 	_, err := b.ingress.Registry(b.registry)
 	require.NoError(t, err, "closing scope A does not close independently managed scope B")
@@ -236,12 +248,12 @@ func TestBatchChildToolScope_UnrelatedScope(t *testing.T) {
 func TestBatchChildToolScope_Disposal(t *testing.T) {
 	f := pctNewScopeFixture(t, true, true)
 	h := f.pctStart(t, "dispose")
-	t.Cleanup(h.pctRelease)
-	driverReleases := h.pctClaimDriver()
+	t.Cleanup(h.Release)
+	driverReleases := h.ClaimDriver()
 	f.parent.Close()
-	adapter := &pctDriverDisposer{SessionAgent: &mockSessionAgent{}, releases: driverReleases}
+	adapter := toolwrap.NewDriverDisposer(&mockSessionAgent{}, driverReleases)
 	require.False(t, adapter.CancelAll(), "mock session agent is idle")
-	h.pctRelease()
+	h.Release()
 	_, count := f.caps.ownerCounts()
 	require.Zero(t, count, "handoff and driver disposal release their references")
 }
@@ -249,12 +261,12 @@ func TestBatchChildToolScope_Disposal(t *testing.T) {
 func TestBatchChildToolScope_AcceptedWithoutDriver(t *testing.T) {
 	f := pctNewScopeFixture(t, true, false)
 	h := f.pctStart(t, "accepted-no-driver")
-	t.Cleanup(h.pctReleaseUnstarted)
+	t.Cleanup(h.ReleaseUnstarted)
 	f.parent.Close()
 	_, count := f.caps.ownerCounts()
 	require.Equal(t, 1, count, "accepted but unstarted handoff retains the child scope")
-	h.pctReleaseUnstarted()
-	h.pctReleaseUnstarted()
+	h.ReleaseUnstarted()
+	h.ReleaseUnstarted()
 	_, count = f.caps.ownerCounts()
 	require.Zero(t, count, "root-Done-style cleanup releases accepted unstarted handoff once")
 	f.captured.mu.Lock()
@@ -268,7 +280,7 @@ func TestBatchChildToolScope_AcceptedWithoutDriver(t *testing.T) {
 func TestBatchChildToolScope_LookupSeesThroughCredentialLeaf(t *testing.T) {
 	captured := &pctCapturedAgentTool{}
 	wrapped := &batchCredentialLeaf{AgentTool: captured}
-	require.Same(t, captured, pctCapturedToolFrom(wrapped), "credential wrapper is unwrapped")
-	require.Same(t, captured, pctCapturedToolFrom(&batchCredentialLeaf{AgentTool: &hookedTool{inner: captured}}), "wrapper over a hooked tool is unwrapped")
-	require.Nil(t, pctCapturedToolFrom(&batchCredentialLeaf{}), "wrapper over nothing resolves to no captured tool")
+	require.Same(t, captured, pctCapturedAgentToolFromTool(wrapped), "credential wrapper is unwrapped")
+	require.Same(t, captured, pctCapturedAgentToolFromTool(&batchCredentialLeaf{AgentTool: toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{captured}, newRunner(t, `exit 0`), false)[0]}), "wrapper over a hooked tool is unwrapped")
+	require.Nil(t, pctCapturedAgentToolFromTool(&batchCredentialLeaf{}), "wrapper over nothing resolves to no captured tool")
 }

@@ -9,18 +9,19 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 )
 
 type pinnedInvoke func(context.Context, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error)
 
 type cliToolBridge struct {
-	registry   *policyLeafRegistry
+	registry   *toolwrap.PolicyLeafRegistry
 	invoke     pinnedInvoke
 	advertised []cliprovider.BridgeTool
 	builtin    map[string]string
 }
 
-func newCLIToolBridgeForContext(ctx context.Context, registry *policyLeafRegistry, invoke pinnedInvoke, external []cliprovider.BridgeTool) (*cliToolBridge, error) {
+func newCLIToolBridgeForContext(ctx context.Context, registry *toolwrap.PolicyLeafRegistry, invoke pinnedInvoke, external []cliprovider.BridgeTool) (*cliToolBridge, error) {
 	if registry == nil || invoke == nil {
 		return nil, fmt.Errorf("CLI bridge requires pinned registry and ingress")
 	}
@@ -35,7 +36,7 @@ func newCLIToolBridgeForContext(ctx context.Context, registry *policyLeafRegistr
 		if !roleToolAllowed(ctx, definition.CanonicalName) {
 			continue
 		}
-		if _, err := registry.resolveForContext(ctx, definition.CanonicalName); err != nil {
+		if _, err := registry.ResolveForContext(ctx, definition.CanonicalName); err != nil {
 			continue
 		}
 		bridge.advertised = append(bridge.advertised, definition)
@@ -49,7 +50,7 @@ func newCLIToolBridgeForContext(ctx context.Context, registry *policyLeafRegistr
 		if !roleToolAllowed(ctx, definition.CanonicalName) {
 			continue
 		}
-		if _, err := registry.resolveForContext(ctx, definition.CanonicalName); err != nil {
+		if _, err := registry.ResolveForContext(ctx, definition.CanonicalName); err != nil {
 			continue
 		}
 		definition.InputSchema = append(json.RawMessage(nil), definition.InputSchema...)
@@ -81,7 +82,7 @@ func (b *cliToolBridge) Call(ctx context.Context, call fantasy.ToolCall) (fantas
 	if !accepted {
 		return fantasy.ToolResponse{}, fmt.Errorf("CLI bridge target %q is not advertised", call.Name)
 	}
-	leaf, err := b.registry.resolveForContext(ctx, call.Name)
+	leaf, err := b.registry.ResolveForContext(ctx, call.Name)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}

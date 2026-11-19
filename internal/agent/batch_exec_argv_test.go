@@ -94,7 +94,7 @@ func batchArgvPayload(t *testing.T, mode string) batchLeafPayload {
 
 func batchArgvEnv(tool fantasy.AgentTool) batchLeafEnv {
 	return batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
-		return newPolicyToolBuild([]fantasy.AgentTool{tool}).leaves, nil
+		return newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves, nil
 	}}
 }
 
@@ -217,7 +217,9 @@ func TestBatchArgvCancelledStartAndValidation(t *testing.T) {
 		return fantasy.ToolResponse{}, nil
 	})
 	env.Leaves = func(string) (*policyLeafRegistry, error) {
-		return &policyLeafRegistry{entries: map[string]policyLeafEntry{tools.RunCommandToolName: {tool: wrong}}}, nil
+		// The pinned name stays RunCommandToolName while the leaf is a
+		// different tool: the mismatch must fail closed (identity preserved).
+		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{tools.RunCommandToolName: {Tool: wrong}}), nil
 	}
 	_, err = (batchArgvFamily{}).start(t.Context(), env, jobbatch.Launch{}, p, nil)
 	require.Error(t, err)

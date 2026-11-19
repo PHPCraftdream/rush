@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -16,6 +17,6 @@ import (
 // async/stall wrappers are NOT installed. allowed is the build's control
 // grant list: batchControlAvailability over the final filtered tools and
 // AllowedTools, computed once in buildPolicyTools.
-func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string, configs ...*config.Config) (policyToolBuild, error) {
+func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string, configs ...*config.Config) (toolwrap.PolicyToolBuild, error) {
 	return newToolsComponent(c).finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowed, configs...)
 }

@@ -194,17 +194,17 @@ func TestConstructionScopeBoundary(t *testing.T) {
 	scope := newBuildResourceScope()
 	built, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{leaf}, scope, false)
 	require.NoError(t, err, "the real construction path pins under the call's build scope")
-	require.NotEmpty(t, built.registryID)
+	require.NotEmpty(t, built.RegistryID)
 
 	// While the build scope is open the construction record exists: the
 	// identity index resolves it and the manager keeps the pin.
-	_, err = registries.Resolve(built.registryID)
+	_, err = registries.Resolve(built.RegistryID)
 	require.NoError(t, err, "pinned registry must stay published while the build scope is open")
 
 	// The call uses the toolset ZERO times and the scope closes (final call
 	// completion / resolution failure shape).
 	scope.Close()
-	_, err = registries.Resolve(built.registryID)
+	_, err = registries.Resolve(built.RegistryID)
 	require.Error(t, err, "closing the build scope must delete the unused construction record")
 	// The binding survives: the Call owner retains the PROVIDER without
 	// retaining the obsolete toolset (R12-H2 §1.1).

@@ -12,6 +12,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -54,8 +55,8 @@ func TestCachePrefix_FinalAdmittedBatchToolsCanonical(t *testing.T) {
 		require.Equal(t, forward[i].Info(), reverse[i].Info())
 	}
 	messages := []fantasy.Message{fantasy.NewSystemMessage("stable prefix")}
-	first := promptcache.PreparedCacheDiagnostic(messages, withProviderOptionsOnLast(forward, cacheOpts()))
-	second := promptcache.PreparedCacheDiagnostic(messages, withProviderOptionsOnLast(reverse, cacheOpts()))
+	first := promptcache.PreparedCacheDiagnostic(messages, toolwrap.WithProviderOptionsOnLast(forward, cacheOpts()))
+	second := promptcache.PreparedCacheDiagnostic(messages, toolwrap.WithProviderOptionsOnLast(reverse, cacheOpts()))
 	require.Equal(t, first, second, "the fingerprint must describe the final marked schema, including controls")
 	for _, tool := range forward {
 		require.Empty(t, tool.ProviderOptions(), "diagnostics and markers must not mutate the pinned tools")

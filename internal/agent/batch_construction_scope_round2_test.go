@@ -351,31 +351,31 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	require.NotEqual(t, originalScope, queued.CallOptions.BuildScope,
 		"the queued replacement call must carry its OWN build scope, not the interrupting ctx's shared one")
 
-	registryIDs := make([]string, 0, len(queuedTools))
+	type queuedRegistryProbe struct {
+		registryID string
+		probeName  string
+	}
+	registryProbes := make([]queuedRegistryProbe, 0, len(queuedTools))
 	for _, armed := range queuedTools {
 		if ingress, ok := armed.(*batchIngressTool); ok {
-			registryIDs = append(registryIDs, ingress.inv.RegistryID)
+			registryProbes = append(registryProbes, queuedRegistryProbe{
+				registryID: ingress.Inv.RegistryID(),
+				// Derive the offered pinned-leaf probe name from the queued
+				// toolset itself: each known registry ID must keep a resolvable
+				// leaf for the tool it arms.
+				probeName: armed.Info().Name,
+			})
 		}
 	}
-	require.NotEmpty(t, registryIDs, "queued toolset must include batch-armed tools with actual registry identities")
+	require.NotEmpty(t, registryProbes, "queued toolset must include batch-armed tools with actual registry identities")
 	// Closing the caller scope must leave each queued construction registered.
 	originalScope.Close()
-	for _, registryID := range registryIDs {
-		registry, resolveErr := h.registries.Resolve(registryID)
+	for _, probe := range registryProbes {
+		registry, resolveErr := h.registries.Resolve(probe.registryID)
 		require.NoError(t, resolveErr, "queued registry remains resolvable after caller scope close")
-		for name := range registry.entries {
-			if tool, toolErr := registry.resolve(name); toolErr == nil && tool != nil {
-				break
-			}
-		}
-		var tool fantasy.AgentTool
-		for name := range registry.entries {
-			if resolved, toolErr := registry.resolve(name); toolErr == nil {
-				tool = resolved
-				break
-			}
-		}
-		require.NotNil(t, tool, "queued registry resolves an offered pinned tool")
+		resolved, toolErr := registry.Resolve(probe.probeName)
+		require.NoError(t, toolErr, "queued registry retains the pinned leaf for its armed tool after caller scope close")
+		require.NotNil(t, resolved, "queued registry resolves an offered pinned tool")
 	}
 	queuedScope := queued.CallOptions.BuildScope
 	require.False(t, queuedScope.Closed(), "the queued call's own scope remains open")

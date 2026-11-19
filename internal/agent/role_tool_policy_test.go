@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +20,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	}
 	noTools := []string{}
 	empty := &session.RoleContract{Version: session.RoleContractVersion, Tools: &noTools}
-	zeroGuard := roleGuardTool{AgentTool: newProbe("probe"), contracts: []*session.RoleContract{empty}}
+	zeroGuard := toolwrap.NewRoleGuardTool(newProbe("probe"), []*session.RoleContract{empty})
 	resp, err := zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-forged", Name: "forged", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
@@ -32,7 +33,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 
 	capturedTools := []string{"probe"}
 	captured := &session.RoleContract{Version: session.RoleContractVersion, Tools: &capturedTools}
-	capturedGuard := roleGuardTool{AgentTool: newProbe("write"), contracts: []*session.RoleContract{captured}}
+	capturedGuard := toolwrap.NewRoleGuardTool(newProbe("write"), []*session.RoleContract{captured})
 	resp, err = capturedGuard.Run(context.Background(), fantasy.ToolCall{ID: "captured", Name: "write", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
@@ -45,7 +46,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	currentCtx := WithCallOptions(context.Background(), currentOptions)
 	widerTools := []string{"probe", "write"}
 	wider := &session.RoleContract{Version: session.RoleContractVersion, Tools: &widerTools}
-	currentGuard := roleGuardTool{AgentTool: newProbe("write"), contracts: []*session.RoleContract{wider}}
+	currentGuard := toolwrap.NewRoleGuardTool(newProbe("write"), []*session.RoleContract{wider})
 	resp, err = currentGuard.Run(currentCtx, fantasy.ToolCall{ID: "current", Name: "write", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)

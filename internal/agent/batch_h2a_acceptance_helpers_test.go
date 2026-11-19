@@ -173,9 +173,9 @@ func newH2aGatedInstallWithLeafWrap(t *testing.T, wrap func(fantasy.AgentTool) f
 	binding, err := deps.DiskBindings.RegisterProvider(fake)
 	require.NoError(t, err)
 	registries := deps.Registries
-	require.NoError(t, registries.Register(h2aRegistry, &policyLeafRegistry{
-		entries: map[string]policyLeafEntry{"fs_write": {layers: []string{"tool"}, tool: leaf}},
-	}))
+	require.NoError(t, registries.Register(h2aRegistry, newTestPolicyLeafRegistry(map[string]testPolicyLeaf{
+		"fs_write": {Layers: []string{"tool"}, Tool: leaf},
+	})))
 	releaseConstruction := pinTestConstruction(t, deps.DiskBindings, h2aRegistry)
 	install, err := InstallBatchRuntime(context.Background(), deps)
 	require.NoError(t, err)

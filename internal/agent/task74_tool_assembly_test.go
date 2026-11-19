@@ -84,7 +84,7 @@ func task74ToolNames(tools []fantasy.AgentTool) []string {
 func task74AssertInstalledStatus(t *testing.T, ctx context.Context, built policyToolBuild, callID string) {
 	t.Helper()
 	var status fantasy.AgentTool
-	for _, tool := range built.tools {
+	for _, tool := range built.Tools {
 		if tool.Info().Name == "batch_status" {
 			status = tool
 			break
@@ -108,7 +108,7 @@ func TestTask74FinishToolAssemblyInstallsAllowedBuiltinControls(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, installer.installs, "trusted nonshared assembly must install its real model controls")
 	for _, name := range allowed {
-		require.Contains(t, task74ToolNames(built.tools), name, "an effective builtin grant must be installed")
+		require.Contains(t, task74ToolNames(built.Tools), name, "an effective builtin grant must be installed")
 	}
 	task74AssertInstalledStatus(t, ctx, built, "task74-status")
 }
@@ -125,7 +125,7 @@ func TestTask74FinishToolAssemblyAppliesRoleAndInheritedControlCeilings(t *testi
 	allowed := []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"}
 	built, err := coord.finishToolAssembly(ctx, task74AssemblyInput(), nil, false, allowed)
 	require.NoError(t, err)
-	names := task74ToolNames(built.tools)
+	names := task74ToolNames(built.Tools)
 	require.Contains(t, names, "batch_status")
 	for _, denied := range []string{"batch_run", "batch_add", "batch_output", "batch_stop"} {
 		require.NotContains(t, names, denied, "installation must not surface a control denied by either role ceiling")
@@ -141,9 +141,9 @@ func TestTask74FinishToolAssemblyCannotWidenBaseAllowedControls(t *testing.T) {
 
 	built, err := coord.finishToolAssembly(ctx, task74AssemblyInput(), nil, false, []string{"batch_status"})
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"view", "batch_status"}, task74ToolNames(built.tools))
+	require.ElementsMatch(t, []string{"view", "batch_status"}, task74ToolNames(built.Tools))
 	for _, denied := range []string{"batch_run", "batch_add", "batch_output", "batch_stop"} {
-		require.NotContains(t, task74ToolNames(built.tools), denied, "installation must not add controls outside the base allowed grant list")
+		require.NotContains(t, task74ToolNames(built.Tools), denied, "installation must not add controls outside the base allowed grant list")
 	}
 	require.Equal(t, 1, installer.installs, "the installer may return every control but must run once")
 	task74AssertInstalledStatus(t, ctx, built, "task74-base-floor-status")
@@ -159,7 +159,7 @@ func TestTask74FinishToolAssemblyEmptyRoleInstallsNoTools(t *testing.T) {
 	built, err := coord.finishToolAssembly(ctx, task74AssemblyInput(), nil, false,
 		[]string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"})
 	require.NoError(t, err)
-	require.Empty(t, built.tools, "an explicit empty role ceiling denies every base and control tool")
+	require.Empty(t, built.Tools, "an explicit empty role ceiling denies every base and control tool")
 	require.Zero(t, installer.installs, "no denied control should be minted when there are no effective grants")
 }
 
