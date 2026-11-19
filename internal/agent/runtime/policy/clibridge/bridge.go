@@ -38,11 +38,11 @@ func TranslateCLIInput(wire, input string) (string, string, error) {
 			return "", "", err
 		}
 		if read.Start < 0 || read.End < 0 {
-			return "", "", fmt.Errorf("Read range cannot be negative")
+			return "", "", fmt.Errorf("read range cannot be negative")
 		}
 		start := max(1, read.Start)
 		if read.End != 0 && read.End < start {
-			return "", "", fmt.Errorf("Read end precedes start")
+			return "", "", fmt.Errorf("read end precedes start")
 		}
 		limit := tools.DefaultReadLimit
 		if read.End != 0 {

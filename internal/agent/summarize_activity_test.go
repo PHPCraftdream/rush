@@ -108,8 +108,7 @@ func TestRunSummarizeSilent_CallsWatchdogBump(t *testing.T) {
 	// Track how many times the watchdog bump was called.
 	var bumpCount atomic.Int32
 	// Create a context with a mocked watchdog bump callback.
-	ctx := context.Background()
-	ctx = withWatchdogBump(context.Background(), func() {
+	ctx := withWatchdogBump(context.Background(), func() {
 		bumpCount.Add(1)
 	})
 
@@ -267,8 +266,7 @@ func TestRunSummarizeBody_CallsWatchdogBump(t *testing.T) {
 	// Track how many times the watchdog bump was called.
 	var bumpCount atomic.Int32
 	// Create a context with a mocked watchdog bump callback.
-	ctx := context.Background()
-	ctx = withWatchdogBump(context.Background(), func() {
+	ctx := withWatchdogBump(context.Background(), func() {
 		bumpCount.Add(1)
 	})
 
