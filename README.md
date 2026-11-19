@@ -1043,6 +1043,14 @@ providers: {
 The value feeds both the model-catalog `client_version` and the `version`
 header of requests; remove the key to return to the built-in default.
 
+Rush raises it by itself. When the backend refuses a request with a 4xx that
+says the client is too old (a named minimum version, "newer client" text, or the
+`model_not_found` that version gating produces), Rush raises the version to the
+one the backend named, or to the latest `openai/codex` release (looked up at most
+once per 10 minutes), retries the request once, and saves the new value to this
+key in the global config. It only ever raises. Under a settings lock the save is
+refused and the raise lasts for that process only.
+
 ### Live model catalogs
 
 Rush reads authenticated model lists from the ChatGPT Codex, StepFun, and
