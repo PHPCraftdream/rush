@@ -92,6 +92,7 @@ func TestPrivateFetchPolicyBindingOmissionLogging(t *testing.T) {
 			resolved, resolveErr := built.Leaves.Resolve("view")
 			require.NoError(t, resolveErr)
 			require.NotNil(t, resolved, "private fetch registry keeps the pinned view leaf")
+			require.Equal(t, []string{"restricted", "tool"}, policyLeafBaselineStack(resolved))
 		})
 	}
 }

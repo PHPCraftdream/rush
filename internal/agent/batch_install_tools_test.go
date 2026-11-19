@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -230,14 +231,14 @@ func TestUnboundCoordinatorArmsNoBatchTools(t *testing.T) {
 	for _, tool := range built.Tools {
 		byName[tool.Info().Name] = tool
 	}
-	// The async/stall wrapper layers are DELETED types: re-adding them is a
-	// compile error, so the wrapper-layer assertion is structural. What
-	// remains behavioral here is that bash kept a direct pinned leaf on the
-	// unbound path; exact wrapper-stack assertions live in the toolwrap
-	// lower suite (TestPolicyLeafWrapperStackExact).
+	// bash keeps a direct pinned leaf on the unbound path, without the
+	// deleted async/stall wrapper layers.
 	resolvedLeaf, resolveErr := built.Leaves.Resolve("bash")
 	if resolveErr != nil || resolvedLeaf == nil {
 		t.Fatalf("bash must keep its pinned leaf: %v", resolveErr)
+	}
+	if layers := policyLeafBaselineStack(resolvedLeaf); slices.Contains(layers, "async") || slices.Contains(layers, "stall") {
+		t.Fatalf("bash leaf layers %v carry a deleted wrapper layer", layers)
 	}
 	for _, tool := range built.Tools {
 		if _, ok := tool.(*batchIngressTool); ok {
