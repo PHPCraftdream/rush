@@ -377,3 +377,56 @@ func TestServiceTierFastSendsPriorityAndUnknownTierFails(t *testing.T) {
 	_, err = model.Generate(context.WithValue(t.Context(), cliprovider.ServiceTierContextKey, "turbo"), call)
 	require.ErrorContains(t, err, "unsupported Codex service tier")
 }
+
+func TestStaleClientVersionIsRaisedAndRequestRetried(t *testing.T) {
+	reset := func() {
+		discover.ResetCodexClientVersionLearning()
+		discover.SetCodexClientVersion("")
+		discover.SetCodexClientVersionPersister(nil)
+	}
+	reset()
+	t.Cleanup(reset)
+	var persisted []string
+	discover.SetCodexClientVersionPersister(func(_, to string) { persisted = append(persisted, to) })
+
+	var versions []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := r.Header.Get("version")
+		versions = append(versions, v)
+		if v == discover.DefaultCodexClientVersion {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"The 'gpt-9' model is not supported when using Codex with a ChatGPT account","min_client_version":"9.9.9"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexEvent(w, `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	}))
+	t.Cleanup(server.Close)
+	model := codexProviderForTest(t, server)
+	call := fantasy.Call{Prompt: fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "hi"}}}}}
+
+	_, err := model.Generate(t.Context(), call)
+	require.NoError(t, err)
+	assert.Equal(t, []string{discover.DefaultCodexClientVersion, "9.9.9"}, versions, "one refusal, then one retry with the named version")
+	assert.Equal(t, []string{"9.9.9"}, persisted)
+	assert.Equal(t, "9.9.9", discover.CodexClientVersion())
+}
+
+func TestUnrelatedBadRequestIsNotRetriedWithANewerVersion(t *testing.T) {
+	discover.ResetCodexClientVersionLearning()
+	t.Cleanup(discover.ResetCodexClientVersionLearning)
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid tool schema"}}`))
+	}))
+	t.Cleanup(server.Close)
+	model := codexProviderForTest(t, server)
+	call := fantasy.Call{Prompt: fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "hi"}}}}}
+	_, err := model.Generate(t.Context(), call)
+	require.Error(t, err)
+	assert.Equal(t, 1, requests)
+}

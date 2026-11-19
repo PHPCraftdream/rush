@@ -4,13 +4,17 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 )
@@ -55,12 +59,216 @@ func CodexCatalogIdentity(accountID, accessToken string) string {
 	return id
 }
 
-// CodexClientVersion is the version sent as client_version and the version header.
+// CodexClientVersion is the version sent as client_version and the version header: the configured
+// (or default) version, or the version learned from the backend when that is newer. A learned
+// version is a floor, so a config reload that still carries the old value cannot lower it.
 func CodexClientVersion() string {
+	base := DefaultCodexClientVersion
 	if v := codexClientVersion.Load(); v != nil {
-		return *v
+		base = *v
 	}
-	return DefaultCodexClientVersion
+	if l := codexLearnedVersion.Load(); l != nil && compareSemver(*l, base) > 0 {
+		return *l
+	}
+	return base
+}
+
+var (
+	codexLearnedVersion   atomic.Pointer[string]
+	codexUpgradeMu        sync.Mutex
+	codexLastReleaseCheck time.Time
+	codexPersister        func(oldVersion, newVersion string)
+
+	// codexLatestReleaseURL is where the latest Codex CLI release is read from (tests replace it).
+	codexLatestReleaseURL = "https://api.github.com/repos/openai/codex/releases/latest"
+	codexReleaseCooldown  = 10 * time.Minute
+	codexSemverRE         = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)
+	// codexTagRE finds the version in a release tag such as "rust-v0.169.0" (no word boundary before the digits).
+	codexTagRE = regexp.MustCompile(`(\d+\.\d+\.\d+)`)
+)
+
+// ErrCodexUpgradeCooldown is returned when the latest-release lookup already ran recently.
+var ErrCodexUpgradeCooldown = errors.New("codex client version: latest release was checked recently")
+
+// SetCodexClientVersionPersister installs the callback that stores a raised version (the app writes
+// it to the config; it may fail, for example under a settings lock, which only costs persistence).
+func SetCodexClientVersionPersister(fn func(oldVersion, newVersion string)) {
+	codexUpgradeMu.Lock()
+	codexPersister = fn
+	codexUpgradeMu.Unlock()
+}
+
+// ResetCodexClientVersionLearning forgets a version learned from the backend (tests, and a deliberate
+// return to the configured version).
+func ResetCodexClientVersionLearning() {
+	codexUpgradeMu.Lock()
+	codexLearnedVersion.Store(nil)
+	codexLastReleaseCheck = time.Time{}
+	codexUpgradeMu.Unlock()
+}
+
+// CodexNeedsNewerClient reports whether a 4xx backend answer means "the client is too old": a
+// named minimum version in the body, error text asking for a newer client, or the model_not_found
+// that version gating produces. 401, 429 and usage limits never qualify. minVersion is the version
+// the backend named, or "" when it only implied one.
+func CodexNeedsNewerClient(status int, body []byte) (minVersion string, ok bool) {
+	if status < 400 || status >= 500 || status == http.StatusUnauthorized || status == http.StatusTooManyRequests {
+		return "", false
+	}
+	var doc any
+	if json.Unmarshal(body, &doc) == nil {
+		if v := codexMinVersionField(doc); v != "" {
+			return v, true
+		}
+	}
+	low := strings.ToLower(string(body))
+	if strings.Contains(low, "usage limit") {
+		return "", false
+	}
+	for _, marker := range []string{"newer client", "update codex", "upgrade codex", "client version", "outdated", "model_not_found"} {
+		if !strings.Contains(low, marker) {
+			continue
+		}
+		if marker == "model_not_found" && !strings.Contains(low, "when using codex") {
+			continue
+		}
+		return codexSemverRE.FindString(string(body)), true
+	}
+	return "", false
+}
+
+func codexMinVersionField(v any) string {
+	switch t := v.(type) {
+	case map[string]any:
+		for key, val := range t {
+			switch strings.ToLower(key) {
+			case "minimal_version", "min_client_version", "minimum_client_version", "required_version", "min_version":
+				if s := codexVersionValue(val); s != "" {
+					return s
+				}
+			}
+		}
+		for _, val := range t {
+			if s := codexMinVersionField(val); s != "" {
+				return s
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if s := codexMinVersionField(val); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// codexVersionValue reads a version given as "X.Y.Z" or as [X,Y,Z].
+func codexVersionValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return codexSemverRE.FindString(t)
+	case []any:
+		if len(t) == 3 {
+			parts := make([]string, 0, 3)
+			for _, p := range t {
+				n, ok := p.(float64)
+				if !ok || n < 0 {
+					return ""
+				}
+				parts = append(parts, strconv.Itoa(int(n)))
+			}
+			return strings.Join(parts, ".")
+		}
+	}
+	return ""
+}
+
+func parseSemver(s string) (v [3]int, ok bool) {
+	m := codexSemverRE.FindStringSubmatch(s)
+	if m == nil {
+		return v, false
+	}
+	for i := range v {
+		v[i], _ = strconv.Atoi(m[i+1])
+	}
+	return v, true
+}
+
+// compareSemver orders two X.Y.Z strings; an unparsable one sorts lowest.
+func compareSemver(a, b string) int {
+	av, aok := parseSemver(a)
+	bv, bok := parseSemver(b)
+	switch {
+	case !aok && !bok:
+		return 0
+	case !aok:
+		return -1
+	case !bok:
+		return 1
+	}
+	for i := range av {
+		if av[i] != bv[i] {
+			return cmp.Compare(av[i], bv[i])
+		}
+	}
+	return 0
+}
+
+// RaiseCodexClientVersion lifts the Codex client version after the backend refused an old client:
+// to the version it named (hint) or, when it named none, to the latest Codex CLI release (looked up
+// at most once per 10 minutes). It only raises, one raise at a time, and hands the new version to
+// the persister. raised is false when nothing newer exists.
+func RaiseCodexClientVersion(ctx context.Context, client *http.Client, hint string) (version string, raised bool, err error) {
+	codexUpgradeMu.Lock()
+	defer codexUpgradeMu.Unlock()
+	current := CodexClientVersion()
+	target := codexSemverRE.FindString(hint)
+	if target == "" {
+		if time.Since(codexLastReleaseCheck) < codexReleaseCooldown {
+			return current, false, ErrCodexUpgradeCooldown
+		}
+		codexLastReleaseCheck = time.Now()
+		if target, err = fetchLatestCodexRelease(ctx, clientOrDefault(client)); err != nil {
+			return current, false, err
+		}
+	}
+	if compareSemver(target, current) <= 0 {
+		return current, false, nil
+	}
+	codexLearnedVersion.Store(&target)
+	if codexPersister != nil {
+		codexPersister(current, target)
+	}
+	return target, true, nil
+}
+
+func fetchLatestCodexRelease(ctx context.Context, client *http.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexLatestReleaseURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("codex latest release: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("codex latest release: HTTP %d", resp.StatusCode)
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&release); err != nil {
+		return "", fmt.Errorf("codex latest release: %w", err)
+	}
+	if v := codexTagRE.FindString(release.TagName); v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("codex latest release: no version in tag %q", release.TagName)
 }
 
 // DiscoverCodexModels reads the authenticated account's ChatGPT Codex model
