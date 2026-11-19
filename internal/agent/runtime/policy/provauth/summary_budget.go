@@ -1,73 +1,127 @@
-package agent
+// Summary-budget estimation: conservative token accounting for unreported
+// message tails and serialized prompt sizes used by the summarization gate.
+package provauth
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"charm.land/fantasy"
 
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-func effectiveMaxOutputTokens(model Model, callOverride int64) int64 {
-	if callOverride > 0 {
-		return callOverride
+func AddStepUsageTokens(total int64, usage fantasy.Usage) int64 {
+	partsTotal := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens + usage.OutputTokens
+	if usage.TotalTokens > partsTotal {
+		partsTotal = usage.TotalTokens
 	}
-	if model.ModelCfg.MaxTokens > 0 {
-		return model.ModelCfg.MaxTokens
-	}
-	return model.CatwalkCfg.DefaultMaxTokens
+	return total + partsTotal
 }
 
-// modelInputBudget is the input-token budget the context gate works against:
-// window minus output reserve (the whole window when no reserve is known),
-// never above the vendor-documented maximum input of the model.
-func modelInputBudget(model Model, callOverride int64) int64 {
-	cw := int64(model.CatwalkCfg.ContextWindow)
-	reserve := effectiveMaxOutputTokens(model, callOverride)
-	budget := contextInputBudget(cw, reserve)
-	if reserve <= 0 {
-		// Legacy gate for models without a known output reserve.
-		budget = cw
+// UpdateSessionTokenCounters writes a new usage snapshot into the session
+// without overwriting accumulated counters with zero. Fork merge note: from
+// origin/main 74e6e378 "fix(agent): harden fallback usage accounting".
+//
+// PromptTokens must be the FULL prompt: InputTokens, CacheReadTokens and
+// CacheCreationTokens are three disjoint classes (see
+// internal/agent/cliprovider/usage.go), so all three belong in the sum.
+//
+// This used to add only InputTokens + CacheReadTokens, silently dropping
+// cache-WRITE tokens. That understated the prompt for every provider that
+// reports the three separately — the Anthropic HTTP provider always did
+// (fantasy anthropic.go maps input_tokens exclusive of both cache counters),
+// and claude-cli joined it once its parser stopped folding cache into input.
+// A real measured turn had input=5842 / cache_creation=16984 / cache_read=0:
+// the prompt is 22826 tokens but was recorded as 5842, a 74% understatement.
+//
+// PromptTokens drives the auto-summarization trigger (the remaining-context
+// checks against CatwalkCfg.ContextWindow), so understating it delays
+// compaction and risks running the context window over instead of sliding it.
+func UpdateSessionTokenCounters(session *coresession.Session, usage fantasy.Usage) {
+	if usage.OutputTokens != 0 {
+		session.CompletionTokens = usage.OutputTokens
 	}
-	id := model.CatwalkCfg.ID
-	if id == "" {
-		id = model.ModelCfg.Model
+	promptTokens := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
+	if promptTokens != 0 {
+		session.PromptTokens = promptTokens
 	}
-	if limit := discover.LookupModelMaxInput(model.ModelCfg.Provider, id); limit > 0 && budget > limit {
-		budget = limit
-	}
-	return budget
 }
 
-func contextInputBudget(contextWindow, outputReserve int64) int64 {
-	if contextWindow <= 0 || outputReserve <= 0 || outputReserve >= contextWindow {
+// ApproxTokenCount is the shared rough token estimator (the usage package
+// receives it injected via fallbackStepUsage).
+func ApproxTokenCount(s string) int64 {
+	if s == "" {
 		return 0
 	}
-	return contextWindow - outputReserve
+	return int64((len(s) + 3) / 4)
 }
 
-// contextAutoSummarizeThreshold is the remaining-input headroom at or below
-// which the context gate fires. Large windows keep at least
-// largeContextWindowBuffer but scale with the budget (1/largeContextHeadroomDivisor),
-// so one tool-heavy step cannot jump past a fixed 20k margin on a ~1M window.
-func contextAutoSummarizeThreshold(contextWindow, inputBudget int64) int64 {
-	if contextWindow <= 0 || inputBudget <= 0 {
-		return 0
+// SummaryCompletionTokens returns OutputTokens when the provider reported
+// them, otherwise falls back to an approximate count from the rendered
+// summary message. Fork merge note: from origin/main 6ed8852b
+// "fix(agent): estimate missing streamed usage" — used in Summarize when
+// the provider omits final usage on the summary stream.
+func SummaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message) int64 {
+	if usage.OutputTokens != 0 {
+		return usage.OutputTokens
 	}
-	threshold := int64(float64(inputBudget) * smallContextWindowRatio)
-	if contextWindow > largeContextWindowThreshold {
-		threshold = max(largeContextWindowBuffer, inputBudget/largeContextHeadroomDivisor)
-	}
-	return min(inputBudget, threshold)
+	return ApproxTokenCount(summaryMessage.Content().Text) + ApproxTokenCount(summaryMessage.FullReasoningText())
 }
 
-// unreportedTailTokens conservatively estimates the tokens of messages after
+// SummaryCommitMaxDuration bounds the silent compaction's COMMIT phase — the
+// SetSummaryAndUsage write plus the deletion of the messages it replaces
+// (P0-4 review follow-up).
+//
+// That phase deliberately runs on context.WithoutCancel: interrupting it
+// between "summary pointer written" and "old messages deleted" is how a
+// session's history gets unrecoverably holed, so cancellation must not be
+// able to land in the middle. Detaching from cancellation without a deadline
+// would recreate the unbounded-operation-holds-Run shape P1-B removed, hence
+// this bound. The provider stream is already finished by then; what remains
+// is local single-writer DB work, so 30s is generous rather than tight.
+const SummaryCommitMaxDuration = 30 * time.Second
+
+//go:embed templates/summary.md
+var summaryPrompt []byte
+
+// SummaryPromptText returns the embedded summary prompt bytes as a string.
+// It is a lazy accessor: callers must evaluate it at the point of use so the
+// asset is never materialized eagerly into a global.
+func SummaryPromptText() string {
+	return string(summaryPrompt)
+}
+
+// BuildSummaryPrompt constructs the prompt text for session summarization.
+func BuildSummaryPrompt(todos []coresession.Todo) string {
+	var sb strings.Builder
+	sb.WriteString("Provide a detailed summary of our conversation above.")
+	if len(todos) > 0 {
+		sb.WriteString("\n\n## Current Todo List\n\n")
+		for _, t := range todos {
+			fmt.Fprintf(&sb, "- [%s] %s\n", t.Status, t.Content)
+		}
+		sb.WriteString("\nInclude these tasks and their statuses in your summary. ")
+		sb.WriteString("Instruct the resuming assistant to use the `todos` tool to continue tracking progress on these tasks.")
+	}
+	return sb.String()
+}
+
+// unreportedCharsPerToken is the conservative ratio used for content
+// appended since the last usage report (trimming assumes 4).
+const unreportedCharsPerToken = 3
+
+// UnreportedTailTokens conservatively estimates the tokens of messages after
 // the last assistant message (tool results, injected or new user input). The
 // previous step's usage report cannot include them, so the context gate adds
 // them. It uses a stricter chars-per-token ratio than trimMessagesToWindow.
-func unreportedTailTokens(msgs []fantasy.Message) int64 {
+// estimateChars is the caller's message-size estimator.
+func UnreportedTailTokens(msgs []fantasy.Message, estimateChars func(fantasy.Message) int) int64 {
 	start := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == fantasy.MessageRoleAssistant {
@@ -77,17 +131,17 @@ func unreportedTailTokens(msgs []fantasy.Message) int64 {
 	}
 	var chars int64
 	for _, msg := range msgs[start:] {
-		chars += int64(estimateMsgChars(msg))
+		chars += int64(estimateChars(msg))
 	}
 	return (chars + unreportedCharsPerToken - 1) / unreportedCharsPerToken
 }
 
-// preparedInputTokenCount retains its token-named signature for runtime callers;
+// PreparedInputTokenCount retains its token-named signature for runtime callers;
 // it returns a UTF-8 JSON-byte upper-bound for message content and prefix, not a
 // tokenizer estimate. Callers adding tool schemas to a request must budget them
 // separately. Output reserve is accounted for by contextInputBudget.
-func preparedInputTokenCount(messages []fantasy.Message, outputReserve int64, systemPrefix string) (int64, error) {
-	_ = outputReserve // Output is reserved separately by contextInputBudget.
+func PreparedInputTokenCount(messages []fantasy.Message, outputReserve int64, systemPrefix string) (int64, error) {
+	_ = outputReserve // Output is reserved separately by ContextInputBudget.
 
 	serializedMessages := make([]json.RawMessage, 0, len(messages)+1)
 	if systemPrefix != "" {

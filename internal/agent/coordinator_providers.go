@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
@@ -694,7 +696,7 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 	if providerCfg.ID == "openai-codex" {
 		if c != nil && c.cfg != nil {
 			registerCodexVersionPersister(c.cfg)
-			return newCodexTokenProvider(httpClient, &codexTokenSource{store: c.cfg, resolve: c.resolveProviderHTTPClient}, c.codexWebSocketOptions()...)
+			return provauth.NewCodexTokenProvider(httpClient, provauth.NewCodexTokenSource(c.cfg, c.resolveProviderHTTPClient), c.codexWebSocketOptions()...)
 		}
 		return codexprovider.New(httpClient, providerCfg.OAuthToken)
 	}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
@@ -55,7 +57,7 @@ func (p *providerComponent) buildAnthropicProvider(baseURL, apiKey string, heade
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 
-	opts = append(opts, anthropic.WithHTTPClient(withoutEmptyAuthHeaders(httpClient)))
+	opts = append(opts, anthropic.WithHTTPClient(provauth.WithoutEmptyAuthHeaders(httpClient)))
 	return anthropic.New(opts...)
 }
 

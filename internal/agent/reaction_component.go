@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
 )
@@ -25,10 +26,10 @@ import (
 // ReactionChainLimit is N: the number of consecutive no-progress links after
 // which the guard defers the session's automatic turns. Exported for the CLI
 // loop's stderr/warning wording (internal/app), so the text cannot drift.
-const ReactionChainLimit = 3
+const ReactionChainLimit = drainctl.ReactionChainLimit
 
 // reactionChainReason is the Deferred reason the guard reports.
-const reactionChainReason = "reaction chain without progress"
+const reactionChainReason = drainctl.ReactionChainReason
 
 // reactionChainMarkerText is the advisory marker inserted once when the guard
 // fires in a web-driven session.

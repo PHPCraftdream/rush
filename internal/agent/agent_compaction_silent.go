@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -138,22 +139,22 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 		if maxOutputTokens <= 0 {
 			return errors.New("automatic context recovery requires known worker output limits")
 		}
-		preparedSummary := recoverySummarySystemMessages(aiMsgs, buildSummaryPrompt(currentSession.Todos))
-		if err := recoveryInputCapacity(smartModel, maxOutputTokens, systemPromptPrefix, preparedSummary, nil, nil); err != nil {
+		preparedSummary := provauth.RecoverySummarySystemMessages(aiMsgs, provauth.BuildSummaryPrompt(currentSession.Todos))
+		if err := provauth.RecoveryInputCapacity(smartModel, maxOutputTokens, systemPromptPrefix, preparedSummary, nil, nil); err != nil {
 			return err
 		}
 	}
 
 	agent := fantasy.NewAgent(
 		smartModel.Model,
-		fantasy.WithSystemPrompt(string(summaryPrompt)),
+		fantasy.WithSystemPrompt(provauth.SummaryPromptText()),
 	)
 	// Create the summary message as hidden so it is invisible in the UI.
 	summaryMessage, err := c.host.compactionMessages().Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
 		Model:            smartModel.Model.Model(),
 		Provider:         smartModel.Model.Provider(),
-		ReasoningEffort:  turnSmartReasoningEffort(smartModel),
+		ReasoningEffort:  provauth.TurnSmartReasoningEffort(smartModel),
 		IsSummaryMessage: true,
 		Hidden:           true,
 	})
@@ -161,7 +162,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 		return err
 	}
 
-	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
+	summaryPromptText := provauth.BuildSummaryPrompt(currentSession.Todos)
 	var discardRetryContent bool
 	truncateAbandonedContent := func() error {
 		if !discardRetryContent {
@@ -188,7 +189,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 	}
 	if recovery {
 		if err := ctx.Err(); err != nil {
-			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
+			return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
 		}
 	}
 	var retryCount *int
@@ -202,7 +203,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 	if recovery {
 		streamCtx = context.WithValue(streamCtx, cliprovider.SessionIDContextKey, sessionID)
 		if smartModel.Model.Provider() == codexprovider.Name {
-			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(smartModel))
+			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, provauth.TurnSmartReasoningEffort(smartModel))
 			streamCtx = context.WithValue(streamCtx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(smartModel))
 		} else {
 			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, "")
@@ -266,7 +267,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 	})
 	if err != nil {
 		if retainUserID != "" {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), provauth.SummaryCommitMaxDuration)
 			deleteErr := c.host.compactionMessages().Delete(cleanupCtx, summaryMessage.ID)
 			cleanupCancel()
 			return errors.Join(fmt.Errorf("automatic context recovery summary stream: %w", err), deleteErr)
@@ -276,7 +277,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 			// Use a bounded cancel-immune context for cleanup (P1-4): the
 			// stream's context is already canceled, so Delete would silently
 			// fail and leave an orphaned summary message in the DB.
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), provauth.SummaryCommitMaxDuration)
 			defer cleanupCancel()
 			deleteErr := c.host.compactionMessages().Delete(cleanupCtx, summaryMessage.ID)
 			if deleteErr != nil {
@@ -301,13 +302,13 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 			state.Spent.Add(recoverySpent)
 			recoverySpentAdded = true
 		}
-		accountCtx, accountCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
+		accountCtx, accountCancel := context.WithTimeout(context.WithoutCancel(ctx), provauth.SummaryCommitMaxDuration)
 		defer accountCancel()
 		return c.host.accountRecoverySummary(accountCtx, sessionID, summaryMessage.ID, smartModel, recoveryUsage, recoveryCostDelta, recoverySession)
 	}
 	if recovery {
-		recoveryUsage = normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
-		recoverySpent = addStepUsageTokens(0, recoveryUsage)
+		recoveryUsage = provauth.NormalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
+		recoverySpent = provauth.AddStepUsageTokens(0, recoveryUsage)
 		var providerCost *float64
 		for _, step := range resp.Steps {
 			if stepCost := c.host.openrouterCost(step.ProviderMetadata); stepCost != nil {
@@ -325,7 +326,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 			recoverySession = usageBase
 			return errors.Join(errors.New("automatic context recovery cannot account summary usage"), accountRecovery())
 		}
-		updateSessionTokenCounters(&recoverySession, recoveryUsage)
+		provauth.UpdateSessionTokenCounters(&recoverySession, recoveryUsage)
 		capacityErr := c.host.checkRecoverySummaryInput(ctx, sessionID, summaryMessage, msgs[boundary:], pinnedOutside, currentSession.Todos, state)
 		if strings.TrimSpace(summaryMessage.Content().Text) == "" {
 			capacityErr = errors.Join(capacityErr, errors.New("automatic context recovery summary was empty"))
@@ -337,20 +338,20 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 		costErr := c.host.checkRecoverySummaryCost(ctx, sessionID, state.MaxCost, recoveryCostDelta)
 		if costErr != nil {
 			accountErr := accountRecovery()
-			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, errors.Join(costErr, accountErr))
+			return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, errors.Join(costErr, accountErr))
 		}
 		if err := ctx.Err(); err != nil {
 			capacityErr = errors.Join(capacityErr, err)
 		}
 		if capacityErr != nil || tokenErr != nil || costErr != nil {
 			accountErr := accountRecovery()
-			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, errors.Join(capacityErr, tokenErr, costErr, accountErr))
+			return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, errors.Join(capacityErr, tokenErr, costErr, accountErr))
 		}
 		state.Spent.Add(recoverySpent)
 		recoverySpentAdded = true
 	}
 	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), provauth.SummaryCommitMaxDuration)
 	defer cleanupCancel()
 	if err = c.host.compactionMessages().Update(cleanupCtx, summaryMessage); err != nil {
 		if recovery {
@@ -377,7 +378,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 	// shutdown, --timeout, or the turn's own stream watchdog. Bounded rather
 	// than unbounded: the provider stream is already finished, so what
 	// remains is local DB work.
-	commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
+	commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), provauth.SummaryCommitMaxDuration)
 	defer commitCancel()
 
 	// Point SummaryMessageID at the new hidden summary and reset token
@@ -399,7 +400,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 		}
 	}
 	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
-	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
+	totalUsage := provauth.NormalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
 	costDelta := c.host.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
 	if recovery {
 		freshSession.PromptTokens = recoverySession.PromptTokens
@@ -410,16 +411,16 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 	}
 	if recovery {
 		if ctx.Err() != nil {
-			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, ctx.Err())
+			return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, ctx.Err())
 		}
 		if err := c.host.compactionSessions().SetUsage(commitCtx, freshSession.ID, recoverySession.PromptTokens, recoverySession.CompletionTokens); err != nil {
 			_ = accountRecovery()
-			return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
+			return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
 		}
 		if recoveryCostDelta != 0 {
 			if _, err := c.host.compactionSessions().IncrementCost(commitCtx, freshSession.ID, recoveryCostDelta); err != nil {
 				_ = accountRecovery()
-				return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
+				return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, err)
 			}
 		}
 		callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), recoveryUsage, recoveryCostDelta)
@@ -485,9 +486,9 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 		}
 	}
 	if recovery && ctx.Err() != nil {
-		return cleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, ctx.Err())
+		return provauth.CleanupUncommittedSummary(c.host.compactionMessages(), ctx, summaryMessage.ID, ctx.Err())
 	}
-	if err := c.host.compactionSessions().SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, summaryCompletionTokens(resp.Response.Usage, summaryMessage)); err != nil {
+	if err := c.host.compactionSessions().SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, provauth.SummaryCompletionTokens(resp.Response.Usage, summaryMessage)); err != nil {
 		if recovery {
 			return errors.Join(err, accountRecovery())
 		}

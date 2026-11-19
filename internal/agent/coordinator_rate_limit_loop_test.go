@@ -14,6 +14,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -119,7 +120,7 @@ func TestRunInternal_RateLimitNoArmedStallClock(t *testing.T) {
 	ctx = withRateLimitWaitObservation(ctx, func() {
 		observed = true
 		if sessID != "" {
-			_, armedDuringWait = armedStallClocks.Load(sessID)
+			_, armedDuringWait = drainctl.StallClockForTest(sessID)
 		}
 		cancel()
 	})

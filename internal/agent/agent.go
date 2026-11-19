@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -35,19 +36,6 @@ const (
 	// left we trim the oldest messages so the next call fits within the budget.
 	contextSlideThreshold = 1.0 - contextSlideRatio
 
-	// Constants for auto-summarization thresholds (used only for background
-	// summarisation triggered at the same time as the sliding window).
-	largeContextWindowThreshold = 200_000
-	largeContextWindowBuffer    = 20_000
-	smallContextWindowRatio     = 0.2
-
-	// largeContextHeadroomDivisor makes large-window headroom proportional:
-	// inputBudget/20 (5%), never below largeContextWindowBuffer.
-	largeContextHeadroomDivisor = 20
-	// unreportedCharsPerToken is the conservative ratio used for content
-	// appended since the last usage report (trimming assumes 4).
-	unreportedCharsPerToken = 3
-
 	// streamIdleTimeoutDefault is the default tolerance for "no streaming
 	// event for this long" before the watchdog cancels the LLM request.
 	// Configurable per-app via Options.StreamIdleTimeoutSeconds, plumbed
@@ -63,7 +51,9 @@ const (
 	// case so far without letting truly hung streams sit forever.
 	// Operators who want the old behaviour can set the value back via
 	// Options.StreamIdleTimeoutSeconds.
-	streamIdleTimeoutDefault = 10 * time.Minute
+	// Aliased to the Phase-3 drainctl canonical constant; the value and
+	// rationale history stay here for reference.
+	streamIdleTimeoutDefault = drainctl.StreamIdleTimeoutDefault
 	// streamWatchdogTick is how often the watchdog re-checks the
 	// last-activity timestamp. Keep small enough that a stall is detected
 	// promptly (well under streamIdleTimeout) but large enough not to

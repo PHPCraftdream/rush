@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -31,7 +31,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// slow prepare doesn't trip the watchdog before the stream
 	// even starts.
 	ts.bumpActivity()
-	ts.stall.setPhase("provider", ts.smartModel.ModelCfg.Model, "")
+	ts.stall.SetPhase("provider", ts.smartModel.ModelCfg.Model, "")
 	prepareStarted := time.Now()
 	// Cache markers belong to this step, not fantasy's retained input slice.
 	prepared.Messages = append([]fantasy.Message(nil), options.Messages...)
@@ -141,13 +141,13 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		if cw > 0 {
 			// Window minus output reserve (legacy: whole window when no
 			// reserve is known), capped by the documented max input.
-			inputBudget := modelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
+			inputBudget := provauth.ModelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
 			if inputBudget > 0 {
 				usedTokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
 				// Usage reflects the previous request only; add what this step's
 				// prompt appended since (e.g. large tool results).
-				remaining := inputBudget - usedTokens - unreportedTailTokens(prepared.Messages)
-				threshold := contextAutoSummarizeThreshold(cw, inputBudget)
+				remaining := inputBudget - usedTokens - provauth.UnreportedTailTokens(prepared.Messages, estimateMsgChars)
+				threshold := provauth.ContextAutoSummarizeThreshold(cw, inputBudget)
 				if remaining <= threshold {
 					targetTokens := min(int64(float64(inputBudget)*contextSlideRatio), inputBudget)
 					prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
@@ -234,7 +234,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		Parts:           []message.ContentPart{},
 		Model:           ts.smartModel.Model.Model(),
 		Provider:        ts.smartModel.Model.Provider(),
-		ReasoningEffort: turnSmartReasoningEffort(ts.smartModel),
+		ReasoningEffort: provauth.TurnSmartReasoningEffort(ts.smartModel),
 	})
 	if err != nil {
 		return callContext, prepared, err
@@ -272,7 +272,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 // cap is still a recorded reaction.
 func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	ts.bumpActivity()
-	ts.stall.markProgress()
+	ts.stall.MarkProgress()
 	ts.recordStepHistory(stepResult)
 	// Surface provider CallWarnings (malformed tool-call sanitization,
 	// unsupported settings, etc.) that fantasy otherwise discards
@@ -291,7 +291,7 @@ func (ts *turnStream) onStepFinish(stepResult fantasy.StepResult) error {
 	// provider already answered and billed is a reaction even when a cap
 	// ends the turn right after it (else the notice stays debt and a paid
 	// reaction turn repeats without bound).
-	ts.stall.setPhase("internal", "persist", "")
+	ts.stall.SetPhase("internal", "persist", "")
 	persistErr := ts.persistStepFinish()
 	if err := ts.enforceRunawayCaps(updatedSession); err != nil {
 		if persistErr != nil {
@@ -411,19 +411,6 @@ func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
 	}
 }
 
-// chainNeutralTools are tool calls that neither advance the session's work
-// nor launch anything: reading a background job's buffered output and
-// managing the todo list. Every other tool (edit/write/view/grep and
-// friends, a bash/run_command call with substance, a delegation, a stop
-// control) is progress for the reaction chain guard (#1113).
-// batch_status/batch_output are the detached-output polling reads -- neutral
-// the same way the deleted job_output polling tool was.
-var chainNeutralTools = map[string]struct{}{
-	tools.TodosToolName: {},
-	"batch_status":      {},
-	"batch_output":      {},
-}
-
 // recordChainEvidence feeds the reaction chain guard (#1113) from this
 // step's tool activity, classified by classifyStepCall: every async launch
 // that is a pure wait command (bash sleep/echo, run_command sleep/timeout) has
@@ -523,27 +510,6 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			ts.att.chainProgress = true
 		}
 	}
-}
-
-func asyncLaunchCommand(call fantasy.ToolCallContent) (string, bool) {
-	var command string
-	switch call.ToolName {
-	case tools.BashToolName:
-		var params tools.BashParams
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return "", false
-		}
-		command = params.Command
-	case tools.RunCommandToolName:
-		var params tools.RunCommandParams
-		if json.Unmarshal([]byte(call.Input), &params) != nil {
-			return "", false
-		}
-		command = (tools.RunCommandPermissionsParams{Program: params.Program, Args: params.Args}).RunAllowlistCommand()
-	default:
-		return "", false
-	}
-	return strings.TrimSpace(command), true
 }
 
 // chainIdleClaim reports whether call is an async launch of a pure wait
@@ -686,11 +652,11 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// Normalize once, upstream of both updateSessionUsage and
 	// recordMessageUsage, so InputTokens is exclusive-of-cache for
 	// every provider before either consumer sees it.
-	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
+	usage = provauth.NormalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
 	ts.logCacheStepUsage(usage, estimated, stepResult.ProviderMetadata)
-	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
+	ts.runTotalTokens = provauth.AddStepUsageTokens(ts.runTotalTokens, usage)
 	if ts.recovery != nil {
-		ts.recovery.Spent.Add(addStepUsageTokens(0, usage))
+		ts.recovery.Spent.Add(provauth.AddStepUsageTokens(0, usage))
 	}
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
@@ -868,8 +834,8 @@ func (ts *turnStream) stopConditions() []fantasy.StopCondition {
 				return false
 			}
 			tokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
-			budget := modelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
-			threshold := contextAutoSummarizeThreshold(cw, budget)
+			budget := provauth.ModelInputBudget(ts.smartModel, ts.call.MaxOutputTokens)
+			threshold := provauth.ContextAutoSummarizeThreshold(cw, budget)
 			if budget > 0 && budget-tokens <= threshold && !ts.a.disableAutoSummarize {
 				ts.shouldSummarize = true
 				return true

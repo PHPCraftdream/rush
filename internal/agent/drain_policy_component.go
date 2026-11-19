@@ -7,31 +7,29 @@ package agent
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
-// drainVerdictKind is the outcome of a launch decision.
-type drainVerdictKind uint8
+// drainVerdictKind is the outcome of a launch decision -- the agent package
+// alias of the drainctl-owned leaf enum; the values live in
+// runtime/exec/drainctl/turn_arbiter.go.
+type drainVerdictKind = drainctl.DrainVerdictKind
 
+// The launch-verdict kinds (drainctl owns the constants).
 const (
-	drainAllow drainVerdictKind = iota
-	// drainDeferred: the policy refuses a turn for this debt (foreign driver,
-	// Stop suspension, released child, bg-shell with auto-resume off or over
-	// its cap for a re-check, ...).
-	drainDeferred
-	// drainPaced: the launch gate is shut until retryAt, or a rerun holds the
-	// session (a temporary hold: retryAt is zero and the tick retries it).
-	drainPaced
-	// drainStuck: the gate is dormant -- a failing pull is reopened by a newer
-	// fact, paid attempts whose close kept failing only by a human message.
-	drainStuck
+	drainAllow    = drainctl.DrainAllow
+	drainDeferred = drainctl.DrainDeferred
+	drainPaced    = drainctl.DrainPaced
+	drainStuck    = drainctl.DrainStuck
 )
 
-// drainVerdict is one launch decision. recheck: deferred, but worth a tick
-// (foreign driver, unreadable policy input).
+// drainVerdict is one launch decision -- the agent package's private carrier
+// of drainctl.DrainVerdict (kept so the retained internal callers and the
+// literal tests read the same lowercase fields as before). recheck: deferred,
+// but worth a tick (foreign driver, unreadable policy input).
 type drainVerdict struct {
 	kind    drainVerdictKind
 	retryAt time.Time
@@ -39,6 +37,12 @@ type drainVerdict struct {
 	reason  string
 	// err is set when the refusal is an unreadable policy input (fail closed).
 	err error
+}
+
+// fromDrainctl carries a drainctl.DrainVerdict into the agent package's
+// private carrier (field-for-field).
+func fromDrainctl(dv drainctl.DrainVerdict) drainVerdict {
+	return drainVerdict{kind: dv.Kind, retryAt: dv.RetryAt, recheck: dv.Recheck, reason: dv.Reason, err: dv.Err}
 }
 
 // The launch decision (R-ARB-2): readTurnFacts + decide is THE decision;
@@ -60,38 +64,18 @@ func (w *drainComponent) arbiterVerdict(ctx context.Context, sessionID string, s
 }
 
 // drainVerdictOf maps an arbiter verdict onto the drainVerdict kinds the
-// callers (wakeSession's switch, the CLI loop, decideDrainTurn) still speak.
-// Texts and recheck-ness mirror today's policy exactly:
-//   - rerun hold and a gate pause read paced and are worth a tick (recheck);
-//   - a dormant gate reads stuck;
-//   - a foreign live driver is deferred but worth a tick;
-//   - every other policy refusal (suspension, chain guard, released child,
-//     cap, auto-resume off) is deferred without a tick.
+// callers (wakeSession's switch, the CLI loop, decideDrainTurn) still speak;
+// the mapping itself is drainctl-owned (drainctl.DrainVerdictOf, exact same
+// texts and recheck-ness).
 func drainVerdictOf(v Verdict) drainVerdict {
-	switch v.Kind {
-	case VRun, VNone:
-		return drainVerdict{kind: drainAllow}
-	}
-	switch v.Reason {
-	case "rerun in progress":
-		return drainVerdict{kind: drainPaced, recheck: true, reason: v.Reason}
-	case "retry pause after an unreacted attempt":
-		return drainVerdict{kind: drainPaced, retryAt: v.RecheckAt, recheck: true, reason: v.Reason}
-	case "repeated unreacted attempts":
-		return drainVerdict{kind: drainStuck, retryAt: v.RecheckAt, reason: v.Reason}
-	}
-	recheck := v.Reason == "another process drives the session"
-	return drainVerdict{kind: drainDeferred, recheck: recheck, reason: v.Reason}
+	return fromDrainctl(drainctl.DrainVerdictOf(v))
 }
 
 // unreadable wraps a read error as a fail-closed deferred verdict (worth a
-// tick), as the old policy's per-input handler did.
+// tick), as the old policy's per-input handler did; drainctl-owned
+// (drainctl.UnreadablePolicyInput), same log line and outcome.
 func unreadablePolicyInput(what string, sessionID string, err error) drainVerdict {
-	slog.Warn("drain policy: input unreadable; refusing the turn for now",
-		"session_id", sessionID, "input", what, "err", err)
-	v := drainVerdict{kind: drainDeferred, recheck: true, reason: what + " unreadable"}
-	v.err = err
-	return v
+	return fromDrainctl(drainctl.UnreadablePolicyInput(what, sessionID, err))
 }
 
 // siteForSpent maps the legacy `spent` flag onto the launch site: a fact's

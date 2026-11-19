@@ -1,15 +1,22 @@
-package agent
+package turnstep
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMain(m *testing.M) {
+	slog.SetLogLoggerLevel(slog.LevelError)
+	testguard.Main(m)
+}
 
 // fakeUINotifyMsgSvc implements message.Service via a nil embedded
 // interface, overriding only Notify -- the sole method turnUINotifier
@@ -45,27 +52,26 @@ func (m *fakeUINotifyMsgSvc) last() *message.Message {
 func TestTurnUINotifierPublishesLatestSnapshotAtTickRate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		msgSvc := &fakeUINotifyMsgSvc{}
-		a := &sessionAgent{messages: msgSvc}
 		var sessionLock sync.Mutex
 		currentAssistant := &message.Message{ID: "msg-1", SessionID: "sess-1"}
 
 		genCtx, genCancel := context.WithCancel(t.Context())
 		defer genCancel()
 
-		n := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
-		n.start()
+		n := NewTurnUINotifier(genCtx, &sessionLock, &currentAssistant, func(msg message.Message) { msgSvc.Notify(msg) })
+		n.Start()
 
 		// Two notify() calls before the ticker ever fires: latest-value
 		// semantics must mean the ticker publishes only the SECOND one.
 		sessionLock.Lock()
 		currentAssistant.AppendContent("first")
 		sessionLock.Unlock()
-		require.NoError(t, n.notify())
+		require.NoError(t, n.Notify())
 
 		sessionLock.Lock()
 		currentAssistant.AppendContent(" second")
 		sessionLock.Unlock()
-		require.NoError(t, n.notify())
+		require.NoError(t, n.Notify())
 
 		// Sleep past the 50ms tick inside the synctest bubble: the fake
 		// clock advances and lets the ticker goroutine's own pending fire
@@ -81,16 +87,15 @@ func TestTurnUINotifierPublishesLatestSnapshotAtTickRate(t *testing.T) {
 func TestTurnUINotifierFlushesPendingSnapshotOnGenCtxDone(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		msgSvc := &fakeUINotifyMsgSvc{}
-		a := &sessionAgent{messages: msgSvc}
 		var sessionLock sync.Mutex
 		currentAssistant := &message.Message{ID: "msg-1", SessionID: "sess-1"}
 		currentAssistant.AppendContent("final")
 
 		genCtx, genCancel := context.WithCancel(t.Context())
 
-		n := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
-		n.start()
-		require.NoError(t, n.notify())
+		n := NewTurnUINotifier(genCtx, &sessionLock, &currentAssistant, func(msg message.Message) { msgSvc.Notify(msg) })
+		n.Start()
+		require.NoError(t, n.Notify())
 
 		// Cancel BEFORE the 50ms ticker would otherwise fire, and before
 		// calling synctest.Wait -- exercises the genCtx.Done() flush path,
@@ -106,7 +111,6 @@ func TestTurnUINotifierFlushesPendingSnapshotOnGenCtxDone(t *testing.T) {
 func TestTurnUINotifierDrainPendingSuppressesStalePublish(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		msgSvc := &fakeUINotifyMsgSvc{}
-		a := &sessionAgent{messages: msgSvc}
 		var sessionLock sync.Mutex
 		currentAssistant := &message.Message{ID: "msg-1", SessionID: "sess-1"}
 		currentAssistant.AppendContent("stale")
@@ -114,15 +118,15 @@ func TestTurnUINotifierDrainPendingSuppressesStalePublish(t *testing.T) {
 		genCtx, genCancel := context.WithCancel(t.Context())
 		defer genCancel()
 
-		n := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
-		n.start()
-		require.NoError(t, n.notify())
+		n := NewTurnUINotifier(genCtx, &sessionLock, &currentAssistant, func(msg message.Message) { msgSvc.Notify(msg) })
+		n.Start()
+		require.NoError(t, n.Notify())
 
 		// drainPending must remove the queued snapshot before the ticker
 		// gets a chance to publish it -- this is what runTurn calls right
 		// before its own authoritative Update of the final state, so the
 		// ticker cannot race a stale snapshot in behind it.
-		n.drainPending()
+		n.DrainPending()
 		synctest.Wait()
 
 		require.Equal(t, 0, msgSvc.count(), "a drained snapshot must never reach messages.Notify")
@@ -162,16 +166,15 @@ func (m *blockingUINotifyMsgSvc) record(event string) {
 // recorded first and the not-returned-yet assertion fails.
 func TestTurnUINotifierDrainPendingWaitsForInFlightPublish(t *testing.T) {
 	msgSvc := &blockingUINotifyMsgSvc{inNotify: make(chan struct{}), release: make(chan struct{})}
-	a := &sessionAgent{messages: msgSvc}
 	var sessionLock sync.Mutex
 	currentAssistant := &message.Message{ID: "msg-1", SessionID: "sess-1"}
 	currentAssistant.AppendContent("unfinished")
 
 	genCtx, genCancel := context.WithCancel(t.Context())
 	defer genCancel()
-	n := newTurnUINotifier(a, genCtx, &sessionLock, &currentAssistant)
-	n.start()
-	require.NoError(t, n.notify())
+	n := NewTurnUINotifier(genCtx, &sessionLock, &currentAssistant, func(msg message.Message) { msgSvc.Notify(msg) })
+	n.Start()
+	require.NoError(t, n.Notify())
 
 	select {
 	case <-msgSvc.inNotify:
@@ -181,7 +184,7 @@ func TestTurnUINotifierDrainPendingWaitsForInFlightPublish(t *testing.T) {
 
 	drained := make(chan struct{})
 	go func() {
-		n.drainPending()
+		n.DrainPending()
 		msgSvc.record("drain-return")
 		close(drained)
 	}()
@@ -204,12 +207,11 @@ func TestTurnUINotifierDrainPendingWaitsForInFlightPublish(t *testing.T) {
 
 func TestTurnUINotifierNotifyIsNoopWithNilAssistant(t *testing.T) {
 	msgSvc := &fakeUINotifyMsgSvc{}
-	a := &sessionAgent{messages: msgSvc}
 	var sessionLock sync.Mutex
 	var currentAssistant *message.Message // nil: no assistant message created yet
 
-	n := newTurnUINotifier(a, context.Background(), &sessionLock, &currentAssistant)
-	require.NoError(t, n.notify(), "notify must not panic or error before PrepareStep has set an assistant message")
+	n := NewTurnUINotifier(context.Background(), &sessionLock, &currentAssistant, func(msg message.Message) { msgSvc.Notify(msg) })
+	require.NoError(t, n.Notify(), "notify must not panic or error before PrepareStep has set an assistant message")
 
 	select {
 	case <-n.latestMsgCh:

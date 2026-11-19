@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +72,7 @@ func (m *stallRetryToolModel) Stream(ctx context.Context, call fantasy.Call) (fa
 // the retry deterministically without sleep-based correctness windows.
 func TestRunTurnStallRetryKeepsCompletedToolResult(t *testing.T) {
 	env := testEnv(t)
-	t.Cleanup(stallDumpWrites.Wait)
+	t.Cleanup(drainctl.StallWaitDumps)
 	model := &stallRetryToolModel{second: make(chan struct{}), third: make(chan struct{})}
 	var toolCalls int
 	tool := fantasy.NewAgentTool("side_effect", "count side effect", func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -87,7 +88,7 @@ func TestRunTurnStallRetryKeepsCompletedToolResult(t *testing.T) {
 	// The fake clock stays at t0, so every progress mark is t0 and the
 	// elapsed time the sampler sees is exactly what the test sets.
 	t0 := time.Now()
-	setNow := installFakeStallNow(t)
+	setNow := drainctl.InstallFakeStallNow(t)
 	setNow(t0)
 	done := make(chan error, 1)
 	go func() {
@@ -95,10 +96,10 @@ func TestRunTurnStallRetryKeepsCompletedToolResult(t *testing.T) {
 		done <- runErr
 	}()
 	<-model.second
-	clockValue, ok := armedStallClocks.Load(session.ID)
-	require.True(t, ok)
+	clock, ok := drainctl.StallClockForTest(session.ID)
+	require.True(t, ok, "runTurn must arm the lower stall clock for the session")
 	setNow(t0.Add(11 * time.Minute))
-	stallSamplerCheck(session.ID, clockValue.(*stallClock), stallNow())
+	drainctl.StallSamplerCheck(session.ID, clock)
 	<-model.third
 	require.NoError(t, <-done)
 

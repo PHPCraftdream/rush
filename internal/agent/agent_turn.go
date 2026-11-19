@@ -12,12 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -59,8 +62,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// session's prior idle state is moot and must not race this turn's own
 	// request.
 	a.cancelCacheKeepAlive(call.SessionID)
-	stall := armTurnStall(call.SessionID, call.CallOptions)
-	defer disarmTurnStall(call.SessionID)
+	stall := drainctl.ArmTurnStall(call.SessionID, call.CallOptions, stallToolStalled)
+	defer drainctl.DisarmTurnStall(call.SessionID)
 
 	// R3-1: consume THIS call's pinned tool slice when it carries one, so
 	// no concurrent call's SetTools (UpdateModels' global rebuild) can
@@ -363,7 +366,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// Add the session to the context.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.SessionIDContextKey, call.SessionID)
-	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, turnSmartReasoningEffort(smartModel))
+	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, provauth.TurnSmartReasoningEffort(smartModel))
 	ctx = context.WithValue(ctx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(smartModel))
 	// Heartbeat attribution: root run entry or inherited sub-agent root (design pt. 1/2).
 	hb := heartbeat.FromContext(ctx)
@@ -449,11 +452,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	)
 	// The watchdog now calls recordActivity (== notifyActivity(genCtx))
 	// internally on every bump(), so this wrapper can be just wd.bump.
-	bumpActivity := func() { stall.markByte(); wd.bump() } // stall.markByte mirrors the watchdog's liveness clock for the stall sampler
+	bumpActivity := func() { stall.MarkByte(); wd.bump() } // stall.MarkByte mirrors the watchdog's liveness clock for the stall sampler
 	// Turn-stall abort seam: the stall policy's abort closure routes through
 	// the existing watchdog fire path (causeStall → finish part) and then
 	// cancels genCtx. See turn_stall_policy.go.
-	stall.armStallAbort(a.stallAbortClosure(call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel, cancel, wd.forceStall))
+	stall.ArmStallAbort(a.stallAbortClosure(call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel, cancel, wd.forceStall))
 	// Store wd.bump in genCtx so runSummarizeBody and runSummarizeSilent
 	// can report LLM streaming progress during compaction (task #310).
 	genCtx = withWatchdogBump(genCtx, wd.bump)
@@ -600,11 +603,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	ts.fenceCheckpoint = checkpoint.fenceFinalization
 
 	// Decouples token arrival from UI render rate. See turnUINotifier's
-	// doc in agent_turn_ui_notify.go.
-	uiNotifier := newTurnUINotifier(a, genCtx, &ts.mu, &ts.currentAssistant)
-	uiNotifier.start()
-	ts.notifyUI = uiNotifier.notify
-	ts.drainPendingUI = uiNotifier.drainPending
+	// doc in internal/agent/runtime/exec/turnstep/turn_ui.go.
+	uiNotifier := turnstep.NewTurnUINotifier(genCtx, &ts.mu, &ts.currentAssistant, func(msg message.Message) { a.messages.Notify(msg) })
+	uiNotifier.Start()
+	ts.notifyUI = uiNotifier.Notify
+	ts.drainPendingUI = uiNotifier.DrainPending
 
 	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
 	var maxOutputTokens *int64
@@ -627,7 +630,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	stallRetryFiles := files
 	stallRetryReady := false
 	var stallRetryErr error
-	err = runStallRetried(stall, func() error {
+	err = drainctl.RunStallRetried(stall, func() error {
 		attemptHistory := history
 		attemptFiles := files
 		if stallRetryErr != nil {
@@ -637,7 +640,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			attemptHistory, attemptFiles = stallRetryHistory, stallRetryFiles
 		}
 		attemptCtx, attemptCancel := context.WithCancel(genCtx)
-		stall.armAttemptCancel(attemptCancel)
+		stall.ArmAttemptCancel(attemptCancel)
 		var streamErr error
 		result, streamErr = agent.Stream(attemptCtx, ts.streamCall(attemptHistory, attemptFiles, maxOutputTokens))
 		attemptCancel()

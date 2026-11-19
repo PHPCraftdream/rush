@@ -13,6 +13,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -449,23 +450,23 @@ func TestRunTurn_ShouldSummarize_QueuedMessageContinuesWithoutLockDeadlock(t *te
 	case r := <-resultCh:
 		runErr = r.err
 	case <-time.After(20 * time.Second):
-		outputReserve := effectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
-		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		outputReserve := provauth.EffectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
+		inputBudget := provauth.ModelInputBudget(model, autoSummarizeOutputReserve)
 		t.Logf("queued auto-summarize timeout: main_requests=%d summary_prompt_requests=%d summarize_handler_requests=%d ordinary_prompt_requests=%d follow_up_requests=%d; primary_context_window=%d default_max_tokens=%d initial_call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
 			mainCalls.Load(), summaryPromptRequests.Load(), summarizeCalls.Load(), ordinaryPromptRequests.Load(), followUpCalls.Load(),
 			model.CatwalkCfg.ContextWindow, model.CatwalkCfg.DefaultMaxTokens, autoSummarizeOutputReserve,
-			outputReserve, inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), sa.disableAutoSummarize)
+			outputReserve, inputBudget, provauth.ContextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), sa.disableAutoSummarize)
 		t.Fatal("Run did not return within 20s — possible deadlock on shouldSummarize's queued-message drain")
 	}
 
 	logStageDiagnostics := func() {
-		outputReserve := effectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
-		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		outputReserve := provauth.EffectiveMaxOutputTokens(model, autoSummarizeOutputReserve)
+		inputBudget := provauth.ModelInputBudget(model, autoSummarizeOutputReserve)
 		t.Logf("queued auto-summarize stages: main_requests=%d summary_prompt_requests=%d summarize_handler_requests=%d ordinary_prompt_requests=%d queued_follow_up_requests=%d run_error=%t; primary_context_window=%d default_max_tokens=%d initial_call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
 			mainCalls.Load(), summaryPromptRequests.Load(), summarizeCalls.Load(), ordinaryPromptRequests.Load(), followUpCalls.Load(),
 			runErr != nil, model.CatwalkCfg.ContextWindow, model.CatwalkCfg.DefaultMaxTokens,
 			autoSummarizeOutputReserve, outputReserve, inputBudget,
-			contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), sa.disableAutoSummarize)
+			provauth.ContextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget), sa.disableAutoSummarize)
 	}
 	if runErr != nil || mainCalls.Load() != 1 || summarizeCalls.Load() != 1 ||
 		summaryPromptRequests.Load() != 1 || ordinaryPromptRequests.Load() != 2 || followUpCalls.Load() != 1 {

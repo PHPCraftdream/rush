@@ -1,18 +1,14 @@
-// Batch rehome (H4 lane P5, phase A): drainPace moved verbatim out of
-// work_ledger_reaction.go before its deletion. The pacing taxonomy is
-// ledger-free: drain_attempt.go's paceUnreacted and the arbiter's gate
-// (turn_arbiter_state.go pace) consume it in the batch world.
+// Batch rehome (H4 lane P5, phase A): the pacing taxonomy moved to
+// runtime/exec/drainctl/turn_arbiter_state.go; these aliases keep the agent
+// package's existing spellings for its callers.
 package agent
 
-// drainPace says what a pacing counts toward the dormancy streaks (the
-// arbiter's gate keeps the same accounting the old ledger gate had).
-type drainPace uint8
+import "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
+type drainPace = drainctl.Pace
 
 const (
-	// paceUncounted: a refusal or a failed ordinary turn -- pause only.
-	paceUncounted drainPace = iota
-	// paceFreeNoTurn: a no-turn Drain left pending debt behind (pull failing).
-	paceFreeNoTurn
-	// pacePaidUnreacted: a paid attempt left the debt unreacted.
-	pacePaidUnreacted
+	paceUncounted     = drainctl.PaceUncounted
+	paceFreeNoTurn    = drainctl.PaceFreeNoTurn
+	pacePaidUnreacted = drainctl.PacePaidUnreacted
 )

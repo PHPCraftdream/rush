@@ -1,4 +1,4 @@
-package agent
+package provauth
 
 import (
 	"testing"
@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 )
 
 func TestCacheProfileFor(t *testing.T) {
@@ -75,6 +76,11 @@ func TestCacheProfileFor(t *testing.T) {
 			want: cacheProfile{
 				knownCacheReporter: true,
 			},
+		},
+		{
+			// Codex input already excludes cache reads, no explicit markers, no keep-alive.
+			provider: codexprovider.Name,
+			want:     cacheProfile{knownCacheReporter: true},
 		},
 		{
 			provider: "unknown-provider",

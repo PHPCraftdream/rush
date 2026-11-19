@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
@@ -31,7 +32,7 @@ func (s *task1314CountingStore) RefreshOAuthTokenWithClient(ctx context.Context,
 }
 
 func TestTask1314OAuthMemoryRotationFourPrebuiltClients(t *testing.T) {
-	// Revert-check: codexTokenSource.Current, oauthTokenSource.Current and oauthBearerTransport.RoundTrip must read live credentials for every prebuilt client.
+	// Revert-check: provauth CodexTokenSource.Current, OAuthTokenSource.Current and BearerTransport.RoundTrip must read live credentials for every prebuilt client.
 	t.Parallel()
 	for _, id := range []string{"openai-codex", "copilot", "hyper"} {
 		t.Run(id, func(t *testing.T) {
@@ -103,11 +104,12 @@ func TestTask1314OAuthMemoryRotationFourPrebuiltClients(t *testing.T) {
 				})}
 				var provider fantasy.Provider
 				if id == "openai-codex" {
-					provider, err = newCodexTokenProvider(client, &codexTokenSource{store: store, resolve: coord.resolveProviderHTTPClient})
+					provider, err = provauth.NewCodexTokenProvider(client, provauth.NewCodexTokenSource(store, coord.resolveProviderHTTPClient))
 				} else {
 					wrapped := coord.withOAuthBearerClient(pc, client)
 					// Count refresh calls without replacing the production source.
-					wrapped.Transport.(*oauthBearerTransport).source.(*oauthTokenSource).store = store
+					tr := wrapped.Transport.(*provauth.BearerTransport)
+					wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(pc.ID, store, coord.resolveProviderHTTPClient), pc.ID)
 					var headers map[string]string
 					if id == "copilot" {
 						headers = copilot.Headers()

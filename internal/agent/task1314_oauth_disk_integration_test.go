@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
@@ -107,11 +108,11 @@ func task1314IntegrationModel(t *testing.T, store *task1314CountingStore, id str
 	require.True(t, ok)
 	var provider fantasy.Provider
 	if id == "openai-codex" {
-		provider, err = newCodexTokenProvider(client, &codexTokenSource{store: store, resolve: resolve})
+		provider, err = provauth.NewCodexTokenProvider(client, provauth.NewCodexTokenSource(store, resolve))
 	} else {
 		wrapped := coord.withOAuthBearerClient(pc, client)
-		source := wrapped.Transport.(*oauthBearerTransport).source.(*oauthTokenSource)
-		source.store, source.resolve = store, resolve
+		tr := wrapped.Transport.(*provauth.BearerTransport)
+		wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(pc.ID, store, resolve), pc.ID)
 		provider, err = coord.buildOpenaiCompatProvider(store.Config(), server.URL+"/v1", pc.APIKey, nil, nil, id, false, wrapped)
 	}
 	require.NoError(t, err)

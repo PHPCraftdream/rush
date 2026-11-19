@@ -4,15 +4,18 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -67,17 +70,10 @@ func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyID
 //     DUPLICATION half).
 func (t *turnBudget) drainDueInjects(h contextBudgetHost, sessionID string, genID uint64, historyIDs map[string]struct{}) []message.Message {
 	due := h.getMailbox(sessionID).drainInjects(genID)
-	if len(due) == 0 {
-		return nil
-	}
-	spliced := make([]message.Message, 0, len(due))
-	for _, inj := range due {
-		if _, ok := historyIDs[inj.msg.ID]; ok {
-			continue
-		}
-		spliced = append(spliced, inj.msg)
-	}
-	return spliced
+	return turnstep.DedupInjects(due, historyIDs,
+		func(inj pendingInject) string { return inj.msg.ID },
+		func(inj pendingInject) message.Message { return inj.msg },
+	)
 }
 
 func (a *sessionAgent) handleWatchdogFire(
@@ -91,44 +87,14 @@ func (a *sessionAgent) handleWatchdogFire(
 	a.turnBudget.handleWatchdogFire(a, cause, elapsed, sessionID, watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 }
 
-// handleWatchdogFire is runTurn's stream-watchdog onFire callback, pulled out
-// into a named method (task #243) so a unit test can invoke the REAL
-// production logic directly — constructing a minimal *sessionAgent and
-// calling this method with a synthetic watchdogCauseVal — instead of only
-// exercising a test-local copy of this shape that could silently drift from
-// what runTurn actually wires up. The onFire closure inside runTurn is now
-// just a thin dispatch: `func(elapsed, cause) { a.handleWatchdogFire(...) }`.
-//
-// watchdogCauseVal is runTurn's local atomic.Int32 (not a sessionAgent
-// field: it is genuinely per-turn state, reset fresh on every call), passed
-// in by pointer so this method can store into the caller's copy.
-// toolMaxDuration/idleTimeout are likewise runTurn locals (the resolved,
-// possibly-overridden effective durations for THIS turn) rather than
-// sessionAgent fields, so they are passed explicitly instead of read off a.
-// smartModel follows the same rule, and then some: runTurn does NOT re-read
-// a.smartModel here at fire time — it passes in the value it took once,
-// before the turn, from the immutable turnConfig snapshot built by
-// resolveTurnConfig (agent.go:302-308), a per-call value copy of every
-// shared model/prompt field (task #265 P0-1) that runTurn reads as
-// `smartModel := cfg.smartModel`. a.smartModel is mutable mid-turn via
-// SetModels (coordinator.UpdateModels / web-UI override path), so
-// re-reading at fire time would name the model the user SWITCHED TO after
-// the hang started rather than the one that actually hung (task #252 —
-// the #243 extraction regressed exactly this by re-reading a.smartModel
-// here).
-//
-// INVARIANT (task #227 + #232, preserved verbatim by this extraction): the
-// cause is stored FIRST, synchronously, before any other work in this
-// method. startStreamWatchdog invokes onFire strictly before cancel(), so
-// whatever this method does before returning is on the critical path to
-// unblocking agent.Stream. If the OUTER ctx is also cancelled independently
-// of this watchdog (Ctrl-C, a --timeout firing at the same moment) while
-// this method is still running, the main goroutine reading watchdogCauseVal
-// after observing stalled==true must never see the zero value
-// (causeIdleStall) for what was actually a hard-cap/tool-timeout fire — that
-// would misreport the cause via a DIFFERENT race than the one #227 fixed
-// (external cancellation racing this callback, rather than this callback
-// racing its own cancel()).
+// handleWatchdogFire is the EX-0H root route: the real fire-handler body
+// lives in the turnstep leaf as turnstep.HandleWatchdogFire (no state
+// instantiated there — everything is a parameter). This delegate forwards
+// the cause/durations/model snapshot unchanged and passes h.timeoutHardCapCfg
+// as a method value, so the config read still happens only in the leaf's
+// causeHardCap branch, at the original point. See the leaf doc for the
+// full invariant commentary (first synchronous Store, sync capture, async
+// write, per-cause logs — all preserved verbatim).
 func (t *turnBudget) handleWatchdogFire(
 	h contextBudgetHost,
 	cause watchdogCause,
@@ -138,72 +104,12 @@ func (t *turnBudget) handleWatchdogFire(
 	toolMaxDuration, idleTimeout time.Duration,
 	smartModel Model,
 ) {
-	watchdogCauseVal.Store(int32(cause))
-	// The watchdog firing IS the hang, caught at the only moment the
-	// evidence still exists. Capture every goroutine's stack now,
-	// SYNCHRONOUSLY: pprof is gated behind RUSH_PROFILE (so it can't be
-	// turned on after the fact) and release builds strip symbols (so a
-	// debugger attach yields nothing and merely kills the process). Without
-	// this, every production hang is diagnosed by guesswork.
-	//
-	// CaptureGoroutineStack does no I/O — it's runtime.Stack plus a string
-	// header — so it cannot block on a stuck disk, and running it
-	// synchronously here is what guarantees the snapshot reflects the
-	// actual moment of the hang. Capturing it from an async goroutine
-	// instead (as an earlier version of this fix did) would let it run
-	// AFTER cancel()/unwind had already started — or, if the process exited
-	// or was force-killed first, never run at all — defeating the entire
-	// point of a diagnostic taken "at the only moment it is still
-	// available" (see the doc comment on CaptureGoroutineStack).
-	stackDump := rushlog.CaptureGoroutineStack("stream watchdog fired")
-	// Only the WRITE is dispatched async and NOT awaited: WriteGoroutineDump
-	// does a synchronous os.WriteFile with no timeout of its own (see its
-	// doc in internal/log/goroutine_dump.go). Since onFire now runs
-	// strictly before cancel(), awaiting a write that hangs (e.g. the log
-	// directory sits on a stuck network/SMB mount) would mean cancel()
-	// never runs, agent.Stream never unblocks, and runTurn's deferred
-	// <-wd.done blocks forever — a full process freeze, exactly the failure
-	// mode this watchdog exists to prevent. The dump is best-effort
-	// diagnostics only; nothing downstream needs the write to complete
-	// before the turn can safely unwind, so firing it off and returning
-	// immediately preserves the already-captured evidence without putting
-	// an unbounded disk write on cancellation's critical path.
-	go func() {
-		if dumpPath, dumpErr := rushlog.WriteGoroutineDump(stackDump); dumpErr != nil {
-			slog.Warn("agent: failed to write goroutine dump for watchdog fire", "err", dumpErr)
-		} else {
-			slog.Warn("agent: wrote goroutine dump for watchdog fire", "path", dumpPath)
-		}
-	}()
-	switch cause {
-	case causeToolTimeout:
-		slog.Warn(
-			"agent: watchdog firing — tool execution exceeded cap, force-cancelling",
-			"session_id", sessionID,
-			"provider", smartModel.ModelCfg.Provider,
-			"model", smartModel.ModelCfg.Model,
-			"elapsed", elapsed.String(),
-			"cap", toolMaxDuration.String(),
-		)
-	case causeHardCap:
-		slog.Warn(
-			"agent: watchdog firing — turn exceeded --timeout-hard-cap, force-cancelling",
-			"session_id", sessionID,
-			"provider", smartModel.ModelCfg.Provider,
-			"model", smartModel.ModelCfg.Model,
-			"elapsed", elapsed.String(),
-			"hard_cap", h.timeoutHardCapCfg().String(),
-		)
-	default:
-		slog.Warn(
-			"agent: stream watchdog firing — no provider activity, force-cancelling",
-			"session_id", sessionID,
-			"provider", smartModel.ModelCfg.Provider,
-			"model", smartModel.ModelCfg.Model,
-			"idle_duration", elapsed.String(),
-			"threshold", idleTimeout.String(),
-		)
-	}
+	turnstep.HandleWatchdogFire(
+		cause, elapsed, sessionID, watchdogCauseVal,
+		toolMaxDuration, idleTimeout,
+		agentcall.Model(smartModel), // Model = agentcall.Model alias
+		h.timeoutHardCapCfg,
+	)
 }
 
 // normalizeTurnError folds the out-of-band way a turn can end (the
@@ -237,4 +143,25 @@ func normalizeTurnError(err error) error {
 		}
 	}
 	return err
+}
+
+func asyncLaunchCommand(call fantasy.ToolCallContent) (string, bool) {
+	var command string
+	switch call.ToolName {
+	case tools.BashToolName:
+		var params tools.BashParams
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		command = params.Command
+	case tools.RunCommandToolName:
+		var params tools.RunCommandParams
+		if json.Unmarshal([]byte(call.Input), &params) != nil {
+			return "", false
+		}
+		command = (tools.RunCommandPermissionsParams{Program: params.Program, Args: params.Args}).RunAllowlistCommand()
+	default:
+		return "", false
+	}
+	return strings.TrimSpace(command), true
 }

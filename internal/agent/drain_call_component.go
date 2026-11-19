@@ -2,16 +2,14 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
-	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -259,18 +257,5 @@ func clearCancelRequest(ctx context.Context, sessions coresession.Service, sessi
 
 // the session, so two processes can never write one session's messages.
 func ForeignWorkspaceError(sess coresession.Session) error {
-	msg := fmt.Sprintf(
-		"session %s belongs to %s (branch %s); run it there or \"rush sessions fork %s\" here",
-		sess.ID, sess.WorkspaceRoot, sess.GitBranch, sess.ID,
-	)
-	if sess.WorkspaceRoot != "" {
-		if _, err := os.Stat(sess.WorkspaceRoot); err != nil {
-			// The owning checkout is gone (`git worktree remove`): say so, or
-			// the operator goes hunting for a directory that no longer
-			// exists. A legacy row's empty root is never stat-ed -- it names no
-			// directory to be missing.
-			msg += " (workspace no longer exists)"
-		}
-	}
-	return fmt.Errorf("%s: %w", msg, runq.ErrForeignWorkspace)
+	return drainctl.ForeignWorkspaceError(sess)
 }

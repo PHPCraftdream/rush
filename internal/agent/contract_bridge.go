@@ -10,6 +10,7 @@ import (
 	"io"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -318,4 +319,12 @@ func subAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
 // thin delegate to agentcall (name kept for staying/external callers; requalified in DM8).
 func diskRequirementForCall(call SessionAgentCall) *session.SessionExecutionRequirement {
 	return agentcall.DiskRequirementForCall(call)
+}
+
+func WithAdmissionSetup(ctx context.Context, fn func(context.Context) error) context.Context {
+	return turnstep.WithAdmissionSetup(ctx, fn)
+}
+
+func admissionSetupFrom(ctx context.Context) func(context.Context) error {
+	return turnstep.AdmissionSetupFrom(ctx)
 }

@@ -5,43 +5,19 @@ package agent
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
-	"log/slog"
-	"strings"
-	"sync/atomic"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
-
 	"charm.land/fantasy"
-	"charm.land/fantasy/providers/anthropic"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
-
-// summaryCommitMaxDuration bounds the silent compaction's COMMIT phase — the
-// SetSummaryAndUsage write plus the deletion of the messages it replaces
-// (P0-4 review follow-up).
-//
-// That phase deliberately runs on context.WithoutCancel: interrupting it
-// between "summary pointer written" and "old messages deleted" is how a
-// session's history gets unrecoverably holed, so cancellation must not be
-// able to land in the middle. Detaching from cancellation without a deadline
-// would recreate the unbounded-operation-holds-Run shape P1-B removed, hence
-// this bound. The provider stream is already finished by then; what remains
-// is local single-writer DB work, so 30s is generous rather than tight.
-const summaryCommitMaxDuration = 30 * time.Second
-
-//go:embed templates/summary.md
-var summaryPrompt []byte
 
 // ErrSummarizeQueued is returned by Summarize when the session is busy and
 // the request has been queued for execution after the current task finishes.
@@ -108,14 +84,6 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, snapshot
 }
 
 func (t *turnBudget) summarizeRequested(h contextBudgetHost, ctx context.Context, sessionID string, snapshot *SummarizeSnapshot) error {
-	// Track this Summarize() call in the agent-wide runWg so CancelAll can join
-	// on manual compactions that might be writing to the DB (P0-4).
-	// This defer fires on EVERY return from Summarize, including the queued
-	// early-return path and all error paths. The check and Add are gated
-	// under admitMu (tryAdmitRunWg) to close the P1-1 race: without the mutex,
-	// a concurrent CancelAll could set shuttingDown and start its Wait goroutine
-	// while the counter was still 0, letting Wait return before Add(1) landed
-	// (panics or admits work after "shutdown complete").
 	return t.summarize(h, ctx, sessionID, snapshot, true)
 }
 
@@ -127,30 +95,21 @@ func (t *turnBudget) summarizeNow(h contextBudgetHost, ctx context.Context, sess
 }
 
 func (t *turnBudget) summarize(h contextBudgetHost, ctx context.Context, sessionID string, snapshot *SummarizeSnapshot, queueWhenBusy bool) error {
-	done, ok := h.tryAdmitRun()
-	if !ok {
-		return ErrAgentShuttingDown
-	}
-	defer done()
-	genCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	mb := h.getMailbox(sessionID)
-	// Atomic check-and-reserve (#268/P0-4, design §6): beginCompact makes
-	// us the sole owner of sessionID's mailbox or returns false if a turn
-	// or another compaction already owns it. This replaces the old
-	// non-atomic IsSessionBusy + runSummarize pair that had a TOCTOU window
-	// between the busy check and the compaction's DB writes — a concurrent
-	// Run could start between the check and the first delete, corrupting
-	// history.
-	epoch, ok := mb.beginCompact(cancel)
-	if !ok {
-		cancel()
-		if !queueWhenBusy {
-			return fmt.Errorf("session %q is already processing another request: %w", sessionID, ErrSessionBusy)
-		}
-		t.summarizeQueue.Set(sessionID, snapshot)
-		return ErrSummarizeQueued
-	}
-	return t.runSummarize(h, ctx, genCtx, sessionID, snapshot, mb, epoch, cancel, queueWhenBusy)
+	var mb *mailbox
+	return turnstep.SummarizeAdmit(turnstep.SummarizeAdmission{
+		Queue:       t.summarizeQueue,
+		TryAdmitRun: h.tryAdmitRun,
+		ShutdownErr: func() error { return ErrAgentShuttingDown },
+		QueuedErr:   func() error { return ErrSummarizeQueued },
+		BusyErr:     func() error { return ErrSessionBusy },
+		BeginCompact: func(sessionID string, cancel context.CancelFunc) (uint64, bool) {
+			mb = h.getMailbox(sessionID)
+			return mb.beginCompact(cancel)
+		},
+		RunSummarize: func(ctx, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
+			return t.runSummarize(h, ctx, genCtx, sessionID, snapshot, mb, epoch, cancel, queueOnLockFailure)
+		},
+	}, ctx, sessionID, snapshot, queueWhenBusy)
 }
 
 // runSummarize runs a manual /compact under mailbox ownership acquired by
@@ -188,200 +147,63 @@ func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context,
 }
 
 func (t *turnBudget) runSummarize(h contextBudgetHost, ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
-	// Determine idle timeout for summarization stream watchdog
+	// Resolve the idle timeout for the summarization stream watchdog (config
+	// read, once, at the original point); the body itself lives in the
+	// turnstep leaf as turnstep.RunSummarize — this wrapper is pure
+	// adaptation: it resolves the leaf's deps (including narrow closures
+	// over the package-private *mailbox, whose test seams are read lazily
+	// inside the closures) and forwards.
 	idleTimeout := streamIdleTimeoutDefault
 	if h.streamIdleTimeoutCfg() > 0 {
 		idleTimeout = h.streamIdleTimeoutCfg()
 	}
+	// Original order preserved: stallSetPhase runs here, BEFORE the leaf reads
+	// effectiveStreamWatchdogTick / starts the watchdog.
 	stallSetPhase(sessionID, "internal", "compaction")
-	// No tools in manual compaction, so use 0 for tool bounds
-	toolMaxDuration := time.Duration(0)
-	toolCleanupGrace := time.Duration(0)
-	// Start stream watchdog to detect idle stalls in the summarization stream
-	var watchdogCauseVal atomic.Int32
-	wd := startStreamWatchdog(
-		genCtx, cancel, idleTimeout, h.effectiveStreamWatchdogTick(),
-		// Use a simple callback - just log and cancel (no tools to report)
-		func(elapsed time.Duration, cause watchdogCause) {
-			watchdogCauseVal.Store(int32(cause))
-			stackDump := rushlog.CaptureGoroutineStack("summarize watchdog fired")
-			go func() {
-				if dumpPath, dumpErr := rushlog.WriteGoroutineDump(stackDump); dumpErr != nil {
-					slog.Warn("agent.runSummarize: failed to write goroutine dump", "err", dumpErr)
-				} else {
-					slog.Warn("agent.runSummarize: wrote goroutine dump", "path", dumpPath)
-				}
-			}()
-			switch cause {
-			case causeToolTimeout:
-				slog.Warn(
-					"agent.runSummarize: watchdog firing — tool execution exceeded cap, force-cancelling",
-					"session_id", sessionID,
-					"elapsed", elapsed.String(),
-					"cap", toolMaxDuration.String(),
-				)
-			case causeHardCap:
-				slog.Warn(
-					"agent.runSummarize: watchdog firing — summarization exceeded hard cap, force-cancelling",
-					"session_id", sessionID,
-					"elapsed", elapsed.String(),
-					"hard_cap", h.timeoutHardCapCfg().String(),
-				)
-			default:
-				slog.Warn(
-					"agent.runSummarize: watchdog firing — no provider activity, force-cancelling",
-					"session_id", sessionID,
-					"idle_duration", elapsed.String(),
-					"threshold", idleTimeout.String(),
-				)
+	return turnstep.RunSummarize(turnstep.RunSummarizeDeps{
+		Queue:     t.summarizeQueue,
+		Requeue:   func() { t.requeueSummarizeSnapshot(sessionID, snapshot) },
+		TakeQueue: func() bool { _, queued := t.takeSummarizeQueue(sessionID); return queued },
+
+		IdleTimeout:        idleTimeout,
+		WatchdogTick:       h.effectiveStreamWatchdogTick(),
+		ExtendsOnProgress:  h.timeoutExtendsOnProgressCfg,
+		HardCap:            h.timeoutHardCapCfg,
+		NotifyActivity:     notifyActivity,
+		WithWatchdogBump:   withWatchdogBump,
+		WithActivityNotify: withActivityNotify,
+
+		DataDir:     h.dataDirCfg,
+		LockOptions: h.lockOptionsCfg,
+		QueuedErr:   func() error { return ErrSummarizeQueued },
+		BusyErr:     func() error { return ErrSessionBusy },
+
+		RunBody: func(bodyCtx context.Context) error {
+			return t.runSummarizeBody(h, bodyCtx, sessionID, snapshot.ProviderOptions, snapshot.Model, snapshot.PromptPrefix)
+		},
+
+		PreSnapshotSeam: func() {
+			if mb.testPreSnapshotConsumeSeam != nil {
+				mb.testPreSnapshotConsumeSeam()
 			}
 		},
-		h.timeoutExtendsOnProgressCfg(),
-		h.timeoutHardCapCfg(),
-		toolMaxDuration,
-		toolCleanupGrace,
-		func() { notifyActivity(genCtx) },
-	)
-	// Wrap genCtx so notifyWatchdog calls reach this watchdog
-	genCtx = withWatchdogBump(genCtx, wd.bump)
-	// Defer order matters: <-wd.done first so it runs after cancel()
-	defer func() { <-wd.done }()
-	defer cancel()
-
-	// #312: Acquire OS session lock for cross-process serialization.
-	// Manual compaction runs outside any Run() call, so the OS lock is not
-	// already held. Acquiring it here prevents another process from starting
-	// a concurrent Run() that would race with the compaction's DB writes.
-	var lk *sessionlock.SessionLock
-	if h.dataDirCfg() != "" {
-		var lockErr error
-		lk, lockErr = sessionlock.TryAcquireSessionLockWithOptions(h.dataDirCfg(), sessionID, h.lockOptionsCfg()...)
-		if lockErr != nil {
-			var busyErr *sessionlock.SessionLockBusyError
-			if errors.As(lockErr, &busyErr) {
-				slog.Warn(
-					"agent.runSummarize: rejected — session locked by another process",
-					"session_id", sessionID,
-					"holder_pid", busyErr.HolderPID,
-					"lock_path", busyErr.Path,
-				)
-				// Release mailbox ownership with handoff so queued work gets a runner.
-				h.abandonOwnershipWithHandoff(sessionID, epoch)
-				if queueOnLockFailure {
-					t.requeueSummarizeSnapshot(sessionID, snapshot)
-					return fmt.Errorf("%w: session %q is already in use: %w", ErrSummarizeQueued, sessionID, lockErr)
-				}
-				return fmt.Errorf("session %q is already in use: %w", sessionID, ErrSessionBusy)
+		PreAbandonSeam: func() {
+			if mb.testPreAbandonSeam != nil {
+				mb.testPreAbandonSeam()
 			}
-			slog.Error("agent.runSummarize: failed to acquire inter-process session lock, refusing to compact unprotected",
-				"session_id", sessionID, "err", lockErr)
-			// Release mailbox ownership with handoff so queued work gets a runner.
-			h.abandonOwnershipWithHandoff(sessionID, epoch)
-			if queueOnLockFailure {
-				t.requeueSummarizeSnapshot(sessionID, snapshot)
-				return fmt.Errorf("%w: session %q: could not acquire session lock: %w", ErrSummarizeQueued, sessionID, lockErr)
-			}
-			return fmt.Errorf("session %q: could not acquire session lock: %w", sessionID, lockErr)
-		}
-	}
+		},
+		BeginRelease:   mb.beginRelease,
+		FinishRelease:  func(epoch uint64) { mb.finishRelease(epoch) },
+		AbandonHandoff: func() { h.abandonOwnershipWithHandoff(sessionID, epoch) },
+		AbandonPopFirst: func() (SessionAgentCall, bool) {
+			return mb.abandonOwnershipAndPopFirstSubmitted(epoch)
+		},
 
-	// Wire this lock into genCtx's activity-notify chain (task #222's
-	// pattern, mirrored from runTurn's own withActivityNotify call) so
-	// runSummarizeBody's notifyActivity(ctx) calls on its stream callbacks
-	// (#310) actually reach THIS lock. Without this, manual /compact
-	// acquires its own lk above but never records activity on it — the
-	// lock's mtime is frozen from acquisition until release, up to the full
-	// 10-minute genCtx timeout, so `sessions locks`/`watch` can misreport a
-	// healthy long-running /compact as heartbeat-stale. nil-receiver-safe
-	// when lk is nil (a.dataDir == "").
-	genCtx = withActivityNotify(genCtx, lk)
-
-	// Test-only seam: fires strictly after the snapshot above was captured
-	// and strictly before it is consumed below, letting a test land a
-	// concurrent shared-state mutation deterministically inside the window a
-	// pre-#341 regression would have re-read from. See
-	// mailbox.testPreSnapshotConsumeSeam's own doc.
-	if mb.testPreSnapshotConsumeSeam != nil {
-		mb.testPreSnapshotConsumeSeam()
-	}
-
-	// Use the snapshot provided by the caller. The snapshot contains the
-	// model, provider options, and prompt prefix resolved from the target
-	// session (or shared state for sessions without overrides), ensuring the
-	// entire summarize operation uses consistent configuration regardless of
-	// concurrent SetModels calls (task #341, P1-1).
-	err := t.runSummarizeBody(h, genCtx, sessionID, snapshot.ProviderOptions, snapshot.Model, snapshot.PromptPrefix)
-
-	// P1-2 fix (2026-08-09): Transition mailbox to mbReleasing before releasing
-	// the OS lock. This provides the same visibility that normal turns get
-	// via drainOrReleaseFinal, allowing diagnostic tools to distinguish "releasing
-	// OS lock" from "still actively streaming". If the filesystem/AV/SMB hangs
-	// during lk.Release(), mbReleasing is still observable as "busy but not
-	// streaming", which is semantically correct - the session is technically busy
-	// (ownership not yet relinquished to another caller) but not making progress.
-	releaseStarted := mb.beginRelease(epoch)
-
-	// Release the OS lock. Even if beginRelease failed (epoch mismatch or state
-	// already transitioned), we still need to release the lock to avoid leaking it.
-	// The worst case is we release without mbReleasing visibility, which is the
-	// old (pre-P1-2) behavior for that particular edge case.
-	if lk != nil {
-		if relErr := lk.Release(); relErr != nil {
-			slog.Debug("agent.runSummarize: release session lock failed", "session_id", sessionID, "err", relErr)
-		}
-	}
-
-	// Test-only seam: fires strictly after the OS lock above is released and
-	// strictly before abandonOwnership below makes that visible as mbIdle to
-	// same-process callers. See mailbox.testPreAbandonSeam's own doc.
-	if mb.testPreAbandonSeam != nil {
-		mb.testPreAbandonSeam()
-	}
-
-	// Complete the mbReleasing -> mbIdle transition if we successfully began it.
-	// If beginRelease failed (epoch changed, wrong state), we skip this - the
-	// actual state transition already happened elsewhere (e.g., a concurrent
-	// abandonOwnership from a Cancel or shutdown).
-	if releaseStarted {
-		mb.finishRelease(epoch)
-	}
-
-	if err != nil {
-		h.abandonOwnershipWithHandoff(sessionID, epoch)
-		return err
-	}
-
-	// Success path: release ownership, drain the mailbox queue, and coalesce
-	// any pending summarize requests. If a second /compact was queued while
-	// this one was running, we discard it (coalesce) because the history has
-	// already been compressed by this successful compaction.
-	//
-	// Uses the atomic abandonOwnershipAndPopFirstSubmitted (P2-5 follow-up)
-	// instead of a separate abandonOwnership() + popFirstSubmitted() pair —
-	// two independent lock acquisitions here left the same era-boundary
-	// reordering window abandonOwnershipWithHandoff's own P2-5 fix closed
-	// for the "pop all" case: a new owner's submit()+queue() landing in the
-	// gap between them could get scooped into firstQueued below instead of
-	// staying queued for that owner's own turn.
-	firstQueued, hasNext := mb.abandonOwnershipAndPopFirstSubmitted(epoch)
-
-	// Drain any queued summarize request - if a second /compact was queued
-	// while this one was running, the history is already compressed, so we
-	// coalesce by discarding the stale queued entry rather than executing it.
-	// This is semantically correct: the queued request's goal (compress history)
-	// is already satisfied by this compaction, and avoids redundant LLM calls.
-	if t.summarizeQueue != nil {
-		if _, queued := t.takeSummarizeQueue(sessionID); queued {
-			slog.Debug("agent: queued summarize coalesced with successful compaction, discarded stale entry",
-				"session_id", sessionID)
-		}
-	}
-
-	if !hasNext {
-		return nil
-	}
-	_, runErr := h.Run(ctx, firstQueued)
-	return runErr
+		RunQueued: func(runCtx context.Context, call SessionAgentCall) error {
+			_, runErr := h.Run(runCtx, call)
+			return runErr
+		},
+	}, ctx, genCtx, sessionID, snapshot, epoch, cancel, queueOnLockFailure)
 }
 
 // requeueSummarizeSnapshot puts a compaction back in summarizeQueue after a
@@ -389,9 +211,7 @@ func (t *turnBudget) runSummarize(h contextBudgetHost, ctx context.Context, genC
 // GetOrSet (not Set) never clobbers a newer queued request, and no compaction
 // is spawned here, so a long-held lock cannot cause a busy retry loop.
 func (t *turnBudget) requeueSummarizeSnapshot(sessionID string, snapshot *SummarizeSnapshot) {
-	t.summarizeQueue.GetOrSet(sessionID, func() *SummarizeSnapshot { return snapshot })
-	slog.Info("agent.runSummarize: re-queued compaction after session lock failure",
-		"session_id", sessionID)
+	turnstep.RequeueSummarizeSnapshot(t.summarizeQueue, sessionID, snapshot)
 }
 
 func (a *sessionAgent) requeueSummarizeSnapshot(sessionID string, snapshot *SummarizeSnapshot) {
@@ -403,8 +223,7 @@ func (a *sessionAgent) SummarizeQueued(sessionID string) bool {
 }
 
 func (t *turnBudget) summarizeQueued(sessionID string) bool {
-	_, ok := t.summarizeQueue.Get(sessionID)
-	return ok
+	return turnstep.SummarizeQueued(t.summarizeQueue, sessionID)
 }
 
 // testBuildSummarizeSnapshot is a test helper that creates a SummarizeSnapshot
@@ -428,8 +247,7 @@ func (a *sessionAgent) TakeSummarizeQueue(sessionID string) (*SummarizeSnapshot,
 }
 
 func (t *turnBudget) takeSummarizeQueue(sessionID string) (*SummarizeSnapshot, bool) {
-	snapshot, ok := t.summarizeQueue.Take(sessionID)
-	return snapshot, ok
+	return turnstep.TakeSummarizeQueue(t.summarizeQueue, sessionID)
 }
 
 func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
@@ -437,7 +255,7 @@ func (a *sessionAgent) CancelQueuedSummarize(sessionID string) {
 }
 
 func (t *turnBudget) cancelQueuedSummarize(sessionID string) {
-	t.summarizeQueue.Del(sessionID)
+	turnstep.CancelQueuedSummarize(t.summarizeQueue, sessionID)
 }
 
 func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
@@ -458,243 +276,21 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 // cancel for manual /compact, or the turn's genCtx for inline
 // auto-summarize).
 func (t *turnBudget) runSummarizeBody(h contextBudgetHost, ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
-	// Heartbeat attribution: summary runs on the smart slot (design pt. 1).
-	role, source := callbeat.HbInherited(ctx)
-	ctx = callbeat.WithHeartbeat(ctx, sessionID, heartbeat.PurposeSummary, role, source)
-	currentSession, err := h.compactionSessions().Get(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-	msgs, err := h.getSessionMessages(ctx, currentSession)
-	if err != nil {
-		return err
-	}
-	if len(msgs) == 0 {
-		// Nothing to summarize.
-		return nil
-	}
-
-	// Snapshot non-pinned message IDs for deletion AFTER the summary stream
-	// completes. The summary message itself is created BELOW, after this
-	// snapshot, so it is never in toDelete. Pinned messages stay.
-	var toDelete []message.Message
-	for _, m := range msgs {
-		if !m.Pinned {
-			toDelete = append(toDelete, m)
-		}
-	}
-
-	aiMsgs, _ := h.preparePrompt(msgs, nil, smartModel.Model.Provider())
-
-	agent := fantasy.NewAgent(
-		smartModel.Model,
-		fantasy.WithSystemPrompt(string(summaryPrompt)),
-		fantasy.WithUserAgent(userAgent),
-	)
-	summaryMessage, err := h.compactionMessages().Create(ctx, sessionID, message.CreateMessageParams{
-		Role:             message.Assistant,
-		Model:            smartModel.Model.Model(),
-		Provider:         smartModel.Model.Provider(),
-		ReasoningEffort:  turnSmartReasoningEffort(smartModel),
-		IsSummaryMessage: true,
-	})
-	if err != nil {
-		return err
-	}
-
-	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
-	var discardRetryContent bool
-	truncateAbandonedContent := func() error {
-		if !discardRetryContent {
-			return nil
-		}
-		discardRetryContent = false
-		if !summaryMessage.TruncateStreamedContent() {
-			return nil
-		}
-		return h.compactionMessages().Update(ctx, summaryMessage.Clone())
-	}
-
-	resp, err := agent.Stream(ctx, fantasy.AgentStreamCall{
-		MaxRetries:      &agentcall.ProviderMaxRetries,
-		Prompt:          summaryPromptText,
-		Messages:        aiMsgs,
-		Headers:         sessionHeaders(sessionID),
-		ProviderOptions: opts,
-		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-			prepared.Messages = options.Messages
-			if systemPromptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
-			}
-			return callContext, prepared, nil
-		},
-		OnRetry: func(_ *fantasy.ProviderError, _ time.Duration) {
-			discardRetryContent = true
-		},
-		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if err := truncateAbandonedContent(); err != nil {
-				return err
-			}
-			summaryMessage.StartReasoningContent(reasoning.Text)
-			return h.compactionMessages().Update(ctx, summaryMessage)
-		},
-		OnReasoningDelta: func(id string, text string) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if err := truncateAbandonedContent(); err != nil {
-				return err
-			}
-			summaryMessage.AppendReasoningContent(text)
-			return h.compactionMessages().Update(ctx, summaryMessage)
-		},
-		OnReasoningEnd: func(id string, reasoning fantasy.ReasoningContent) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			// Handle anthropic signature.
-			if anthropicData, ok := reasoning.ProviderMetadata["anthropic"]; ok {
-				if signature, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok && signature.Signature != "" {
-					summaryMessage.AppendReasoningSignature(signature.Signature)
-				}
-			}
-			summaryMessage.FinishThinking()
-			return h.compactionMessages().Update(ctx, summaryMessage)
-		},
-		OnTextDelta: func(id, text string) error {
-			notifyActivity(ctx)
-			notifyWatchdog(ctx)
-			if err := truncateAbandonedContent(); err != nil {
-				return err
-			}
-			summaryMessage.AppendContent(text)
-			return h.compactionMessages().Update(ctx, summaryMessage)
-		},
-	})
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			// User cancelled summarize; remove the summary message.
-			// Use a bounded cancel-immune context for cleanup (P1-4): the
-			// stream's context is already canceled, so Delete would silently
-			// fail and leave an orphaned summary message in the DB.
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-			defer cleanupCancel()
-			deleteErr := h.compactionMessages().Delete(cleanupCtx, summaryMessage.ID)
-			if deleteErr != nil {
-				slog.Error("Failed to delete orphaned summary message after cancel", "session_id", sessionID, "err", deleteErr)
-			}
-			return err
-		}
-		// Mark the summary message as finished with an error so the UI
-		// stops spinning. Use a bounded cancel-immune context for cleanup (P1-4).
-		summaryMessage.AddFinish(message.FinishReasonError, "Summarization Error", err.Error())
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-		defer cleanupCancel()
-		if updateErr := h.compactionMessages().Update(cleanupCtx, summaryMessage); updateErr != nil {
-			slog.Error("Failed to mark summary message as error", "session_id", sessionID, "err", updateErr)
-			return updateErr
-		}
-		return err
-	}
-
-	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-	defer cleanupCancel()
-	if err = h.compactionMessages().Update(cleanupCtx, summaryMessage); err != nil {
-		return err
-	}
-
-	// COMMIT PHASE — the commit must not be tearable by cancellation.
-	//
-	// Without WithoutCancel, a cancellation (Stop, CancelAll, --timeout, stream
-	// watchdog) could land between SetSummaryAndUsage and the deletes, leaving
-	// the session in a holed state: summary pointer is set but old messages
-	// still exist, getSessionMessages sees neither, history is unrecoverably
-	// corrupt.
-	//
-	// Bounded rather than unbounded: the provider stream is already finished,
-	// so what remains is local DB work. Uses the same timeout as
-	// runSummarizeSilent.
-	commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), summaryCommitMaxDuration)
-	defer commitCancel()
-
-	var openrouterCost *float64
-	for _, step := range resp.Steps {
-		stepCost := h.openrouterCost(step.ProviderMetadata)
-		if stepCost != nil {
-			newCost := *stepCost
-			if openrouterCost != nil {
-				newCost += *openrouterCost
-			}
-			openrouterCost = &newCost
-		}
-	}
-
-	// Re-fetch the session to pick up any user edits that happened while the
-	// summary was streaming, then overlay our own fields.
-	freshSession, err := h.compactionSessions().Get(commitCtx, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to re-fetch session before save: %w", err)
-	}
-	// Normalize once, upstream of both sinks (see agent_turn.go's OnStepFinish).
-	totalUsage := normalizeProviderUsage(smartModel.Model.Provider(), resp.TotalUsage)
-	costDelta := h.updateSessionUsage(smartModel, &freshSession, totalUsage, openrouterCost)
-	// Heartbeat usage: one add per accounted compaction (design pt. 4).
-	callbeat.AddHeartbeatUsage(ctx, smartModel.Model.Provider(), smartModel.Model.Model(), totalUsage, costDelta)
-	if costDelta != 0 {
-		if _, costErr := h.compactionSessions().IncrementCost(commitCtx, freshSession.ID, costDelta); costErr != nil {
-			return costErr
-		}
-	}
-
-	// Per-message usage for the summary turn itself (task #469). Recorded
-	// against totalUsage — the same figure updateSessionUsage just billed —
-	// so the summarization's own token cost is visible in analytics instead
-	// of appearing as an unattributed jump in the session total.
-	h.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
-
-	usage := resp.Response.Usage
-	if err := h.compactionSessions().SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, summaryCompletionTokens(usage, summaryMessage)); err != nil {
-		// Nothing has been deleted yet, so the session is still whole: the
-		// compaction simply did not happen, and the next turn retries it.
-		return err
-	}
-
-	// Now that the summary is persisted and SummaryMessageID is wired up,
-	// drop the historical non-pinned messages. The summary message itself was
-	// created AFTER the snapshot above so it is not in toDelete.
-	for _, m := range toDelete {
-		if delErr := h.compactionMessages().Delete(commitCtx, m.ID); delErr != nil {
-			slog.Warn("summarise: failed to delete old message", "id", m.ID, "err", delErr)
-		}
-	}
-
-	return nil
-}
-
-// summaryCompletionTokens returns OutputTokens when the provider reported
-// them, otherwise falls back to an approximate count from the rendered
-// summary message. Fork merge note: from origin/main 6ed8852b
-// "fix(agent): estimate missing streamed usage" — used in Summarize when
-// the provider omits final usage on the summary stream.
-func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message) int64 {
-	if usage.OutputTokens != 0 {
-		return usage.OutputTokens
-	}
-	return approxTokenCount(summaryMessage.Content().Text) + approxTokenCount(summaryMessage.FullReasoningText())
-}
-
-// buildSummaryPrompt constructs the prompt text for session summarization.
-func buildSummaryPrompt(todos []coresession.Todo) string {
-	var sb strings.Builder
-	sb.WriteString("Provide a detailed summary of our conversation above.")
-	if len(todos) > 0 {
-		sb.WriteString("\n\n## Current Todo List\n\n")
-		for _, t := range todos {
-			fmt.Fprintf(&sb, "- [%s] %s\n", t.Status, t.Content)
-		}
-		sb.WriteString("\nInclude these tasks and their statuses in your summary. ")
-		sb.WriteString("Instruct the resuming assistant to use the `todos` tool to continue tracking progress on these tasks.")
-	}
-	return sb.String()
+	return turnstep.RunSummarizeBody(turnstep.SummarizeBodyDeps{
+		Sessions:           h.compactionSessions,
+		Messages:           h.compactionMessages,
+		NotifyActivity:     notifyActivity,
+		NotifyWatchdog:     notifyWatchdog,
+		PreparePrompt:      h.preparePrompt,
+		GetSessionMessages: h.getSessionMessages,
+		SummaryPrompt:      provauth.SummaryPromptText,
+		CommitMaxDuration:  provauth.SummaryCommitMaxDuration,
+		BuildSummaryPrompt: provauth.BuildSummaryPrompt,
+		CompletionTokens:   provauth.SummaryCompletionTokens,
+		SessionHeaders:     sessionHeaders,
+		NormalizeUsage:     provauth.NormalizeProviderUsage,
+		OpenrouterCost:     h.openrouterCost,
+		UpdateSessionUsage: h.updateSessionUsage,
+		RecordMessageUsage: h.recordMessageUsage,
+	}, ctx, sessionID, opts, smartModel, systemPromptPrefix)
 }

@@ -1,85 +1,14 @@
 package agent
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"net/http"
 
 	"charm.land/catwalk/pkg/catwalk"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 )
-
-type oauthTokenStore interface {
-	Config() *config.Config
-	RefreshOAuthTokenWithClient(context.Context, config.Scope, config.ProviderConfig, *http.Client) error
-}
-
-type oauthTokenSource struct {
-	providerID string
-	store      oauthTokenStore
-	resolve    func(*config.Config, config.ProviderConfig) (*http.Client, error)
-}
-
-func (s *oauthTokenSource) Current() (oauth.Token, bool) {
-	if s == nil || s.store == nil {
-		return oauth.Token{}, false
-	}
-	cfg := s.store.Config()
-	if cfg == nil || cfg.Providers == nil {
-		return oauth.Token{}, false
-	}
-	pc, ok := cfg.Providers.Get(s.providerID)
-	if !ok || pc.OAuthToken == nil {
-		return oauth.Token{}, false
-	}
-	return copyOAuthToken(*pc.OAuthToken), true
-}
-
-func (s *oauthTokenSource) Refresh(ctx context.Context, used oauth.Token) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if s == nil {
-		return errors.New("OAuth credentials unavailable: no token source")
-	}
-	if s.store == nil {
-		return fmt.Errorf("%s credentials unavailable: provider removed or logged out", s.providerID)
-	}
-	cfg := s.store.Config()
-	if cfg == nil || cfg.Providers == nil {
-		return fmt.Errorf("%s credentials unavailable: provider removed or logged out", s.providerID)
-	}
-	current, ok := cfg.Providers.Get(s.providerID)
-	if !ok || current.OAuthToken == nil {
-		return fmt.Errorf("%s credentials unavailable: provider removed or logged out", s.providerID)
-	}
-	if s.resolve == nil {
-		return errors.New("OAuth refresh network resolver unavailable")
-	}
-	client, err := s.resolve(cfg, current)
-	if err != nil {
-		return fmt.Errorf("resolve provider network client for OAuth refresh: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	refreshConfig := current
-	used = copyOAuthToken(used)
-	refreshConfig.OAuthToken = &used
-	return s.store.RefreshOAuthTokenWithClient(ctx, config.ScopeGlobal, refreshConfig, client)
-}
-
-func copyOAuthToken(token oauth.Token) oauth.Token {
-	if token.Client != nil {
-		client := *token.Client
-		token.Client = &client
-	}
-	return token
-}
 
 // withOAuthBearerClient leaves SDK/static credentials alone unless a live OAuth store is available.
 func (c *coordinator) withOAuthBearerClient(pc config.ProviderConfig, client *http.Client) *http.Client {
@@ -118,6 +47,6 @@ func (o *oauthBearerClientComponent) withOAuthBearerClient(pc config.ProviderCon
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	copied.Transport = &oauthBearerTransport{base: base, providerID: pc.ID, source: &oauthTokenSource{providerID: pc.ID, store: o.host.oauthTokenConfigStore(), resolve: o.host.resolveProviderHTTPClient}}
+	copied.Transport = provauth.NewBearerTransport(base, provauth.NewOAuthTokenSource(pc.ID, o.host.oauthTokenConfigStore(), o.host.resolveProviderHTTPClient), pc.ID)
 	return &copied
 }

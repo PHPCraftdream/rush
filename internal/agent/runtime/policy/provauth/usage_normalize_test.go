@@ -1,4 +1,4 @@
-package agent
+package provauth
 
 import (
 	"testing"
@@ -27,7 +27,7 @@ func TestNormalizeProviderUsage_SubtractsCacheReadForInclusiveProviders(t *testi
 				CacheReadTokens: 900,
 				OutputTokens:    50,
 			}
-			got := normalizeProviderUsage(provider, usage)
+			got := NormalizeProviderUsage(provider, usage)
 			require.Equal(t, int64(100), got.InputTokens)
 			require.Equal(t, int64(900), got.CacheReadTokens)
 			require.Equal(t, int64(50), got.OutputTokens)
@@ -49,7 +49,7 @@ func TestNormalizeProviderUsage_PassthroughForExclusiveProviders(t *testing.T) {
 				CacheCreationTokens: 200,
 				OutputTokens:        50,
 			}
-			got := normalizeProviderUsage(provider, usage)
+			got := NormalizeProviderUsage(provider, usage)
 			require.Equal(t, usage, got)
 		})
 	}
@@ -62,6 +62,6 @@ func TestNormalizeProviderUsage_ClampsWhenCacheReadExceedsInput(t *testing.T) {
 		InputTokens:     100,
 		CacheReadTokens: 900,
 	}
-	got := normalizeProviderUsage(openrouter.Name, usage)
+	got := NormalizeProviderUsage(openrouter.Name, usage)
 	require.Equal(t, int64(0), got.InputTokens)
 }

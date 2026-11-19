@@ -15,6 +15,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -257,14 +258,14 @@ func TestP0_2_CompactionContinuation_DurableAckAfterContinuationExecutes(t *test
 	logStageDiagnostics := func() {
 		finalSess, sessionErr := env.sessions.Get(ctx, sessionID)
 		summaryPersisted := sessionErr == nil && finalSess.SummaryMessageID != ""
-		outputReserve := effectiveMaxOutputTokens(model, durableCall.MaxOutputTokens)
-		inputBudget := contextInputBudget(int64(model.CatwalkCfg.ContextWindow), outputReserve)
+		outputReserve := provauth.EffectiveMaxOutputTokens(model, durableCall.MaxOutputTokens)
+		inputBudget := provauth.ModelInputBudget(model, durableCall.MaxOutputTokens)
 		t.Logf("compaction continuation stages: main_requests=%d summarize_handler_requests=%d continuation_requests=%d continuation_requests_at_callback=%d summary_prompt_requests=%d ordinary_prompt_requests=%d summary_persisted=%t session_read_error=%t; primary_context_window=%d default_max_tokens=%d call_max_output_tokens=%d effective_output_reserve=%d input_budget=%d threshold=%d auto_summarize_disabled=%t",
 			mainCalls.Load(), summarizeCalls.Load(), continuationCalls.Load(),
 			continuationCallsAtResolution.Load(), summaryPromptRequests.Load(), ordinaryPromptRequests.Load(),
 			summaryPersisted, sessionErr != nil, model.CatwalkCfg.ContextWindow,
 			model.CatwalkCfg.DefaultMaxTokens, durableCall.MaxOutputTokens, outputReserve,
-			inputBudget, contextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget),
+			inputBudget, provauth.ContextAutoSummarizeThreshold(int64(model.CatwalkCfg.ContextWindow), inputBudget),
 			sessionAgent.disableAutoSummarize)
 	}
 	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{

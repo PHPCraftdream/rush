@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +37,7 @@ func TestPromptTokens_IncludesCacheCreation(t *testing.T) {
 	}
 
 	var sess core.Session
-	updateSessionTokenCounters(&sess, usage)
+	provauth.UpdateSessionTokenCounters(&sess, usage)
 
 	require.Equal(t, int64(22826), sess.PromptTokens,
 		"prompt is input + cache-read + cache-write; dropping cache-write understated this turn by 74%%")
@@ -54,7 +55,7 @@ func TestPromptTokens_WarmCacheStillSumsAllThree(t *testing.T) {
 	}
 
 	var sess core.Session
-	updateSessionTokenCounters(&sess, usage)
+	provauth.UpdateSessionTokenCounters(&sess, usage)
 
 	require.Equal(t, int64(23511), sess.PromptTokens)
 }
@@ -65,7 +66,7 @@ func TestPromptTokens_WarmCacheStillSumsAllThree(t *testing.T) {
 func TestPromptTokens_ZeroUsageDoesNotClobber(t *testing.T) {
 	sess := core.Session{PromptTokens: 1000, CompletionTokens: 200}
 
-	updateSessionTokenCounters(&sess, fantasy.Usage{})
+	provauth.UpdateSessionTokenCounters(&sess, fantasy.Usage{})
 
 	require.Equal(t, int64(1000), sess.PromptTokens, "an empty usage chunk must not reset the counter")
 	require.Equal(t, int64(200), sess.CompletionTokens)
@@ -83,7 +84,7 @@ func TestPromptTokens_ExclusiveProviderShapeIsUnchanged(t *testing.T) {
 	}
 
 	var sess core.Session
-	updateSessionTokenCounters(&sess, usage)
+	provauth.UpdateSessionTokenCounters(&sess, usage)
 
 	require.Equal(t, int64(12601), sess.PromptTokens,
 		"providers with no cache-write concept must be unaffected by the fix")

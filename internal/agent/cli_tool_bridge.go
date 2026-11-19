@@ -8,7 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
 )
 
 type pinnedInvoke func(context.Context, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error)
@@ -18,10 +18,6 @@ type cliToolBridge struct {
 	invoke     pinnedInvoke
 	advertised []cliprovider.BridgeTool
 	builtin    map[string]string
-}
-
-func newCLIToolBridge(registry *policyLeafRegistry, invoke pinnedInvoke, external []cliprovider.BridgeTool) (*cliToolBridge, error) {
-	return newCLIToolBridgeForContext(context.Background(), registry, invoke, external)
 }
 
 func newCLIToolBridgeForContext(ctx context.Context, registry *policyLeafRegistry, invoke pinnedInvoke, external []cliprovider.BridgeTool) (*cliToolBridge, error) {
@@ -90,7 +86,7 @@ func (b *cliToolBridge) Call(ctx context.Context, call fantasy.ToolCall) (fantas
 		return fantasy.ToolResponse{}, err
 	}
 	wire := b.builtin[call.Name]
-	input, path, err := translateCLIInput(wire, call.Input)
+	input, path, err := clibridge.TranslateCLIInput(wire, call.Input)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
@@ -100,58 +96,4 @@ func (b *cliToolBridge) Call(ctx context.Context, call fantasy.ToolCall) (fantas
 		response.Content = cliprovider.FilterBridgeRead(path, response.Content)
 	}
 	return response, err
-}
-
-func translateCLIInput(wire, input string) (string, string, error) {
-	var params map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(input), &params); err != nil {
-		return "", "", err
-	}
-	if params == nil {
-		return "", "", fmt.Errorf("CLI input must be an object")
-	}
-	path := ""
-	switch wire {
-	case "Read":
-		var read struct {
-			Path  string `json:"path"`
-			Start int    `json:"start_line"`
-			End   int    `json:"end_line"`
-		}
-		if err := json.Unmarshal([]byte(input), &read); err != nil {
-			return "", "", err
-		}
-		if read.Start < 0 || read.End < 0 {
-			return "", "", fmt.Errorf("Read range cannot be negative")
-		}
-		start := max(1, read.Start)
-		if read.End != 0 && read.End < start {
-			return "", "", fmt.Errorf("Read end precedes start")
-		}
-		limit := tools.DefaultReadLimit
-		if read.End != 0 {
-			limit = read.End - start + 1
-		}
-		raw, err := json.Marshal(tools.ViewParams{FilePath: read.Path, Offset: start - 1, Limit: limit})
-		return string(raw), read.Path, err
-	case "Write":
-		params["file_path"] = params["path"]
-		delete(params, "path")
-	case "Grep":
-		if glob, ok := params["glob"]; ok {
-			params["include"] = glob
-			delete(params, "glob")
-		}
-	case "Bash":
-		for _, forbidden := range []string{"timeout", "run_in_background", "auto_background_after", "background"} {
-			if _, ok := params[forbidden]; ok {
-				return "", "", fmt.Errorf("CLI Bash does not accept %s", forbidden)
-			}
-		}
-	}
-	if wire == "" {
-		return input, path, nil
-	}
-	raw, err := json.Marshal(params)
-	return string(raw), path, err
 }

@@ -8,26 +8,48 @@ package agent
 import (
 	"context"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 )
+
+// arbiterState is the test seam's projection of the arbiter's per-session
+// state: only the fields tests may seed, written back under the original
+// lock.
+type arbiterState struct {
+	gate            GateFacts
+	autoResumes     int
+	overCap         map[int64]struct{}
+	chainLinks      int
+	chainClaims     map[string]struct{}
+	chainBatchRoots map[string]struct{}
+	chainNoticed    bool
+}
 
 // seedArbiterState runs fn over sessionID's arbiter state under the lock:
 // the single test constructor for hand-set launch facts.
 func (c *coordinator) seedArbiterState(sessionID string, fn func(*arbiterState)) {
-	c.arb.mu.Lock()
-	defer c.arb.mu.Unlock()
-	fn(c.arb.stateLocked(sessionID))
+	c.arb.SeedStateForTest(sessionID, func(v *drainctl.StateView) {
+		s := &arbiterState{
+			gate:            v.Gate,
+			autoResumes:     v.AutoResumes,
+			overCap:         v.OverCap,
+			chainLinks:      v.ChainLinks,
+			chainClaims:     v.ChainClaims,
+			chainBatchRoots: v.ChainBatchRoots,
+			chainNoticed:    v.ChainNoticed,
+		}
+		fn(s)
+		v.Gate, v.AutoResumes, v.OverCap, v.ChainLinks, v.ChainClaims, v.ChainBatchRoots, v.ChainNoticed =
+			s.gate, s.autoResumes, s.overCap, s.chainLinks, s.chainClaims, s.chainBatchRoots, s.chainNoticed
+	})
 }
 
-// readArbiterState copies sessionID's arbiter state for assertions.
-func (c *coordinator) readArbiterState(sessionID string) arbiterState {
-	c.arb.mu.Lock()
-	defer c.arb.mu.Unlock()
-	s := c.arb.bySession[sessionID]
-	if s == nil {
-		return arbiterState{}
-	}
-	cp := *s
-	return cp
+// setArbiterClockForTest installs the arbiter's injectable clock via
+// drainctl.Arbiter.SetClockForTest (the test-only seam; the setter is
+// guarded to test binaries, reads keep their existing nil fallback and
+// timing).
+func (c *coordinator) setArbiterClockForTest(fn func() time.Time) {
+	c.arb.SetClockForTest(fn)
 }
 
 // bumpConsecutiveResume is the test fixture for "one more auto-resume

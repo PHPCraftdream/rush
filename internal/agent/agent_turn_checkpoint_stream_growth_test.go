@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func TestTurnCheckpointWriterGetsFreshDeadlinePerWrite(t *testing.T) {
 	deadlines := make(chan time.Time, 2)
 	messages := &checkpointDeadlineMessages{Service: env.messages, deadlines: deadlines}
 	a := &sessionAgent{messages: messages, checkpointInterval: 10 * time.Millisecond}
-	cp := newTurnCheckpointWriter(a, sess.ID, ctx, &lock, &current, &stallClock{})
+	cp := newTurnCheckpointWriter(a, sess.ID, ctx, &lock, &current, &drainctl.StallClock{})
 	cp.start()
 	defer cp.stop()
 
@@ -100,7 +101,7 @@ func TestTurnCheckpointWriterPersistsStreamingContentGrowth(t *testing.T) {
 			current := &msg
 			var lock sync.Mutex
 			a := &sessionAgent{messages: env.messages, checkpointInterval: 10 * time.Millisecond}
-			cp := newTurnCheckpointWriter(a, sess.ID, ctx, &lock, &current, &stallClock{})
+			cp := newTurnCheckpointWriter(a, sess.ID, ctx, &lock, &current, &drainctl.StallClock{})
 			cp.start()
 			defer cp.stop()
 

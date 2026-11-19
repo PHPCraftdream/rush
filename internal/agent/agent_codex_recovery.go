@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -182,7 +183,7 @@ func (a *sessionAgent) recoverCodexContext(ctx context.Context, call SessionAgen
 	if worker.Model.CatwalkCfg.ContextWindow <= 0 {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery requires known worker context metadata")
 	}
-	workerMaxOutput := effectiveMaxOutputTokens(worker.Model, 0)
+	workerMaxOutput := provauth.EffectiveMaxOutputTokens(worker.Model, 0)
 	if workerMaxOutput <= 0 || workerMaxOutput >= int64(worker.Model.CatwalkCfg.ContextWindow) {
 		return SessionAgentCall{}, false, errors.New("automatic context recovery requires known worker output reserve")
 	}
@@ -248,7 +249,7 @@ func cloneRecoveryAttachments(attachments []message.Attachment) []message.Attach
 
 func addRecoveryUsage(state *codexRecoveryState, usage fantasy.Usage) {
 	if state != nil {
-		state.Spent.Add(addStepUsageTokens(0, usage))
+		state.Spent.Add(provauth.AddStepUsageTokens(0, usage))
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -405,7 +406,7 @@ func (a *sessionAgent) generateTitle(ctx context.Context, sessionID string, user
 	// Google/OpenRouter/Vercel report InputTokens inclusive of cached tokens;
 	// normalize before costing, same as the main turn (agent_turn.go) and the
 	// keep-alive replay (recordCacheKeepAliveCost) already do.
-	usage := normalizeProviderUsage(model.Model.Provider(), resp.TotalUsage)
+	usage := provauth.NormalizeProviderUsage(model.Model.Provider(), resp.TotalUsage)
 	modelConfig := model.CatwalkCfg
 	cost := modelConfig.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
 		modelConfig.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +

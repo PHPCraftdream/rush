@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -38,7 +39,7 @@ func BenchmarkBuildSummaryPrompt(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				_ = buildSummaryPrompt(todos)
+				_ = provauth.BuildSummaryPrompt(todos)
 			}
 		})
 	}

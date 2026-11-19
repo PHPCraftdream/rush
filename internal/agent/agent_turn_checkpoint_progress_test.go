@@ -8,9 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
+
+// stallLastProgressForTest reads the clock's lastProgress via the drainctl
+// diagnostic snapshot seam.
+func stallLastProgressForTest(sc *drainctl.StallClock) int64 {
+	lp, _, _ := drainctl.StallSnapshot(sc)
+	return lp
+}
 
 func TestTurnCheckpointWriterMarksChangedSuccessfulWriteAsProgress(t *testing.T) {
 	env := testEnv(t)
@@ -21,9 +29,9 @@ func TestTurnCheckpointWriterMarksChangedSuccessfulWriteAsProgress(t *testing.T)
 	require.NoError(t, err)
 	current := &msg
 	var lock sync.Mutex
-	stall := &stallClock{}
+	stall := &drainctl.StallClock{}
 	const baseline = int64(123)
-	stall.lastProgress.Store(baseline)
+	drainctl.StallSetLastProgress(stall, baseline)
 	cp := newTurnCheckpointWriter(&sessionAgent{messages: env.messages, checkpointInterval: 5 * time.Millisecond}, sess.ID, ctx, &lock, &current, stall)
 	cp.start()
 	defer cp.stop()
@@ -31,7 +39,7 @@ func TestTurnCheckpointWriterMarksChangedSuccessfulWriteAsProgress(t *testing.T)
 	lock.Lock()
 	current.AppendContent("persisted progress")
 	lock.Unlock()
-	require.Eventually(t, func() bool { return stall.lastProgress.Load() != baseline }, time.Second, 5*time.Millisecond,
+	require.Eventually(t, func() bool { return stallLastProgressForTest(stall) != baseline }, time.Second, 5*time.Millisecond,
 		"a changed checkpoint should mark progress only after its successful update")
 
 	updated, err := env.messages.Get(ctx, msg.ID)
@@ -51,9 +59,9 @@ func TestTurnCheckpointWriterDoesNotMarkUnchangedOrFailedWritesAsProgress(t *tes
 	require.NoError(t, err)
 	current := &msg
 	var lock sync.Mutex
-	stall := &stallClock{}
+	stall := &drainctl.StallClock{}
 	const baseline = int64(123)
-	stall.lastProgress.Store(baseline)
+	drainctl.StallSetLastProgress(stall, baseline)
 	messages := &checkpointFailingMessages{Service: env.messages}
 	cp := newTurnCheckpointWriter(&sessionAgent{messages: messages, checkpointInterval: 5 * time.Millisecond}, sess.ID, ctx, &lock, &current, stall)
 	cp.start()
@@ -61,13 +69,13 @@ func TestTurnCheckpointWriterDoesNotMarkUnchangedOrFailedWritesAsProgress(t *tes
 
 	// An unchanged ticker tick has no snapshot to persist and is not progress.
 	time.Sleep(30 * time.Millisecond)
-	require.Equal(t, baseline, stall.lastProgress.Load())
+	require.Equal(t, baseline, stallLastProgressForTest(stall))
 
 	lock.Lock()
 	current.AppendContent("not persisted")
 	lock.Unlock()
 	require.Eventually(t, func() bool { return messages.calls.Load() > 0 }, time.Second, 5*time.Millisecond)
-	require.Equal(t, baseline, stall.lastProgress.Load(), "failed checkpoint writes must not extend the stall deadline")
+	require.Equal(t, baseline, stallLastProgressForTest(stall), "failed checkpoint writes must not extend the stall deadline")
 }
 
 type checkpointFailingMessages struct {

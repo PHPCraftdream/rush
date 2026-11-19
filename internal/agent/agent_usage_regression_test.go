@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -13,10 +14,10 @@ import (
 func TestAddStepUsageTokensUsesLargestTotal(t *testing.T) {
 	// Revert-check: removing TotalTokens from the per-step cap calculation
 	// makes the first assertion return only 15 instead of 30.
-	got := addStepUsageTokens(0, fantasy.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 30})
+	got := provauth.AddStepUsageTokens(0, fantasy.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 30})
 	require.EqualValues(t, 30, got, "provider-reported total includes tokens absent from the parts")
 
-	got = addStepUsageTokens(0, fantasy.Usage{
+	got = provauth.AddStepUsageTokens(0, fantasy.Usage{
 		InputTokens: 20, CacheReadTokens: 4, CacheCreationTokens: 6, OutputTokens: 10, TotalTokens: 25,
 	})
 	require.EqualValues(t, 40, got, "parts must win when their sum exceeds TotalTokens")

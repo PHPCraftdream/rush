@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth/copilot"
@@ -21,6 +22,21 @@ func oauthBearerStore(t *testing.T, id string, token *oauth.Token) *config.Confi
 	store := config.NewLibraryStore(&config.Config{Options: &config.Options{}}, t.TempDir())
 	store.SetProviderRuntimeConfig(id, config.ProviderConfig{ID: id, Type: "openai-compat", OAuthToken: token})
 	return store
+}
+
+// countedLiveOAuthStore counts provauth token-source lookups while always delegating to the live
+// store: ConfigStore.Config() returns snapshot pointers and SetProviderRuntimeConfig publishes a
+// fresh config copy, so caching cfg once would go stale across token rotation and logout.
+type countedLiveOAuthStore struct {
+	store     *config.ConfigStore
+	reads     int
+	refreshes int
+}
+
+func (s *countedLiveOAuthStore) Config() *config.Config { s.reads++; return s.store.Config() }
+func (s *countedLiveOAuthStore) RefreshOAuthTokenWithClient(ctx context.Context, scope config.Scope, pc config.ProviderConfig, client *http.Client) error {
+	s.refreshes++
+	return s.store.RefreshOAuthTokenWithClient(ctx, scope, pc, client)
 }
 
 func TestOAuthBearerBuilderRotation(t *testing.T) {
@@ -53,7 +69,15 @@ func TestOAuthBearerBuilderRotation(t *testing.T) {
 			wrapped := coord.withOAuthBearerClient(pc, original)
 			require.NotSame(t, original, wrapped)
 			require.Equal(t, original.Timeout, wrapped.Timeout)
-			require.Same(t, original.Transport, wrapped.Transport.(*oauthBearerTransport).base)
+			require.Same(t, original.Transport, wrapped.Transport.(*provauth.BearerTransport).Base())
+			// Install a counted live source BEFORE provider construction: Copilot copies/retains the
+			// inner transport at build time, so a post-build rewrap of `wrapped` never reaches the model.
+			// The counted store delegates Config() to the live store on every call: store.Config()
+			// returns a snapshot pointer and SetProviderRuntimeConfig publishes a fresh copy, so a
+			// cached cfg would go stale across token rotation and logout.
+			oauthLookupStore := &countedLiveOAuthStore{store: store}
+			tr := wrapped.Transport.(*provauth.BearerTransport)
+			wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(id, oauthLookupStore, coord.resolveProviderHTTPClient), id)
 			provider, err := coord.buildOpenaiCompatProvider(store.Config(), server.URL, "static", headers, nil, id, true, wrapped)
 			require.NoError(t, err)
 			model, err := provider.LanguageModel(t.Context(), "test-model")
@@ -76,14 +100,13 @@ func TestOAuthBearerBuilderRotation(t *testing.T) {
 			}
 			pc.OAuthToken = nil
 			store.SetProviderRuntimeConfig(id, pc)
-			oauthLookupStore := &fakeOAuthTokenStore{cfg: store.Config()}
-			wrapped.Transport.(*oauthBearerTransport).source.(*oauthTokenSource).store = oauthLookupStore
+			readsBeforeLogout := oauthLookupStore.reads
 			_, err = model.Generate(t.Context(), fantasy.Call{})
 			require.ErrorContains(t, err, "OAuth credentials unavailable")
 			var oauthProviderError *fantasy.ProviderError
 			require.True(t, errors.As(err, &oauthProviderError))
 			require.Equal(t, http.StatusUnauthorized, oauthProviderError.StatusCode)
-			require.Equal(t, 1, oauthLookupStore.reads)
+			require.Equal(t, readsBeforeLogout+1, oauthLookupStore.reads)
 			require.Zero(t, oauthLookupStore.refreshes)
 			require.Len(t, auth, 2)
 		})
@@ -125,7 +148,7 @@ func TestOAuthBearerEligibilityAndClientCopy(t *testing.T) {
 				require.NotSame(t, original, wrapped)
 				require.Equal(t, original.Timeout, wrapped.Timeout)
 				require.ErrorIs(t, wrapped.CheckRedirect(nil, nil), http.ErrUseLastResponse)
-				require.Same(t, http.DefaultTransport, wrapped.Transport.(*oauthBearerTransport).base)
+				require.Same(t, http.DefaultTransport, wrapped.Transport.(*provauth.BearerTransport).Base())
 			} else {
 				require.Same(t, original, wrapped)
 			}
@@ -139,7 +162,8 @@ func TestOAuthBearerEligibilityAndClientCopy(t *testing.T) {
 	pc := config.ProviderConfig{ID: "copilot", OAuthToken: &oauth.Token{AccessToken: "memory"}}
 	wrapped := coord.withOAuthBearerClient(pc, nil)
 	require.NotSame(t, http.DefaultClient, wrapped)
-	require.IsType(t, &oauthBearerTransport{}, wrapped.Transport)
+	var wantTransport *provauth.BearerTransport
+	require.IsType(t, wantTransport, wrapped.Transport)
 }
 
 func TestOAuthBearerAPIKeyAndStaticBuilderFallback(t *testing.T) {
@@ -190,20 +214,37 @@ func TestOAuthBearerCodexUnchanged(t *testing.T) {
 	require.ErrorContains(t, err, "openai-codex OAuth credentials unavailable")
 }
 
-func TestOAuthTokenSourceNestedSnapshot(t *testing.T) {
-	// Revert-check: token snapshots and used-token forwarding copy nested client metadata rather than caller pointers.
-	token := oauth.Token{AccessToken: "access", Client: &oauth.OAuthClient{ClientID: "original"}}
-	store := &fakeOAuthTokenStore{cfg: oauthAdapterConfig(&token)}
-	source := &oauthTokenSource{providerID: "copilot", store: store, resolve: func(*config.Config, config.ProviderConfig) (*http.Client, error) { return nil, nil }}
-	snapshot, ok := source.Current()
+func TestOAuthBearerBuilderLoggedOut1302(t *testing.T) {
+	store := oauthBearerStore(t, "copilot", &oauth.Token{AccessToken: "synthetic"})
+	coord := &coordinator{cfg: store}
+	pc, ok := store.Config().Providers.Get("copilot")
 	require.True(t, ok)
-	snapshot.Client.ClientID = "snapshot"
-	require.Equal(t, "original", token.Client.ClientID)
-	store.refresh = func(_ context.Context, _ config.Scope, pc config.ProviderConfig, _ *http.Client) error {
-		require.Equal(t, "snapshot", pc.OAuthToken.Client.ClientID)
-		pc.OAuthToken.Client.ClientID = "store"
-		return nil
-	}
-	require.NoError(t, source.Refresh(t.Context(), snapshot))
-	require.Equal(t, "snapshot", snapshot.Client.ClientID)
+	sends := 0
+	client := &http.Client{Transport: oauthBearerRT(func(*http.Request) (*http.Response, error) {
+		sends++
+		return nil, errors.New("unexpected outbound send")
+	})}
+	wrapped := coord.withOAuthBearerClient(pc, client)
+	require.NotSame(t, client, wrapped)
+	source := &rootOAuthBearerSource{token: oauth.Token{AccessToken: "old"}, present: true}
+	tr := wrapped.Transport.(*provauth.BearerTransport)
+	wrapped.Transport = provauth.NewBearerTransport(tr.Base(), source, pc.ID)
+	provider, err := coord.buildOpenaiCompatProvider(store.Config(), "http://local.invalid", "synthetic", nil, nil, pc.ID, true, wrapped)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer cancel()
+	model, err := provider.LanguageModel(ctx, "test-model")
+	require.NoError(t, err)
+	source.set(oauth.Token{}, false)
+	start := time.Now()
+	_, err = model.Generate(ctx, fantasy.Call{})
+	elapsed := time.Since(start)
+	require.ErrorContains(t, err, "copilot OAuth credentials unavailable")
+	var providerErr *fantasy.ProviderError
+	require.True(t, errors.As(err, &providerErr))
+	require.Equal(t, http.StatusUnauthorized, providerErr.StatusCode)
+	require.EqualValues(t, 1, source.lookups.Load())
+	require.Zero(t, source.refreshes.Load())
+	require.Zero(t, sends)
+	require.Less(t, elapsed, 2*time.Second)
 }
