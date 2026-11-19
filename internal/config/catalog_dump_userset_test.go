@@ -35,7 +35,7 @@ func setupCodexCatalogDumpTest(t *testing.T) catwalk.Model {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
 	live := codexLiveRow()
-	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, "chatgpt-account", []catwalk.Model{live})
+	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, discover.CodexCatalogIdentity("chatgpt-account", "rush-access-token"), []catwalk.Model{live})
 	return live
 }
 
