@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -152,7 +153,7 @@ func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryS
 		return nil, err
 	}
 	return &SummarizeSnapshot{
-		Model: model, ProviderOptions: getProviderOptions(state.Session.ID, model, providerCfg),
+		Model: model, ProviderOptions: modelkit.GetProviderOptions(state.Session.ID, model, providerCfg),
 		PromptPrefix: providerCfg.SystemPromptPrefix, ProviderCfg: providerCfg,
 	}, nil
 }

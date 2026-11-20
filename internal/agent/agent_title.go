@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 
@@ -181,7 +182,7 @@ func titleProviderOptions(model Model) *fantasy.ProviderOptions {
 		return nil
 	}
 	extraBody := map[string]any{}
-	if zai53ModelIDs[strings.ToLower(model.ModelCfg.Model)] {
+	if modelkit.IsZAI53Model(strings.ToLower(model.ModelCfg.Model)) {
 		extraBody["thinking"] = map[string]any{"type": "enabled"}
 		extraBody["reasoning_effort"] = "low"
 	} else {

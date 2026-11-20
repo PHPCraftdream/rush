@@ -11,6 +11,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -67,9 +68,9 @@ func runInternalCallsFor(t *testing.T, ctx context.Context, providerID string) i
 // Revert-check: removing the `if agentCall.IsDrain { maxRetries = 0 }` guard
 // makes the Drain run three times and this test goes red.
 func TestRunInternal_DrainIsOneAttempt(t *testing.T) {
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	require.Equal(t, 3, runInternalCallsFor(t, t.Context(), "test-ordinary-retry"),
 		"precondition: an ordinary turn IS retried by the coordinator")

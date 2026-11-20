@@ -17,6 +17,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -147,9 +148,9 @@ func TestRunInternal_NoRetryAfterAdmissionRefusal_WithForeignStalledMessage(t *t
 	const providerID = "test-busy-refusal"
 	const prompt = "A's reviewer prompt"
 
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
@@ -292,9 +293,9 @@ func TestRunInternal_RetryReusesUserMessage_NoDuplicate(t *testing.T) {
 	const providerID = "test-retry-dup"
 	const prompt = "investigate the flaky provider"
 
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
@@ -404,9 +405,9 @@ func TestRunInternal_SuccessfulResultNotClobberedByConcurrentStalledMessage(t *t
 	const providerID = "test-success-clobber"
 	const prompt = "A's prompt that succeeds on the first attempt"
 
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
@@ -509,9 +510,9 @@ func TestRunInternal_TransientContinuationUsesOwnPartialNotNewerForeignRow(t *te
 	const providerID = "test-own-partial"
 	const prompt = "A's flaky prompt"
 
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)
@@ -634,9 +635,9 @@ func TestRunInternal_QueuedAttemptNotRetriedOnStaleEvidence(t *testing.T) {
 	const providerID = "test-queued-stale"
 	const prompt = "A's prompt that gets queued"
 
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)

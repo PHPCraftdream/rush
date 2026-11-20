@@ -16,8 +16,7 @@ func TestAwaitTimerEraRejectsLateInstall(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			fx := newSchedFx(t)
 			trace := batchAgentTraceFor(t)
-			c := &coordinator{wakeScheduler: newWakeScheduler(fx.store, "test", nil)}
-			c.wakeScheduler.now = fx.now
+			c := &coordinator{wakeScheduler: fx.scheduler()}
 			ctx, cancel := context.WithCancel(fx.ctx)
 			defer cancel()
 			model, err := fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{Owner: "owner", Kind: sessionwake.WakeKindOnce, Message: "model timer", RunAt: fx.now().Add(time.Hour)}, fx.now())
@@ -79,8 +78,7 @@ func TestAwaitTimerEraRejectsLateInstall(t *testing.T) {
 func TestAwaitTimerEraReplacesOldTimer(t *testing.T) {
 	fx := newSchedFx(t)
 	trace := batchAgentTraceFor(t)
-	c := &coordinator{wakeScheduler: newWakeScheduler(fx.store, "test", nil)}
-	c.wakeScheduler.now = fx.now
+	c := &coordinator{wakeScheduler: fx.scheduler()}
 	create := func() (string, error) {
 		v, err := c.ScheduleWakeOnceDelay(fx.ctx, "owner", 3600, sessionwake.AwaitTasksMaxWaitPrefix)
 		trace.addf("create id=%s err=%v", v.ScheduleID, err)
@@ -103,8 +101,7 @@ func TestAwaitTimerEraReplacesOldTimer(t *testing.T) {
 func TestAwaitTimerEraOldFailureCannotClearNewSleep(t *testing.T) {
 	fx := newSchedFx(t)
 	trace := batchAgentTraceFor(t)
-	c := &coordinator{wakeScheduler: newWakeScheduler(fx.store, "test", nil)}
-	c.wakeScheduler.now = fx.now
+	c := &coordinator{wakeScheduler: fx.scheduler()}
 	var current string
 	_, err := c.armAwait(fx.ctx, "owner", true, func() (string, error) {
 		var err error

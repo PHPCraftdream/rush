@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 )
 
 // TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections keeps
@@ -19,7 +21,7 @@ func TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections(t *testin
 	contract.Tools = &own
 	contract.Inherited = [][]string{{"view"}, {}}
 
-	inherited, err := inheritedRoleCeilings(contract)
+	inherited, err := modelkit.InheritedRoleCeilings(contract)
 	require.NoError(t, err)
 	require.Equal(t, [][]string{{"view"}, {}, {"view", "grep"}}, inherited)
 	require.NotNil(t, inherited[1], "an explicit empty inherited cap must remain deny-all")
@@ -36,7 +38,7 @@ func TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections(t *testin
 
 	contract.Tools = nil
 	contract.Inherited = nil
-	inherited, err = inheritedRoleCeilings(contract)
+	inherited, err = modelkit.InheritedRoleCeilings(contract)
 	require.NoError(t, err)
 	require.NotNil(t, inherited, "preserve the existing non-nil empty collection shape")
 	require.Empty(t, inherited)

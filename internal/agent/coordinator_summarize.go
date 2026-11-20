@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -108,7 +109,7 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string, snapshot 
 		}
 		currentSnapshot = &SummarizeSnapshot{
 			Model:           freshModel,
-			ProviderOptions: getProviderOptions(sessionID, freshModel, freshProviderCfg),
+			ProviderOptions: modelkit.GetProviderOptions(sessionID, freshModel, freshProviderCfg),
 			PromptPrefix:    currentSnapshot.PromptPrefix,
 			ProviderCfg:     freshProviderCfg,
 		}
@@ -150,7 +151,7 @@ func (c *coordinator) buildSummarizeSnapshot(ctx context.Context, sessionID stri
 	}
 
 	// Build provider options from the resolved model.
-	opts := getProviderOptions(sessionID, resolved.smart, providerCfg)
+	opts := modelkit.GetProviderOptions(sessionID, resolved.smart, providerCfg)
 
 	// Use the prompt prefix from the resolved snapshot (provider config's
 	// prefix, already set by resolveSessionModels).

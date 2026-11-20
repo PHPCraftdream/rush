@@ -13,7 +13,7 @@
 // counts from the SCHEDULED time, SCHED-3), and a machine that was off
 // wakes nobody — the notice is simply delivered after the next start of
 // this worker, on the next due tick.
-package agent
+package wakectl
 
 import (
 	"context"
@@ -36,11 +36,11 @@ const wakeSchedulerMaxWait = time.Minute
 // (immediately after, via the recomputed NextDue) picks up more.
 const wakeSchedulerClaimBatch = 50
 
-// wakeScheduler is the single per-process timer over wake_schedules.
+// Scheduler is the single per-process timer over wake_schedules.
 // now/after are injectable so tests are deterministic without sleeps;
 // wake is the delivery callback (production: coordinator.wakeSession in a
 // goroutine, so a long Drain turn never stalls the timer loop).
-type wakeScheduler struct {
+type Scheduler struct {
 	store *sessionwake.WakeScheduleStore
 	// leaseOwner identifies this scheduler instance in wake_schedules'
 	// lease columns; unique per Start so a dead worker's leases expire
@@ -64,70 +64,22 @@ type wakeScheduler struct {
 	stopOnce       sync.Once
 }
 
-// WakeScheduleController is the optional interface the App asserts the
-// Coordinator to when wiring the stage-4b wake-schedule worker
-// (internal/app). Deliberately NOT part of the Coordinator interface
-// itself: every test fake implementing Coordinator would have to grow the
-// two methods for nothing (same reasoning as
-// coordinator_work_scope.go's own not-on-the-interface note).
-type WakeScheduleController interface {
-	// SetWakeScheduleStore hands the coordinator the durable wake-schedule
-	// store and starts the stage-4b worker over it. nil (or a second call)
-	// is a no-op.
-	SetWakeScheduleStore(store *sessionwake.WakeScheduleStore)
-	// StopWakeScheduler terminates the worker; safe to call repeatedly
-	// and on a coordinator that never got a store.
-	StopWakeScheduler()
-}
-
-// SetWakeScheduleStore builds this coordinator's wake scheduler over store
-// and starts it. The wake delivery is coordinator.wakeSession(ctx, id,
-// fact=true) in a goroutine — the same path every other durable wake=1
-// session_notices row is delivered by (supervision, wake_only timeouts,
-// async completions); detached so a long Drain turn never stalls the timer
-// loop.
-func (c *coordinator) SetWakeScheduleStore(store *sessionwake.WakeScheduleStore) {
-	if c == nil || store == nil || c.wakeScheduler != nil {
-		return
-	}
-	owner := "wakesched-" + uuid.NewString()
-	s := newWakeScheduler(store, owner, func(ctx context.Context, sessionID string) {
-		if err := c.wakeSession(ctx, sessionID, true); err != nil {
-			slog.Debug("wake scheduler: delivery attempt did not complete", "session_id", sessionID, "err", err)
+func NewScheduler(store *sessionwake.WakeScheduleStore, sink SessionWakeDispatcher, now func() time.Time, after func(time.Duration) <-chan time.Time) *Scheduler {
+	return buildScheduler(store, "wakesched-"+uuid.NewString(), func(ctx context.Context, id string) {
+		if err := sink.WakeSession(ctx, id, true); err != nil {
+			slog.Debug("wake scheduler: delivery attempt did not complete", "session_id", id, "err", err)
 		}
-	})
-	c.wakeScheduler = s
-	s.Start()
+	}, now, after)
 }
 
-// StopWakeScheduler stops the wake-schedule worker goroutine, waiting for
-// its exit. Part of App shutdown ordering: it must finish before the DB is
-// released. Nil-safe.
-func (c *coordinator) StopWakeScheduler() {
-	if c == nil {
-		return
-	}
-	c.wakeScheduler.Stop()
-}
-
-// WakeSchedulerNotify recomputes the worker's timer after an in-process
-// schedule change (the stage-4c tools' hook; see wakeScheduler.Notify).
-// No-op when the coordinator has no scheduler.
-func (c *coordinator) WakeSchedulerNotify() {
-	if c == nil {
-		return
-	}
-	c.wakeScheduler.Notify()
-}
-
-func newWakeScheduler(store *sessionwake.WakeScheduleStore, leaseOwner string, wake func(ctx context.Context, sessionID string)) *wakeScheduler {
+func buildScheduler(store *sessionwake.WakeScheduleStore, leaseOwner string, wake func(context.Context, string), now func() time.Time, after func(time.Duration) <-chan time.Time) *Scheduler {
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
-	return &wakeScheduler{
+	return &Scheduler{
 		store:          store,
 		leaseOwner:     leaseOwner,
 		wake:           wake,
-		now:            time.Now,
-		after:          time.After,
+		now:            now,
+		after:          after,
 		wakeCh:         make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 		done:           make(chan struct{}),
@@ -138,14 +90,14 @@ func newWakeScheduler(store *sessionwake.WakeScheduleStore, leaseOwner string, w
 }
 
 // Start launches the worker goroutine. Idempotent.
-func (s *wakeScheduler) Start() {
+func (s *Scheduler) Start() {
 	s.startOnce.Do(func() { go s.run() })
 }
 
 // Stop terminates the worker, cancels its delivery context, and waits for
 // its goroutine and every wake delivery it dispatched to return. Nil-safe,
 // idempotent.
-func (s *wakeScheduler) Stop() {
+func (s *Scheduler) Stop() {
 	if s == nil {
 		return
 	}
@@ -159,12 +111,12 @@ func (s *wakeScheduler) Stop() {
 
 // Notify asks the run loop to recompute the nearest due time NOW — the
 // recompute hook the stage-4c tools (wakein/wakeon/loop/wake_cancel) call
-// after CreateSchedule/CancelSchedule. Reschedule is an alias of the same
+// after CreateSchedule/CancelSchedule. reschedule is an alias of the same
 // operation: the timer's only state is NextDue, so "something changed" and
 // "reschedule" are one and the same signal.
-func (s *wakeScheduler) Notify() { s.Reschedule() }
+func (s *Scheduler) Notify() { s.reschedule() }
 
-func (s *wakeScheduler) Reschedule() {
+func (s *Scheduler) reschedule() {
 	if s == nil {
 		return
 	}
@@ -174,7 +126,7 @@ func (s *wakeScheduler) Reschedule() {
 	}
 }
 
-func (s *wakeScheduler) run() {
+func (s *Scheduler) run() {
 	defer close(s.done)
 	// Startup recovery (SCHED-2/07): release leases a dead scheduler left
 	// behind, then let the first NextDue read below deliver whatever came
@@ -200,7 +152,7 @@ func (s *wakeScheduler) run() {
 // nextWait returns how long the timer should sleep: until the earliest due
 // schedule, capped at wakeSchedulerMaxWait so cross-process changes are
 // seen even without a Notify.
-func (s *wakeScheduler) nextWait() time.Duration {
+func (s *Scheduler) nextWait() time.Duration {
 	d := wakeSchedulerMaxWait
 	next, err := s.store.NextDue(context.Background())
 	if err != nil {
@@ -222,7 +174,7 @@ func (s *wakeScheduler) nextWait() time.Duration {
 // fireDue claims and fires every currently due occurrence, then returns;
 // the run loop recomputes NextDue right after (a loop's advanced
 // next_run_at and a once schedule's completion both show up there).
-func (s *wakeScheduler) fireDue() {
+func (s *Scheduler) fireDue() {
 	now := s.now()
 	claimed, err := s.store.ClaimDue(context.Background(), s.leaseOwner, now, wakeSchedulerClaimBatch, session.WakeLeaseTTL)
 	if err != nil {
@@ -257,4 +209,19 @@ func (s *wakeScheduler) fireDue() {
 			s.wake(s.dispatchCtx, owner)
 		}(row.OwnerSessionID)
 	}
+}
+
+func (s *Scheduler) Now() time.Time { return s.now() }
+
+func (s *Scheduler) CancelSchedule(ctx context.Context, owner, id string, now time.Time) error {
+	return s.store.CancelSchedule(ctx, owner, id, now)
+}
+
+func SetWakeScheduleStore(slot **Scheduler, store *sessionwake.WakeScheduleStore, sink SessionWakeDispatcher) {
+	if slot == nil || store == nil || *slot != nil {
+		return
+	}
+	scheduler := NewScheduler(store, sink, time.Now, time.After)
+	*slot = scheduler
+	scheduler.Start()
 }

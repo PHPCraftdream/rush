@@ -1,6 +1,6 @@
-package agent
+package modelkit
 
-// getProviderOptions reasoning-effort mapping tests: anthropic/bedrock
+// GetProviderOptions reasoning-effort mapping tests: anthropic/bedrock
 // effort plumbing, the upstream first-level fallback, and the fork's ZAI
 // and DeepSeek thinking-mode defaults.
 
@@ -31,7 +31,7 @@ func TestGetProviderOptionsReasoningEffort(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			model := Model{
+			model := providerModel{
 				CatwalkCfg: catwalk.Model{
 					ID:              "claude-opus-4-7",
 					CanReason:       true,
@@ -44,7 +44,7 @@ func TestGetProviderOptionsReasoningEffort(t *testing.T) {
 			}
 			providerCfg := config.ProviderConfig{ID: "test", Type: tc.providerType}
 
-			opts := getProviderOptions("test-session", model, providerCfg)
+			opts := GetProviderOptions("test-session", model, providerCfg)
 
 			raw, ok := opts[anthropic.Name]
 			require.True(t, ok, "options should be keyed under anthropic.Name for type %q", tc.providerType)
@@ -58,14 +58,14 @@ func TestGetProviderOptionsReasoningEffort(t *testing.T) {
 
 // Ported from upstream f75435a2: when a reasoning-capable model has no
 // default_reasoning_effort configured and the user hasn't selected one,
-// getProviderOptions must fall back to the first configured reasoning
+// GetProviderOptions must fall back to the first configured reasoning
 // level instead of silently disabling reasoning. Uses the openai branch,
 // the same path f75435a2 itself exercises upstream — the fork's own
 // ZAI/GLM openaicompat mapping (a fork-owned block, not part of this
 // upstream commit) has its own analogous default-on behavior, covered
 // separately below.
 func TestGetProviderOptionsReasoningEffortFallback(t *testing.T) {
-	model := Model{
+	model := providerModel{
 		CatwalkCfg: catwalk.Model{
 			ID:              "chat-completions-test",
 			CanReason:       true,
@@ -77,7 +77,7 @@ func TestGetProviderOptionsReasoningEffortFallback(t *testing.T) {
 	}
 	providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
 
-	opts := getProviderOptions("test-session", model, providerCfg)
+	opts := GetProviderOptions("test-session", model, providerCfg)
 
 	raw, ok := opts[openai.Name]
 	require.True(t, ok)
@@ -88,7 +88,7 @@ func TestGetProviderOptionsReasoningEffortFallback(t *testing.T) {
 }
 
 func TestGetProviderOptionsResponsesReasoningEffortFallback(t *testing.T) {
-	model := Model{
+	model := providerModel{
 		CatwalkCfg: catwalk.Model{
 			ID:              "gpt-5-test",
 			CanReason:       true,
@@ -98,7 +98,7 @@ func TestGetProviderOptionsResponsesReasoningEffortFallback(t *testing.T) {
 	}
 	providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
 
-	opts := getProviderOptions("test-session", model, providerCfg)
+	opts := GetProviderOptions("test-session", model, providerCfg)
 
 	raw, ok := opts[openai.Name]
 	require.True(t, ok)
@@ -111,14 +111,14 @@ func TestGetProviderOptionsResponsesReasoningEffortFallback(t *testing.T) {
 	require.Contains(t, parsed.Include, openai.IncludeReasoningEncryptedContent)
 }
 
-// The fork's ZAI/GLM mapping (getProviderOptions, InferenceProviderZAI case)
+// The fork's ZAI/GLM mapping (GetProviderOptions, InferenceProviderZAI case)
 // has no "unset" state on z.ai's own API — thinking is either on at some
 // level or off. An unset ReasoningEffort now defaults thinking ON at "high"
 // (z.ai recommends max/high for coding tasks) instead of silently disabling
 // reasoning; "off" is the explicit opt-out.
 func TestGetProviderOptionsZAIReasoningDefault(t *testing.T) {
-	newModel := func(effort string) Model {
-		return Model{
+	newModel := func(effort string) providerModel {
+		return providerModel{
 			CatwalkCfg: catwalk.Model{
 				ID:              "glm-5.2",
 				CanReason:       true,
@@ -134,7 +134,7 @@ func TestGetProviderOptionsZAIReasoningDefault(t *testing.T) {
 
 	extraBody := func(t *testing.T, effort string) map[string]any {
 		t.Helper()
-		opts := getProviderOptions("test-session", newModel(effort), providerCfg)
+		opts := GetProviderOptions("test-session", newModel(effort), providerCfg)
 		raw, ok := opts[openaicompat.Name]
 		require.True(t, ok)
 		parsed, ok := raw.(*openaicompat.ProviderOptions)
@@ -175,8 +175,8 @@ func TestGetProviderOptionsZAIReasoningDefault(t *testing.T) {
 // two spot checks (below) confirming it shares the same branch, not a
 // duplicate full matrix.
 func TestGetProviderOptionsZAI53ReasoningLevels(t *testing.T) {
-	newModel := func(modelID, effort string) Model {
-		return Model{
+	newModel := func(modelID, effort string) providerModel {
+		return providerModel{
 			CatwalkCfg: catwalk.Model{
 				ID:              modelID,
 				CanReason:       true,
@@ -193,7 +193,7 @@ func TestGetProviderOptionsZAI53ReasoningLevels(t *testing.T) {
 
 	extraBodyFor := func(t *testing.T, modelID, effort string) map[string]any {
 		t.Helper()
-		opts := getProviderOptions("test-session", newModel(modelID, effort), providerCfg)
+		opts := GetProviderOptions("test-session", newModel(modelID, effort), providerCfg)
 		raw, ok := opts[openaicompat.Name]
 		require.True(t, ok)
 		parsed, ok := raw.(*openaicompat.ProviderOptions)
@@ -254,11 +254,11 @@ func TestGetProviderOptionsUsesDiscoveredZAILevels(t *testing.T) {
 		{"none", "disabled", ""},
 	} {
 		t.Run("effort="+tc.effort, func(t *testing.T) {
-			model := Model{
+			model := providerModel{
 				CatwalkCfg: catwalk.Model{ID: id, CanReason: true, ReasoningLevels: provider.LiveEfforts[id].Levels},
 				ModelCfg:   config.SelectedModel{Provider: "zai", Model: id, ReasoningEffort: tc.effort},
 			}
-			raw := getProviderOptions("test-session", model, provider)[openaicompat.Name]
+			raw := GetProviderOptions("test-session", model, provider)[openaicompat.Name]
 			parsed, ok := raw.(*openaicompat.ProviderOptions)
 			require.True(t, ok)
 			thinking, ok := parsed.ExtraBody["thinking"].(map[string]any)
@@ -278,8 +278,8 @@ func TestGetProviderOptionsUsesDiscoveredZAILevels(t *testing.T) {
 // (added in 28ec4145) deliberately does not apply to DeepSeek — this test
 // pins that separation so the two providers can't drift back together.
 func TestGetProviderOptionsDeepSeekReasoningDefault(t *testing.T) {
-	newModel := func(effort string, think bool) Model {
-		return Model{
+	newModel := func(effort string, think bool) providerModel {
+		return providerModel{
 			CatwalkCfg: catwalk.Model{
 				ID:        "deepseek-reasoner",
 				CanReason: true,
@@ -295,7 +295,7 @@ func TestGetProviderOptionsDeepSeekReasoningDefault(t *testing.T) {
 
 	extraBody := func(t *testing.T, effort string, think bool) map[string]any {
 		t.Helper()
-		opts := getProviderOptions("test-session", newModel(effort, think), providerCfg)
+		opts := GetProviderOptions("test-session", newModel(effort, think), providerCfg)
 		raw, ok := opts[openaicompat.Name]
 		require.True(t, ok)
 		parsed, ok := raw.(*openaicompat.ProviderOptions)
@@ -338,7 +338,7 @@ func TestGetProviderOptionsDeepSeekReasoningDefault(t *testing.T) {
 	})
 }
 
-// getProviderOptions must set PromptCacheKey to the same stable, opaque hash
+// GetProviderOptions must set PromptCacheKey to the same stable, opaque hash
 // sessionHeaders uses, so OpenAI-direct sessions get session-stable cache
 // routing via the prompt_cache_key request parameter (not just headers).
 // Covers both the Chat Completions parse path (ParseOptions) and the
@@ -349,7 +349,7 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 	wantHash := session.HashID(sessionID)
 
 	t.Run("chat completions path sets stable prompt_cache_key", func(t *testing.T) {
-		model := Model{
+		model := providerModel{
 			// Fictional ID outside fantasy's Responses API generation classifier to
 			// force the Chat Completions parse path.
 			CatwalkCfg: catwalk.Model{ID: "chat-completions-test"},
@@ -358,7 +358,7 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
 		require.False(t, openai.IsResponsesModel(model.CatwalkCfg.ID))
 
-		opts := getProviderOptions(sessionID, model, providerCfg)
+		opts := GetProviderOptions(sessionID, model, providerCfg)
 
 		raw, ok := opts[openai.Name]
 		require.True(t, ok)
@@ -369,14 +369,14 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 	})
 
 	t.Run("responses API path sets stable prompt_cache_key", func(t *testing.T) {
-		model := Model{
+		model := providerModel{
 			CatwalkCfg: catwalk.Model{ID: "gpt-4.1"}, // Responses API model.
 			ModelCfg:   config.SelectedModel{Provider: "openai"},
 		}
 		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
 		require.True(t, openai.IsResponsesModel(model.CatwalkCfg.ID))
 
-		opts := getProviderOptions(sessionID, model, providerCfg)
+		opts := GetProviderOptions(sessionID, model, providerCfg)
 
 		raw, ok := opts[openai.Name]
 		require.True(t, ok)
@@ -387,13 +387,13 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 	})
 
 	t.Run("azure shares the openai prompt_cache_key behavior", func(t *testing.T) {
-		model := Model{
+		model := providerModel{
 			CatwalkCfg: catwalk.Model{ID: "chat-completions-test"},
 			ModelCfg:   config.SelectedModel{Provider: "azure"},
 		}
 		providerCfg := config.ProviderConfig{ID: "azure", Type: azure.Name}
 
-		opts := getProviderOptions(sessionID, model, providerCfg)
+		opts := GetProviderOptions(sessionID, model, providerCfg)
 
 		raw, ok := opts[openai.Name]
 		require.True(t, ok)
@@ -404,7 +404,7 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 	})
 
 	t.Run("user-supplied prompt_cache_key is not overwritten", func(t *testing.T) {
-		model := Model{
+		model := providerModel{
 			CatwalkCfg: catwalk.Model{ID: "chat-completions-test"},
 			ModelCfg: config.SelectedModel{
 				Provider: "openai",
@@ -415,7 +415,7 @@ func TestGetProviderOptionsPromptCacheKey(t *testing.T) {
 		}
 		providerCfg := config.ProviderConfig{ID: "openai", Type: openai.Name}
 
-		opts := getProviderOptions(sessionID, model, providerCfg)
+		opts := GetProviderOptions(sessionID, model, providerCfg)
 
 		raw, ok := opts[openai.Name]
 		require.True(t, ok)

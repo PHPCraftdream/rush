@@ -14,6 +14,7 @@ import (
 	"charm.land/fantasy/providers/openrouter"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -28,10 +29,10 @@ type modelsHost interface {
 	activeModelRole() config.SelectedModelType
 	modelCacheMu() *sync.Mutex
 	bumpModelCacheEpoch()
-	modelCache() modelPairCache
-	getCachedModelPair(key modelPairCacheKey) (cachedModelPair, bool, uint64)
+	modelCache() modelkit.ModelPairCache
+	getCachedModelPair(key modelkit.ModelPairCacheKey) (modelkit.CachedModelPair, bool, uint64)
 	buildCachedModelPair(ctx context.Context, cfg *config.Config, smartCfg, fastCfg config.SelectedModel) (Model, Model, error)
-	setCachedModelPairIfCurrent(key modelPairCacheKey, pair cachedModelPair, epoch uint64)
+	setCachedModelPairIfCurrent(key modelkit.ModelPairCacheKey, pair modelkit.CachedModelPair, epoch uint64)
 	buildCredentialModel(ctx context.Context, cfg *config.Config, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error)
 	buildProvider(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error)
 	buildTools(ctx context.Context, cfg *config.Config, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error)
@@ -58,10 +59,14 @@ func (h coordinatorModelsHost) activeModelRoleMu() *sync.Mutex {
 func (h coordinatorModelsHost) activeModelRole() config.SelectedModelType {
 	return h.coordinator.activeModelRole
 }
-func (h coordinatorModelsHost) modelCacheMu() *sync.Mutex  { return &h.coordinator.modelCacheMu }
-func (h coordinatorModelsHost) bumpModelCacheEpoch()       { h.coordinator.modelCacheEpoch++ }
-func (h coordinatorModelsHost) modelCache() modelPairCache { return h.coordinator.modelCache }
-func (h coordinatorModelsHost) getCachedModelPair(key modelPairCacheKey) (cachedModelPair, bool, uint64) {
+
+func (h coordinatorModelsHost) modelCacheMu() *sync.Mutex { return &h.coordinator.modelCacheMu }
+
+func (h coordinatorModelsHost) bumpModelCacheEpoch() { h.coordinator.modelCacheEpoch++ }
+
+func (h coordinatorModelsHost) modelCache() modelkit.ModelPairCache { return h.coordinator.modelCache }
+
+func (h coordinatorModelsHost) getCachedModelPair(key modelkit.ModelPairCacheKey) (modelkit.CachedModelPair, bool, uint64) {
 	return h.coordinator.getCachedModelPair(key)
 }
 
@@ -69,7 +74,7 @@ func (h coordinatorModelsHost) buildCachedModelPair(ctx context.Context, cfg *co
 	return h.coordinator.buildCachedModelPair(ctx, cfg, smartCfg, fastCfg)
 }
 
-func (h coordinatorModelsHost) setCachedModelPairIfCurrent(key modelPairCacheKey, pair cachedModelPair, epoch uint64) {
+func (h coordinatorModelsHost) setCachedModelPairIfCurrent(key modelkit.ModelPairCacheKey, pair modelkit.CachedModelPair, epoch uint64) {
 	h.coordinator.setCachedModelPairIfCurrent(key, pair, epoch)
 }
 
@@ -121,7 +126,7 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 		if err := customContract.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid custom role contract: %w", err)
 		}
-		selected, source, roleErr := roleContractPromptSource(cfg, customContract)
+		selected, source, roleErr := modelkit.RoleContractPromptSource(cfg, customContract)
 		if roleErr != nil {
 			return nil, roleErr
 		}
@@ -152,7 +157,7 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 		return nil, fmt.Errorf("custom role selection is missing its contract snapshot")
 	}
 	if customRequested {
-		model := cloneSelectedModel(smartCfg)
+		model := modelkit.CloneSelectedModel(smartCfg)
 		selectedModel, _, buildErr := p.buildModelsFromCfg(ctx, cfg, model, model, false)
 		if buildErr != nil {
 			return nil, fmt.Errorf("failed to build custom role model: %w", buildErr)
@@ -210,17 +215,7 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 	//
 	// Use the atomic generation from Snapshot(), not a separate Generation()
 	// call, to ensure consistency (task #341, P1-3).
-	pairCacheKey := modelPairCacheKey{
-		generation:     gen,
-		smartProvider:  smartCfg.Provider,
-		smartModel:     smartCfg.Model,
-		smartReasoning: smartCfg.ReasoningEffort,
-		smartTier:      smartCfg.ServiceTier,
-		fastProvider:   fastCfg.Provider,
-		fastModel:      fastCfg.Model,
-		fastReasoning:  fastCfg.ReasoningEffort,
-		fastTier:       fastCfg.ServiceTier,
-	}
+	pairCacheKey := modelkit.NewModelPairCacheKey(gen, smartCfg, fastCfg)
 
 	// p.host.modelCache() is nil for any *coordinator built as a struct literal
 	// instead of via NewCoordinator (several existing test fixtures in this
@@ -230,14 +225,14 @@ func (p *modelsComponent) resolveSessionModelsInternal(ctx context.Context, sess
 	var smartModel, fastModel Model
 	cached, cacheHit, cacheEpoch := p.host.getCachedModelPair(pairCacheKey)
 	if cacheHit {
-		smartModel, fastModel = cached.smart, cached.fast
+		smartModel, fastModel = cached.Smart, cached.Fast
 	}
 	if !cacheHit {
 		smartModel, fastModel, err = p.host.buildCachedModelPair(ctx, cfg, smartCfg, fastCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build models: %w", err)
 		}
-		p.host.setCachedModelPairIfCurrent(pairCacheKey, cachedModelPair{smart: smartModel, fast: fastModel}, cacheEpoch)
+		p.host.setCachedModelPairIfCurrent(pairCacheKey, modelkit.CachedModelPair{Smart: smartModel, Fast: fastModel}, cacheEpoch)
 	}
 
 	resolved := &resolvedOverrides{
@@ -556,7 +551,7 @@ func (p *modelsComponent) buildAgentModelsFromCfg(ctx context.Context, cfg *conf
 }
 
 func (p *modelsComponent) buildRoleContractModels(ctx context.Context, cfg *config.Config, contract *coresession.RoleContract) (Model, Model, error) {
-	selected, _, err := currentOrSnapshotRoleModel(cfg, contract)
+	selected, _, err := modelkit.CurrentOrSnapshotRoleModel(cfg, contract)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
@@ -721,14 +716,14 @@ func (p *modelsComponent) clearModelCache() {
 	if p.host.modelCache() == nil {
 		return
 	}
-	if cache, ok := p.host.modelCache().(*boundedModelPairCache); ok {
-		cache.clear()
+	if cache, ok := p.host.modelCache().(*modelkit.BoundedModelPairCache); ok {
+		cache.Clear()
 		return
 	}
 	if cache, ok := p.host.modelCache().(interface {
-		Reset(map[string]cachedModelPair)
+		Reset(map[string]modelkit.CachedModelPair)
 	}); ok {
-		cache.Reset(make(map[string]cachedModelPair))
+		cache.Reset(make(map[string]modelkit.CachedModelPair))
 	}
 }
 

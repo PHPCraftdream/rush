@@ -11,6 +11,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
@@ -212,7 +213,7 @@ func TestRunWithUnauthorizedRetry_RebuildFailuresAreTerminal(t *testing.T) {
 			}, tc.rebuild)
 
 			require.ErrorIs(t, err, tc.want)
-			require.False(t, coord.isUnauthorized(err))
+			require.False(t, modelkit.IsUnauthorized(err))
 			require.Equal(t, 1, calls)
 		})
 	}
@@ -387,7 +388,7 @@ func TestSummarize_RefreshRebuildFailureDoesNotRetry(t *testing.T) {
 
 	err = coord.Summarize(t.Context(), session.ID, snapshot)
 	require.Error(t, err)
-	require.False(t, coord.isUnauthorized(err))
+	require.False(t, modelkit.IsUnauthorized(err))
 	require.Contains(t, err.Error(), "failed to rebuild summarize model")
 	require.Equal(t, 1, calls)
 }

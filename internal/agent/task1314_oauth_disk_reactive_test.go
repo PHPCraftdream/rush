@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
@@ -180,7 +181,7 @@ func TestTask1314OAuthDiskReactiveChild(t *testing.T) {
 					wrapped := coord.withOAuthBearerClient(pc, client)
 					tr := wrapped.Transport.(*provauth.BearerTransport)
 					wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(pc.ID, counted, resolve), pc.ID)
-					provider, err = coord.buildOpenaiCompatProvider(store.Config(), server.URL+"/v1", old.AccessToken, nil, nil, id, false, wrapped)
+					provider, err = modelkit.BuildOpenaiCompatProvider(store.Config(), server.URL+"/v1", old.AccessToken, nil, nil, id, false, wrapped)
 				}
 				require.NoError(t, err)
 				model, err := provider.LanguageModel(t.Context(), "gpt-5-codex")

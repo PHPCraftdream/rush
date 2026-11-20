@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -83,7 +84,7 @@ func (s *standaloneSummarizer) SummarizeWithRole(ctx context.Context, sessionID 
 	})
 	snapshot := &SummarizeSnapshot{
 		Model:           model,
-		ProviderOptions: getProviderOptions(sessionID, model, providerCfg),
+		ProviderOptions: modelkit.GetProviderOptions(sessionID, model, providerCfg),
 		PromptPrefix:    providerCfg.SystemPromptPrefix,
 		ProviderCfg:     providerCfg,
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 func wakeCoord(fx *schedFx) *coordinator {
-	return &coordinator{wakeScheduler: fx.start("w4c-test")}
+	return &coordinator{wakeScheduler: fx.start()}
 }
 
 func TestCoordinatorWakeTools_NoSchedulerHonestError(t *testing.T) {
@@ -200,7 +200,7 @@ func TestCoordinatorWakeTools_ListOnlyOwnActive(t *testing.T) {
 // schedule's delay).
 func TestCoordinatorWakeTools_EndToEndWakein(t *testing.T) {
 	fx := newSchedFx(t)
-	s := fx.start("w4c-e2e")
+	s := fx.start()
 	c := &coordinator{wakeScheduler: s}
 	ctx := t.Context()
 

@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -83,7 +84,7 @@ const (
 // (time.Now() and quotaResetDisplayZone read at the original point).
 func classifyProviderError(err error) retryClass {
 	return drainctl.ClassifyProviderError(err, errProviderPeakHours, drainctl.Seams{
-		ReplayForbidden: responsesWSReplayForbidden,
+		ReplayForbidden: modelkit.ResponsesWSReplayForbidden,
 		HardProviderLimit: func(err error) bool {
 			return usage.ClassifyHardProviderLimit(err, "", time.Now(), quotaResetDisplayZone) == usage.ProviderLimitHard
 		},
@@ -189,7 +190,7 @@ func (c *coordinator) ownAttemptAssistantMessage(ctx context.Context, sessionID,
 //   - turn returned no error (empty-stream close)                → retry
 //   - otherwise classify the returned error                      → transient/rate limit?
 func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err error, attemptAssistantMsgID string) bool {
-	if responsesWSReplayForbidden(err) {
+	if modelkit.ResponsesWSReplayForbidden(err) {
 		return false
 	}
 	// R3-1: an admission refusal means this call never started a provider
@@ -259,7 +260,7 @@ func (c *coordinator) shouldRetryTurn(ctx context.Context, sessionID string, err
 // only for the empty-stream-close case, which by definition has no
 // content), so it's surfaced rather than guessed at.
 func (c *coordinator) shouldContinueTurn(ctx context.Context, sessionID string, err error, attemptAssistantMsgID string) (message.Message, bool) {
-	if responsesWSReplayForbidden(err) {
+	if modelkit.ResponsesWSReplayForbidden(err) {
 		return message.Message{}, false
 	}
 	// R3-1: an admission refusal means this call never started a provider

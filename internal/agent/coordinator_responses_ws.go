@@ -15,13 +15,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
-
-func responsesWSReplayForbidden(err error) bool {
-	var guard interface{ NoReplay() bool }
-	return errors.As(err, &guard) && guard.NoReplay()
-}
 
 // Published generations fence logout/relogin ABA at the next exchange.
 // Unrelated reloads rotate reuse, without revoking an active response.
@@ -93,11 +89,11 @@ func (c *coordinator) responsesWSSnapshot() (*config.Config, uint64) {
 }
 
 func (c *coordinator) responsesWSResolveHTTPClient(cfg *config.Config, providerCfg config.ProviderConfig) (*http.Client, error) {
-	return c.resolveProviderHTTPClient(cfg, providerCfg)
+	return modelkit.ResolveProviderHTTPClient(cfg, providerCfg)
 }
 
 func (c *coordinator) responsesWSFallbackOpenaiProvider(baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {
-	return c.buildOpenaiProvider(baseURL, apiKey, headers, client)
+	return modelkit.BuildOpenaiProvider(baseURL, apiKey, headers, client)
 }
 
 func (c *coordinator) buildPublicResponsesProvider(pc config.ProviderConfig, baseURL, apiKey string, headers map[string]string, client *http.Client) (fantasy.Provider, error) {

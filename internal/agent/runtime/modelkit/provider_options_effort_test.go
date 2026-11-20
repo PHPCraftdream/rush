@@ -1,4 +1,4 @@
-package agent
+package modelkit
 
 import (
 	"testing"
@@ -17,7 +17,7 @@ import (
 // agent runs on 2026-10-05); values fantasy accepts keep working as before.
 //
 // Revert-check: drop the fantasyAcceptsReasoningEffort guard in
-// getProviderOptions and every "max" row goes red (top-level "max").
+// GetProviderOptions and every "max" row goes red (top-level "max").
 func TestGetProviderOptions_WireOnlyEffortNeverReachesFantasyTopLevel(t *testing.T) {
 	zai := config.ProviderConfig{ID: string(catwalk.InferenceProviderZAI), Type: openaicompat.Name}
 	zaiLive := config.ProviderConfig{
@@ -47,11 +47,11 @@ func TestGetProviderOptions_WireOnlyEffortNeverReachesFantasyTopLevel(t *testing
 		{"glm-5.3 high keeps the top-level value", zai, "glm-5.3", []string{"low", "high", "max"}, "high", "high", "high"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := Model{
+			model := providerModel{
 				CatwalkCfg: catwalk.Model{ID: tc.model, CanReason: true, ReasoningLevels: tc.levels},
 				ModelCfg:   config.SelectedModel{Provider: tc.provider.ID, Model: tc.model, ReasoningEffort: tc.effort},
 			}
-			raw := getProviderOptions("test-session", model, tc.provider)[openaicompat.Name]
+			raw := GetProviderOptions("test-session", model, tc.provider)[openaicompat.Name]
 			parsed, ok := raw.(*openaicompat.ProviderOptions)
 			require.True(t, ok)
 			require.Equal(t, tc.wantWire, parsed.ExtraBody["reasoning_effort"], "the wire value must still reach extra_body")

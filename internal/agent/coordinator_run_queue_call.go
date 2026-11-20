@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -318,7 +319,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		releaseDurableContinuationOwner(c.diskCaps, requirement.BindingID, rowID)
 	}
 
-	contract := cloneRoleContractForCall(data.RoleContract)
+	contract := agentcall.CloneRoleContractForCall(data.RoleContract)
 	if contract != nil {
 		if err := contract.Validate(); err != nil {
 			releasePrep()
@@ -330,7 +331,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		}
 	}
 	if contract == nil && rebuiltCallOptions != nil {
-		contract = cloneRoleContractForCall(rebuiltCallOptions.RoleContract)
+		contract = agentcall.CloneRoleContractForCall(rebuiltCallOptions.RoleContract)
 	}
 	if contract != nil && data.RequestedModelRole != "" && contract.Name != data.RequestedModelRole {
 		releasePrep()
@@ -401,7 +402,7 @@ func (c *coordinator) RebuildSessionAgentCall(ctx context.Context, rowID string,
 		if call.CallOptions == nil {
 			call.CallOptions = &CallOptions{}
 		}
-		call.CallOptions.RoleContract = cloneRoleContractForCall(call.RoleContract)
+		call.CallOptions.RoleContract = agentcall.CloneRoleContractForCall(call.RoleContract)
 	}
 	return call, nil
 }
