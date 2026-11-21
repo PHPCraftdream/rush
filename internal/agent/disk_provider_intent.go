@@ -1,32 +1,23 @@
 package agent
 
-import "context"
+import (
+	"context"
 
-// ExecutionProviderIntent records caller intent before a nil provider is
-// normalized to OSDisk. Only explicit OS intent may start a new epoch.
-type ExecutionProviderIntent uint8
-
-const (
-	ExecutionProviderOmitted ExecutionProviderIntent = iota
-	ExecutionProviderCustom
-	ExecutionProviderOS
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 )
 
-type executionProviderIntent struct {
-	sessionID string
-	intent    ExecutionProviderIntent
-}
+type ExecutionProviderIntent = batchlife.ExecutionProviderIntent
 
-type executionProviderIntentKey struct{}
+const (
+	ExecutionProviderOmitted = batchlife.ExecutionProviderOmitted
+	ExecutionProviderCustom  = batchlife.ExecutionProviderCustom
+	ExecutionProviderOS      = batchlife.ExecutionProviderOS
+)
 
 func WithExecutionProviderIntent(ctx context.Context, sessionID string, intent ExecutionProviderIntent) context.Context {
-	return context.WithValue(ctx, executionProviderIntentKey{}, executionProviderIntent{sessionID: sessionID, intent: intent})
+	return batchlife.WithExecutionProviderIntent(ctx, sessionID, intent)
 }
 
 func executionProviderIntentFrom(ctx context.Context, sessionID string) ExecutionProviderIntent {
-	value, _ := ctx.Value(executionProviderIntentKey{}).(executionProviderIntent)
-	if value.sessionID != sessionID {
-		return ExecutionProviderOmitted
-	}
-	return value.intent
+	return batchlife.ExecutionProviderIntentFrom(ctx, sessionID)
 }

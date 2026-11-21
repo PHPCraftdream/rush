@@ -3,12 +3,15 @@
 // package's existing spellings for its callers.
 package agent
 
-import "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+import (
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+)
 
 type drainPace = drainctl.Pace
 
 const (
-	paceUncounted     = drainctl.PaceUncounted
+	paceUncounted     = batchlife.PaceUncounted
 	paceFreeNoTurn    = drainctl.PaceFreeNoTurn
 	pacePaidUnreacted = drainctl.PacePaidUnreacted
 )

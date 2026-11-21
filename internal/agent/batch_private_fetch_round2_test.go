@@ -100,7 +100,12 @@ func newRound2DriverScopeInstall(t *testing.T) *round2DriverScopeInstall {
 	probeConstructionRegistryID = registryID
 	pinTestConstruction(t, bindings, registryID)
 	agentDeps := batchAgentDeps{Runs: batchCoordinatorAgentRuns{}, Descendants: batchCompleteDescendantsReader{}, QuestionPublisher: batchCoordinatorQuestionPublisher{store: store}}
-	executor := newBatchExecutor(batchLeafEnv{Leaves: registries.Resolve, DiskBindings: bindings}, newBatchExecutorFamilies(agentDeps))
+	ingress := &batchWorkIngress{registries: registries, diskBindings: bindings, caps: bindings}
+	executor := newBatchExecutor(batchLeafEnv{
+		Leaves:       registries.Resolve,
+		DiskBindings: bindings,
+		Ingress:      func() BatchWorkIngress { return ingress },
+	}, newBatchExecutorFamilies(agentDeps))
 	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = executor
 	deps.AgentDeps = agentDeps
@@ -114,8 +119,7 @@ func newRound2DriverScopeInstall(t *testing.T) *round2DriverScopeInstall {
 			require.NoError(t, install.Runner.Close(context.Background()))
 		}
 	})
-	ingress := &batchWorkIngress{rt: install.Runtime, registries: registries, diskBindings: bindings, caps: bindings}
-	executor.env.Ingress = func() BatchWorkIngress { return ingress }
+	ingress.rt = install.Runtime
 	BindRuntimeIngress(install.Runtime, ingress)
 	return &round2DriverScopeInstall{t: t, conn: conn, store: store, install: install, executor: executor, bindingID: bindingID, registryID: registryID, fingerprint: fingerprint, sessionID: sessionID, stub: stub, ctx: ctx}
 }
@@ -193,7 +197,7 @@ func TestAgenticFetchToolProductionStampArmsIngress(t *testing.T) {
 	require.NoError(t, err)
 	bind := &batchCoordinatorBinding{ingress: ingress, controls: workingModelControls{}, diskBindings: env.install.DiskBindings}
 	coordinatorBatchBindings.Store(h.coord, bind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(h.coord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(h.coord) })
 	opts, release, err := BindCallDiskProvider(env.install.DiskBindings, round2FakeDisk{DiskProvider: tools.OSDisk()}, "round2-fetch", &CallOptions{})
 	require.NoError(t, err)
 	defer release()

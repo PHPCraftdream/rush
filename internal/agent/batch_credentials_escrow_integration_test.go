@@ -248,7 +248,7 @@ func TestBatchCredentialSubmitAddDriverLifecycle(t *testing.T) {
 	_, err = batch.Wait(closeCtx)
 	require.NoError(t, err)
 	pendingKey := batchCredentialKey{registryID: "registry", sessionID: "session", messageID: "message", callID: "unstarted-call", tool: "agent"}
-	require.NoError(t, store.credentialEscrow().register(pendingKey, string(root), escrowTestCreds("pending-secret")))
+	require.NoError(t, store.credentialEscrow().Register(pendingKey.adapterKey(), string(root), escrowTestCreds("pending-secret")))
 	require.NoError(t, adapter.Release(closeCtx, root))
 	_, _, err = store.credentialEscrow().consume(pendingKey, string(root)+".1")
 	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)

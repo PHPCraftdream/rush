@@ -66,7 +66,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	}
 	bind := &batchCoordinatorBinding{ingress: &fakeBatchIngress{}, controls: modelControlInventory{tools: controls}, diskBindings: NewDiskProviderRegistry()}
 	coordinatorBatchBindings.Store(c, bind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 	tools := batchTestTools("bash", "job_output", "job_kill")
 	granted := batchControlAvailability(tools, allowedBatchReadControls)
 	for _, name := range granted {

@@ -77,8 +77,6 @@ func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobb
 	return batch, nil
 }
 
-func batchRankRoot() jobbatch.ID { return jobbatch.ID(uuid.NewString()) }
-
 func validateBatchOwnerPayloads(owner string, spec jobbatch.Spec) error {
 	if (spec.Task == nil) == (spec.Batch == nil) {
 		return errors.New("batch CLI: every item must be exactly a task or batch")

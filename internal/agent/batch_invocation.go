@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -249,56 +250,28 @@ func batchWellFormedBindingID(id string) bool {
 	return true
 }
 
-// batchLeafRunContext rebuilds the executor run context from the invocation's
-// immutable policy transport: every value batch_exec_generic.go copies today,
-// disk provider closure pinned at caller tool-build time. Executor resolves
-// and validates the binding; it never reconstructs these ordinary leaves.
 func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Context {
-	ctx := context.WithValue(base, tools.SessionIDContextKey, p.SessionID)
-	if p.AgentDepth != nil {
-		depthCtx, err := WithAgentDepth(ctx, *p.AgentDepth)
-		if err != nil {
-			return context.WithValue(ctx, batchAgentDepthInvalidContextKey{}, true)
+	var policy *batchdispatch.RunPolicy
+	if q := p.Policy; q != nil {
+		policy = &batchdispatch.RunPolicy{
+			MessageID: q.MessageID, SupportsImages: q.SupportsImages, ModelName: q.ModelName,
+			FolderScope: q.FolderScope, RunAllowlist: q.RunAllowlist, CustomDisk: q.CustomDisk,
 		}
-		ctx = depthCtx
+		if q.RoleContract != nil {
+			policy.WithRole = func(ctx context.Context) context.Context { return withRoleToolContract(ctx, q.RoleContract) }
+		}
 	}
-	if p.Policy == nil {
-		return ctx
-	}
-	if p.diskProvider != nil {
-		ctx = context.WithValue(ctx, batchDiskProviderContextKey{}, p.diskProvider)
-	}
-	ctx = context.WithValue(ctx, tools.MessageIDContextKey, p.Policy.MessageID)
-	ctx = context.WithValue(ctx, tools.SupportsImagesContextKey, p.Policy.SupportsImages)
-	ctx = context.WithValue(ctx, tools.ModelNameContextKey, p.Policy.ModelName)
-	if p.Policy.RoleContract != nil {
-		ctx = withRoleToolContract(ctx, p.Policy.RoleContract)
-	}
-	if p.Policy.FolderScope != nil {
-		ctx = context.WithValue(ctx, batchFolderScopeContextKey{}, p.Policy.FolderScope)
-	}
-	if p.Policy.RunAllowlist != nil {
-		ctx = context.WithValue(ctx, batchRunAllowlistContextKey{}, p.Policy.RunAllowlist)
-	}
-	if p.Policy.CustomDisk != "" {
-		ctx = context.WithValue(ctx, batchCustomDiskContextKey{}, p.Policy.CustomDisk)
-	}
-	return ctx
+	return batchdispatch.LeafRunContext(base, p.SessionID, p.AgentDepth, WithAgentDepth, policy, p.diskProvider)
 }
 
 type (
-	batchFolderScopeContextKey       struct{}
-	batchRunAllowlistContextKey      struct{}
-	batchCustomDiskContextKey        struct{}
-	batchAgentDepthInvalidContextKey struct{}
-	// batchDiskProviderContextKey carries the resolved process-bound
-	// DiskProvider for a pinned leaf run.
-	batchDiskProviderContextKey struct{}
+	batchFolderScopeContextKey       = batchdispatch.FolderScopeContextKey
+	batchRunAllowlistContextKey      = batchdispatch.RunAllowlistContextKey
+	batchCustomDiskContextKey        = batchdispatch.CustomDiskContextKey
+	batchAgentDepthInvalidContextKey = batchdispatch.AgentDepthInvalidContextKey
+	batchDiskProviderContextKey      = batchdispatch.DiskProviderContextKey
 )
 
-// batchDiskProviderFrom returns the resolved binding provider carried by a
-// pinned leaf run context, or nil (no binding required).
 func batchDiskProviderFrom(ctx context.Context) tools.DiskProvider {
-	p, _ := ctx.Value(batchDiskProviderContextKey{}).(tools.DiskProvider)
-	return p
+	return batchdispatch.DiskProviderFrom(ctx)
 }

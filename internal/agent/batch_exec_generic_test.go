@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -31,9 +32,12 @@ func (t *batchGenericTestTool) Run(ctx context.Context, c fantasy.ToolCall) (fan
 	return t.run(ctx, c)
 }
 
-func batchGenericTestExecutor(tool fantasy.AgentTool) *batchExecutor {
+func batchGenericTestExecutor(tool fantasy.AgentTool, beforeResolve ...func()) *batchExecutor {
 	family := newBatchGenericFamily()
 	return newBatchExecutor(batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
+		for _, before := range beforeResolve {
+			before()
+		}
 		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{tool.Info().Name: {Tool: tool}}), nil
 	}}, map[string]batchLeafFamily{batchKindGeneric: family, batchKindMCP: family})
 }
@@ -261,12 +265,7 @@ func TestBatchGenericResolverCancellation(t *testing.T) {
 		t.Error("cancelled resolver ran leaf")
 		return fantasy.ToolResponse{}, nil
 	}}
-	e := batchGenericTestExecutor(tool)
-	resolve := e.env.Leaves
-	e.env.Leaves = func(s string) (*policyLeafRegistry, error) {
-		cancel()
-		return resolve(s)
-	}
+	e := batchGenericTestExecutor(tool, cancel)
 	execution, err := e.Start(ctx, batchTestLaunch(batchKindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(jobbatch.Result) { t.Error("cancelled resolver reported") })
 	require.ErrorIs(t, err, context.Canceled)
 	require.Nil(t, execution)
@@ -315,3 +314,17 @@ func TestBatchGenericStartLifetime(t *testing.T) {
 // to pin, managed or otherwise. The generic stall clock's spacing and
 // zero-timeout policy remain pinned by turn_stall_policy_spacing_test.go and
 // turn_stall_zero_timeout_test.go.
+
+// Compatibility fixture for batch_terminal_handoff_test.go.
+type batchGenericExecution struct {
+	*batchexec.GenericExecution
+	cache          *batchOutputCache
+	nodeID, rootID jobbatch.ID
+	cancel         context.CancelFunc
+	done           chan struct{}
+}
+
+func (e *batchGenericExecution) run(ctx context.Context, tool fantasy.AgentTool, call fantasy.ToolCall, report func(jobbatch.Result)) {
+	e.GenericExecution = batchexec.NewGeneric(e.cancel, batchExecutionOutput(e.cache, e.nodeID, e.rootID, batchOutputCursorClamp))
+	e.Run(ctx, tool, call, report)
+}

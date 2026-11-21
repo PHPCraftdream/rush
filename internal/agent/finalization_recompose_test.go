@@ -12,7 +12,7 @@ import (
 func newFinalizationRecomposeFixture(t *testing.T) *finalizationWaitFixture {
 	t.Helper()
 	f := newFinalizationWaitFixture(t)
-	f.ts.finalizationStamp.revision++
+	bumpGateRevision(t, f.env.execution.gate)
 	return f
 }
 
@@ -22,12 +22,12 @@ func TestFinalizationRecomposeDefaultRebuildsAndSeals(t *testing.T) {
 	hook := f.hook(func(d *FinalizationWaitDeps) { d.Compose = nil })
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
-	require.Greater(t, f.ts.finalizationStamp.serial, previous.serial, "recomposition takes a fresh stamp")
-	require.NotEmpty(t, f.ts.finalizationCandidate.messageID)
-	stored, err := f.env.messages.Get(t.Context(), f.ts.finalizationCandidate.messageID)
+	require.Greater(t, f.ts.finalizationStamp.Serial(), previous.Serial(), "recomposition takes a fresh stamp")
+	require.NotEmpty(t, f.ts.finalizationCandidate.MessageID)
+	stored, err := f.env.messages.Get(t.Context(), f.ts.finalizationCandidate.MessageID)
 	require.NoError(t, err)
 	require.True(t, stored.IsFinished())
-	require.Equal(t, f.ts.finalizationCandidate.messageID, f.ts.currentAssistant.ID)
+	require.Equal(t, f.ts.finalizationCandidate.MessageID, f.ts.currentAssistant.ID)
 }
 
 func TestFinalizationRecomposeWithoutProvisionalFailsClosed(t *testing.T) {

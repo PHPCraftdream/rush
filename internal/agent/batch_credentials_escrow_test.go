@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,7 @@ func TestBatchCredentialEscrowRegisterConsumeRelease(t *testing.T) {
 	e := newBatchCredentialEscrow()
 	key := batchCredentialKey{registryID: "reg", sessionID: "sess", messageID: "msg", callID: "call", tool: "agent"}
 	creds := escrowTestCreds("tenant-secret")
-	releaseRegistration, err := e.registerBatch([]batchCredentialRegistration{{key: key, root: "root", creds: creds}})
+	releaseRegistration, err := e.RegisterBatch([]batchadapter.CredentialRegistration{{Key: key.adapterKey(), Root: "root", Credentials: creds}})
 	require.NoError(t, err)
 	creds.Credentials[0].APIKey = "changed"
 	got, complete, err := e.consume(key, "root.1")
@@ -27,7 +28,7 @@ func TestBatchCredentialEscrowRegisterConsumeRelease(t *testing.T) {
 	_, _, err = e.consume(key, "root.1")
 	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
 	releaseRegistration()
-	require.NoError(t, e.register(key, "root", escrowTestCreds("tenant-secret")))
+	require.NoError(t, e.Register(key.adapterKey(), "root", escrowTestCreds("tenant-secret")))
 	_, complete2, err := e.consume(key, "root.1")
 	require.NoError(t, err)
 	e.releaseRoot("root")
@@ -45,7 +46,7 @@ func TestBatchCredentialEscrowConcurrentIsolationAndSingleConsume(t *testing.T) 
 		{registryID: "r2", sessionID: "s2", messageID: "m", callID: "c", tool: "agent"},
 	}
 	for i, key := range keys {
-		require.NoError(t, e.register(key, "root", escrowTestCreds([]string{"one", "two"}[i])))
+		require.NoError(t, e.Register(key.adapterKey(), "root", escrowTestCreds([]string{"one", "two"}[i])))
 	}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -83,7 +84,7 @@ func TestBatchCredentialEscrowReleaseRacesConsume(t *testing.T) {
 		t.Run(map[bool]string{true: "release first", false: "consume first"}[releaseFirst], func(t *testing.T) {
 			e := newBatchCredentialEscrow()
 			key := batchCredentialKey{registryID: "r", sessionID: "s", messageID: "m", callID: "c", tool: "agent"}
-			require.NoError(t, e.register(key, "root", escrowTestCreds("secret")))
+			require.NoError(t, e.Register(key.adapterKey(), "root", escrowTestCreds("secret")))
 			type result struct {
 				creds *CredentialSet
 				err   error
@@ -151,7 +152,7 @@ func TestBatchCredentialEscrowReleaseRacesConsume(t *testing.T) {
 func TestBatchCredentialEscrowMissingAndWrongRootFailClosed(t *testing.T) {
 	e := newBatchCredentialEscrow()
 	key := batchCredentialKey{registryID: "r", sessionID: "s", messageID: "m", callID: "c", tool: "agent"}
-	require.NoError(t, e.register(key, "root", nil))
+	require.NoError(t, e.Register(key.adapterKey(), "root", nil))
 	_, _, err := e.consume(key, "other.1")
 	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
 	creds, complete, err := e.consume(key, "root.1")

@@ -14,7 +14,7 @@ func testFinalizationExecution() *finalizationExecution {
 	return &finalizationExecution{
 		sessionID: "session", logicalID: "logical", gate: newFinalizationGate(7),
 		read: func(context.Context) (finalizationFacts, error) {
-			return finalizationFacts{complete: true}, nil
+			return finalizationFacts{Complete: true}, nil
 		},
 	}
 }
@@ -46,24 +46,23 @@ func TestFinalizationStepRefreshesStampAfterOwnedWork(t *testing.T) {
 	ts := &turnStream{finalization: execution}
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	first := ts.finalizationStamp
-	release, err := execution.gate.admitMutation(true)
+	release, err := execution.gate.AdmitMutation(true)
 	require.NoError(t, err)
 	release()
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	second := ts.finalizationStamp
-	require.Greater(t, second.serial, first.serial)
-	require.Greater(t, second.revision, first.revision)
-	candidate := finalizationCandidate{messageID: "message", hash: "hash"}
+	require.Greater(t, second.Serial(), first.Serial())
+	candidate := finalizationCandidate{MessageID: "message", Hash: "hash"}
 	publications := 0
 	publish := func(context.Context, finalizationCandidate) error {
 		publications++
 		return nil
 	}
-	verdict, err := execution.gate.trySeal(t.Context(), first, candidate, execution.read, publish)
+	verdict, err := execution.gate.TrySeal(t.Context(), first, candidate, execution.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationCompose, verdict)
 	require.Zero(t, publications)
-	verdict, err = execution.gate.trySeal(t.Context(), second, candidate, execution.read, publish)
+	verdict, err = execution.gate.TrySeal(t.Context(), second, candidate, execution.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
@@ -74,10 +73,10 @@ func TestFinalizationStepReadFailureClearsPreviousStamp(t *testing.T) {
 	execution := testFinalizationExecution()
 	ts := &turnStream{finalization: execution}
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
-	require.NotZero(t, ts.finalizationStamp.serial)
+	require.NotZero(t, ts.finalizationStamp.Serial())
 	execution.read = nil
 	require.ErrorIs(t, ts.beginFinalizationStep(t.Context()), ErrFinalizationFactsUnavailable)
-	require.Zero(t, ts.finalizationStamp.serial)
+	require.Zero(t, ts.finalizationStamp.Serial())
 }
 
 func TestFinalizationStepFinishIsProvisionalBeforeUsageFailure(t *testing.T) {
@@ -105,7 +104,7 @@ func TestFinalizationStepFinishIsProvisionalBeforeUsageFailure(t *testing.T) {
 	require.NotNil(t, finish)
 	require.True(t, finish.Partial)
 	require.Equal(t, execution.logicalID, finish.FinalizationKey)
-	require.Equal(t, ts.finalizationStamp.serial, finish.FinalizationSerial)
+	require.Equal(t, ts.finalizationStamp.Serial(), finish.FinalizationSerial)
 	require.EqualValues(t, 1, ts.currentAssistant.CheckpointGeneration)
 }
 
@@ -122,19 +121,18 @@ func TestPrepareStepCapturesFinalizationForEveryProviderStep(t *testing.T) {
 	_, _, err := ts.prepareStep(t.Context(), options)
 	require.NoError(t, err)
 	first := ts.finalizationStamp
-	require.NotZero(t, first.serial, "the actual PrepareStep must acquire a stamp")
-	release, err := execution.gate.admitMutation(true)
+	require.NotZero(t, first.Serial(), "the actual PrepareStep must acquire a stamp")
+	release, err := execution.gate.AdmitMutation(true)
 	require.NoError(t, err)
 	release()
 	_, _, err = ts.prepareStep(t.Context(), options)
 	require.NoError(t, err)
-	require.Greater(t, ts.finalizationStamp.serial, first.serial)
-	require.Greater(t, ts.finalizationStamp.revision, first.revision)
+	require.Greater(t, ts.finalizationStamp.Serial(), first.Serial())
 	require.Equal(t, 2, created)
 	execution.read = nil
 	_, _, err = ts.prepareStep(t.Context(), options)
 	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
-	require.Zero(t, ts.finalizationStamp.serial)
+	require.Zero(t, ts.finalizationStamp.Serial())
 	require.Equal(t, 2, created, "unavailable facts must refuse before creating another assistant")
 	require.Zero(t, f.requests.Load(), "preparing a step never invokes the provider")
 }

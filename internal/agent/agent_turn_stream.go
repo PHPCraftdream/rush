@@ -14,9 +14,9 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
-	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -284,40 +284,7 @@ func (ts *turnStream) streamCall(history []fantasy.Message, files []fantasy.File
 
 type toolReceiptContextKey struct{}
 
-type toolResultReceipt struct {
-	identity session.BatchToolResultIdentity
-	// persist fuses the actual tool-result message with the guarded root
-	// consumption CAS in ONE transaction (session.BatchConsumeToolResult).
-	persist func(context.Context, message.CreateMessageParams) (message.Message, bool, error)
-}
-
-type toolResultReceiptSink struct {
-	mu       sync.Mutex
-	receipts map[string]toolResultReceipt
-}
-
-func (s *toolResultReceiptSink) add(receipt toolResultReceipt) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.receipts == nil {
-		receipts := make(map[string]toolResultReceipt)
-		s.receipts = receipts
-	}
-	id := receipt.identity.ToolCallID
-	if _, exists := s.receipts[id]; exists {
-		return errors.New("batch tool result: duplicate call receipt")
-	}
-	s.receipts[id] = receipt
-	return nil
-}
-
-func (s *toolResultReceiptSink) take(callID string) (toolResultReceipt, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.receipts[callID]
-	delete(s.receipts, callID)
-	return r, ok
-}
+type toolResultReceiptSink = batchmeta.ReceiptSink
 
 func (ts *turnStream) prepareStepWithToolReceipts(ctx context.Context, opts fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
 	ts.toolResultMu.Lock()
@@ -341,14 +308,14 @@ func (ts *turnStream) prepareStepWithToolReceipts(ctx context.Context, opts fant
 // takeToolReceipt removes THIS step's receipt for the call, if the delivery
 // registered one. The sink is per-step and installed only by
 // prepareStepWithToolReceipts, so it never leaks across steps or turns.
-func (ts *turnStream) takeToolReceipt(callID string) (toolResultReceipt, bool) {
+func (ts *turnStream) takeToolReceipt(callID string) (batchmeta.Receipt, bool) {
 	ts.toolResultMu.Lock()
 	sink := ts.toolReceipts
 	ts.toolResultMu.Unlock()
 	if sink == nil {
-		return toolResultReceipt{}, false
+		return batchmeta.Receipt{}, false
 	}
-	return sink.take(callID)
+	return sink.Take(callID)
 }
 
 func (ts *turnStream) recordToolReceiptError(err error) {
@@ -616,14 +583,15 @@ func (ts *turnStream) onToolResult(result fantasy.ToolResultContent) error {
 	}
 	receipt, hasReceipt := ts.takeToolReceipt(result.ToolCallID)
 	if hasReceipt {
-		if receipt.identity.Owner != sessionID || receipt.identity.ToolCallID != result.ToolCallID {
+		identity := receipt.Identity()
+		if identity.Owner != sessionID || identity.ToolCallID != result.ToolCallID {
 			err := errors.New("batch tool result: receipt identity mismatch")
 			ts.recordToolReceiptError(err)
 			return err
 		}
 		// Fused delivery identity: the actual tool message IS the consumed
 		// delivery. Ordinary persistence is skipped for this call.
-		if _, _, err := receipt.persist(ts.ctx, params); err != nil {
+		if _, _, err := receipt.Persist(ts.ctx, params); err != nil {
 			ts.recordToolReceiptError(err)
 			return err
 		}

@@ -1,4 +1,4 @@
-package agent
+package batchinst
 
 import (
 	"encoding/json"
@@ -11,8 +11,8 @@ import (
 
 func TestExternalBatchDepthPreservesParentBudget(t *testing.T) {
 	t.Parallel()
-	for _, tool := range []string{AgentToolName, "agentic_fetch"} {
-		for _, depth := range []int{0, 1, DefaultAgentDepth, MaxAgentDepthForResume} {
+	for _, tool := range []string{agentToolName, "agentic_fetch"} {
+		for _, depth := range []int{0, 1, DefaultAgentDepth, 32} {
 			t.Run(fmt.Sprintf("%s-%d", tool, depth), func(t *testing.T) {
 				t.Parallel()
 				leaf := BatchExternalSpec{Tool: tool, Input: json.RawMessage(`{"prompt":"p"}`)}
@@ -21,7 +21,7 @@ func TestExternalBatchDepthPreservesParentBudget(t *testing.T) {
 				}}).SpecWithAgentDepth(depth)
 				require.NoError(t, err)
 				for _, item := range spec.Batch.Items[0].Batch.Items {
-					var payload batchExternalDepthPayload
+					var payload ExternalDepthPayload
 					require.NoError(t, json.Unmarshal(item.Task.Payload, &payload))
 					require.Equal(t, tool, payload.Tool)
 					require.Equal(t, depth, payload.AgentDepth, "wrappers and siblings must not consume an edge before dispatch")
@@ -47,17 +47,17 @@ func TestParseBatchExternalSpecJSON(t *testing.T) {
 
 	depthSpec, err := ParseBatchExternalSpecJSON([]byte(`{"max_agent_depth":2,"items":[{"tool":"agent","input":{"prompt":"p"}}]}`))
 	require.NoError(t, err)
-	var depthPayload batchExternalDepthPayload
+	var depthPayload ExternalDepthPayload
 	require.NoError(t, json.Unmarshal(depthSpec.Batch.Items[0].Task.Payload, &depthPayload))
 	require.Equal(t, 2, depthPayload.AgentDepth)
 	narrowed, err := ParseBatchExternalSpecJSON([]byte(`{"max_agent_depth":2,"items":[{"items":[{"tool":"agent","input":{"prompt":"p"}}]}]}`))
 	require.NoError(t, err)
-	var nestedPayload batchExternalDepthPayload
+	var nestedPayload ExternalDepthPayload
 	require.NoError(t, json.Unmarshal(narrowed.Batch.Items[0].Batch.Items[0].Task.Payload, &nestedPayload))
 	require.Equal(t, 2, nestedPayload.AgentDepth, "batch wrappers do not consume delegation edges")
 	leafSpec, err := ParseBatchExternalSpecJSON([]byte(`{"max_agent_depth":1,"tool":"agent","input":{"prompt":"p"}}`))
 	require.NoError(t, err)
-	var singlePayload batchExternalDepthPayload
+	var singlePayload ExternalDepthPayload
 	require.NoError(t, json.Unmarshal(leafSpec.Task.Payload, &singlePayload))
 	require.Equal(t, 1, singlePayload.AgentDepth, "a leaf carries its parent's remaining budget")
 	_, err = ParseBatchExternalSpecJSON([]byte(`{"max_agent_depth":0,"items":[{"tool":"agent","input":{"prompt":"p"}}]}`))

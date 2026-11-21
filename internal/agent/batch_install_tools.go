@@ -2,14 +2,12 @@ package agent
 
 import (
 	"context"
-	"errors"
-	"sort"
-	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/google/uuid"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // batchIngressTool is the root compatibility alias over the moved ingress
@@ -142,7 +140,7 @@ func newBatchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, bi
 //
 //   - todos: (iii) WORK — it MUTATES session state (writes the session's
 //     todo list that the worker turns read back). It IS wrapped below: it
-//     is batch-admissible (batchIOTools), so its invocation enters the ONE
+//     is batch-admissible (batchinst.IsIOTool), so its invocation enters the ONE
 //     authority like any other state-changing leaf. The admission validator
 //     classifies it in the io group.
 //   - batch_status/batch_output/batch_stop: (i) D1 CONTROLS —
@@ -159,21 +157,12 @@ func newBatchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, bi
 //   - ask-adjacent (ask_question and every wake/loop/inspect/inject
 //     control): (i) D1 control (batchControlTarget) — never wrapped.
 //
-// Every category-(iii) tool above is covered by the batchIOTools /
+// Every category-(iii) tool above is covered by the batchinst.IsIOTool /
 // agent / agentic_fetch / mcp_ admission below; if a future WORK tool is
 // added, it MUST join one of those families or it silently keeps a direct
 // pinned leaf (this comment is the review anchor).
 func batchWorkTarget(name string) bool {
-	if batchControlTarget(name) {
-		return false
-	}
-	if name == AgentToolName || name == tools.AgenticFetchToolName {
-		return true
-	}
-	if batchIOTools[name] {
-		return true
-	}
-	return strings.HasPrefix(name, "mcp_")
+	return installwire.WorkTarget(name, batchControlTarget, batchinst.IsIOTool)
 }
 
 // batchFamilyDelivery is the per-family delivery choice of a batch-armed work
@@ -183,10 +172,7 @@ func batchWorkTarget(name string) bool {
 // child that may itself be waiting for the parent's answer, or for a gate the
 // parent turn opens); every other work family stays synchronous.
 func batchFamilyDelivery(name string) batchDeliveryChoice {
-	if name == AgentToolName || name == tools.AgenticFetchToolName {
-		return batchDeliveryChoice{Mode: batchDeliveryDetached}
-	}
-	return batchDeliveryChoice{Mode: batchDeliverySync}
+	return installwire.FamilyDelivery(name, batchDeliveryChoice{Mode: batchDeliveryDetached}, batchDeliveryChoice{Mode: batchDeliverySync})
 }
 
 // errBatchIngressTool fails closed: the ingress could not be armed (pin
@@ -196,141 +182,58 @@ type errBatchIngressTool struct {
 	err error
 }
 
-func (t errBatchIngressTool) Run(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	return fantasy.ToolResponse{}, t.err
+func (t errBatchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	return installwire.NewRefusedTool(t.AgentTool, t.err).Run(ctx, call)
 }
 
-// newBatchWorkToolBuild pins the decorated slice and re-arms the work tools.
-// Per-build state: ONE fresh pinned registry identity per construction; the
-// per-invocation delivery choice follows the family: agent and agentic_fetch
-// are DETACHED (escape never — a delegation returns the batch started text
-// in-turn and the child runs detached, the legacy async_tool contract); bash
-// keeps sync + escape auto + the unchanged inline window; every other work
-// family stays sync with escape never.
-//
-// Construction ownership (R12-H2 §1.2): the pinned registry is published
-// with a Construction owner key ATOMICALLY with the pin, and that owner's
-// release is registered in the call/build scope of the trusted call state
-// the build was made for. scope comes from the call's CallOptions; a nil
-// scope fails closed (there is no "nil means process lifetime" fallback —
-// ordinary, non-provider builds need the same closure semantics).
+// newBatchWorkToolBuild uses the default context for shared tool assembly.
 func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (policyToolBuild, error) {
 	return newBatchWorkToolBuildForContext(context.Background(), bind, list, scope, deferred)
 }
 
 func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (policyToolBuild, error) {
-	if scope == nil {
-		return policyToolBuild{}, errors.New("batch tool build: no build-resource scope in the trusted call state")
+	var registerRelease func(func())
+	if scope != nil {
+		registerRelease = scope.Register
 	}
-	built := newPolicyToolBuildForContext(ctx, list)
-	fingerprint := batchToolsetFingerprint(built.Tools)
-	roleContract := roleContractForToolBuild(ctx, built.Tools)
-	if deferred {
-		// Shared default toolset build (no trusted call state): the registry
-		// identity is NOT published and NO Construction owner is taken here.
-		// The armed tools pin lazily on first dispatch
-		// (batchIngressTool.ensurePinned), so an unused shared toolset holds
-		// nothing and a public run returns the capability manager exactly
-		// to empty (design §1.2: bare builders create AND close a scope; no
-		// process-lifetime fallback).
-		for i, tool := range built.Tools {
-			name := tool.Info().Name
-			if !roleContractAllowsName(roleContract, name) {
-				continue
-			}
-			if name == tools.AskQuestionToolName {
-				built.Tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
-				continue
-			}
-			if !batchWorkTarget(name) {
-				continue
-			}
+	return installwire.BuildWorkTools(ctx, list, registerRelease, deferred, installwire.WorkToolPorts[*session.RoleContract]{
+		Pin:     bind.pin,
+		Owners:  diskConstructionOwners{bind},
+		Role:    roleContractForToolBuild,
+		Allows:  roleContractAllowsName,
+		Control: batchControlTarget,
+		IO:      batchinst.IsIOTool,
+		WrapQuestion: func(tool fantasy.AgentTool) fantasy.AgentTool {
+			return batchAgentAskQuestionTool{AgentTool: tool}
+		},
+		NoWindow: func() bool { return inlineWindowDisabledFor(bind) },
+		Arm: func(tool fantasy.AgentTool, leaves *policyLeafRegistry, role *session.RoleContract, template installwire.WorkToolTemplate, deferred bool) fantasy.AgentTool {
 			inv := BatchInvocation{
+				RegistryID:       template.RegistryID,
 				Origin:           "coordinator",
-				Delivery:         batchFamilyDelivery(name),
+				Delivery:         batchDeliveryChoice{Mode: batchDeliverySync},
 				BackgroundEscape: batchEscapeNever,
-				WaiterRank:       0,
-				Policy:           batchLeafPolicyContext{RestrictedToolset: fingerprint, RoleContract: cloneRoleContractForCall(roleContract)},
+				Policy: batchLeafPolicyContext{
+					RegistryID:        template.RegistryID,
+					RestrictedToolset: template.RestrictedToolset,
+					RoleContract:      cloneRoleContractForCall(role),
+				},
 			}
-			if name == tools.BashToolName {
-				if inlineWindowDisabledFor(bind) {
-					// Window disabled (SetInlineWindowForTest(false)): the
-					// pre-A14 "started" flow -- the shell detaches from the
-					// start and the call returns the started text in-turn.
-					inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
-				} else {
-					inv.BackgroundEscape = batchEscapeAuto
-					inv.Delivery.Window = inlineWindow.String()
-				}
+			if template.Detached {
+				inv.Delivery.Mode = batchDeliveryDetached
 			}
-			built.Tools[i] = newBatchIngressShell(tool, built.Leaves, bind, inv, true)
-		}
-		return built, nil
-	}
-	registryID, err := bind.pin(built.Leaves)
-	if err != nil {
-		return policyToolBuild{}, err
-	}
-	// Publish the construction record and take its Construction owner; the
-	// owner's release lands in the call/build scope (or runs immediately
-	// when the scope is already closed). Ordinary (non-provider) pinned
-	// registries take the SAME ownership — no provider binding required.
-	constructionKey := diskOwnerKey{kind: diskOwnerConstruction, instance: uuid.NewString(), registryID: registryID}
-	if err := bind.diskBindings.acquireConstruction("", registryID, constructionKey.instance); err != nil {
-		return policyToolBuild{}, err
-	}
-	scope.Register(func() { bind.diskBindings.release(constructionKey) })
-	built.RegistryID = registryID
-	if fingerprint == "" {
-		fingerprint = registryID
-	}
-	for i, tool := range built.Tools {
-		name := tool.Info().Name
-		if !roleContractAllowsName(roleContract, name) {
-			continue
-		}
-		if name == tools.AskQuestionToolName {
-			built.Tools[i] = batchAgentAskQuestionTool{AgentTool: tool}
-			continue
-		}
-		if !batchWorkTarget(name) {
-			continue
-		}
-		inv := BatchInvocation{
-			RegistryID:       registryID,
-			Origin:           "coordinator",
-			Delivery:         batchFamilyDelivery(name),
-			BackgroundEscape: batchEscapeNever,
-			WaiterRank:       0,
-			Policy: batchLeafPolicyContext{
-				RegistryID:        registryID,
-				RestrictedToolset: fingerprint,
-				RoleContract:      cloneRoleContractForCall(roleContract),
-			},
-		}
-		if name == tools.BashToolName {
-			// Auto-background keeps its window: escape switches DELIVERY of
-			// the existing root after the window, never its execution.
-			if inlineWindowDisabledFor(bind) {
-				inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
-			} else {
+			if template.AutoEscape {
 				inv.BackgroundEscape = batchEscapeAuto
 				inv.Delivery.Window = inlineWindow.String()
 			}
-		}
-		built.Tools[i] = newBatchIngressShell(tool, built.Leaves, bind, inv, false)
-	}
-	return built, nil
+			return newBatchIngressShell(tool, leaves, bind, inv, deferred)
+		},
+	})
 }
 
 // batchToolsetFingerprint is the restricted-toolset identity of one build:
 // the sorted tool names. Two builds with different toolsets carry different
 // pinned registries AND different fingerprints.
 func batchToolsetFingerprint(list []fantasy.AgentTool) string {
-	names := make([]string, 0, len(list))
-	for _, tool := range list {
-		names = append(names, tool.Info().Name)
-	}
-	sort.Strings(names)
-	return strings.Join(names, ",")
+	return installwire.ToolsetFingerprint(list)
 }

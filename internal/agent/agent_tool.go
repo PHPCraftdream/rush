@@ -9,6 +9,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -103,7 +104,7 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		},
 	)
 	if childScope != nil {
-		return &pctCapturedAgentTool{AgentTool: tool, scope: childScope}, nil
+		return childagent.NewPctCapturedAgentTool(tool, childScope), nil
 	}
 	return tool, nil
 }

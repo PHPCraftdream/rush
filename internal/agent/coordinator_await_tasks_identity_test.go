@@ -48,7 +48,7 @@ func TestAwaitTasksDispatchUsesDurableIdentity(t *testing.T) {
 			})
 			require.NoError(t, err)
 			coordinatorBatchBindings.Store(c, &batchCoordinatorBinding{live: batchEnv.live})
-			t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
+			t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 			cutoverBindFacts(t, c, batchEnv)
 			workerSnapshot := false
 			hook := new(func(string, string))

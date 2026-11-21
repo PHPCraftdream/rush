@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -201,46 +202,8 @@ func buildSessionNoticeMessageParams(row sessionnotice.SessionNoticeRow) message
 	}
 }
 
-// buildBatchNoticeMessageParams converts a pulled batch_nodes selected
-// notice row into the history message's params, mirroring
-// buildJobNoticeMessageParams. Batch notices carry NO tool name (batch
-// leaves resolve by payload, not by tool identity) and no timeout seconds:
-// the row's own notice_kind/state/cause and the root's outcome summary are
-// the single source of truth.
 func buildBatchNoticeMessageParams(row session.BatchNoticeRow) message.CreateMessageParams {
-	// H4 W2: a recovered node (State interrupted / OutcomeCode host_lost)
-	// is an interruption, not a finished job and not a stop: FormatAsync
-	// Completion checks Stopped BEFORE Interrupted (coordinator_background
-	// .go), so a Cause=="stop" node recovered to interrupted/host_lost must
-	// not keep Stopped. Cancelled is kept as-is: State "interrupted" never
-	// equals "cancelled", so a recovered node can never read as Cancelled.
-	recovered := row.State == "interrupted" || row.OutcomeCode == "host_lost"
-	completion := AsyncCompletion{
-		ToolCallID: row.ToolCallID,
-		ToolName:   "",
-		Content:    row.OutcomeSummary,
-		IsError:    row.State == "failed" || row.OutcomeCode == "failed",
-		TimedOut:   row.State == "timed_out",
-		Stopped:    row.Cause == "stop" && !recovered,
-		Cancelled:  row.Cause == "stop" && row.State == "cancelled",
-	}
-	// The structured state and the retained summary are kept; no cause or
-	// executor envelope is invented.
-	if row.Cause == "host_closing" || recovered {
-		completion.Interrupted = true
-	}
-	origin := message.OriginWeb
-	if row.OriginCLI {
-		origin = message.OriginCLI
-	}
-	return message.CreateMessageParams{
-		Role:                message.User,
-		Parts:               []message.ContentPart{message.TextContent{Text: FormatAsyncCompletion(completion)}},
-		AutoResumed:         true,
-		BackgroundJobNotice: true,
-		NoticeKind:          row.Kind,
-		Origin:              origin,
-	}
+	return batchmeta.BuildBatchNoticeMessageParams(row)
 }
 
 // to clear.

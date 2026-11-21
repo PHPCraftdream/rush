@@ -8,10 +8,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -141,25 +140,16 @@ func (n nodeBatchCutoverFacts) LiveDelegationChildOf(ctx context.Context, parent
 	// never on roots). The live scan includes terminal children of live
 	// roots, so only a LIVE-state delegation counts as running.
 	for _, node := range res.Descendants {
-		if node.ChildSessionID == child && batchNodeStateLive(node.State) {
+		if node.ChildSessionID == child && batchmeta.BatchNodeStateLive(node.State) {
 			return true, nil
 		}
 	}
 	for _, node := range res.Tree {
-		if node.ChildSessionID == child && batchNodeStateLive(node.State) {
+		if node.ChildSessionID == child && batchmeta.BatchNodeStateLive(node.State) {
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-// batchNodeStateLive mirrors the store's live-state vocabulary.
-func batchNodeStateLive(state string) bool {
-	switch state {
-	case "pending", "starting", "running", "cancelling":
-		return true
-	}
-	return false
 }
 
 // DelegationChildEver reports a node under parent naming child, live or
@@ -357,7 +347,7 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 	}
 	var out []sessionnotice.PendingNoticeDebt
 	for _, r := range pending {
-		node, token, ok := parseBatchQuestionMarker(r.text)
+		node, token, ok := batchmeta.ParseBatchQuestionMarker(r.text)
 		if !ok {
 			continue
 		}
@@ -366,10 +356,10 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 		err := n.writer.QueryRowContext(ctx,
 			`SELECT token, state FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
 			node, owner).Scan(&rowToken, &state)
-		if err != nil || !batchNodeStateLive(state) || rowToken != token {
+		if err != nil || !batchmeta.BatchNodeStateLive(state) || rowToken != token {
 			continue
 		}
-		out = append(out, sessionnotice.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion, NodeID: node, ChildSessionID: batchQuestionMarkerChild(r.text)})
+		out = append(out, sessionnotice.PendingNoticeDebt{ID: r.id, Kind: session.NoticeKindChildQuestion, NodeID: node, ChildSessionID: batchmeta.BatchQuestionMarkerChild(r.text)})
 	}
 	return out, nil
 }
@@ -382,66 +372,6 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 // LiveHeldQuestions.
 func (n nodeBatchCutoverFacts) ActionableHeldQuestions(ctx context.Context, owner string) ([]BatchHeldQuestionRoute, error) {
 	return batchActionableHeldQuestionRoutes(ctx, n.writer, owner)
-}
-
-// parseBatchQuestionMarker extracts (nodeID, token) from a child-question
-// notice text whose header line is the production marker written by
-// batchCoordinatorQuestionPublisher (batch_install_question.go):
-// "[batch-question node=X token=N sequence=S depth=D child=C]". A text
-// without a parseable marker (or token 0, which the publisher never writes)
-// is not counted. The token parses straight into int64 -- the batch_nodes
-// token column's type -- so no unbounded uint64->int64 conversion exists
-// (CodeQL go/integer-conversion).
-func parseBatchQuestionMarker(text string) (string, int64, bool) {
-	if !strings.HasPrefix(text, "[batch-question ") {
-		return "", 0, false
-	}
-	header := strings.TrimPrefix(text, "[batch-question ")
-	if idx := strings.Index(header, "]"); idx >= 0 {
-		header = header[:idx]
-	}
-	var node string
-	var token int64
-	for _, field := range strings.Fields(header) {
-		name, value, ok := strings.Cut(field, "=")
-		if !ok {
-			continue
-		}
-		switch name {
-		case "node":
-			node = value
-		case "token":
-			t, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				return "", 0, false
-			}
-			token = t
-		}
-	}
-	if node == "" || token == 0 {
-		return "", 0, false
-	}
-	return node, token, true
-}
-
-// batchQuestionMarkerChild extracts the child session field ("child=C") of a
-// published question marker header; "" when absent. The companion of
-// parseBatchQuestionMarker, which deliberately keeps its session-package
-// twin's signature.
-func batchQuestionMarkerChild(text string) string {
-	if !strings.HasPrefix(text, "[batch-question ") {
-		return ""
-	}
-	header := strings.TrimPrefix(text, "[batch-question ")
-	if idx := strings.Index(header, "]"); idx >= 0 {
-		header = header[:idx]
-	}
-	for _, field := range strings.Fields(header) {
-		if name, value, ok := strings.Cut(field, "="); ok && name == "child" {
-			return value
-		}
-	}
-	return ""
 }
 
 func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages message.Service, owner string) ([]sessionnotice.PulledNotice, error) {
@@ -577,3 +507,11 @@ func (n nodeBatchCutoverFacts) pullOneSessionNotice(ctx context.Context, message
 	messages.PublishCreated(msg)
 	return msg, true, nil
 }
+
+func batchNodeStateLive(state string) bool { return batchmeta.BatchNodeStateLive(state) }
+
+func parseBatchQuestionMarker(text string) (string, int64, bool) {
+	return batchmeta.ParseBatchQuestionMarker(text)
+}
+
+func batchQuestionMarkerChild(text string) string { return batchmeta.BatchQuestionMarkerChild(text) }

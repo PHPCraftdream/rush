@@ -26,12 +26,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
@@ -271,29 +271,7 @@ func mustJSONString(text string) json.RawMessage {
 	return raw
 }
 
-// batchQuestionMarkerDepth extracts the depth field ("depth=D") of a
-// published question marker header; 0 when absent or unparseable (the
-// publisher never writes depth <= 0, so 0 disqualifies the row, like an
-// unparseable marker).
-func batchQuestionMarkerDepth(text string) int {
-	if !strings.HasPrefix(text, "[batch-question ") {
-		return 0
-	}
-	header := strings.TrimPrefix(text, "[batch-question ")
-	if idx := strings.Index(header, "]"); idx >= 0 {
-		header = header[:idx]
-	}
-	for _, field := range strings.Fields(header) {
-		if name, value, ok := strings.Cut(field, "="); ok && name == "depth" {
-			d, err := strconv.Atoi(value)
-			if err != nil {
-				return 0
-			}
-			return d
-		}
-	}
-	return 0
-}
+func batchQuestionMarkerDepth(text string) int { return batchlife.QuestionMarkerDepth(text) }
 
 // coordinatorHeldAnswerSinks maps a coordinator onto its installed sink
 // (one App install per coordinator; the App closes and clears the entry on

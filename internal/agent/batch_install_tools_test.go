@@ -524,3 +524,18 @@ func TestPrivateFetchCustomProviderPassesExecutorAdmission(t *testing.T) {
 func withPrivateFetchBuildIngress(ctx context.Context, ingress BatchWorkIngress) context.Context {
 	return context.WithValue(ctx, privateFetchIngressKey{}, ingress)
 }
+
+func TestBatchInstallWireRootSeams(t *testing.T) {
+	coord := &coordinator{}
+	bind := &batchCoordinatorBinding{coord: coord}
+	require.True(t, SetInlineWindowForTest(coord, false))
+	require.True(t, inlineWindowDisabledFor(bind))
+	require.True(t, SetInlineWindowForTest(coord, true))
+	require.False(t, inlineWindowDisabledFor(bind))
+	require.False(t, SetInlineWindowForTest(nil, false))
+
+	_, err := NewBatchWorkIngress(nil, NewBatchLeafRegistryStore())
+	require.Equal(t, errBatchWorkIngressDeps, err)
+	_, err = NewBatchWorkIngressWithDiskBindings(nil, NewBatchLeafRegistryStore(), nil)
+	require.Equal(t, errBatchWorkIngressDeps, err)
+}

@@ -76,7 +76,7 @@ func TestPinCallToolsReadyGateErrorReleasesConstruction(t *testing.T) {
 		diskBindings: caps,
 	}
 	coordinatorBatchBindings.Store(coord, bind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(coord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(coord) })
 
 	// Trusted call state carrying its OWN build scope; DisableSubAgents
 	// makes the toolset distinct (scopedCallOptionsRequireDistinctTools), so
@@ -216,7 +216,7 @@ func newRound2LiveHarness(t *testing.T, smartSrv, fastSrv *httptest.Server) *rou
 		diskBindings: caps,
 	}
 	coordinatorBatchBindings.Store(coord, bind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(coord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(coord) })
 
 	return &round2LiveHarness{coord: coord, sa: sa, caps: caps, registries: registries, sess: env}
 }

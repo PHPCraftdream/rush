@@ -84,7 +84,7 @@ func newFinalizationDriverSeamEnv(t *testing.T) finalizationDriverSeamEnv {
 		logicalID: env.identity.LogicalCallID,
 		gate:      newFinalizationGate(uint64(env.identity.Generation)),
 		read: func(context.Context) (finalizationFacts, error) {
-			return finalizationFacts{complete: true}, nil
+			return finalizationFacts{Complete: true}, nil
 		},
 		scope:      env.scope,
 		scopeFacts: env.reader,

@@ -30,6 +30,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -38,6 +39,30 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
+
+// Use an isolated coordinator index in the test binary so cleanup can remove
+// individual entries without exposing deletion or replacing the process slot.
+var fixtureCoordinatorBatchBindings fixtureBatchCoordinatorBindingIndex
+
+type fixtureBatchCoordinatorBindingIndex struct {
+	sync.Map
+}
+
+func (m *fixtureBatchCoordinatorBindingIndex) Store(c Coordinator, binding *batchCoordinatorBinding) {
+	m.Map.Store(c, binding)
+}
+
+func (m *fixtureBatchCoordinatorBindingIndex) Load(c Coordinator) (*batchCoordinatorBinding, bool) {
+	binding, ok := m.Map.Load(c)
+	if !ok {
+		return nil, false
+	}
+	return binding.(*batchCoordinatorBinding), true
+}
+
+func init() {
+	coordinatorBatchBindings = &fixtureCoordinatorBatchBindings
+}
 
 func batchFixtureLiveReader(conn *sql.DB, dataDir string) *session.BatchLiveReader {
 	live := session.NewBatchLiveReader(db.New(conn), dataDir)
@@ -68,7 +93,7 @@ func bindBatchCoordinatorControls(t *testing.T, c *coordinator, conn *sql.DB, da
 	t.Helper()
 	live := batchFixtureLiveReader(conn, dataDir)
 	require.NoError(t, BindCoordinatorBatchControls(c, ingress, nil, live))
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 }
 
 func batchFixtureMessage(text string) message.CreateMessageParams {

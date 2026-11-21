@@ -35,7 +35,7 @@ func TestFinalizationOnCancelHookRefusesSealBeforePublication(t *testing.T) {
 	registry := newFinalizationCancelRegistry()
 	registry.register(env.execution)
 	hook := NewFinalizationOnCancelHook(registry)
-	stamp, err := env.execution.gate.beginCandidate(env.ctx, env.execution.read)
+	stamp, err := env.execution.gate.BeginCandidate(env.ctx, env.execution.read)
 	require.NoError(t, err)
 	hook(env.call.SessionID)
 	var published int
@@ -43,14 +43,14 @@ func TestFinalizationOnCancelHookRefusesSealBeforePublication(t *testing.T) {
 		published++
 		return nil
 	}
-	candidate := finalizationCandidate{messageID: "m", hash: "h"}
-	verdict, err := env.execution.gate.trySeal(env.ctx, stamp, candidate, env.execution.read, publish)
+	candidate := finalizationCandidate{MessageID: "m", Hash: "h"}
+	verdict, err := env.execution.gate.TrySeal(env.ctx, stamp, candidate, env.execution.read, publish)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Equal(t, finalizationWaitWork, verdict)
 	require.Zero(t, published, "a cancelled owner must not deliver anything")
-	_, err = env.execution.gate.beginCandidate(env.ctx, env.execution.read)
+	_, err = env.execution.gate.BeginCandidate(env.ctx, env.execution.read)
 	require.ErrorIs(t, err, context.Canceled, "no later stamp can be taken, so no later seal is possible")
-	_, err = env.execution.gate.trySeal(env.ctx, stamp, candidate, env.execution.read, publish)
+	_, err = env.execution.gate.TrySeal(env.ctx, stamp, candidate, env.execution.read, publish)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, published)
 	record, err := env.scope.store.Snapshot(env.ctx, env.scope.identity)
@@ -79,10 +79,10 @@ func TestFinalizationOnCancelHookWakesArmedWaitThroughRegistry(t *testing.T) {
 	registry := newFinalizationCancelRegistry()
 	registry.register(execution)
 	hook := NewFinalizationOnCancelHook(registry)
-	release, err := execution.gate.admitMutation(true)
+	release, err := execution.gate.AdmitMutation(true)
 	require.NoError(t, err)
 	defer release()
-	_, changed, err := execution.gate.waitState(t.Context(), execution.read)
+	_, changed, err := execution.gate.WaitState(t.Context(), execution.read)
 	require.NoError(t, err)
 	require.NotNil(t, changed)
 	hook("session")
@@ -107,11 +107,11 @@ func TestFinalizationOnCancelHookDoubleCancelIsIdempotent(t *testing.T) {
 	registry.register(execution)
 	hook := NewFinalizationOnCancelHook(registry)
 	hook("session")
-	require.True(t, execution.gate.cancelled)
+	requireFinalizationCancelled(t, execution.gate, true)
 	hook("session")
 	hook("session")
-	require.True(t, execution.gate.cancelled)
-	require.False(t, execution.gate.sealed)
+	requireFinalizationCancelled(t, execution.gate, true)
+	requireFinalizationSealed(t, execution.gate, false)
 }
 
 // TestFinalizationOnCancelHookUnknownSessionIsInert proves an unknown or
@@ -128,9 +128,9 @@ func TestFinalizationOnCancelHookUnknownSessionIsInert(t *testing.T) {
 	hook := NewFinalizationOnCancelHook(registry)
 	hook("other")
 	hook("")
-	require.False(t, execution.gate.cancelled)
+	requireFinalizationCancelled(t, execution.gate, false)
 	hook("session")
-	require.True(t, execution.gate.cancelled)
+	requireFinalizationCancelled(t, execution.gate, true)
 }
 
 // TestFinalizationOnCancelHookNilDependenciesDoNotPanic proves the hook and
@@ -168,12 +168,12 @@ func TestFinalizationConcurrentCancelAndSealAgreeOnExactlyOneOutcome(t *testing.
 	registry := newFinalizationCancelRegistry()
 	registry.register(execution)
 	hook := NewFinalizationOnCancelHook(registry)
-	stamp, err := execution.gate.beginCandidate(t.Context(), execution.read)
+	stamp, err := execution.gate.BeginCandidate(t.Context(), execution.read)
 	require.NoError(t, err)
 	var published atomic.Int32
 	sealErr := make(chan error, 1)
 	go func() {
-		_, err := execution.gate.trySeal(t.Context(), stamp, finalizationCandidate{messageID: "m", hash: "h"}, execution.read, func(context.Context, finalizationCandidate) error {
+		_, err := execution.gate.TrySeal(t.Context(), stamp, finalizationCandidate{MessageID: "m", Hash: "h"}, execution.read, func(context.Context, finalizationCandidate) error {
 			published.Add(1)
 			return nil
 		})
@@ -192,12 +192,12 @@ func TestFinalizationConcurrentCancelAndSealAgreeOnExactlyOneOutcome(t *testing.
 	count := published.Load()
 	if count == 0 {
 		require.ErrorIs(t, err, context.Canceled)
-		require.True(t, execution.gate.cancelled)
-		require.False(t, execution.gate.sealed)
+		requireFinalizationCancelled(t, execution.gate, true)
+		requireFinalizationSealed(t, execution.gate, false)
 	} else {
 		require.EqualValues(t, 1, count, "a second publication is always a defect")
-		require.True(t, execution.gate.sealed)
-		require.False(t, execution.gate.cancelled, "cancel must become a no-op once the seal committed")
+		requireFinalizationSealed(t, execution.gate, true)
+		requireFinalizationCancelled(t, execution.gate, false, "cancel must become a no-op once the seal committed")
 	}
 }
 
@@ -235,7 +235,7 @@ func TestFinalizationOnCancelHookSurvivesConcurrentRegistryTraffic(t *testing.T)
 		}()
 	}
 	wg.Wait()
-	require.True(t, execution.gate.cancelled)
+	requireFinalizationCancelled(t, execution.gate, true)
 	registry.unregister(execution)
 	registry.unregister(other)
 	registry.mu.Lock()
@@ -266,8 +266,8 @@ func TestFinalizationCancelRegistryLifecycleDoesNotLeak(t *testing.T) {
 	require.Equal(t, 1, firstBucket, "set semantics keep one entry per execution")
 	registry.register(second)
 	registry.cancelSession("first")
-	require.True(t, first.gate.cancelled)
-	require.False(t, second.gate.cancelled, "sessions are isolated")
+	requireFinalizationCancelled(t, first.gate, true)
+	requireFinalizationCancelled(t, second.gate, false, "sessions are isolated")
 	registry.unregister(first)
 	registry.cancelSession("first")
 	registry.mu.Lock()

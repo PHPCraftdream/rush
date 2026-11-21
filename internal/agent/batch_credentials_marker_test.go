@@ -23,12 +23,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -59,35 +61,26 @@ func markerCaptureInvocation(env *markerModelControlEnv) BatchInvocation {
 	}
 }
 
-// markerCaptureWaitEscrowRootGone polls until NO escrow entry names the root
-// anymore. The Done watcher installed by Run (batchRootLeaseStore.adopt →
-// batchRunnerAdapter.Release → releaseRoot) runs on its own goroutine; this
-// bounded poll joins it deterministically on the escrow's own observable
-// state, so no goroutine outlives the test (and later the DB release).
-func markerCaptureWaitEscrowRootGone(t *testing.T, escrow *batchCredentialEscrow, root jobbatch.ID) {
+// markerCaptureWaitRelease waits for the real runner to dispose of the root
+// and for the adapter to remove the single agent leaf's escrow entry. A
+// duplicate registration is rejected even after Consume; successful reuse
+// proves removal without consuming a credential. Roll back the probe at once.
+func markerCaptureWaitRelease(t *testing.T, runner *batchRunnerAdapter, root jobbatch.ID, key batchCredentialKey) {
 	t.Helper()
-	ticker := time.NewTicker(2 * time.Millisecond)
-	defer ticker.Stop()
-	deadline := time.After(5 * time.Second)
-	for {
-		escrow.mu.Lock()
-		found := false
-		for _, entry := range escrow.entries {
-			if entry.root == string(root) {
-				found = true
-				break
-			}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.Eventually(t, func() bool {
+		_, err := runner.View(ctx, root)
+		return errors.Is(err, jobbatch.ErrReleased)
+	}, 5*time.Second, 2*time.Millisecond, "runner never released root %q", root)
+	require.Eventually(t, func() bool {
+		rollback, err := runner.credentials.RegisterBatch([]batchadapter.CredentialRegistration{{Key: key.adapterKey(), Root: string(root)}})
+		if err != nil {
+			return false
 		}
-		escrow.mu.Unlock()
-		if !found {
-			return
-		}
-		select {
-		case <-ticker.C:
-		case <-deadline:
-			t.Fatalf("escrow entries for root %q were never released", root)
-		}
-	}
+		rollback()
+		return true
+	}, 5*time.Second, 2*time.Millisecond, "escrow entry for root %q was never released", root)
 }
 
 // markerCaptureExecutor is the executor seam of the e2e fixture: the REAL
@@ -372,14 +365,16 @@ func TestModelControlRunAgentLeafTimeoutReachesExecutor(t *testing.T) {
 	require.True(t, payload.CallCredentials, "the stamped payload carries the marker")
 	require.NotContains(t, string(launches[0].Task.Payload), "topsecret", "the secret never rides in the payload")
 	// The escrow entry was registered by the adapter BEFORE the engine ran:
-	// the test consumes it like the agent driver would, then releases.
-	creds, complete, err := env.install.RunnerHandle.credentials.consume(batchCredentialKey{
+	// consume it like the agent driver would, but leave the consumed entry
+	// in escrow so settlement must actually remove it.
+	key := batchCredentialKey{
 		registryID: env.registryID, sessionID: env.sessionID, messageID: "message",
 		callID: "call-mc-run-0", tool: "agent",
-	}, string(root))
+	}
+	creds, complete, err := env.install.RunnerHandle.credentials.consume(key, string(root))
 	require.NoError(t, err, "the adapter registered the launch's escrow entry")
 	require.Equal(t, "topsecret", creds.Credentials[0].APIKey)
-	complete()
+	defer complete()
 	// Settlement and full release: unblock the parked execution (cleanup runs
 	// this first on failure too), wait for the real Done, then join the
 	// adopt-installed release watcher on the escrow's observable state.
@@ -390,7 +385,7 @@ func TestModelControlRunAgentLeafTimeoutReachesExecutor(t *testing.T) {
 	defer cancel()
 	_, err = batch.Wait(waitCtx)
 	require.NoError(t, err)
-	markerCaptureWaitEscrowRootGone(t, env.install.RunnerHandle.credentials, root)
+	markerCaptureWaitRelease(t, env.install.RunnerHandle, root, key)
 }
 
 // TestModelControlRunAgentLeafEscrowAudit is the corrected launch-path audit
@@ -426,10 +421,11 @@ func TestModelControlRunAgentLeafEscrowAudit(t *testing.T) {
 	// The registered entry is a CLONE taken at registration: mutating the
 	// caller's CredentialSet after Submit cannot change what a leaf observes.
 	creds.Credentials[0].APIKey = "mutated-after-submit"
-	entry, complete, err := env.install.RunnerHandle.credentials.consume(batchCredentialKeyFor(payload), string(root))
+	key := batchCredentialKeyFor(payload)
+	entry, complete, err := env.install.RunnerHandle.credentials.consume(key, string(root))
 	require.NoError(t, err, "the escrow key derives exactly from the stamped payload")
 	require.Equal(t, "audit-secret", entry.Credentials[0].APIKey, "the entry holds the registration-time clone")
-	complete()
+	defer complete()
 	env.executor.letGo()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -437,5 +433,5 @@ func TestModelControlRunAgentLeafEscrowAudit(t *testing.T) {
 	require.NotNil(t, batch)
 	_, err = batch.Wait(waitCtx)
 	require.NoError(t, err)
-	markerCaptureWaitEscrowRootGone(t, env.install.RunnerHandle.credentials, root)
+	markerCaptureWaitRelease(t, env.install.RunnerHandle, root, key)
 }

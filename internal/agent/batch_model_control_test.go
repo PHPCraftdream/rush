@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -385,8 +386,19 @@ func TestInstalledModelControlStopRootAndDescendant(t *testing.T) {
 			require.Eventually(t, func() bool {
 				var state string
 				_ = env.conn.QueryRowContext(env.ctx, `SELECT state FROM batch_nodes WHERE root_id=? AND node_id=root_id`, root).Scan(&state)
-				return terminalBatchStoreState(state)
+				return modelcontrol.TerminalBatchStoreState(state)
 			}, time.Second, time.Millisecond)
 		})
 	}
 }
+
+// Legacy spellings used by the separate terminal-cache and worker-stop tests.
+// Keep their coverage wired to the extracted implementation until those callers migrate.
+const batchModelOutputLimit = modelcontrol.OutputLimit
+
+var (
+	outputResponse  = modelcontrol.OutputResponse
+	liveBatchOutput = modelcontrol.LiveOutput
+)
+
+type batchWorkerStopScopeKey = modelcontrol.WorkerStopScopeKey

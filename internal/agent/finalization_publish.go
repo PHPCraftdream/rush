@@ -10,8 +10,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-var ErrFinalizationScopeChanged = errors.New("finalization_scope_changed")
-
 type finalizationPublicationScope struct {
 	store    *session.AgentFinalizationStore
 	identity session.AgentFinalizationIdentity
@@ -30,7 +28,7 @@ func publishFinalizationCandidate(ctx context.Context, sessions session.Service,
 	if !scope.matches(identity) {
 		return message.Message{}, ErrFinalizationScopeChanged
 	}
-	sealed, ok := session.CandidateOf(candidate.messageID, candidate.hash, identity)
+	sealed, ok := session.CandidateOf(candidate.MessageID, candidate.Hash, identity)
 	if !ok {
 		return message.Message{}, ErrFinalizationScopeChanged
 	}
@@ -45,14 +43,14 @@ func publishFinalizationCandidate(ctx context.Context, sessions session.Service,
 	var accepted message.Message
 	var postCommit func()
 	err := writer.WithFinalizationTx(ctx, owner, func(tx *sql.Tx) error {
-		current, err := reader.GetFinalizationCandidateTx(ctx, tx, candidate.messageID)
+		current, err := reader.GetFinalizationCandidateTx(ctx, tx, candidate.MessageID)
 		if err != nil {
 			return err
 		}
 		if current.SessionID != owner {
 			return message.ErrFinalizationCandidateChanged
 		}
-		err = current.AcceptFinalizationCandidate(identity, candidate.hash)
+		err = current.AcceptFinalizationCandidate(identity, candidate.Hash)
 		alreadyAccepted := errors.Is(err, message.ErrFinalizationAlreadyAccepted)
 		if err != nil && !alreadyAccepted {
 			return err

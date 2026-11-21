@@ -1,4 +1,4 @@
-package agent
+package batchlife
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func TestBatchWebDrainNonblockingWithBlockedRoot(t *testing.T) {
 	}()
 	select {
 	case err := <-results:
-		require.ErrorIs(t, err, errBatchDrainPullTimeout, "Drain returned while the root stayed blocked")
+		require.ErrorIs(t, err, errDrainPullTimeout, "Drain returned while the root stayed blocked")
 	case <-time.After(2 * time.Second):
 		t.Fatal("Drain blocked on running batch work")
 	}

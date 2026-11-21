@@ -23,7 +23,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 			if readErr != nil {
 				return finalizationFacts{}, readErr
 			}
-			return finalizationFacts{complete: true, durableRevision: uint64(record.Revision), own: int(record.OpenTickets), cancelled: record.Cancelled}, nil
+			return finalizationFacts{Complete: true, DurableRevision: uint64(record.Revision), Own: int(record.OpenTickets), Cancelled: record.Cancelled}, nil
 		},
 	}
 	created, err := env.messages.Create(t.Context(), "session", message.CreateMessageParams{
@@ -34,8 +34,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	ts := &turnStream{finalization: execution, currentAssistant: &created, fenceCheckpoint: checkpoint.fenceFinalization}
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	first := ts.finalizationStamp
-	require.Zero(t, first.revision, "a reconstructed local gate has its own counter")
-	require.EqualValues(t, 2, first.durableRevision)
+	require.EqualValues(t, 2, first.DurableRevision())
 	require.NoError(t, ts.markFinalizationStep())
 	require.EqualValues(t, 2, ts.currentAssistant.FinishPart().FinalizationRevision)
 	persistCandidate := func() {
@@ -46,7 +45,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	persistCandidate()
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
-	candidate := finalizationCandidate{messageID: created.ID, hash: hash}
+	candidate := finalizationCandidate{MessageID: created.ID, Hash: hash}
 
 	// A separate store represents work that did not signal this local gate.
 	external := session.NewAgentFinalizationStore(env.conn)
@@ -58,7 +57,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 		publications++
 		stamp := ts.finalizationStamp
 		_, publishErr := publishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
-			Key: execution.logicalID, Generation: stamp.epoch, Revision: stamp.durableRevision, Serial: stamp.serial,
+			Key: execution.logicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 		}, candidate)
 		return publishErr
 	}
@@ -68,16 +67,15 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 			t.Logf("phase=durable-revision first=%+v current=%+v record=%+v read_error=%v publications=%d", first, ts.finalizationStamp, record, readErr, publications)
 		}
 	})
-	verdict, err := execution.gate.trySeal(t.Context(), first, candidate, execution.read, publish)
+	verdict, err := execution.gate.TrySeal(t.Context(), first, candidate, execution.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationCompose, verdict)
 	require.Zero(t, publications, "quiet external work still invalidates pre-work composition")
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
-	require.Zero(t, ts.finalizationStamp.revision)
-	require.EqualValues(t, 4, ts.finalizationStamp.durableRevision)
+	require.EqualValues(t, 4, ts.finalizationStamp.DurableRevision())
 	require.NoError(t, ts.markFinalizationStep())
 	persistCandidate()
-	verdict, err = execution.gate.trySeal(t.Context(), ts.finalizationStamp, candidate, execution.read, publish)
+	verdict, err = execution.gate.TrySeal(t.Context(), ts.finalizationStamp, candidate, execution.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
@@ -89,13 +87,4 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	require.NoError(t, err)
 	require.True(t, stored.IsFinished())
 	require.EqualValues(t, 4, stored.FinishPart().FinalizationRevision)
-}
-
-func TestFinalizationRefusesUnrepresentableDurableRevision(t *testing.T) {
-	t.Parallel()
-	gate := newFinalizationGate(1)
-	_, err := gate.beginCandidate(t.Context(), func(context.Context) (finalizationFacts, error) {
-		return finalizationFacts{complete: true, durableRevision: uint64(1) << 63}, nil
-	})
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
 }

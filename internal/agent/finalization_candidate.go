@@ -52,7 +52,7 @@ func persistFinalizationCandidate(ctx context.Context, sessions session.Service,
 	if postCommit != nil {
 		postCommit()
 	}
-	return persistedFinalizationCandidate{finalizationCandidate: finalizationCandidate{messageID: stored.ID, hash: hash}, identity: identity}, nil
+	return persistedFinalizationCandidate{finalizationCandidate: finalizationCandidate{MessageID: stored.ID, Hash: hash}, identity: identity}, nil
 }
 
 // recoverFinalizationCandidate re-adopts or fails the candidate a previous
@@ -67,15 +67,6 @@ func recoverFinalizationCandidate(ctx context.Context, messages message.Service,
 	if err != nil {
 		return session.AgentFinalizationNoCandidate, err
 	}
-	gate.resumeCandidateSerial(uint64(record.CandidateSerial))
+	gate.ResumeCandidateSerial(uint64(record.CandidateSerial))
 	return verdict, nil
-}
-
-// resumeCandidateSerial raises, never lowers, the step counter.
-func (g *finalizationGate) resumeCandidateSerial(serial uint64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if serial > g.candidateSerial {
-		g.candidateSerial = serial
-	}
 }

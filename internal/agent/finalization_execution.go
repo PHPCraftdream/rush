@@ -25,7 +25,7 @@ type finalizationExecution struct {
 type finalizationExecutionContextKey struct{}
 
 func withFinalizationExecution(ctx context.Context, execution *finalizationExecution) (context.Context, error) {
-	if execution == nil || execution.sessionID == "" || execution.logicalID == "" || execution.gate == nil || execution.gate.epoch == 0 {
+	if execution == nil || execution.sessionID == "" || execution.logicalID == "" || execution.gate == nil || execution.gate.Epoch() == 0 {
 		return nil, ErrFinalizationFactsUnavailable
 	}
 	return context.WithValue(ctx, finalizationExecutionContextKey{}, execution), nil
@@ -47,7 +47,7 @@ func (ts *turnStream) beginFinalizationStep(ctx context.Context) error {
 	if ts.finalization == nil {
 		return nil
 	}
-	stamp, err := ts.finalization.gate.beginCandidate(ctx, ts.finalization.read)
+	stamp, err := ts.finalization.gate.BeginCandidate(ctx, ts.finalization.read)
 	if err != nil {
 		return err
 	}
@@ -58,12 +58,12 @@ func (ts *turnStream) beginFinalizationStep(ctx context.Context) error {
 // markFinalizationStep runs under the assistant lock, before adding a final footer.
 func (ts *turnStream) markFinalizationStep() error {
 	stamp := ts.finalizationStamp
-	if stamp.owner != ts.finalization.gate || stamp.serial == 0 || ts.fenceCheckpoint == nil {
+	if !stamp.BelongsTo(ts.finalization.gate) || stamp.Serial() == 0 || ts.fenceCheckpoint == nil {
 		return ErrFinalizationFactsUnavailable
 	}
 	if err := ts.currentAssistant.MarkFinalizationCandidate(message.FinalizationIdentity{
-		Key: ts.finalization.logicalID, Generation: stamp.epoch,
-		Revision: stamp.durableRevision, Serial: stamp.serial,
+		Key: ts.finalization.logicalID, Generation: stamp.Epoch(),
+		Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 	}); err != nil {
 		return err
 	}
