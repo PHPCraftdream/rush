@@ -27,8 +27,7 @@ func TestAwaitTasksMaxWaitArbiterIndependent(t *testing.T) {
 
 func TestAwaitTasksMaxWaitClearTerminalQuiet(t *testing.T) {
 	fx := newSchedFx(t)
-	c := &coordinator{wakeScheduler: newWakeScheduler(fx.store, "test", nil)}
-	c.wakeScheduler.now = fx.now
+	c := &coordinator{wakeScheduler: fx.scheduler()}
 	for _, state := range []string{"active", "done", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
 			row, err := fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{

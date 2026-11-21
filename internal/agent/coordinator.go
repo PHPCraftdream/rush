@@ -33,6 +33,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -134,7 +135,7 @@ type coordinator struct {
 	// wakeScheduler is the stage-4b durable wake-schedule worker (one timer
 	// goroutine over WakeScheduleStore.NextDue), wired via
 	// SetWakeScheduleStore from internal/app; nil until then.
-	wakeScheduler *wakeScheduler
+	wakeScheduler *wakeScheduleWorker
 
 	// sharedBuildScopeMu/sharedBuildScope guard the coordinator-level build
 	// scope for tool assemblies WITHOUT trusted call state (the shared
@@ -250,7 +251,7 @@ type coordinator struct {
 	// buildModelsFromCfg call always fills both roles together — see
 	// resolveSessionModels's own comment for why a per-slot cache
 	// previously mismatched smart/fast roles.
-	modelCache       modelPairCache
+	modelCache       modelkit.ModelPairCache
 	modelCacheMu     sync.Mutex
 	modelCacheEpoch  uint64
 	modelPairBuilder func(context.Context, *config.Config, config.SelectedModel, config.SelectedModel) (Model, Model, error)
@@ -258,19 +259,6 @@ type coordinator struct {
 	// refreshOAuth2TokenFn is nil in production. Tests use it to install a
 	// deterministic refreshed provider credential without network traffic.
 	refreshOAuth2TokenFn func(context.Context, config.ProviderConfig) error
-}
-
-// cachedModelPair holds a resolved (smart, fast) Model pair as built
-// together by a single buildModelsFromCfg call.
-type cachedModelPair struct {
-	smart Model
-	fast  Model
-}
-
-// modelPairCache is the small cache surface used by model resolution. Keeping
-// it narrow preserves compatibility with existing csync.Map fixtures.
-type modelPairCache interface {
-	Len() int
 }
 
 // modelCacheMaxEntries bounds the number of resolved model pairs retained by a
@@ -352,7 +340,7 @@ func NewCoordinator(
 		allSkills:    allSkills,
 		activeSkills: activeSkills,
 		skillTracker: skillTracker,
-		modelCache:   newBoundedModelPairCache(modelCacheMaxEntries),
+		modelCache:   modelkit.NewBoundedModelPairCache(modelCacheMaxEntries),
 	}
 	// The hint counter, supervision registry and the shared timeout service
 	// are in-process coordination memory rehomed from the deleted workLedger

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -103,7 +104,7 @@ func (h coordinatorDrainHost) addToRecheckSet(sessionID string) {
 }
 
 func (h coordinatorDrainHost) isUnauthorized(err error) bool {
-	return h.coordinator.isUnauthorized(err)
+	return modelkit.IsUnauthorized(err)
 }
 
 func (h coordinatorDrainHost) refreshAfterUnauthorized(ctx context.Context, providerID string) bool {
@@ -349,7 +350,7 @@ func (g drainAccountGovernor) PublishReauthenticate(providerID string) {
 	g.host.publishReauthenticate(providerID)
 }
 
-func (g drainAccountGovernor) RedactURLs(s string) string { return redactNetworkURLs(s) }
+func (g drainAccountGovernor) RedactURLs(s string) string { return modelkit.RedactNetworkURLs(s) }
 
 // drainctlAttemptPort projects the root BatchCutoverFacts onto the leaf
 // accounting's narrow AttemptPort (only AttemptRows' shape differs).

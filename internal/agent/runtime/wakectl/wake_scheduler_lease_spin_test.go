@@ -12,7 +12,7 @@
 // makes the first two wait assertions below fail: the waits collapse to
 // 0 while the foreign lease is live.
 
-package agent
+package wakectl
 
 import (
 	"testing"

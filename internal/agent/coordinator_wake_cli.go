@@ -23,13 +23,17 @@ type LoopWakeCanceler interface {
 }
 
 func (c *coordinator) openOnceWakeSchedules(ctx context.Context, sessionID string) ([]db.WakeSchedule, error) {
-	return newWakeComponent(c).openOnceWakeSchedules(ctx, sessionID)
+	return c.wakeWorker().OpenOnceWakeSchedules(ctx, sessionID)
 }
 
 func (c *coordinator) HasOpenOnceWakeSchedule(ctx context.Context, sessionID string) (bool, error) {
-	return newWakeComponent(c).HasOpenOnceWakeSchedule(ctx, sessionID)
+	once, err := c.openOnceWakeSchedules(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return len(once) > 0, nil
 }
 
 func (c *coordinator) CancelLoopWakeSchedules(ctx context.Context, sessionID string) (int, error) {
-	return newWakeComponent(c).CancelLoopWakeSchedules(ctx, sessionID)
+	return c.wakeWorker().CancelLoopWakeSchedules(ctx, sessionID)
 }

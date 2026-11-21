@@ -11,11 +11,15 @@ import (
 	"charm.land/fantasy/providers/openai"
 	"github.com/stretchr/testify/require"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 // webTurnCtx marks a web turn, the only kind that honors session-stored models.
+// cachedModelPair keeps existing string-keyed cache fixtures compatible.
+type cachedModelPair = modelkit.CachedModelPair
+
 func webTurnCtx(t *testing.T) context.Context {
 	return WithCallOptions(t.Context(), &CallOptions{WebTurnOptIn: true})
 }
@@ -23,7 +27,7 @@ func webTurnCtx(t *testing.T) context.Context {
 func TestResolveSessionModels_ModelCacheIsBoundedAndEvictsPairs(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
-	coord.modelCache = newBoundedModelPairCache(modelCacheMaxEntries)
+	coord.modelCache = modelkit.NewBoundedModelPairCache(modelCacheMaxEntries)
 
 	defaultSession, err := env.sessions.Create(t.Context(), "cache default")
 	require.NoError(t, err)
@@ -54,7 +58,7 @@ func TestResolveSessionModels_ModelCacheIsBoundedAndEvictsPairs(t *testing.T) {
 func TestResolveSessionModels_ModelCacheSeparatesPunctuationTuples(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
-	coord.modelCache = newBoundedModelPairCache(modelCacheMaxEntries)
+	coord.modelCache = modelkit.NewBoundedModelPairCache(modelCacheMaxEntries)
 
 	coord.cfg.Config().Providers.Set("pair", config.ProviderConfig{
 		ID: "pair", Type: openai.Name, Models: []catwalk.Model{{ID: "one:two"}},
@@ -87,7 +91,7 @@ func TestResolveSessionModels_ModelCacheSeparatesPunctuationTuples(t *testing.T)
 func TestResolveSessionModels_ClearCannotPublishInFlightBuild(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
-	coord.modelCache = newBoundedModelPairCache(modelCacheMaxEntries)
+	coord.modelCache = modelkit.NewBoundedModelPairCache(modelCacheMaxEntries)
 	sess, err := env.sessions.Create(t.Context(), "clear in flight")
 	require.NoError(t, err)
 
@@ -123,14 +127,14 @@ func TestResolveSessionModels_ClearCannotPublishInFlightBuild(t *testing.T) {
 func TestCoordinatorModelCache_ConcurrentClearAndPublishStaysBounded(t *testing.T) {
 	env := testEnv(t)
 	coord := newWorkerToolTestCoordinator(t, env, false)
-	coord.modelCache = newBoundedModelPairCache(modelCacheMaxEntries)
+	coord.modelCache = modelkit.NewBoundedModelPairCache(modelCacheMaxEntries)
 
 	const workers = modelCacheMaxEntries + 1
 	ready := make(chan struct{}, workers)
 	release := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
-		key := modelPairCacheKey{generation: uint64(i), smartModel: fmt.Sprintf("smart-%d", i)}
+		key := modelkit.NewModelPairCacheKey(uint64(i), config.SelectedModel{Model: fmt.Sprintf("smart-%d", i)}, config.SelectedModel{})
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -149,7 +153,7 @@ func TestCoordinatorModelCache_ConcurrentClearAndPublishStaysBounded(t *testing.
 
 	require.Equal(t, 0, coord.modelCache.Len())
 	for i := 0; i < workers; i++ {
-		key := modelPairCacheKey{generation: uint64(i), smartModel: fmt.Sprintf("fresh-%d", i)}
+		key := modelkit.NewModelPairCacheKey(uint64(i), config.SelectedModel{Model: fmt.Sprintf("fresh-%d", i)}, config.SelectedModel{})
 		coord.setCachedModelPairIfCurrent(key, cachedModelPair{}, coord.modelCacheEpoch)
 	}
 	require.Equal(t, modelCacheMaxEntries, coord.modelCache.Len())

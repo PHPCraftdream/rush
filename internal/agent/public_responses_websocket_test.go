@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/gorilla/websocket"
@@ -137,10 +138,10 @@ func TestPublicResponsesWebSocketAmbiguousSendBlocksFantasyAndCoordinatorRetries
 		return collectPublicResponsesStream(publicResponsesTestContext(t), model, fantasy.Call{})
 	})
 	require.Error(t, err)
-	require.True(t, responsesWSReplayForbidden(err))
+	require.True(t, modelkit.ResponsesWSReplayForbidden(err))
 	require.Equal(t, classTerminal, classifyProviderError(err))
 	joined := errors.Join(&fantasy.ProviderError{StatusCode: http.StatusUnauthorized}, err)
-	require.False(t, (&coordinator{}).isUnauthorized(joined))
+	require.False(t, modelkit.IsUnauthorized(joined))
 	require.EqualValues(t, 1, requests.Load())
 	require.Zero(t, httpRequests.Load())
 	// A watchdog's persisted title must not override the send-state fence.
@@ -224,7 +225,7 @@ func TestPublicResponsesWebSocketCancellationAllowsLaterRequest(t *testing.T) {
 	select {
 	case err := <-done:
 		require.ErrorIs(t, err, context.Canceled)
-		require.True(t, responsesWSReplayForbidden(err))
+		require.True(t, modelkit.ResponsesWSReplayForbidden(err))
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancel did not unwind exchange")
 	}

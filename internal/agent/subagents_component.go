@@ -14,13 +14,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
-
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
-
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -174,14 +174,14 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 				return err
 			}
 			if parent := parentRoleContractFrom(ctx); parent != nil && (parent.Tools != nil || len(parent.Inherited) > 0) {
-				childRoleContract, err = copyInheritedRoleContract(parent)
+				childRoleContract, err = modelkit.CopyInheritedRoleContract(parent)
 				if err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		if admitted := selectedRoleContractFrom(ctx); admitted != nil {
+		if admitted := modelkit.SelectedRoleContractFrom(ctx); admitted != nil {
 			if admitted.Name != string(requestedRole) {
 				return ErrAgentRoleMismatch
 			}
@@ -210,7 +210,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 		}
 		if requestedRole.Builtin() && childRoleContract == nil {
 			if parent := parentRoleContractFrom(ctx); parent != nil && (parent.Tools != nil || len(parent.Inherited) > 0) {
-				childRoleContract = roleContractWithName(selected.Model.ModelCfg, string(requestedRole), parent)
+				childRoleContract = modelkit.RoleContractWithName(selected.Model.ModelCfg, string(requestedRole), parent)
 				if childRoleContract == nil {
 					return fmt.Errorf("%w: cannot snapshot inherited role cap", ErrAgentRoleUnconfigured)
 				}
@@ -340,7 +340,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	// session sharing the same underlying agent object (task #466).
 	model := params.Agent.Model()
 	if explicitRoleModel == nil && childRoleContract != nil && childRoleContract.Name != "" {
-		selected, _, resolveErr := currentOrSnapshotRoleModel(cfg, childRoleContract)
+		selected, _, resolveErr := modelkit.CurrentOrSnapshotRoleModel(cfg, childRoleContract)
 		if resolveErr != nil {
 			return fantasy.ToolResponse{}, resolveErr
 		}
@@ -390,7 +390,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	}
 
 	if explicitRoleModel == nil && childRoleContract != nil && childRoleContract.Name != "" && callCreds == nil {
-		selected, source, resolveErr := currentOrSnapshotRoleModel(cfg, childRoleContract)
+		selected, source, resolveErr := modelkit.CurrentOrSnapshotRoleModel(cfg, childRoleContract)
 		if resolveErr != nil {
 			return fantasy.ToolResponse{}, resolveErr
 		}
@@ -503,7 +503,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 		childCallOptions = WithRoleContractCopy(childCallOptions, childRoleContract)
 	}
 	if childRoleContract != nil && childRoleContract.Name != "" && explicitRoleModel == nil && callCreds == nil {
-		selected, source, resolveErr := currentOrSnapshotRoleModel(cfg, childRoleContract)
+		selected, source, resolveErr := modelkit.CurrentOrSnapshotRoleModel(cfg, childRoleContract)
 		if resolveErr != nil {
 			return fantasy.ToolResponse{}, resolveErr
 		}
@@ -545,7 +545,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	callTemplate := SessionAgentCall{
 		SessionID:            session.ID,
 		MaxOutputTokens:      maxTokens,
-		ProviderOptions:      getProviderOptions(session.ID, model, providerCfg),
+		ProviderOptions:      modelkit.GetProviderOptions(session.ID, model, providerCfg),
 		Temperature:          model.ModelCfg.Temperature,
 		TopP:                 model.ModelCfg.TopP,
 		TopK:                 model.ModelCfg.TopK,
@@ -557,7 +557,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 		SmartModel:           &driverModel,
 		Credentials:          callCreds,
 		CallOptions:          childCallOptions,
-		RoleContract:         cloneRoleContractForCall(childRoleContract),
+		RoleContract:         agentcall.CloneRoleContractForCall(childRoleContract),
 	}
 	if lifecycleBound {
 		callTemplate.Tools = batchChildTools
@@ -625,7 +625,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 			DriverGeneration:     generation,
 			Prompt:               params.Prompt,
 			MaxOutputTokens:      maxTokens,
-			ProviderOptions:      getProviderOptions(session.ID, model, providerCfg),
+			ProviderOptions:      modelkit.GetProviderOptions(session.ID, model, providerCfg),
 			Temperature:          model.ModelCfg.Temperature,
 			TopP:                 model.ModelCfg.TopP,
 			TopK:                 model.ModelCfg.TopK,
@@ -636,7 +636,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 			RequestedModelSource: requestedSource,
 			SmartModel:           pinnedModel,
 			Credentials:          callCreds,
-			RoleContract:         cloneRoleContractForCall(runOptions.RoleContract),
+			RoleContract:         agentcall.CloneRoleContractForCall(runOptions.RoleContract),
 			CallOptions:          &runOptions,
 		}
 		if lifecycleBound {

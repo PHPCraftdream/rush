@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -16,7 +18,7 @@ func (c *coordinator) refreshRequestedDelegationCall(ctx context.Context, parent
 		if call.CallOptions == nil {
 			call.CallOptions = &CallOptions{}
 		}
-		call.CallOptions.RoleContract = cloneRoleContractForCall(call.RoleContract)
+		call.CallOptions.RoleContract = agentcall.CloneRoleContractForCall(call.RoleContract)
 		ctx = WithCallOptions(ctx, call.CallOptions)
 	}
 	if call.CallOptions == nil || call.CallOptions.RoleContract == nil {
@@ -38,7 +40,7 @@ func (c *coordinator) refreshRequestedDelegationCall(ctx context.Context, parent
 		call.CallOptions = callOptionsFrom(ctx)
 	}
 	call = applyDrainModelOptions(call, selected.Model)
-	call.ProviderOptions = getProviderOptions(call.SessionID, selected.Model, selected.Provider)
+	call.ProviderOptions = modelkit.GetProviderOptions(call.SessionID, selected.Model, selected.Provider)
 	call.RequestedModelSource = selected.Source
 	return call, nil
 }

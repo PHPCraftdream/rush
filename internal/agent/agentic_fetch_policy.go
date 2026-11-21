@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/google/uuid"
@@ -119,7 +120,7 @@ func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress 
 		// the comma-joined leaf names), not the registry ID — a
 		// provider-backed private payload must pass hasToolset at the
 		// executor without bypassing it.
-		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: cloneRoleContractForCall(roleContractForToolBuild(ctx, built.Tools))},
+		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: agentcall.CloneRoleContractForCall(roleContractForToolBuild(ctx, built.Tools))},
 	}
 	invoke := batchPinnedInvoke(ingress, tpl)
 	ingressList := make([]fantasy.AgentTool, len(built.Tools))

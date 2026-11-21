@@ -15,6 +15,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -472,9 +473,9 @@ func TestRunInternal_ContinuationRetry_PreservesPartialContent(t *testing.T) {
 	const providerID = "test-continuation-retry"
 	const prompt = "write a long report"
 
-	orig := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = time.Millisecond
-	t.Cleanup(func() { streamStallRetryBaseBackoff = orig })
+	orig := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+	t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = orig })
 
 	env := testEnv(t)
 	cfg, err := config.Init(env.workingDir, "", false)

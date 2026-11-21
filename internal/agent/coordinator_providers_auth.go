@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -134,7 +135,7 @@ var errUnauthorizedRebuildUnavailable = errors.New("cannot retry unauthorized re
 
 func (c *coordinator) runWithUnauthorizedRetry(ctx context.Context, providerCfg config.ProviderConfig, fn func() error, rebuildCall func() error) error {
 	err := fn()
-	if err != nil && c.isUnauthorized(err) {
+	if err != nil && modelkit.IsUnauthorized(err) {
 		retryErr := c.retryAfterUnauthorized(ctx, providerCfg)
 		if retryErr != nil {
 			slog.Warn("401 retry skipped: credential refresh failed", "provider", providerCfg.ID, "error", retryErr)
@@ -169,10 +170,6 @@ func (c *coordinator) retryAfterUnauthorized(ctx context.Context, providerCfg co
 	}
 }
 
-func (c *coordinator) isUnauthorized(err error) bool {
-	return newProviderComponent(c).isUnauthorized(err)
-}
-
 func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config.ProviderConfig) error {
 	var err error
 	if c.refreshOAuth2TokenFn != nil {
@@ -203,7 +200,7 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 			return fmt.Errorf("resolve provider network client for OAuth refresh: provider %s is no longer configured; refusing refresh", providerCfg.ID)
 		}
 		providerCfg = freshProviderCfg
-		httpClient, clientErr := c.resolveProviderHTTPClient(cfg, providerCfg)
+		httpClient, clientErr := modelkit.ResolveProviderHTTPClient(cfg, providerCfg)
 		if clientErr != nil {
 			return fmt.Errorf("resolve provider network client for OAuth refresh: %w", clientErr)
 		}

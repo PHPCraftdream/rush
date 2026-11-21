@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
@@ -104,17 +105,17 @@ func TestTask1314OAuthMemoryRotationFourPrebuiltClients(t *testing.T) {
 				})}
 				var provider fantasy.Provider
 				if id == "openai-codex" {
-					provider, err = provauth.NewCodexTokenProvider(client, provauth.NewCodexTokenSource(store, coord.resolveProviderHTTPClient))
+					provider, err = provauth.NewCodexTokenProvider(client, provauth.NewCodexTokenSource(store, modelkit.ResolveProviderHTTPClient))
 				} else {
 					wrapped := coord.withOAuthBearerClient(pc, client)
 					// Count refresh calls without replacing the production source.
 					tr := wrapped.Transport.(*provauth.BearerTransport)
-					wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(pc.ID, store, coord.resolveProviderHTTPClient), pc.ID)
+					wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(pc.ID, store, modelkit.ResolveProviderHTTPClient), pc.ID)
 					var headers map[string]string
 					if id == "copilot" {
 						headers = copilot.Headers()
 					}
-					provider, err = coord.buildOpenaiCompatProvider(store.Config(), server.URL+"/v1", old.AccessToken, headers, nil, id, index != 0, wrapped)
+					provider, err = modelkit.BuildOpenaiCompatProvider(store.Config(), server.URL+"/v1", old.AccessToken, headers, nil, id, index != 0, wrapped)
 				}
 				require.NoError(t, err)
 				models[index], err = provider.LanguageModel(t.Context(), "gpt-5-codex")

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
@@ -24,7 +25,6 @@ func TestCodexTokenSourceRealStoreMemoryRotation(t *testing.T) {
 	store := config.NewLibraryStore(&config.Config{Options: &config.Options{}}, t.TempDir())
 	old := oauth.Token{AccessToken: "old-memory", AccountID: "old-account"}
 	store.SetProviderRuntimeConfig(provauth.CodexTokenProviderID, config.ProviderConfig{ID: provauth.CodexTokenProviderID, OAuthToken: &old})
-	coord := &coordinator{cfg: store}
 	pc, _ := store.Config().Providers.Get(provauth.CodexTokenProviderID)
 	var auth, accounts []string
 	client := &http.Client{Transport: codexAdapterRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -32,7 +32,7 @@ func TestCodexTokenSourceRealStoreMemoryRotation(t *testing.T) {
 		accounts = append(accounts, r.Header.Get("chatgpt-account-id"))
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))}, nil
 	})}
-	source := provauth.NewCodexTokenSource(store, coord.resolveProviderHTTPClient)
+	source := provauth.NewCodexTokenSource(store, modelkit.ResolveProviderHTTPClient)
 	provider, err := provauth.NewCodexTokenProvider(client, source)
 	require.NoError(t, err)
 	model, err := provider.LanguageModel(t.Context(), "gpt-5-codex")

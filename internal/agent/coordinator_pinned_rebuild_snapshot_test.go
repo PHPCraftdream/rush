@@ -25,6 +25,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -352,7 +353,7 @@ func TestRefreshOAuth2Token_UsesFreshSameSnapshotProviderPair(t *testing.T) {
 	// generation-0 provider carries no network policy and neither do the
 	// generation-0 globals — so the failure asserted below can only come
 	// from the fresh generation's provider entry.
-	client, err := f.coord.resolveProviderHTTPClient(f.pinnedCfg, f.staleProv)
+	client, err := modelkit.ResolveProviderHTTPClient(f.pinnedCfg, f.staleProv)
 	require.NoError(t, err)
 	require.Nil(t, client)
 
