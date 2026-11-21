@@ -1,0 +1,188 @@
+package modelopts
+
+import (
+	"testing"
+
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestRenderEffortsOverview_NoArg covers the no-argument output: it must
+// state both syntaxes (short codes + raw @effort), call out that @effort is
+// unvalidated, state the Claude-only short-code asymmetry, and mention every
+// provider's collapsing behavior — especially Z.AI's low/medium/high → high.
+func TestRenderEffortsOverview_NoArg(t *testing.T) {
+	out := renderEffortsOverview()
+
+	// Two syntaxes.
+	assert.Contains(t, out, "Short codes")
+	assert.Contains(t, out, "@effort")
+	assert.Contains(t, out, "UNVALIDATED")
+
+	// Claude-only LETTER short-code asymmetry (o3x, h1l, ...) — Z.AI atoms
+	// now have their OWN validated levels array + long-form atom suffix
+	// (glm5_3-max), so the assertion here is scoped to "no letter short
+	// code", not "no way at all to set effort with validation".
+	assert.Contains(t, out, "ASYMMETRY")
+	assert.Contains(t, out, "local-cli/")
+	assert.Contains(t, out, "`glm5_3xx`")
+	assert.Contains(t, out, "no letter\nshort code for effort")
+
+	// Z.AI collapsing — the single most surprising fact.
+	assert.Contains(t, out, "Z.AI")
+	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
+	// Z.AI now has a real, validated levels array + long-form atom suffix.
+	assert.Contains(t, out, "glm5_3-max")
+	assert.Contains(t, out, "validated")
+
+	// DeepSeek's differing unset default should also be documented.
+	assert.Contains(t, out, "DeepSeek")
+	assert.Contains(t, out, "UNSET effort means thinking is OFF")
+
+	// io.net / Alibaba / hyper coverage (boolean-only providers).
+	assert.Contains(t, out, "io.net")
+	assert.Contains(t, out, "Alibaba Singapore")
+	assert.Contains(t, out, "hyper")
+}
+
+// TestRenderEffortsForModel_ZAI verifies a Z.AI model lookup by atom key
+// states the low/medium→high collapsing explicitly, since that is the fact
+// most likely to waste a user's time if it's missing.
+func TestRenderEffortsForModel_ZAI(t *testing.T) {
+	out, err := renderEffortsForModel("glm5_3")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "GLM 5.3")
+	assert.Contains(t, out, "zai/glm-5.3")
+	// The generic Z.AI provider doc (shown for every Z.AI model, including
+	// glm5_3) still describes the shape most OTHER Z.AI models share.
+	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
+	assert.Contains(t, out, "xhigh, max, ultracode        -> reasoning_effort: \"max\"")
+
+	// Must show the raw @effort command form, not a letter short code (none exist).
+	assert.Contains(t, out, "rush models use zai/glm-5.3@<level> <fast>")
+	// glm5_3's own resolved levels are low/high/max (verified 2026-08-26 —
+	// the API rejects disabling reasoning for this model) — "off" is no
+	// longer one of its settable rows.
+	assert.Contains(t, out, "rush models use zai/glm-5.3@low <fast>")
+	assert.Contains(t, out, "rush models use zai/glm-5.3@max <fast>")
+	assert.Contains(t, out, "rush models use zai/glm-5.3@high <fast>")
+	assert.NotContains(t, out, "rush models use zai/glm-5.3@off <fast>")
+	assert.NotContains(t, out, "rush models use zai/glm-5.3@xhigh <fast>")
+
+	// New behavior for this task: the long-form atom suffix (validated,
+	// same mechanism as Claude atoms) is now also offered and the output
+	// says both forms are validated against the real levels array — not
+	// left as an unvalidated blind string split.
+	assert.Contains(t, out, "rush models use glm5_3-<level> <fast>")
+	assert.Contains(t, out, "Validated")
+	assert.Contains(t, out, "3 real states")
+}
+
+// TestRenderEffortsForModel_ZAI_LevelsFromRealArray proves the rendered
+// levels for a Z.AI atom come from the real ReasoningLevels array (used
+// for validation), not merely restated as prose that could drift from it.
+func TestRenderEffortsForModel_ZAI_LevelsFromRealArray(t *testing.T) {
+	out, err := renderEffortsForModel("glm5_3")
+	require.NoError(t, err)
+	a, ok := modelatoms.LookupAtom("glm5_3")
+	require.True(t, ok)
+	require.NotNil(t, a.ReasoningLevels)
+	for _, level := range a.ReasoningLevels {
+		assert.Contains(t, out, "rush models use zai/glm-5.3@"+level, "level %q from the real array must be rendered", level)
+	}
+}
+
+// TestRenderEffortsForModel_ZAI_RawProviderModel verifies the same lookup
+// also works when addressed as raw "provider/model" instead of the atom key.
+func TestRenderEffortsForModel_ZAI_RawProviderModel(t *testing.T) {
+	out, err := renderEffortsForModel("zai/glm-5.3")
+	require.NoError(t, err)
+	assert.Contains(t, out, "atom: glm5_3")
+	assert.Contains(t, out, `unset, low, medium, high     -> reasoning_effort: "high"`)
+}
+
+// TestRenderEffortsForModel_Claude verifies a Claude/local-cli model lookup
+// (via a short code, matching how users actually invoke it) shows the
+// atom-level command syntax and the CLI-validated framing, not the raw
+// @effort form (Claude atoms use short codes, not @effort).
+func TestRenderEffortsForModel_Claude(t *testing.T) {
+	out, err := renderEffortsForModel("fl")
+	require.NoError(t, err)
+
+	entry, ok := modelatoms.LookupShortCode("fl")
+	require.True(t, ok)
+	assert.Contains(t, out, "local-cli/"+entry.Slug)
+	assert.Contains(t, out, "Claude: effort")
+	for _, level := range []string{"low", "high", "max"} {
+		assert.Contains(t, out, "rush models use local-cli/"+entry.Slug+"@"+level+" <fast>")
+	}
+	assert.NotContains(t, out, "detected")
+}
+
+// TestRenderEffortsForModel_Claude_ByAtomKey verifies the same lookup by
+// bare atom key (no effort suffix) also resolves.
+func TestRenderEffortsForModel_Claude_ByAtomKey(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	out, err := renderEffortsForModel("fable")
+	require.NoError(t, err)
+	assert.Contains(t, out, "atom: fable")
+	assert.Contains(t, out, "fable-low")
+	assert.Contains(t, out, "fable-medium")
+	assert.Contains(t, out, "fable-high")
+}
+
+// TestRenderEffortsForModel_UnknownModel verifies the error path for a
+// model/atom/short-code that resolves to nothing.
+func TestRenderEffortsForModel_UnknownModel(t *testing.T) {
+	_, err := renderEffortsForModel("totally-fake-model-xyz")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a recognized atom, short code, or provider/model")
+	assert.Contains(t, err.Error(), "rush models list")
+}
+
+// TestResolveEffortTarget_Variants exercises the three accepted input
+// shapes: atom key, full short code, and raw provider/model.
+func TestResolveEffortTarget_Variants(t *testing.T) {
+	t.Run("atom key", func(t *testing.T) {
+		target, ok := resolveEffortTarget("glm5_turbo")
+		require.True(t, ok)
+		assert.Equal(t, "glm5_turbo", target.AtomKey)
+		assert.Equal(t, "zai", target.Provider)
+		assert.Equal(t, "glm-5-turbo", target.Model)
+	})
+
+	t.Run("short code", func(t *testing.T) {
+		target, ok := resolveEffortTarget("hl")
+		require.True(t, ok)
+		assert.Empty(t, target.AtomKey) // Generated top Haiku is pinned, not the moving haiku atom.
+		entry, ok := modelatoms.LookupShortCode("hl")
+		require.True(t, ok)
+		assert.Equal(t, entry.Slug, target.Model)
+		assert.Equal(t, entry.Display, target.DisplayName)
+		assert.Equal(t, "local-cli", target.Provider)
+	})
+
+	t.Run("raw provider/model not in registry", func(t *testing.T) {
+		target, ok := resolveEffortTarget("openai/gpt-5")
+		require.True(t, ok)
+		assert.Empty(t, target.AtomKey)
+		assert.Equal(t, "openai", target.Provider)
+		assert.Equal(t, "gpt-5", target.Model)
+	})
+
+	t.Run("raw provider/model with @effort suffix ignored for lookup", func(t *testing.T) {
+		target, ok := resolveEffortTarget("zai/glm-5.3@max")
+		require.True(t, ok)
+		assert.Equal(t, "glm5_3", target.AtomKey)
+		assert.Equal(t, "zai", target.Provider)
+		assert.Equal(t, "glm-5.3", target.Model)
+	})
+
+	t.Run("unrecognized", func(t *testing.T) {
+		_, ok := resolveEffortTarget("nonsense-not-a-model")
+		assert.False(t, ok)
+	})
+}

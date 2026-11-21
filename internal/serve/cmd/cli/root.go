@@ -18,6 +18,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	out "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/ping"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/providers"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/run"
 	wtree "github.com/PHPCraftdream/rush/internal/serve/cmd/run/wtree"
 	"github.com/PHPCraftdream/rush/internal/serve/server"
@@ -29,7 +32,7 @@ import (
 
 // NewRootCmd builds the whole Rush command tree. Every call returns a FRESH
 // root command (the former package-level rootCmd is gone); family sub-trees
-// come from the exported constructors of package cmd. Persistent flags,
+// come from command-family constructors. Persistent flags,
 // PersistentPreRunE chain order, and the full AddCommand set are byte-for-byte
 // the former root.go init()/var contents.
 func NewRootCmd() *cobra.Command {
@@ -238,13 +241,13 @@ authenticate — it is never transmitted as part of the URL.
 		apiCmd,
 		cmdpkg.NewSessionsCmd(),
 		serveCmd,
-		cmdpkg.NewModelsCmd(),
-		cmdpkg.NewPingCmd(),
-		cmdpkg.NewPingFastCmd(),
+		models.NewModelsCmd(),
+		ping.NewPingCmd(),
+		ping.NewPingFastCmd(),
 		cmdpkg.NewMigrateCmd(),
 		cmdpkg.NewQueueCmd(),
 		cmdpkg.NewBatchCmd(),
-		cmdpkg.NewProvidersCmd(),
+		providers.NewProvidersCmd(),
 		wtree.NewWorktreeCmd(),
 		cmdpkg.NewMcpCmd(),
 		cmdpkg.NewClaudeInitCmd(),

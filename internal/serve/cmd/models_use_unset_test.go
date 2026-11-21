@@ -15,12 +15,12 @@ func TestModelsUnset_ClearsWorkerOnly(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsUnsetFlags(t)
-	_, runErr = runModelsCmd(t, modelsUnsetCmd, "worker")
+	_, runErr = runModelsCmd(t, modelsUnsetCmd(), "worker")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -44,12 +44,12 @@ func TestModelsUnset_AllClearsAllFourSlots(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsUnsetFlags(t)
-	_, runErr = runModelsCmd(t, modelsUnsetCmd, "all")
+	_, runErr = runModelsCmd(t, modelsUnsetCmd(), "all")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -63,7 +63,7 @@ func TestModelsUnset_UnknownSlotFailsCleanly(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUnsetFlags(t)
-	_, runErr := runModelsCmd(t, modelsUnsetCmd, "bogus-slot")
+	_, runErr := runModelsCmd(t, modelsUnsetCmd(), "bogus-slot")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "expected smart|fast|worker|reviewer|both|all")
 }
