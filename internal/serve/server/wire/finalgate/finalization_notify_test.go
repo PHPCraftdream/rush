@@ -22,12 +22,14 @@ type finalizationNotifyGateStub struct {
 	seals     map[string]chan struct{} // Created lazily, buffered cap 1.
 	awaitErr  error                    // Deterministic AwaitSealed failure.
 	failAllow bool                     // Deterministic AllowTerminal=false.
+	admitted  chan struct{}            // One signal per AllowTerminal decision.
 }
 
 func newFinalizationNotifyGateStub() *finalizationNotifyGateStub {
 	return &finalizationNotifyGateStub{
-		active: map[string]bool{},
-		seals:  map[string]chan struct{}{},
+		active:   map[string]bool{},
+		seals:    map[string]chan struct{}{},
+		admitted: make(chan struct{}, 64),
 	}
 }
 
@@ -61,11 +63,26 @@ func (s *finalizationNotifyGateStub) seal(owner string) {
 
 func (s *finalizationNotifyGateStub) AllowTerminal(_ context.Context, owner string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.failAllow {
-		return false
+	allowed := !s.failAllow && !s.active[owner]
+	s.mu.Unlock()
+	select {
+	case s.admitted <- struct{}{}:
+	default:
 	}
-	return !s.active[owner]
+	return allowed
+}
+
+// awaitAdmissions blocks until the pump has taken n admission decisions, so a
+// test can seal only after every event is known to be held.
+func (s *finalizationNotifyGateStub) awaitAdmissions(t *testing.T, n int) {
+	t.Helper()
+	for range n {
+		select {
+		case <-s.admitted:
+		case <-t.Context().Done():
+			t.Fatal("pump did not admit all events")
+		}
+	}
 }
 
 func (s *finalizationNotifyGateStub) AwaitSealed(ctx context.Context, owner string) error {
@@ -178,6 +195,10 @@ func TestFinalizationGatedMessageStreamDeliversHeldEventsInArrivalOrder(t *testi
 	first := finalizationTerminalEvent("t1", "owner")
 	second := finalizationTerminalEvent("t2", "owner")
 	finalizationPublishAll(t, in, []pubsub.Event[message.Message]{first, second})
+	// Seal only once both terminals are held: a terminal admitted after the
+	// seal passes immediately by design, which would reorder it before the
+	// still-held earlier one.
+	gate.awaitAdmissions(t, 2)
 	gate.seal("owner")
 	require.Equal(t, []pubsub.Event[message.Message]{first, second},
 		finalizationCollect(out))
