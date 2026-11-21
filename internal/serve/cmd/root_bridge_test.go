@@ -20,9 +20,9 @@ func Execute() { executeForTest() }
 func InstallRootForTest(root *cobra.Command, execute func()) {
 	templates := []*cobra.Command{
 		lockCmd, unlockCmd, dirsCmd, projectsCmd, updateProvidersCmd,
-		logsCmd, schemaCmd, psCmd, loginCmd, statsCmd, tokensCmd, apiCmd,
-		sessionsCmd, serveCmd, models.NewModelsCmd(), ping.NewPingCmd(), ping.NewPingFastCmd(), migrateCmd,
-		queueCmd, batchCmd, providers.NewProvidersCmd(), mcpCmd, claudeInitCmd,
+		logsCmd, schemaCmd, psCmd, loginCmd, statsCmd, tokensCmd,
+		sessionsCmd, models.NewModelsCmd(), ping.NewPingCmd(), ping.NewPingFastCmd(), migrateCmd,
+		providers.NewProvidersCmd(), mcpCmd, claudeInitCmd,
 		claudeDelCmd, cliRefreshCmd, codexInitCmd, codexDelCmd, geminiInitCmd,
 		geminiDelCmd, grokInitCmd, grokDelCmd, ompInitCmd, ompDelCmd,
 		opencodeInitCmd, opencodeDelCmd, qwenInitCmd, qwenDelCmd, resultCmd,

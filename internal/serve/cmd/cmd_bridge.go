@@ -57,11 +57,6 @@ func setupAppLite(cmd *cobra.Command) (*app.App, error) {
 	return cmdkit.SetupAppLite(cmd)
 }
 
-func setupAppWithOptions(cmd *cobra.Command, opts []app.Option) (*app.App, error) {
-	installCfgSeams()
-	return cmdkit.SetupAppWithOptions(cmd, opts)
-}
-
 func mcpAppOptions(cmd *cobra.Command) []app.Option { return cmdkit.McpAppOptions(cmd) }
 
 func setSettingsAudit(cmd *cobra.Command) { cmdkit.SetSettingsAudit(cmd) }
@@ -77,8 +72,6 @@ func initCommandConfig(cmd *cobra.Command) (*config.ConfigStore, string, bool, e
 
 func ResolveCwd(cmd *cobra.Command) (string, error) { return cmdkit.ResolveCwd(cmd) }
 
-func applyGlobalDir(flagValue string) { cmdkit.ApplyGlobalDir(flagValue) }
-
 func resolveSessionID(ctx context.Context, svc core.Service, id string) (core.Session, error) {
 	return cmdkit.ResolveSessionID(ctx, svc, id)
 }
@@ -92,8 +85,6 @@ func deepFreshCmdRebind(src *cobra.Command, skip map[string]bool, rebind func(fr
 func scopeFromFlags(cmd *cobra.Command, def config.Scope) (config.Scope, error) {
 	return cmdkit.ScopeFromFlags(cmd, def)
 }
-
-func cmdFlagString(cmd *cobra.Command, name string) string { return cmdkit.CmdFlagString(cmd, name) }
 
 func parseSinceDuration(s string) (time.Duration, error) { return cmdkit.ParseSinceDuration(s) }
 
@@ -158,10 +149,6 @@ func exitWithAudit(code int) {
 func ensureAuditDirFunc() { journal.EnsureAuditDirFunc() }
 
 func resetCommandJournalForTests() { journal.ResetCommandJournalForTests() }
-
-func tokenCLIExitCode(err error) (int, bool) {
-	return cliout.ErrorExitCode(err, "tokens")
-}
 
 func maybeDetachConsole() { proc.MaybeDetachConsole() }
 

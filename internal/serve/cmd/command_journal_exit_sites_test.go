@@ -1,8 +1,10 @@
-// REVERT-CHECK: restoring any os.Exit(n) call in a non-test internal/cmd
-// file (e.g. in ping.go) must fail TestJournalNoBareOsExit.
+// REVERT-CHECK: adding an os.Exit(n) call to a production Go file anywhere
+// under internal/serve/cmd (including a platform-specific file) must fail
+// TestJournalNoBareOsExit and report the relative path and line.
 package cmd
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,25 +17,38 @@ import (
 
 // A bare os.Exit skips the journal end record; exits go through exitWithAudit.
 func TestJournalNoBareOsExit(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	require.NoError(t, err)
-	require.NotEmpty(t, files)
 	call := regexp.MustCompile(`\bos\.Exit\(`)
+	// Only the two exits in the shared TestMain adapter are exempt, once each.
+	allowed := map[string]int{"os.Exit(1)": 1, "os.Exit(code)": 1}
 	var offenders []string
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
+	var scannedNested bool
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		data, err := os.ReadFile(f)
-		require.NoError(t, err)
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		path = filepath.ToSlash(path)
+		scannedNested = scannedNested || strings.Contains(path, "/")
 		for i, line := range strings.Split(string(data), "\n") {
-			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || !call.MatchString(line) {
 				continue
 			}
-			if call.MatchString(line) {
-				offenders = append(offenders, f+":"+strconv.Itoa(i+1))
+			if path == "cli/cmdtest/isolate.go" && allowed[trimmed] > 0 {
+				allowed[trimmed]--
+				continue
 			}
+			offenders = append(offenders, path+":"+strconv.Itoa(i+1))
 		}
-	}
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, scannedNested, "expected to scan non-test Go files in subdirectories")
 	require.Empty(t, offenders, "use exitWithAudit instead of os.Exit")
 }

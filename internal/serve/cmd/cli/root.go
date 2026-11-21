@@ -15,6 +15,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	cmdpkg "github.com/PHPCraftdream/rush/internal/serve/cmd"
+	apictl "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/api"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/queuecmd"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/serve"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	out "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
@@ -139,7 +142,7 @@ rush claude-init --global
 		if err := settingsPasswordPreRun(cmd, args); err != nil {
 			return err
 		}
-		return cmdpkg.APITokenArgumentGuard(root, cmd, args)
+		return apictl.APITokenArgumentGuard(root, cmd, args)
 	}
 	root.PersistentFlags().StringP("cwd", "c", "", "Working directory rush operates in (absolute or relative). Applies to every subcommand; the .rush/ store and any tool-side relative paths resolve against it.")
 	root.PersistentFlags().StringP("data-dir", "D", "",
@@ -219,9 +222,9 @@ authenticate — it is never transmitted as part of the URL.
 	web.Flags().Bool("no-open", false, "Do not open browser automatically")
 	// The moved journal/exit-code helpers need the live tree objects before
 	// any RunE runs (formerly installed by package cmd's init phase).
-	apiCmd := cmdpkg.NewAPICmd()
+	apiCmd := apictl.NewAPICmd()
 	tokensCmd := cmdpkg.NewTokensCmd()
-	serveCmd := cmdpkg.NewServeCmd()
+	serveCmd := serve.NewServeCmd()
 	journal.UseJournalRoot(root)
 	out.SetInvocationCommands(root, apiCmd, tokensCmd, serveCmd)
 
@@ -245,8 +248,8 @@ authenticate — it is never transmitted as part of the URL.
 		ping.NewPingCmd(),
 		ping.NewPingFastCmd(),
 		cmdpkg.NewMigrateCmd(),
-		cmdpkg.NewQueueCmd(),
-		cmdpkg.NewBatchCmd(),
+		queuecmd.NewQueueCmd(),
+		queuecmd.NewBatchCmd(),
 		providers.NewProvidersCmd(),
 		wtree.NewWorktreeCmd(),
 		cmdpkg.NewMcpCmd(),
