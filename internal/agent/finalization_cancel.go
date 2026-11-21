@@ -81,7 +81,7 @@ func (r *finalizationCancelRegistry) cancelSession(sessionID string) {
 	}
 	r.mu.Unlock()
 	for _, gate := range gates {
-		gate.cancel()
+		gate.Cancel()
 	}
 }
 

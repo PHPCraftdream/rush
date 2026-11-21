@@ -49,9 +49,9 @@ func TestFinalizationRecoverScopeHookAdoptsIntactCandidate(t *testing.T) {
 	verdict, err := hook(env.ctx, env.execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateAdopted, verdict)
-	stamp, err := env.execution.gate.beginCandidate(env.ctx, quietFinalizationTestFacts)
+	stamp, err := env.execution.gate.BeginCandidate(env.ctx, quietFinalizationTestFacts)
 	require.NoError(t, err)
-	require.EqualValues(t, 6, stamp.serial, "the restarted owner continues above the durable high-water mark")
+	require.EqualValues(t, 6, stamp.Serial(), "the restarted owner continues above the durable high-water mark")
 }
 
 // TestFinalizationRecoverScopeHookFailsStaleCandidate proves a candidate
@@ -77,10 +77,10 @@ func TestFinalizationRecoverScopeHookFailsStaleCandidate(t *testing.T) {
 	require.Empty(t, record.CandidateMessageID, "the stale candidate is cleared")
 	require.Empty(t, record.CandidateHash)
 	require.EqualValues(t, 7, record.CandidateSerial, "the serial high-water mark survives the clearing")
-	stamp, err := env.execution.gate.beginCandidate(env.ctx, quietFinalizationTestFacts)
+	stamp, err := env.execution.gate.BeginCandidate(env.ctx, quietFinalizationTestFacts)
 	require.NoError(t, err)
-	require.EqualValues(t, 8, stamp.serial)
-	require.GreaterOrEqual(t, stamp.serial, uint64(record.CandidateSerial))
+	require.EqualValues(t, 8, stamp.Serial())
+	require.GreaterOrEqual(t, stamp.Serial(), uint64(record.CandidateSerial))
 }
 
 // TestFinalizationRecoverScopeHookReportsNoneWithoutCandidate proves an
@@ -95,9 +95,9 @@ func TestFinalizationRecoverScopeHookReportsNoneWithoutCandidate(t *testing.T) {
 	verdict, err := hook(env.ctx, env.execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationNoCandidate, verdict)
-	stamp, err := env.execution.gate.beginCandidate(env.ctx, quietFinalizationTestFacts)
+	stamp, err := env.execution.gate.BeginCandidate(env.ctx, quietFinalizationTestFacts)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, stamp.serial)
+	require.EqualValues(t, 1, stamp.Serial())
 }
 
 // TestFinalizationRecoverScopeHookRestartAfterSealIsIdempotent proves a
@@ -127,9 +127,9 @@ func TestFinalizationRecoverScopeHookRestartAfterSealIsIdempotent(t *testing.T) 
 	record, err := env.scope.store.Snapshot(env.ctx, env.scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
-	stamp, err := env.execution.gate.beginCandidate(env.ctx, quietFinalizationTestFacts)
+	stamp, err := env.execution.gate.BeginCandidate(env.ctx, quietFinalizationTestFacts)
 	require.NoError(t, err)
-	require.EqualValues(t, 2, stamp.serial, "even the terminal path resumes above the durable serial")
+	require.EqualValues(t, 2, stamp.Serial(), "even the terminal path resumes above the durable serial")
 }
 
 // TestFinalizationRecoverScopeHookReadErrorKeepsCandidate proves a transient
@@ -154,7 +154,7 @@ func TestFinalizationRecoverScopeHookReadErrorKeepsCandidate(t *testing.T) {
 	record, err := env.scope.store.Snapshot(env.ctx, env.scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, record.CandidateMessageID, "a transient read failure must not clear the recorded candidate")
-	require.Equal(t, persisted.hash, record.CandidateHash)
+	require.Equal(t, persisted.Hash, record.CandidateHash)
 	require.EqualValues(t, 3, record.CandidateSerial)
 	require.Equal(t, "executing", record.Phase)
 }

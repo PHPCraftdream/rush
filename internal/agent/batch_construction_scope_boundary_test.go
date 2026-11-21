@@ -137,7 +137,7 @@ func TestBatchCLIBindOwnsConstructionScopeUntilRelease(t *testing.T) {
 	ingress := &batchWorkIngress{registries: registries, diskBindings: caps}
 	prevProcess := processBatchBinding.Load()
 	t.Cleanup(func() {
-		coordinatorBatchBindings.Delete(coord)
+		fixtureCoordinatorBatchBindings.Delete(coord)
 		processBatchBinding.Store(prevProcess)
 	})
 	require.NoError(t, BindCoordinatorBatchRuntimeBindings(coord, ingress, nil, caps))
@@ -227,7 +227,7 @@ func TestConstructionScopeBoundary(t *testing.T) {
 	}
 	failedCoord := newBatchRuntimeCoordinator()
 	coordinatorBatchBindings.Store(failedCoord, failedBind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(failedCoord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(failedCoord) })
 
 	// Trusted call state with NO custom provider: the assembly must use the
 	// call's OWN build scope (EnsureCallBuildScope), never the shared one.

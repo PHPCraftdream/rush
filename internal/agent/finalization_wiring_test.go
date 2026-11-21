@@ -147,7 +147,7 @@ func readFactsMust(t *testing.T, w *finalizationWiring, identity coresession.Age
 	t.Helper()
 	facts, err := w.readFacts(t.Context(), identity)
 	require.NoError(t, err)
-	require.True(t, facts.complete)
+	require.True(t, facts.Complete)
 	return facts
 }
 
@@ -162,41 +162,41 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 		_, err := w.store.Admit(t.Context(), identity, "t1")
 		require.NoError(t, err)
 		open := readFactsMust(t, w, identity)
-		require.Equal(t, before.durableRevision+1, open.durableRevision, "admit advances the durable revision")
-		require.Equal(t, 1, open.own)
+		require.Equal(t, before.DurableRevision+1, open.DurableRevision, "admit advances the durable revision")
+		require.Equal(t, 1, open.Own)
 		require.NoError(t, w.store.Release(t.Context(), identity, "t1"))
 		after := readFactsMust(t, w, identity)
-		require.Equal(t, open.durableRevision+1, after.durableRevision, "release advances the durable revision exactly like admit")
-		require.Zero(t, after.own)
+		require.Equal(t, open.DurableRevision+1, after.DurableRevision, "release advances the durable revision exactly like admit")
+		require.Zero(t, after.Own)
 	})
 
 	t.Run("open ticket keeps own busy", func(t *testing.T) {
 		_, w, _, identity := newFinalizationFactsEnv(t)
 		facts := readFactsMust(t, w, identity)
-		require.Zero(t, facts.own)
+		require.Zero(t, facts.Own)
 		_, err := w.store.Admit(t.Context(), identity, "held")
 		require.NoError(t, err)
 		facts = readFactsMust(t, w, identity)
-		require.Equal(t, 1, facts.own)
+		require.Equal(t, 1, facts.Own)
 		require.NoError(t, w.store.Release(t.Context(), identity, "held"))
 		facts = readFactsMust(t, w, identity)
-		require.Zero(t, facts.own)
+		require.Zero(t, facts.Own)
 	})
 
 	t.Run("scope counters map through the stub sources", func(t *testing.T) {
 		_, w, stub, identity := newFinalizationFactsEnv(t)
 		stub.descendants, stub.queued, stub.holds, stub.debt = 3, 5, 7, 9
 		facts := readFactsMust(t, w, identity)
-		require.Equal(t, 3, facts.descendants)
-		require.Equal(t, 5, facts.queuedCalls)
-		require.Equal(t, 7, facts.physicalHolds)
-		require.Equal(t, 9, facts.debt)
+		require.Equal(t, 3, facts.Descendants)
+		require.Equal(t, 5, facts.QueuedCalls)
+		require.Equal(t, 7, facts.PhysicalHolds)
+		require.Equal(t, 9, facts.Debt)
 	})
 
 	t.Run("pending batch child question holds the seal", func(t *testing.T) {
 		env, w, _, identity := newFinalizationFactsEnv(t)
 		facts := readFactsMust(t, w, identity)
-		require.False(t, facts.heldQuestion)
+		require.False(t, facts.HeldQuestion)
 		// Batch-published frame: JobToolCallID NULL, parsed by
 		// ParseBatchChildQuestionNotice, never subject to the void rule.
 		text := fmt.Sprintf("[batch-question node=%s token=%d sequence=%d depth=%d child=%s]\n",
@@ -210,21 +210,21 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 			"session", session.NoticeKindChildQuestion, text)
 		require.NoError(t, err)
 		facts = readFactsMust(t, w, identity)
-		require.True(t, facts.heldQuestion)
+		require.True(t, facts.HeldQuestion)
 		_, err = env.conn.ExecContext(t.Context(), `DELETE FROM session_notices WHERE owner = 'session'`)
 		require.NoError(t, err)
 		facts = readFactsMust(t, w, identity)
-		require.False(t, facts.heldQuestion)
+		require.False(t, facts.HeldQuestion)
 	})
 
 	t.Run("cancel requested surfaces as cancelled", func(t *testing.T) {
 		env, w, _, identity := newFinalizationFactsEnv(t)
 		facts := readFactsMust(t, w, identity)
-		require.False(t, facts.cancelled)
+		require.False(t, facts.Cancelled)
 		_, err := env.conn.ExecContext(t.Context(), `UPDATE sessions SET cancel_requested = 1 WHERE id = 'session'`)
 		require.NoError(t, err)
 		facts = readFactsMust(t, w, identity)
-		require.True(t, facts.cancelled)
+		require.True(t, facts.Cancelled)
 		_, err = env.conn.ExecContext(t.Context(), `UPDATE sessions SET cancel_requested = 0 WHERE id = 'session'`)
 		require.NoError(t, err)
 	})
@@ -278,7 +278,7 @@ func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 	require.NotNil(t, exec)
 	require.Equal(t, "session", exec.sessionID)
 	require.Equal(t, "logical", exec.logicalID)
-	require.EqualValues(t, 7, exec.gate.epoch)
+	require.EqualValues(t, 7, exec.gate.Epoch())
 	require.Equal(t, identity, exec.scope.identity)
 	require.NotNil(t, exec.scopeFacts)
 	require.NotNil(t, exec.read)
@@ -320,13 +320,13 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	require.NoError(t, err)
 	exec := finalizationExecutionFor(execCtx, call)
 	require.NotNil(t, exec)
-	require.False(t, exec.gate.cancelled)
+	requireFinalizationCancelled(t, exec.gate, false)
 
 	// After unregistration the coordinator interrupt no longer reaches this
 	// execution's gate.
 	unregister()
 	w.hooks.OnCancel("session")
-	require.False(t, exec.gate.cancelled, "an unregistered execution must not be cancelled")
+	requireFinalizationCancelled(t, exec.gate, false, "an unregistered execution must not be cancelled")
 
 	// A fresh registration is cancellable and beginCandidate fails closed.
 	execCtx2, unregister2, err := w.startExecution(ctx, call)
@@ -334,8 +334,8 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	exec2 := finalizationExecutionFor(execCtx2, call)
 	require.NotNil(t, exec2)
 	w.hooks.OnCancel("session")
-	require.True(t, exec2.gate.cancelled)
-	_, err = exec2.gate.beginCandidate(t.Context(), exec2.read)
+	requireFinalizationCancelled(t, exec2.gate, true)
+	_, err = exec2.gate.BeginCandidate(t.Context(), exec2.read)
 	require.ErrorIs(t, err, context.Canceled)
 	unregister2()
 
@@ -357,7 +357,7 @@ func finalizationWiringPublish(env fakeEnv, ts *turnStream, scope finalizationPu
 		*counter++
 		stamp := ts.finalizationStamp
 		_, err := publishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
-			Key: ts.finalization.logicalID, Generation: stamp.epoch, Revision: stamp.durableRevision, Serial: stamp.serial,
+			Key: ts.finalization.logicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 		}, candidate)
 		return err
 	}
@@ -416,13 +416,12 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 
 	// Round 1: live work holds the seal as WaitWork, no publication.
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
-	require.False(t, ts.finalizationStamp.ready, "noisy facts must not arm a ready stamp")
 	require.NoError(t, ts.markFinalizationStep())
 	persistCandidate()
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
-	candidate := finalizationCandidate{messageID: created.ID, hash: hash}
-	verdict, err := exec.gate.trySeal(execCtx, ts.finalizationStamp, candidate, exec.read, publish)
+	candidate := finalizationCandidate{MessageID: created.ID, Hash: hash}
+	verdict, err := exec.gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationWaitWork, verdict)
 	require.Zero(t, publications, "noisy facts must not publish")
@@ -443,10 +442,9 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 
 	// Round 2: quiet facts seal the same shape as Accepted, once.
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
-	require.True(t, ts.finalizationStamp.ready, "quiet facts must arm a ready stamp")
 	require.NoError(t, ts.markFinalizationStep())
 	persistCandidate()
-	verdict, err = exec.gate.trySeal(execCtx, ts.finalizationStamp, candidate, exec.read, publish)
+	verdict, err = exec.gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
@@ -503,7 +501,6 @@ func TestFinalizationWiringTrySealPausesOnHeldQuestion(t *testing.T) {
 		call:             call,
 	}
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
-	require.False(t, ts.finalizationStamp.ready, "a held question is not quiet")
 	require.NoError(t, ts.markFinalizationStep())
 	stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
 	_, err = persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.scope, stepID, *ts.currentAssistant)
@@ -512,7 +509,7 @@ func TestFinalizationWiringTrySealPausesOnHeldQuestion(t *testing.T) {
 	require.NoError(t, err)
 	publications := 0
 	publish := finalizationWiringPublish(env, ts, exec.scope, &publications)
-	verdict, err := exec.gate.trySeal(execCtx, ts.finalizationStamp, finalizationCandidate{messageID: created.ID, hash: hash}, exec.read, publish)
+	verdict, err := exec.gate.TrySeal(execCtx, ts.finalizationStamp, finalizationCandidate{MessageID: created.ID, Hash: hash}, exec.read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationPauseQuestion, verdict)
 	require.Zero(t, publications)
@@ -548,14 +545,14 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 
 	// Noisy facts (the debt was seeded before the bind): the waiter must come
 	// back as WaitWork with a signal.
-	verdict, changed, err := exec.gate.waitState(t.Context(), exec.read)
+	verdict, changed, err := exec.gate.WaitState(t.Context(), exec.read)
 	require.NoError(t, err)
 	require.Equal(t, finalizationWaitWork, verdict)
 	require.NotNil(t, changed)
 
 	// Cancel first, then observe the unblock with a bounded select.
 	w.hooks.OnCancel("session")
-	require.True(t, exec.gate.cancelled)
+	requireFinalizationCancelled(t, exec.gate, true)
 	select {
 	case <-changed:
 	case <-time.After(2 * time.Second):
@@ -563,7 +560,7 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 	}
 	// The gate refuses its own reads once cancelled; the durable record is
 	// untouched by the in-process cancel (the durable half is RequestCancel).
-	_, err = exec.gate.readLocked(t.Context(), exec.read)
+	_, _, err = exec.gate.WaitState(t.Context(), exec.read)
 	require.ErrorIs(t, err, context.Canceled)
 
 	// Unregistration plus a repeat interrupt stays silent.

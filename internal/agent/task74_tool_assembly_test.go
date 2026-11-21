@@ -46,7 +46,7 @@ func task74AssemblyFixture(t *testing.T, controls *task74ControlInstaller, callI
 		controls:     controls,
 		diskBindings: caps,
 	})
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(coord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(coord) })
 
 	callOptions := &CallOptions{}
 	scope := EnsureCallBuildScope(callOptions)

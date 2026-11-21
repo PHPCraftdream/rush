@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"sync/atomic"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
@@ -109,24 +108,8 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 	if req.QuestionRoute {
 		runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
 	}
-	var childBound atomic.Bool
-	childBound.Store(req.ChildSessionID != "")
-	var noChildOnce sync.Once
-	markNoChild := func() {
-		if !childBound.Load() && host.NoChildSelected != nil {
-			noChildOnce.Do(host.NoChildSelected)
-		}
-	}
-	lifecycle := batchAgentLifecycle{NoChildSelected: markNoChild}
-	if host.BindChildSession != nil {
-		lifecycle.BindChildSession = func(ctx context.Context, id string) error {
-			if err := host.BindChildSession(ctx, id); err != nil {
-				return err
-			}
-			childBound.Store(true)
-			return nil
-		}
-	}
+	tracked := childagent.TrackChild(host, req.ChildSessionID != "")
+	lifecycle := batchAgentLifecycle{NoChildSelected: tracked.NoChildSelected, BindChildSession: tracked.BindChildSession}
 	runCtx = withBatchAgentLifecycle(runCtx, lifecycle)
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, req.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, req.MessageID)
@@ -157,66 +140,7 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 		runCtx = WithCallOptions(runCtx, co)
 	}
 	call := fantasy.ToolCall{ID: req.ToolCallID, Name: req.Tool, Input: string(req.Input)}
-	turn := &batchCoordinatorAgentTurn{cancel: cancel, done: make(chan struct{}), exit: make(chan struct{})}
-	go func() {
-		defer close(turn.exit)
-		defer releaseCredentials()
-		defer childScope.Close()
-		defer close(turn.done)
-		// Отказы leaf до runSubAgent тоже должны закрывать scope без ребёнка.
-		defer markNoChild()
-		resp, runErr := func() (resp fantasy.ToolResponse, err error) {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("batch agent leaf panic: %v", r)
-				}
-			}()
-			return leaf.Run(runCtx, call)
-		}()
-		turn.mu.Lock()
-		turn.resp, turn.err = resp, runErr
-		turn.mu.Unlock()
-		cancel()
-	}()
-	return turn, nil
-}
-
-// batchCoordinatorAgentTurn is one launched incarnation.
-type batchCoordinatorAgentTurn struct {
-	cancel      context.CancelFunc
-	done, exit  chan struct{}
-	mu          sync.Mutex
-	resp        fantasy.ToolResponse
-	err         error
-	stopPending bool
-}
-
-func (t *batchCoordinatorAgentTurn) Done() <-chan struct{} { return t.done }
-func (t *batchCoordinatorAgentTurn) Exit() <-chan struct{} { return t.exit }
-
-func (t *batchCoordinatorAgentTurn) Result() batchAgentTurnResult {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return batchAgentTurnResult{Response: t.resp}
-}
-
-func (t *batchCoordinatorAgentTurn) Err() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.err
-}
-
-// Stop acknowledges the stop request by cancelling the run context; the
-// scope watcher still settles only on confirmed closure.
-func (t *batchCoordinatorAgentTurn) Stop(context.Context) error {
-	t.mu.Lock()
-	first := !t.stopPending
-	t.stopPending = true
-	t.mu.Unlock()
-	if first {
-		t.cancel()
-	}
-	return nil
+	return childagent.RunTool(runCtx, cancel, leaf, call, lifecycle.NoChildSelected, childScope.Close, releaseCredentials), nil
 }
 
 // CoordinatorBatchAgentDeps builds the flag-on agent-family seams for the

@@ -71,15 +71,17 @@ func TestBatchQuestionPublicationSerializesWithAnswerAcceptance(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("publisher did not reach commit barrier")
 	}
-	// Белый ящик: выбранная граница линеаризации обязана удерживать scope mutex.
-	unlocked := e.scope.mu.TryLock()
-	if unlocked {
-		e.scope.mu.Unlock()
-	}
-	tl.addf("publication barrier: scope_unlocked=%v committed=%v", unlocked, pub.committed.Load())
-	require.False(t, unlocked, "publication must serialize with held-scope answer acceptance")
+	// Bring the injector to the call boundary while publication is gated.
+	// The same-package scope test checks mutex ownership; the resolver below
+	// checks durable ordering regardless of which goroutine runs next.
+	injecting := make(chan struct{})
 	injected := make(chan error, 1)
-	go func() { injected <- e.Inject(ctx, json.RawMessage(`{"depth":1,"sequence":1,"text":"accepted"}`)) }()
+	go func() {
+		close(injecting)
+		injected <- e.Inject(ctx, json.RawMessage(`{"depth":1,"sequence":1,"text":"accepted"}`))
+	}()
+	<-injecting
+	tl.addf("inject reached call barrier: committed=%v", pub.committed.Load())
 	release()
 	select {
 	case err := <-injected:
@@ -101,15 +103,14 @@ func TestBatchQuestionPublicationSerializesWithAnswerAcceptance(t *testing.T) {
 func TestBatchScopeZeroSequenceCannotResolveUnpublishedHold(t *testing.T) {
 	tl := newQuestionTestTimeline(t)
 	scope := newBatchAgentScope()
-	hold, err := scope.hold(1)
+	_, err := scope.hold(1)
 	require.NoError(t, err)
 	called := false
 	err = scope.deliverWithCommit(batchAgentInjectMessage{Depth: 1, Sequence: 0}, func() error { called = true; return nil })
 	tl.addf("zero-sequence answer: err=%v committed=%v", err, called)
 	require.ErrorIs(t, err, ErrBatchAgentNotHeld)
 	require.False(t, called)
-	scope.mu.Lock()
-	retained := scope.held == hold
-	scope.mu.Unlock()
+	depth, retained := scope.HeldDepth()
 	require.True(t, retained)
+	require.Equal(t, 1, depth)
 }

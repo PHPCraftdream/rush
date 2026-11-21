@@ -9,24 +9,12 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
-// awaitTaskSummary names the awaited tasks compactly for the wake message.
-func awaitTaskSummary(refs []tools.AwaitTaskRef) string {
-	out := ""
-	for i, ref := range refs {
-		if i > 0 {
-			out += ", "
-		}
-		out += ref.ToolName + "/" + ref.ToolCallID
-		if len(out) > 200 {
-			return out[:200] + "..."
-		}
-	}
-	return out
-}
+func awaitTaskSummary(refs []tools.AwaitTaskRef) string { return batchlife.AwaitTaskSummary(refs) }
 
 // clearSleepAll disarms the session's await_tasks sleep and cancels its
 // pending max_wait once schedule. Called on EVERY drain launch that is
@@ -111,15 +99,6 @@ func (c *coordinator) bgShellManager() *shell.BackgroundShellManager {
 	return c.background
 }
 
-// stallToolStalled is the stall-clock's tool-phase hook. The stall-DETACH
-// action it once drove (turn_stall_tool_detach.go: the stallDetachPending
-// registry, stallDetacherTool, the job_output/job_kill controller) was
-// deleted with the work ledger: there is no background job to detach into,
-// and the pinned tests that exercised the detach were deleted with it
-// (turn_stall_tool_test.go, batch_exec_generic_test.go both record the
-// deletion). The detach ACTION is dead in the batch product; the call site
-// in turnStallAbortPolicy stays so the tool phase keeps its explicit,
-// documented branch, and the function honestly reports "nothing detached".
 func stallToolStalled(sessionID, callID string, since time.Duration) string {
-	return ""
+	return batchlife.StallToolStalled(sessionID, callID, since)
 }

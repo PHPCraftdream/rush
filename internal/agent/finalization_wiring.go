@@ -171,15 +171,15 @@ func (w *finalizationWiring) readFacts(ctx context.Context, identity coresession
 			ErrFinalizationFactsUnavailable)
 	}
 	return finalizationFacts{
-		durableRevision: uint64(record.Revision),
-		complete:        true,
-		own:             int(record.OpenTickets),
-		descendants:     facts.ActiveDescendants,
-		physicalHolds:   facts.PhysicalHolds,
-		debt:            facts.ReactionDebt,
-		queuedCalls:     facts.QueuedCalls,
-		heldQuestion:    len(questions) > 0,
-		cancelled:       record.Cancelled,
+		DurableRevision: uint64(record.Revision),
+		Complete:        true,
+		Own:             int(record.OpenTickets),
+		Descendants:     facts.ActiveDescendants,
+		PhysicalHolds:   facts.PhysicalHolds,
+		Debt:            facts.ReactionDebt,
+		QueuedCalls:     facts.QueuedCalls,
+		HeldQuestion:    len(questions) > 0,
+		Cancelled:       record.Cancelled,
 	}, nil
 }
 

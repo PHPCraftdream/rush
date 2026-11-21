@@ -160,17 +160,17 @@ func TestBatchBindChildSessionMemoryFollowsPersist(t *testing.T) {
 		return store.BatchBindChildSession(ctx, o, "host", "runner", r, n, token, c)
 	})
 	require.NoError(t, e.bindChildSession(ctx, child))
-	require.Equal(t, child, e.requestSnapshot().ChildSessionID)
+	require.Equal(t, child, e.snapshotExecutionRequest().ChildSessionID)
 
 	// Failing binder: error returned, memory NOT updated.
 	eFail := newExecution(func(context.Context, string, string, string, uint64, string) error {
 		return errors.New("bind down")
 	})
 	require.Error(t, eFail.bindChildSession(ctx, child))
-	require.Empty(t, eFail.requestSnapshot().ChildSessionID)
+	require.Empty(t, eFail.snapshotExecutionRequest().ChildSessionID)
 
 	// Nil Bind: flag-off memory-only behavior, byte-identical, no DB call.
 	eMem := newExecution(nil)
 	require.NoError(t, eMem.bindChildSession(ctx, child))
-	require.Equal(t, child, eMem.requestSnapshot().ChildSessionID)
+	require.Equal(t, child, eMem.snapshotExecutionRequest().ChildSessionID)
 }

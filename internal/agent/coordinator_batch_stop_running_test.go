@@ -81,7 +81,7 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 		require.NoError(t, err)
 		controls := NewInstalledBatchModelControl(env.install.RunnerHandle, nil, env.store, env.live, c.sessions, env.install.Runtime.cfg.Host, env.install.Runtime.cfg.RunnerID, env.install.Runtime.cfg.Profile, nil)
 		coordinatorBatchBindings.Store(c, &batchCoordinatorBinding{ingress: ingress, live: env.live, controls: controls})
-		t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
+		t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 		c.stopTree(sibling)
 		require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT state FROM batch_nodes WHERE root_id=? AND node_id=root_id`, rootID).Scan(&state))
 		require.Equal(t, "running", state)

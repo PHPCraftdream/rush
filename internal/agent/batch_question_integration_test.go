@@ -166,7 +166,7 @@ func TestBatchQuestionAnswerRoutesSameExecution(t *testing.T) {
 		2*time.Second, time.Millisecond, "the held question must be published")
 	notices := rig.publishedNotices()
 	require.Len(t, notices, 1, "exactly one publish per held question")
-	require.Equal(t, string(e.requestSnapshot().NodeID), notices[0].NodeID,
+	require.Equal(t, string(e.snapshotExecutionRequest().NodeID), notices[0].NodeID,
 		"the question must be published under the SAME node identity the answer routes to")
 	require.Equal(t, 3, notices[0].Depth)
 	// While held with terminal descendants the node must NOT settle.

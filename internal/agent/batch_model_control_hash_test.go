@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -41,7 +42,12 @@ func TestModelControlRunCredentialBackedSameCallRetry(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, firstRoot)
-	require.Len(t, env.executor.snapshotLaunches(), 1, "concurrent same-call retry must submit only one credential-backed batch")
+	launches := env.executor.snapshotLaunches()
+	require.Len(t, launches, 1, "concurrent same-call retry must submit only one credential-backed batch")
+
+	var payload batchLeafPayload
+	require.NoError(t, json.Unmarshal(launches[0].Task.Payload, &payload))
+	key := batchCredentialKeyFor(payload)
 
 	env.executor.letGo()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -50,5 +56,5 @@ func TestModelControlRunCredentialBackedSameCallRetry(t *testing.T) {
 	require.NotNil(t, batch)
 	_, err = batch.Wait(waitCtx)
 	require.NoError(t, err)
-	markerCaptureWaitEscrowRootGone(t, env.install.RunnerHandle.credentials, jobbatch.ID(firstRoot))
+	markerCaptureWaitRelease(t, env.install.RunnerHandle, jobbatch.ID(firstRoot), key)
 }

@@ -41,7 +41,7 @@ func routeStampIngressSetup(t *testing.T) (*coordinator, *batchWorkIngress) {
 	ingress := &batchWorkIngress{registries: registries, diskBindings: caps}
 	prevProcess := processBatchBinding.Load()
 	t.Cleanup(func() {
-		coordinatorBatchBindings.Delete(coord)
+		fixtureCoordinatorBatchBindings.Delete(coord)
 		processBatchBinding.Store(prevProcess)
 	})
 	require.NoError(t, BindCoordinatorBatchRuntimeBindings(coord, ingress, nil, caps))

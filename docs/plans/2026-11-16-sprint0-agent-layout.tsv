@@ -1,14 +1,71 @@
 # DM0 deliverable: machine-readable "file -> package" map of internal/agent.
 # Design: docs/plans/2026-11-15-sprint0-split-agent.md §2.3 (lane DM0, docs/plans/2026-11-15-sprint0-plan.md §5).
-# Format: <file>.go<TAB><target-package-name>; unlisted files stay in the root package; '#' lines are comments.
-# Snapshot: branch s0-dm0-20261116 has 245 non-test .go files in internal/agent root; 244 rows exist there today,
+# Legacy format: <file>.go<TAB><logical-owner>; unlisted files default to root in the DM0 projection.
+# Lines starting with '#' are comments for legacy consumers; rows do not track physical moves.
+# DM0 snapshot: branch s0-dm0-20261116 had 245 non-test .go files in internal/agent root; 244 rows existed there.
 # 10 rows are §2.3 files already relocated/absorbed by lanes SA1/SA3 (see docs/plans/2026-11-16-sprint0-agent-dm0.md).
 # batch_glue.go was created by SA2 and is named as a coord glue file in §2.3 -> mapped to coord.
 # contract_bridge.go (SA1 alias shim, deleted at DM8) is intentionally unlisted (stays in root).
-# Decided seams: wakectl dissolved into coord (owner removed from graph); coordinator/sessionAgent
-# method files re-homed to coord/agentrun/batchinst/batchassemble per decided seams A; batchassemble added.
+# Historical Round 2 seams: wakectl dissolved into coord (owner removed from graph);
+# coordinator/sessionAgent method files re-homed to coord/agentrun/batchinst/batchassemble
+# per decided seams A; batchassemble added.
 # sessionprompt keeps agent_prompt.go + agent_prompt_order.go (sessionAgent methods moved out via overrides).
-# Round 2: batchrun dissolved into batchinst (exec layer unified); wakectl/agenticfetch dissolved.
+# Historical Round 2: batchrun dissolved into batchinst (exec layer unified); wakectl/agenticfetch dissolved.
+#
+# DM5a Step 1: this table records only batch physical allocations and preserves
+# the legacy non-comment logical mappings. The batchrun fold is reflected in the
+# logical batchinst rows; there is no separate batchrun owner or physical package.
+# Physical package names below are not new logical owners. The current wake
+# declaration owner correction is tracked separately in
+# 2026-11-16-sprint0-agent-execution.tsv; DM-W code merged separately.
+# DM5a execution declaration rows with receiver_disposition=not receiver inventory row may use receiver_component=target_symbol=<spelling> to override only the destination spelling; see 2026-11-16-sprint0-agent-dm5a-diagnostics.tsv.
+#
+# Physical allocation: each # dm5a-package record is TAB-separated:
+# record tag, directory relative to internal/agent/runtime/batch, Go package
+# name, then non-test Go basenames (one per field).
+# dm5a-package	batchadapter	batchadapter	attach.go	escrow.go	marker.go	runner.go	store.go
+# dm5a-package	batchcore	batchcore	batch_delivery.go	batch_ingress.go	batch_ingress_doc.go	batch_runtime.go	supervision_glue.go
+# dm5a-package	batchcore/modelcontrol	modelcontrol	batch_model_control.go	batch_model_tools.go	mutations.go	spec.go
+# dm5a-package	batchexec	batchexec	argv.go	binding.go	completion.go	generic.go	shell.go
+# dm5a-package	batchexec/batchdispatch	batchdispatch	batch_exec.go	batch_invocation.go	batch_rehome_async_completion.go
+# dm5a-package	batchexec/childagent	childagent	bridge.go	bridge_fallback.go	captured_tool.go	driver.go	question.go	scope.go
+# dm5a-package	batchexec/childagent/state	state	context.go	executor_lifecycle.go	executor_request.go	executor_result.go	executor_watch.go	policy.go
+# dm5a-package	batchinst	batchinst	batch_admission.go	batch_allowed_controls.go	batch_external_spec.go	batch_role_admission.go
+# dm5a-package	batchinst/diskport	diskport	disk_provider_call.go	disk_provider_continuation.go	disk_provider_continuation_testsupport.go	disk_provider_durable.go
+# dm5a-package	batchinst/installwire	installwire	ingress.go	model.go	registry.go	tools.go	window.go
+# dm5a-package	batchlife	batchlife	disk_provider_intent.go	drain_pace.go	driver_hints.go	held_question.go	lifecycle.go	managed_call.go	web_drain.go
+# dm5a-package	batchmeta	batchmeta	batch_question_route.go	batch_rehome_tool_metadata.go	batch_terminal_output.go	cancel_glue.go	facts_glue.go	notice_glue.go	receipt.go
+# dm5a-package	gate	gate	finalization_gate.go	finalization_gate_methods.go	gate_contract.go
+#
+# Root compatibility: the # dm5a-root records list present batchinst baseline
+# files still in internal/agent (package agent). These include aliases, wrappers,
+# adapters and retained implementations, not whole-file moves. For example,
+# batch_install_adapters.go still wires the host to batchadapter and batchmeta;
+# batch_exec_agent.go still binds the host to childagent and childagent/state.
+# Mixed sources such as agent_tool.go, agent_turn_stream.go, batch_cancel.go,
+# batch_child_tool_scope.go and batch_cutover_facts_node.go also stay in root
+# and keep their original logical labels. Imports do not imply file ownership.
+# dm5a-root	batch_admission.go	batch_allowed_controls.go	batch_credentials_escrow.go	batch_credentials_marker.go
+# dm5a-root	batch_delivery.go	batch_delivery_drain.go	batch_depth_payload.go	batch_exec.go
+# dm5a-root	batch_exec_agent.go	batch_exec_agent_doc.go	batch_exec_argv.go	batch_exec_binding.go
+# dm5a-root	batch_exec_generic.go	batch_exec_shell.go	batch_external_spec.go	batch_held_question_route.go
+# dm5a-root	batch_ingress.go	batch_install_adapters.go	batch_install_agent_driver.go	batch_install_bridge.go
+# dm5a-root	batch_install_ingress.go	batch_install_policy.go	batch_install_question.go	batch_install_tools.go
+# dm5a-root	batch_invocation.go	batch_managed_call.go	batch_model_control.go	batch_model_tools.go
+# dm5a-root	batch_profile.go	batch_question_route.go	batch_rehome_async_completion.go	batch_rehome_coord_runtime.go
+# dm5a-root	batch_rehome_drain_pace.go	batch_rehome_runtime.go	batch_rehome_tool_metadata.go	batch_role_admission.go
+# dm5a-root	batch_root_lease.go	batch_runtime.go	batch_scope.go	batch_terminal_output.go
+# dm5a-root	batch_timeout_parse.go	batch_worker_hints.go	disk_provider_binding.go	disk_provider_call.go
+# dm5a-root	disk_provider_capability.go	disk_provider_continuation.go	disk_provider_durable.go	disk_provider_intent.go
+# dm5a-root	finalization_gate.go	inline_window.go
+#
+# # dm5a-moved records give baseline root basename and current path relative
+# to internal/agent/runtime/batch for batchinst sources no longer at root.
+# dm5a-moved	batch_done_cancel.go	batchadapter/store.go
+# dm5a-moved	batch_ingress_doc.go	batchcore/batch_ingress_doc.go
+# dm5a-moved	batch_supervision_arming.go	batchcore/supervision_glue.go
+# dm5a-moved	disk_provider_continuation_testsupport.go	batchinst/diskport/disk_provider_continuation_testsupport.go
+#
 errors.go	agentcall
 call_attempted_error.go	agentcall
 call_options.go	agentcall

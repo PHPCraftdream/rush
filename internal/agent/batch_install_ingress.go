@@ -5,15 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	"github.com/google/uuid"
 )
 
 // R11F (M3): the exported one-authority seam between the app-owned batch
@@ -26,10 +24,7 @@ import (
 // builds.
 type BatchLeafRegistry = toolwrap.PolicyLeafRegistry
 
-type BatchModelControl interface {
-	batchModelControl
-	InstallBatchModelControls(*BatchLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error)
-}
+type BatchModelControl = installwire.ModelControl[BatchInvocation, batchModelSpec, batchModelItem]
 
 func NewBatchModelControl(runner batchModelRunner, delivery batchDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions coresession.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
 	return NewInstalledBatchModelControl(runner, delivery, store, live, sessions, host, runnerID, profile, resolver, leases...)
@@ -60,66 +55,64 @@ type batchWorkIngress struct {
 	caps *diskCapabilityManager
 }
 
-var errBatchWorkIngressDeps = errors.New("batch work ingress: runtime and pinned registry store are required")
+var errBatchWorkIngressDeps = installwire.ErrIngressDeps
 
-// NewBatchWorkIngress builds the exported ingress seam over one dormant
-// runtime and its registry store. Construction has no side effects.
+// NewBatchWorkIngress builds the exported ingress over a dormant runtime.
 func NewBatchWorkIngress(rt *batchRuntime, registries *BatchLeafRegistryStore) (BatchWorkIngress, error) {
-	if rt == nil || registries == nil || rt.cfg.DiskBindings == nil {
-		return nil, errBatchWorkIngressDeps
+	var bindings *DiskProviderRegistry
+	if rt != nil {
+		bindings = rt.cfg.DiskBindings
 	}
-	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: rt.cfg.DiskBindings, caps: rt.cfg.DiskBindings}, nil
+	return newBatchWorkIngress(rt, registries, bindings, nil)
 }
 
-// NewBatchWorkIngressWithDiskBindings injects the owning App's provider
-// registry into one ingress/runtime; nil never selects a process global.
+// NewBatchWorkIngressWithDiskBindings injects the owning App's registry.
 func NewBatchWorkIngressWithDiskBindings(rt *batchRuntime, registries *BatchLeafRegistryStore, bindings *DiskProviderRegistry) (BatchWorkIngress, error) {
-	if rt == nil || registries == nil || bindings == nil {
-		return nil, errBatchWorkIngressDeps
-	}
-	rt.cfg.DiskBindings = bindings
-	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: bindings, caps: bindings}, nil
+	return newBatchWorkIngress(rt, registries, bindings, func(b *DiskProviderRegistry) { rt.cfg.DiskBindings = b })
 }
 
-func (b *batchWorkIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	ctx = withDiskProviderRegistry(ctx, b.diskBindings)
-	return b.rt.Invoke(ctx, inv, leaf, call)
-}
-
-func (b *batchWorkIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string, error) {
-	if registry == nil {
-		return "", errors.New("batch work ingress: nil leaf registry")
+func newBatchWorkIngress(rt *batchRuntime, registries *BatchLeafRegistryStore, bindings *DiskProviderRegistry, configure func(*DiskProviderRegistry)) (BatchWorkIngress, error) {
+	var run installwire.Invoke[BatchInvocation]
+	if rt != nil {
+		run = rt.Invoke
 	}
-	id := uuid.NewString()
-	// Identity index registration only — deliberately NO ownership
-	// operation here. Retention is expressed exclusively through typed
-	// owner keys in the App capability manager: the caller (tool build or
-	// private-fetch arming) takes the Construction owner atomically with
-	// this pin and registers its release in the call/build scope; the
-	// entry is deleted when no owner names the registry any more.
-	if err := b.registries.Register(id, registry); err != nil {
-		return "", err
+	var index installwire.RegistryIndex
+	if registries != nil {
+		index = registries
 	}
-	return id, nil
-}
-
-func (b *batchWorkIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTool, error) {
-	registry, err := b.registries.Resolve(registryID)
+	wire, err := installwire.NewIngress(run, index, bindings, configure, withDiskProviderRegistry)
 	if err != nil {
 		return nil, err
 	}
-	return registry.Resolve(name)
+	return &batchWorkIngress{rt: rt, registries: registries, diskBindings: wire.DiskBindings, caps: wire.DiskBindings}, nil
+}
+
+// Keep the root fixture's fields as the source of truth, including for
+// test-only ingress values built without a runtime.
+func (b *batchWorkIngress) wire() installwire.Ingress[BatchInvocation, *DiskProviderRegistry] {
+	return installwire.Ingress[BatchInvocation, *DiskProviderRegistry]{Run: b.rt.Invoke, Registries: b.registries, DiskBindings: b.diskBindings, WithDiskBindings: withDiskProviderRegistry}
+}
+
+func (b *batchWorkIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	return b.wire().Invoke(ctx, inv, leaf, call)
+}
+
+func (b *batchWorkIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string, error) {
+	return b.wire().PinLeafRegistry(registry)
+}
+
+func (b *batchWorkIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTool, error) {
+	return b.wire().ResolveLeaf(registryID, name)
 }
 
 func (b *batchWorkIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
-	return b.registries.Resolve(registryID)
+	return b.wire().Registry(registryID)
 }
 
+func (b *batchWorkIngress) InstallDiskBindings() *DiskProviderRegistry { return b.diskBindings }
+
 func registryForIngress(ingress BatchWorkIngress) *DiskProviderRegistry {
-	if b, ok := ingress.(*batchWorkIngress); ok {
-		return b.diskBindings
-	}
-	return nil
+	return installwire.RegistryForIngress[*DiskProviderRegistry, *batchWorkIngress](ingress)
 }
 
 // batchCoordinatorBinding is one coordinator's flag-on binding. R11F P1-4:
@@ -143,12 +136,15 @@ func (b *batchCoordinatorBinding) pin(registry *BatchLeafRegistry) (string, erro
 	return b.ingress.PinLeafRegistry(registry)
 }
 
+type batchCoordinatorBindingIndex interface {
+	Store(Coordinator, *batchCoordinatorBinding)
+	Load(Coordinator) (*batchCoordinatorBinding, bool)
+}
+
 var (
-	// coordinatorBatchBindings maps a *coordinator onto its binding.
-	coordinatorBatchBindings sync.Map
-	// processBatchBinding is the process-wide binding (one install per
-	// process, one Runner, one owner — the M2 one-authority decision).
-	processBatchBinding atomic.Pointer[batchCoordinatorBinding]
+	installedBatchBindings   installwire.Bindings[Coordinator, batchCoordinatorBinding]
+	coordinatorBatchBindings batchCoordinatorBindingIndex = &installedBatchBindings
+	processBatchBinding                                   = installedBatchBindings.ProcessSlot()
 )
 
 // BindCoordinatorBatchRuntime binds one coordinator (and, first-wins, the
@@ -156,7 +152,9 @@ var (
 // build re-arms its work tools through the ingress; the old async/stall
 // wrappers are no longer installed. It fails closed on nil arguments.
 func BindCoordinatorBatchRuntime(c Coordinator, ingress BatchWorkIngress) error {
-	return BindCoordinatorBatchControls(c, ingress, nil)
+	return installwire.BindCoordinatorRuntime(c, ingress, func(c Coordinator, ingress BatchWorkIngress) error {
+		return BindCoordinatorBatchControls(c, ingress, nil)
+	})
 }
 
 func BindCoordinatorBatchControls(c Coordinator, ingress BatchWorkIngress, controls BatchModelControl, live ...*session.BatchLiveReader) error {
@@ -168,11 +166,8 @@ func coordinatorBatchBindingFor(c *coordinator) *batchCoordinatorBinding {
 	if c == nil {
 		return nil
 	}
-	bind, ok := coordinatorBatchBindings.Load(c)
-	if !ok {
-		return nil
-	}
-	return bind.(*batchCoordinatorBinding)
+	bind, _ := coordinatorBatchBindings.Load(c)
+	return bind
 }
 
 // coordinatorPrivateFetchIngress returns the coordinator's OWN batch
@@ -182,15 +177,12 @@ func coordinatorBatchBindingFor(c *coordinator) *batchCoordinatorBinding {
 // sub-agent build context so delegated private-fetch dispatch goes through
 // the ONE per-App authority.
 func coordinatorPrivateFetchIngress(c *coordinator) BatchWorkIngress {
-	if bind := coordinatorBatchBindingFor(c); bind != nil {
-		return bind.ingress
-	}
-	return nil
+	return installwire.CoordinatorIngress(coordinatorBatchBindingFor(c), func(bind *batchCoordinatorBinding) BatchWorkIngress { return bind.ingress })
 }
 
 // processCoordinatorBatchBinding returns the process-wide binding or nil.
 func processCoordinatorBatchBinding() *batchCoordinatorBinding {
-	return processBatchBinding.Load()
+	return installwire.ProcessBinding(processBatchBinding)
 }
 
 // BindRuntimeIngress attaches the App-owned ingress to one install's
@@ -202,7 +194,7 @@ func BindRuntimeIngress(rt *batchRuntime, ingress BatchWorkIngress) {
 	if rt == nil || ingress == nil {
 		return
 	}
-	rt.setIngress(ingress)
+	installwire.BindRuntimeIngress(rt.setIngress, ingress)
 }
 
 // invokeBatchWithCallContext fills the invocation's per-call identity from
@@ -267,9 +259,7 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 // BatchInvocation template. Delegation target for the CLI bridge and the
 // agentic_fetch private tools.
 func batchPinnedInvoke(ingress BatchWorkIngress, tpl BatchInvocation) pinnedInvoke {
-	return func(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		return invokeBatchWithCallContext(ctx, ingress, tpl, leaf, call)
-	}
+	return installwire.PinnedInvoke(ingress, tpl, invokeBatchWithCallContext)
 }
 
 // Exported aliases so the app package can wire the M1 install deps without
@@ -278,8 +268,8 @@ type (
 	BatchAgentDeps             = batchAgentDeps
 	BatchAgentRunFactory       = batchAgentRunFactory
 	BatchAgentDescendantReader = batchAgentDescendantReader
-	BatchMCPCapability         = batchMCPCapability
-	BatchMCPCapabilityResolver = batchMCPCapabilityResolver
+	BatchMCPCapability         = installwire.MCPCapability
+	BatchMCPCapabilityResolver = installwire.MCPCapabilityResolver
 )
 
 // BatchNonReentrantMCPResolver is the flag-on default MCP admission
@@ -287,9 +277,7 @@ type (
 // reentrant MCP tool therefore always fails closed
 // (errBatchReentrantMCPUnannotated), never silently re-enters.
 func BatchNonReentrantMCPResolver() BatchMCPCapabilityResolver {
-	return func(string, string) (batchMCPCapability, bool) {
-		return batchMCPCapability{}, true
-	}
+	return installwire.NonReentrantMCPResolver()
 }
 
 // BatchLeafRegistryStore is the pinned R1 registry resolver keyed by the
@@ -297,75 +285,26 @@ func BatchNonReentrantMCPResolver() BatchMCPCapabilityResolver {
 // can never be replaced, so a live call's leaf set cannot change under it.
 // Lookup fails closed on an unknown identity.
 type BatchLeafRegistryStore struct {
-	mu          sync.RWMutex
-	registries  map[string]*BatchLeafRegistry
-	credentials *batchCredentialEscrow
-}
-
-func (s *BatchLeafRegistryStore) credentialEscrowLocked() *batchCredentialEscrow {
-	if s.credentials == nil {
-		s.credentials = newBatchCredentialEscrow()
-	}
-	return s.credentials
+	store installwire.RegistryStore[batchCredentialEscrow]
 }
 
 func (s *BatchLeafRegistryStore) credentialEscrow() *batchCredentialEscrow {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.credentialEscrowLocked()
+	return s.store.CredentialEscrow(newBatchCredentialEscrow)
 }
 
 func NewBatchLeafRegistryStore() *BatchLeafRegistryStore {
-	return &BatchLeafRegistryStore{registries: make(map[string]*BatchLeafRegistry), credentials: newBatchCredentialEscrow()}
+	return &BatchLeafRegistryStore{store: installwire.NewRegistryStore(newBatchCredentialEscrow)}
 }
 
-// Register pins one registry under its identity. Double registration of the
-// same identity is refused, whether the registry differs or not.
 func (s *BatchLeafRegistryStore) Register(registryID string, registry *BatchLeafRegistry) error {
-	if strings.TrimSpace(registryID) == "" {
-		return errors.New("batch leaf registry: empty registry identity")
-	}
-	if registry == nil {
-		return errors.New("batch leaf registry: nil registry")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.registries[registryID]; exists {
-		return fmt.Errorf("batch leaf registry: %q is already pinned", registryID)
-	}
-	copyRegistry := registry.CloneLeaves(func(name string, tool fantasy.AgentTool) fantasy.AgentTool {
-		if name == "agent" || name == "agentic_fetch" {
-			return &batchCredentialLeaf{AgentTool: tool, escrow: s.credentialEscrowLocked()}
-		}
-		return tool
+	return s.store.Register(registryID, registry, newBatchCredentialEscrow, func(tool fantasy.AgentTool, escrow *batchCredentialEscrow) fantasy.AgentTool {
+		return &batchCredentialLeaf{AgentTool: tool, escrow: escrow}
 	})
-	s.registries[registryID] = copyRegistry
-	return nil
 }
 
-// Resolve returns the pinned registry of the identity; an unknown identity
-// fails closed (never an empty registry).
-func (s *BatchLeafRegistryStore) Resolve(registryID string) (*BatchLeafRegistry, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	registry, ok := s.registries[registryID]
-	if !ok {
-		return nil, fmt.Errorf("batch leaf registry: unknown pinned registry identity %q", registryID)
-	}
-	return registry, nil
+func (s *BatchLeafRegistryStore) Resolve(id string) (*BatchLeafRegistry, error) {
+	return s.store.Resolve(id)
 }
 
-// Delete removes one registry identity from the index. It is invoked ONLY
-// by the capability manager when a construction record dies (no owner
-// names the registry any more); it is not an ownership operation.
-func (s *BatchLeafRegistryStore) Delete(registryID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.registries, registryID)
-}
-
-func (s *BatchLeafRegistryStore) Count() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.registries)
-}
+func (s *BatchLeafRegistryStore) Delete(id string) { s.store.Delete(id) }
+func (s *BatchLeafRegistryStore) Count() int       { return s.store.Count() }

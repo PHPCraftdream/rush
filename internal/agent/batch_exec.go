@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -16,14 +17,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Batch leaf kinds. R11 owns the tool-name -> kind -> group -> rank mapping;
-// the executor only routes by kind.
 const (
-	batchKindGeneric = "generic" // any tool run to completion through its policy leaf
-	batchKindMCP     = "mcp"     // an MCP tool through its policy leaf
-	batchKindShell   = "shell"   // bash with a retained background-shell handle
-	batchKindArgv    = "argv"    // run_command with a retained process handle
-	batchKindAgent   = "agent"   // delegation scope (agent, agentic_fetch)
+	batchKindGeneric     = batchdispatch.KindGeneric
+	batchKindMCP         = batchdispatch.KindMCP
+	batchKindShell       = batchdispatch.KindShell
+	batchKindArgv        = batchdispatch.KindArgv
+	batchKindAgent       = batchdispatch.KindAgent
+	batchCodeBadPayload  = batchdispatch.CodeBadPayload
+	batchCodeUnknownKind = batchdispatch.CodeUnknownKind
+	batchCodeNoLeaf      = batchdispatch.CodeNoLeaf
+	batchCodeNoBinding   = batchdispatch.CodeNoBinding
 )
 
 // batchLeafPayload is the JSON carried in jobbatch.TaskSpec.Payload for every
@@ -97,77 +100,78 @@ type batchLeafFamily interface {
 	start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error)
 }
 
-// Machine codes of start failures produced by the router (valid, nonreserved).
-const (
-	batchCodeBadPayload  = "bad_payload"
-	batchCodeUnknownKind = "unknown_kind"
-	batchCodeNoLeaf      = "tool_unavailable"
-	// batchCodeNoBinding marks a required process-bound disk binding that
-	// is no longer available (batchLeafPayload.Policy.DiskBindingID).
-	batchCodeNoBinding = "binding_unavailable"
-)
+type batchStartError = batchdispatch.StartError
 
-// batchStartError carries a safe machine code for the Runner's code rule.
-type batchStartError struct {
-	code string
-	err  error
+func newBatchStartError(code string, err error) error {
+	return batchdispatch.NewStartError(code, err)
 }
 
-func (e *batchStartError) Error() string { return e.code + ": " + e.err.Error() }
-func (e *batchStartError) Code() string  { return e.code }
-func (e *batchStartError) Unwrap() error { return e.err }
-
-// batchExecutor is the Rush jobbatch.Executor: it routes a launch to the family
-// registered for its kind. It is inert until R11 wires it to a Runner.
+// batchExecutor adapts the host's post-construction execution decorator to the
+// dispatch router. Installation sets the decorator before publishing the executor.
 type batchExecutor struct {
-	env               batchLeafEnv
-	families          map[string]batchLeafFamily
+	router            batchdispatch.Executor[batchLeafEnv, batchLeafPayload]
 	decorateExecution func(jobbatch.Execution) jobbatch.Execution
 }
 
 var _ jobbatch.Executor = (*batchExecutor)(nil)
 
 func newBatchExecutor(env batchLeafEnv, families map[string]batchLeafFamily) *batchExecutor {
-	return &batchExecutor{env: env, families: families}
+	router := batchdispatch.NewExecutor(
+		env,
+		func(kind string) (batchdispatch.LeafFamily[batchLeafEnv, batchLeafPayload], bool) {
+			f, ok := families[kind]
+			if !ok {
+				return nil, false
+			}
+			return f.start, true
+		},
+		prepareBatchLeaf,
+		newBatchBindingExecution,
+		newBatchStartError,
+		ErrDiskProviderUnavailable,
+	)
+	return &batchExecutor{router: router}
 }
 
 func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
-	family, ok := e.families[l.Task.Kind]
-	if !ok {
-		return nil, &batchStartError{batchCodeUnknownKind, errors.New("no family for kind")}
-	}
+	router := e.router
+	router.DecorateExecution = e.decorateExecution
+	return router.Start(ctx, l, report)
+}
+
+func prepareBatchLeaf(ctx context.Context, env batchLeafEnv, raw json.RawMessage) (batchLeafPayload, func(), error) {
 	var p batchLeafPayload
-	if err := json.Unmarshal(l.Task.Payload, &p); err != nil || p.Tool == "" || p.SessionID == "" {
-		return nil, &batchStartError{batchCodeBadPayload, errors.New("payload needs tool, session_id and input")}
+	if err := json.Unmarshal(raw, &p); err != nil || p.Tool == "" || p.SessionID == "" {
+		return p, nil, newBatchStartError(batchCodeBadPayload, errors.New("payload needs tool, session_id and input"))
 	}
 	if p.Tool == AgentToolName {
 		if err := validateAgentRoleInput(p.Input); err != nil {
-			return nil, &batchStartError{batchCodeBadPayload, err}
+			return p, nil, newBatchStartError(batchCodeBadPayload, err)
 		}
 		var requested struct {
 			Role RequestedModelRole `json:"role"`
 		}
 		if err := json.Unmarshal(p.Input, &requested); err != nil {
-			return nil, &batchStartError{batchCodeBadPayload, err}
+			return p, nil, newBatchStartError(batchCodeBadPayload, err)
 		}
 		if requested.Role != "" && !requested.Role.Builtin() {
 			if p.SelectedRoleContract == nil || p.SelectedRoleContract.Name != string(requested.Role) {
-				return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: selected custom role snapshot missing or mismatched", ErrAgentRoleMismatch)}
+				return p, nil, newBatchStartError(batchCodeBadPayload, fmt.Errorf("%w: selected custom role snapshot missing or mismatched", ErrAgentRoleMismatch))
 			}
 		} else if p.SelectedRoleContract != nil {
-			return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: custom snapshot supplied for built-in or omitted role", ErrAgentRoleMismatch)}
+			return p, nil, newBatchStartError(batchCodeBadPayload, fmt.Errorf("%w: custom snapshot supplied for built-in or omitted role", ErrAgentRoleMismatch))
 		}
 	} else if p.SelectedRoleContract != nil {
-		return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("%w: custom role snapshot on non-agent leaf", ErrAgentRoleMismatch)}
+		return p, nil, newBatchStartError(batchCodeBadPayload, fmt.Errorf("%w: custom role snapshot on non-agent leaf", ErrAgentRoleMismatch))
 	}
 	if p.Policy != nil && p.Policy.RoleContract != nil {
 		if err := p.Policy.RoleContract.Validate(); err != nil {
-			return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("invalid inherited role contract: %w", err)}
+			return p, nil, newBatchStartError(batchCodeBadPayload, fmt.Errorf("invalid inherited role contract: %w", err))
 		}
 	}
 	if p.SelectedRoleContract != nil {
 		if err := p.SelectedRoleContract.Validate(); err != nil {
-			return nil, &batchStartError{batchCodeBadPayload, fmt.Errorf("invalid admitted role contract: %w", err)}
+			return p, nil, newBatchStartError(batchCodeBadPayload, fmt.Errorf("invalid admitted role contract: %w", err))
 		}
 		if p.Tool != AgentToolName || p.SelectedRoleContract.Name == "" || !roleContractInherits(p.SelectedRoleContract, func() *session.RoleContract {
 			if p.Policy == nil {
@@ -175,7 +179,7 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 			}
 			return p.Policy.RoleContract
 		}()) {
-			return nil, &batchStartError{batchCodeBadPayload, errors.New("admitted role contract does not match leaf or inherited ceiling")}
+			return p, nil, newBatchStartError(batchCodeBadPayload, errors.New("admitted role contract does not match leaf or inherited ceiling"))
 		}
 	}
 	dispatchCtx := ctx
@@ -183,12 +187,12 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 		dispatchCtx = withRoleToolContract(dispatchCtx, p.Policy.RoleContract)
 	}
 	if !roleToolAllowed(dispatchCtx, p.Tool) {
-		return nil, &batchStartError{batchCodeNoLeaf, toolwrap.GuardRoleContractError(p.Tool)}
+		return p, nil, newBatchStartError(batchCodeNoLeaf, toolwrap.GuardRoleContractError(p.Tool))
 	}
 	// A required provider dependency is never accepted with only the
 	// legacy boolean/free-text marker; this avoids OS-disk promotion.
 	if p.Policy != nil && (p.Policy.DiskProvider || strings.TrimSpace(p.Policy.CustomDisk) != "") && p.Policy.DiskBindingID == "" {
-		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+		return p, nil, newBatchStartError(batchCodeNoBinding, ErrDiskProviderUnavailable)
 	}
 	// Execution owner (R12-H2 §1.2): acquired BEFORE resolving leaves or
 	// starting any side effect. One key per accepted execution — instance
@@ -200,131 +204,75 @@ func (e *batchExecutor) Start(ctx context.Context, l jobbatch.Launch, report fun
 	// owner, so start-error paths are the only early releasers here.
 	var execRelease func()
 	if p.RegistryID != "" {
-		if e.env.DiskBindings == nil {
-			return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
+		if env.DiskBindings == nil {
+			return p, nil, newBatchStartError(batchCodeNoBinding, ErrDiskProviderUnavailable)
 		}
 		bindingID := ""
 		if p.Policy != nil {
 			bindingID = p.Policy.DiskBindingID
 			if bindingID != "" {
-				if _, err := e.env.DiskBindings.Lookup(bindingID); err != nil {
-					return nil, &batchStartError{batchCodeNoBinding, err}
+				if _, err := env.DiskBindings.Lookup(bindingID); err != nil {
+					return p, nil, newBatchStartError(batchCodeNoBinding, err)
 				}
 			}
 		}
 		execKey := diskOwnerKey{kind: diskOwnerExecution, instance: uuid.NewString(), bindingID: bindingID, registryID: p.RegistryID}
-		if err := e.env.DiskBindings.acquire(execKey); err != nil {
-			return nil, &batchStartError{batchCodeNoBinding, err}
+		if err := env.DiskBindings.acquire(execKey); err != nil {
+			return p, nil, newBatchStartError(batchCodeNoBinding, err)
 		}
 		var once sync.Once
-		execRelease = func() { once.Do(func() { e.env.DiskBindings.release(execKey) }) }
+		execRelease = func() { once.Do(func() { env.DiskBindings.release(execKey) }) }
 		if bindingID != "" {
-			registry, err := e.env.Leaves(p.RegistryID)
+			registry, err := env.Leaves(p.RegistryID)
 			if err != nil || registry == nil || !registry.HasToolset(p.Policy.RestrictedToolset) {
 				if err == nil {
 					err = ErrDiskProviderUnavailable
 				}
 				execRelease()
-				return nil, &batchStartError{batchCodeNoBinding, err}
+				return p, nil, newBatchStartError(batchCodeNoBinding, err)
 			}
 			leaf, err := registry.Resolve(p.Tool)
 			if err != nil {
 				execRelease()
-				return nil, &batchStartError{batchCodeNoBinding, err}
+				return p, nil, newBatchStartError(batchCodeNoBinding, err)
 			}
 			_ = leaf
-			provider, err := e.env.DiskBindings.Lookup(bindingID)
+			provider, err := env.DiskBindings.Lookup(bindingID)
 			if err != nil {
 				execRelease()
-				return nil, &batchStartError{batchCodeNoBinding, err}
+				return p, nil, newBatchStartError(batchCodeNoBinding, err)
 			}
 			p.diskProvider = provider
 		}
 	}
-	execution, err := family.start(ctx, e.env, l, p, report)
-	if err != nil {
-		if execRelease != nil {
-			execRelease()
-		}
-		return nil, err
-	}
-	if execution == nil {
-		if execRelease != nil {
-			execRelease()
-		}
-		return nil, &batchStartError{batchCodeNoBinding, ErrDiskProviderUnavailable}
-	}
-	if e.decorateExecution != nil {
-		execution = e.decorateExecution(execution)
-	}
-	if execRelease != nil {
-		return newBatchBindingExecution(execution, execRelease), nil
-	}
-	return execution, nil
+	return p, execRelease, nil
 }
 
 // batchLeafLookupID returns the identity leaf resolution is keyed under: the
 // invocation's pinned registry identity when present, else the legacy
 // session-keyed lookup.
 func batchLeafLookupID(p batchLeafPayload) string {
-	if p.RegistryID != "" {
-		return p.RegistryID
-	}
-	return p.SessionID
+	return batchdispatch.LeafLookupID(p.RegistryID, p.SessionID)
 }
 
 // resolveLeaf returns the pinned policy leaf for the payload's tool.
 func (env batchLeafEnv) resolveLeaf(p batchLeafPayload) (fantasy.AgentTool, error) {
 	if env.Leaves == nil {
-		return nil, &batchStartError{batchCodeNoLeaf, errors.New("no toolset provider")}
+		return nil, newBatchStartError(batchCodeNoLeaf, errors.New("no toolset provider"))
 	}
 	registry, err := env.Leaves(batchLeafLookupID(p))
 	if err != nil {
-		return nil, &batchStartError{batchCodeNoLeaf, err}
+		return nil, newBatchStartError(batchCodeNoLeaf, err)
 	}
 	tool, err := registry.Resolve(p.Tool)
 	if err != nil {
-		return nil, &batchStartError{batchCodeNoLeaf, err}
+		return nil, newBatchStartError(batchCodeNoLeaf, err)
 	}
 	return tool, nil
 }
 
-// batchEnvelope marshals a tool response as the full result envelope carried in
-// jobbatch.Result.Details (text, media, metadata and the error flag).
-func batchEnvelope(resp fantasy.ToolResponse) json.RawMessage {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return nil
-	}
-	return data
-}
+func batchEnvelope(resp fantasy.ToolResponse) json.RawMessage { return batchdispatch.Envelope(resp) }
 
-// batchResultFromResponse maps a finished leaf Run to a jobbatch.Result. A
-// denial or failure never becomes success: an error response or a Run error
-// settles Failed. cancelled says the execution was stopped by a Stop request.
-// A Run error with an empty response gets an error envelope so the stored
-// result cannot read as a successful empty one; a response that carries
-// content or media (partial output of a stopped or failed leaf) is kept.
 func batchResultFromResponse(resp fantasy.ToolResponse, err error, cancelled bool) jobbatch.Result {
-	if err != nil && resp.Content == "" && len(resp.Data) == 0 {
-		metadata := resp.Metadata
-		resp = fantasy.NewTextErrorResponse(err.Error())
-		resp.Metadata = metadata
-	}
-	r := jobbatch.Result{Details: batchEnvelope(resp)}
-	switch {
-	case cancelled:
-		r.State = jobbatch.StateCancelled
-	case err != nil:
-		r.State, r.Code = jobbatch.StateFailed, "tool_run_error"
-		r.Summary = fmt.Sprintf("%v", err)
-	case resp.IsError:
-		r.State, r.Code = jobbatch.StateFailed, "tool_error"
-	default:
-		r.State = jobbatch.StateCompleted
-	}
-	if r.Summary == "" {
-		r.Summary = resp.Content
-	}
-	return r
+	return batchdispatch.ResultFromResponse(resp, err, cancelled)
 }

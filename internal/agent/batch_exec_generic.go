@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -21,14 +21,14 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 		return nil, err
 	}
 	if batchControlTarget(p.Tool) {
-		return nil, &batchStartError{batchCodeNoLeaf, errors.New("control-plane target")}
+		return nil, newBatchStartError(batchCodeNoLeaf, errors.New("control-plane target"))
 	}
 	if p.Policy != nil && p.Policy.RoleContract != nil {
 		if err := p.Policy.RoleContract.Validate(); err != nil {
-			return nil, &batchStartError{batchCodeBadPayload, err}
+			return nil, newBatchStartError(batchCodeBadPayload, err)
 		}
 		if !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
-			return nil, &batchStartError{batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool)}
+			return nil, newBatchStartError(batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
 		}
 	}
 	if p.SelectedRoleContract != nil {
@@ -38,7 +38,7 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 			}
 			return p.Policy.RoleContract
 		}()); err != nil {
-			return nil, &batchStartError{batchCodeBadPayload, err}
+			return nil, newBatchStartError(batchCodeBadPayload, err)
 		}
 	}
 	leaf, err := env.resolveLeaf(p)
@@ -77,9 +77,9 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	if p.diskProvider != nil && p.Policy != nil {
 		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
 	}
-	e := &batchGenericExecution{cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID), cancel: cancel, done: make(chan struct{})}
+	e := batchexec.NewGeneric(cancel, batchExecutionOutput(env.OutputCache, l.ID, batchOutputRoot(l.ID), batchOutputCursorClamp))
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
-	go e.run(runCtx, leaf, call, report)
+	go e.Run(runCtx, leaf, call, report)
 	return e, nil
 }
 
@@ -93,88 +93,10 @@ func batchControlTarget(name string) bool {
 	return false
 }
 
-type batchGenericExecution struct {
-	cache          *batchOutputCache
-	nodeID, rootID jobbatch.ID
-	mu             sync.Mutex
-	cancel         context.CancelFunc
-	done           chan struct{}
-	stopped        bool
-	finished       bool
-	disposed       bool
-	content        []byte
-}
-
-var (
-	_ jobbatch.Execution    = (*batchGenericExecution)(nil)
-	_ jobbatch.OutputReader = (*batchGenericExecution)(nil)
-	_ jobbatch.Disposer     = (*batchGenericExecution)(nil)
-)
-
-func (e *batchGenericExecution) run(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall, report func(jobbatch.Result)) {
-	resp, err, panicked := batchGenericRun(ctx, leaf, call)
-	e.mu.Lock()
-	cancelled := e.stopped && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
-	result := batchResultFromResponse(resp, err, cancelled)
-	if panicked {
-		result = jobbatch.Result{State: jobbatch.StateFailed, Code: "tool_panic"}
+func batchExecutionOutput(cache *batchOutputCache, id, root jobbatch.ID, contract batchOutputCursorContract) batchexec.Output {
+	output := batchexec.Output{Result: batchResultFromResponse}
+	if cache != nil {
+		output.Store = func(chunk jobbatch.OutputChunk) { cache.putForContract(id, root, chunk, contract) }
 	}
-	e.content = []byte(resp.Content)
-	if e.cache != nil {
-		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: e.content, Next: uint64(len(e.content)), EOF: true})
-	}
-	e.finished = true
-	close(e.done)
-	e.mu.Unlock()
-	e.cancel()
-	report(result)
-}
-
-func batchGenericRun(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (resp fantasy.ToolResponse, err error, panicked bool) {
-	defer func() {
-		if recover() != nil {
-			panicked = true
-		}
-	}()
-	resp, err = leaf.Run(ctx, call)
-	return
-}
-
-func (e *batchGenericExecution) Stop(context.Context) error {
-	e.mu.Lock()
-	if !e.finished && !e.stopped {
-		e.stopped = true
-		e.cancel()
-	}
-	e.mu.Unlock()
-	return nil
-}
-
-func (e *batchGenericExecution) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
-	select {
-	case <-e.done:
-	case <-ctx.Done():
-		return jobbatch.OutputChunk{}, ctx.Err()
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.disposed {
-		return jobbatch.OutputChunk{}, jobbatch.ErrReleased
-	}
-	next := uint64(len(e.content))
-	if cursor > next {
-		cursor = next
-	}
-	return jobbatch.OutputChunk{Data: append([]byte(nil), e.content[cursor:]...), Next: next, Oldest: 0, EOF: true}, nil
-}
-
-func (e *batchGenericExecution) Dispose(context.Context) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if !e.finished {
-		return jobbatch.ErrNotTerminal
-	}
-	e.content = nil
-	e.disposed = true
-	return nil
+	return output
 }

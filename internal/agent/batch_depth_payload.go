@@ -1,9 +1,7 @@
 package agent
 
-import "encoding/json"
+import (
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+)
 
-type batchExternalDepthPayload struct {
-	Tool       string          `json:"tool"`
-	Input      json.RawMessage `json:"input"`
-	AgentDepth int             `json:"agent_depth"`
-}
+type batchExternalDepthPayload = batchinst.ExternalDepthPayload

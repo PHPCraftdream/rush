@@ -71,17 +71,17 @@ var ErrFinalizationRecomposeLimit = errors.New("finalization recomposition limit
 // facts the gate observed; a held question is a pause path, not a reason.
 func mapFinalizationSealReason(f finalizationFacts) coresession.AgentFinalizationSealReason {
 	switch {
-	case f.cancelled:
+	case f.Cancelled:
 		return coresession.AgentFinalizationSealCancelled
-	case !f.complete:
+	case !f.Complete:
 		return coresession.AgentFinalizationSealScopeIncomplete
-	case f.descendants > 0:
+	case f.Descendants > 0:
 		return coresession.AgentFinalizationSealDescendantsActive
-	case f.debt > 0:
+	case f.Debt > 0:
 		return coresession.AgentFinalizationSealReactionDebt
-	case f.physicalHolds > 0:
+	case f.PhysicalHolds > 0:
 		return coresession.AgentFinalizationSealPhysicalHolds
-	case f.queuedCalls > 0:
+	case f.QueuedCalls > 0:
 		return coresession.AgentFinalizationSealQueuedCalls
 	default:
 		return coresession.AgentFinalizationSealNone
@@ -92,12 +92,12 @@ func (d FinalizationWaitDeps) status(phase FinalizationWaitPhase, f finalization
 	return FinalizationWaitStatus{
 		Phase:         phase,
 		Reason:        mapFinalizationSealReason(f),
-		Descendants:   f.descendants,
-		Debt:          f.debt,
-		PhysicalHolds: f.physicalHolds,
-		QueuedCalls:   f.queuedCalls,
-		HeldQuestion:  f.heldQuestion,
-		Cancelled:     f.cancelled,
+		Descendants:   f.Descendants,
+		Debt:          f.Debt,
+		PhysicalHolds: f.PhysicalHolds,
+		QueuedCalls:   f.QueuedCalls,
+		HeldQuestion:  f.HeldQuestion,
+		Cancelled:     f.Cancelled,
 	}
 }
 
@@ -144,11 +144,11 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 	}
 	// scopeChanged remembers that the last publication refused as a durable
 	// "not yet"; that compose verdict must not burn recomposition budget.
-	// The closure runs only inside gate.trySeal under its mutex.
+	// The closure runs only inside gate.TrySeal under its mutex.
 	scopeChanged := false
 	publish := finalizationPublishClosure(ts, execution, &scopeChanged)
 	for {
-		// Status facts are read directly, never through gate.readLocked:
+		// Status facts are read directly, without re-entering the gate:
 		// that helper requires the gate's mutex, which this loop does not
 		// hold; trySeal re-reads and refuses under the lock.
 		facts, err := execution.read(ctx)
@@ -160,7 +160,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 			return ctx.Err()
 		}
 		deps.emit(FinalizationPhaseSealing, facts)
-		verdict, err := execution.gate.trySeal(ctx, ts.finalizationStamp, ts.finalizationCandidate.finalizationCandidate, execution.read, publish)
+		verdict, err := execution.gate.TrySeal(ctx, ts.finalizationStamp, ts.finalizationCandidate.finalizationCandidate, execution.read, publish)
 		if err != nil {
 			// An already sealed gate answers Accepted plus ErrFinalizationSealed;
 			// sealing twice is idempotent and must not publish again.
@@ -207,7 +207,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 			if err := settleFinalizationDebts(ctx, deps.Settler, execution.sessionID); err != nil {
 				return err
 			}
-			waitVerdict, changed, err := execution.gate.waitState(ctx, execution.read)
+			waitVerdict, changed, err := execution.gate.WaitState(ctx, execution.read)
 			if err != nil {
 				deps.emit(FinalizationPhaseFailed, facts)
 				return fmt.Errorf("finalization wait state read failed: %w", err)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,6 +32,18 @@ func TestTaskPromptRendersBatchLifecycleGuidance(t *testing.T) {
 	for _, name := range []string{"await_tasks", "batch_status", "batch_output", "batch_stop"} {
 		require.Contains(t, workerLayeredToolNames(), name, "task-worker guidance must refer to a wired tool")
 	}
-	require.Equal(t, batchStartedResponse("prompt-regression-root").Content, batchStartedNoticeText("prompt-regression-root"),
+	storeBatch, conn, ctx := newTestBatchStore(t)
+	deps := installTestDeps(t, storeBatch, conn, "ok")
+	_, err = db.New(conn).CreateSession(ctx, db.CreateSessionParams{ID: "owner", Title: "owner"})
+	require.NoError(t, err)
+	install := installRunnerForTest(t, ctx, deps)
+	root := installSubmit(t, install, installOneItemSpec(t, "prompt-regression"))
+	won, err := install.Elector.ElectStarted(ctx, "owner", root)
+	require.NoError(t, err)
+	require.True(t, won)
+	history, err := deps.Messages.List(ctx, "owner")
+	require.NoError(t, err)
+	require.Len(t, history, 1)
+	require.Equal(t, batchStartedResponse(root).Content, history[0].Content().Text,
 		"durable started notices must match the tool response exactly")
 }

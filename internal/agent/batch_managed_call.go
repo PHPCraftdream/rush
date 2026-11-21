@@ -3,13 +3,13 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 )
 
 func withBatchManagedCall(ctx context.Context) context.Context {
-	return tools.WithBatchManagedCall(ctx)
+	return batchlife.WithBatchManagedCall(ctx)
 }
 
 func isBatchManagedCall(ctx context.Context) bool {
-	return tools.IsBatchManagedCall(ctx)
+	return batchlife.IsBatchManagedCall(ctx)
 }

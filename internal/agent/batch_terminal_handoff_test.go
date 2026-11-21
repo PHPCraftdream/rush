@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"charm.land/fantasy"
@@ -63,26 +63,32 @@ func (h *terminalHandoffShell) Dispose(context.Context) error {
 	return nil
 }
 
-func assertHandoff(t *testing.T, cache *batchOutputCache, id, root jobbatch.ID, want string) {
+type terminalHandoffRetention struct {
+	root jobbatch.ID
+	data string
+}
+
+func assertHandoff(t *testing.T, cache *batchOutputCache, retained map[jobbatch.ID][]terminalHandoffRetention, id, root jobbatch.ID, want string) {
 	t.Helper()
-	chunk, ok := cache.read(id, 0)
+	chunk, _, _, _, ok := cache.readWithMetadata(id, 0)
 	if !ok || string(chunk.Data) != want {
 		t.Fatalf("cache handoff for %s: got %q, %v; want %q", id, chunk.Data, ok, want)
 	}
-	cache.mu.Lock()
-	entry := cache.entries[id]
-	cache.mu.Unlock()
-	if entry.rootID != string(root) {
-		t.Fatalf("root metadata %q, want %q", entry.rootID, root)
-	}
+	require.Equal(t, []terminalHandoffRetention{{root: root, data: want}}, retained[id], "retention calls for %s", id)
 }
 
 func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 	ctx := context.Background()
 	cache := newBatchOutputCache()
-	var now atomic.Int64
-	now.Store(100)
-	cache.now = func() time.Time { return time.Unix(now.Load(), 0) }
+	// Use a root distinct from the ID prefix to check that the sink receives
+	// the executor's root, not a root reconstructed from the retained ID.
+	const root jobbatch.ID = "handoff-root"
+	retained := make(map[jobbatch.ID][]terminalHandoffRetention)
+	store := cache.leaf().PutForContract
+	cache.retain = func(id, root jobbatch.ID, chunk jobbatch.OutputChunk, contract batchOutputCursorContract) {
+		store(id, root, chunk, contract)
+		retained[id] = append(retained[id], terminalHandoffRetention{root: root, data: string(chunk.Data)})
+	}
 	cases := []struct {
 		name string
 		id   jobbatch.ID
@@ -92,9 +98,9 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 		{
 			name: "generic", id: "root.generic", want: "generic-result",
 			run: func(t *testing.T, report func(jobbatch.Result)) {
-				e := &batchGenericExecution{cache: cache, nodeID: "root.generic", rootID: batchOutputRoot("root.generic"), cancel: func() {}, done: make(chan struct{})}
+				e := &batchGenericExecution{cache: cache, nodeID: "root.generic", rootID: root, cancel: func() {}, done: make(chan struct{})}
 				e.run(ctx, terminalHandoffLeaf{content: "generic-result"}, fantasy.ToolCall{}, func(r jobbatch.Result) {
-					assertHandoff(t, cache, "root.generic", "root", "generic-result")
+					assertHandoff(t, cache, retained, "root.generic", root, "generic-result")
 					require.NoError(t, e.Dispose(ctx))
 					report(r)
 				})
@@ -103,12 +109,12 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 		{
 			name: "agent", id: "root.agent", want: "agent-summary",
 			run: func(t *testing.T, report func(jobbatch.Result)) {
-				e := &batchAgentExecution{cache: cache, nodeID: "root.agent", rootID: batchOutputRoot("root.agent"), finished: make(chan struct{}), driverDone: make(chan struct{}), watcherDone: make(chan struct{}), cancel: func() {}}
+				e := &batchAgentExecution{cache: cache, nodeID: "root.agent", rootID: root, finished: make(chan struct{}), driverDone: make(chan struct{}), watcherDone: make(chan struct{}), cancel: func() {}}
 				e.scope = newBatchAgentScope()
 				close(e.driverDone)
 				close(e.watcherDone)
 				e.finish(jobbatch.Result{State: jobbatch.StateCompleted, Summary: "agent-summary"}, func(r jobbatch.Result) {
-					assertHandoff(t, cache, "root.agent", "root", "agent-summary")
+					assertHandoff(t, cache, retained, "root.agent", root, "agent-summary")
 					require.NoError(t, e.Dispose(ctx))
 					report(r)
 				})
@@ -119,9 +125,9 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 			run: func(t *testing.T, report func(jobbatch.Result)) {
 				h := &terminalHandoffShell{done: make(chan struct{}), output: []byte("shell-bytes")}
 				close(h.done)
-				e := &batchShellExecution{cache: cache, nodeID: "root.shell", rootID: batchOutputRoot("root.shell"), handle: h, cancel: func() {}, finished: make(chan struct{})}
+				e := &batchShellExecution{cache: cache, nodeID: "root.shell", rootID: root, handle: h, cancel: func() {}, finished: make(chan struct{})}
 				e.run(ctx, terminalHandoffLeaf{content: "response-not-process-output"}, fantasy.ToolCall{}, func(r jobbatch.Result) {
-					assertHandoff(t, cache, "root.shell", "root", "shell-bytes")
+					assertHandoff(t, cache, retained, "root.shell", root, "shell-bytes")
 					require.NoError(t, e.Dispose(ctx))
 					if len(h.output) != 0 {
 						t.Fatal("shell Dispose did not clear output")
@@ -135,12 +141,12 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 			run: func(t *testing.T, report func(jobbatch.Result)) {
 				p := &terminalHandoffArgv{done: make(chan struct{}), output: []byte("argv-bytes")}
 				close(p.done)
-				e := &batchArgvExecution{cache: cache, nodeID: "root.argv", rootID: batchOutputRoot("root.argv"), process: p, changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
+				e := &batchArgvExecution{cache: cache, nodeID: "root.argv", rootID: root, process: p, changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
 				leaf := &batchGenericTestTool{name: tools.RunCommandToolName, run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 					return fantasy.NewTextResponse("response-not-process-output"), nil
 				}}
 				e.run(ctx, leaf, fantasy.ToolCall{}, func(r jobbatch.Result) {
-					assertHandoff(t, cache, "root.argv", "root", "argv-bytes")
+					assertHandoff(t, cache, retained, "root.argv", root, "argv-bytes")
 					require.NoError(t, e.Dispose(ctx))
 					if len(p.output) != 0 {
 						t.Fatal("argv Dispose did not clear output")
@@ -159,7 +165,7 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("terminal report not delivered")
 			}
-			assertHandoff(t, cache, tc.id, batchOutputRoot(tc.id), tc.want)
+			assertHandoff(t, cache, retained, tc.id, root, tc.want)
 		})
 	}
 }
@@ -363,7 +369,7 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 				if !has {
 					t.Fatalf("missing live chunk at cursor %d", cursor)
 				}
-				cached, found := cache.read(tc.id, cursor)
+				cached, _, _, _, found := cache.readWithMetadata(tc.id, cursor)
 				if !found {
 					t.Fatalf("%s: cache miss at cursor %d", tc.id, cursor)
 				}
@@ -377,52 +383,51 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 }
 
 func TestBatchOutputExpiredMarkerAfterRealRelease(t *testing.T) {
-	env := newBatchInventoryEnv(t, "view")
-	var seconds atomic.Int64
-	seconds.Store(time.Now().Unix())
-	env.install.OutputCache.now = func() time.Time { return time.Unix(seconds.Load(), 0) }
-	result, err := env.invoke("terminal-cache", "view")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.IsError {
-		t.Fatalf("invoke failed: %s", result.Content)
-	}
-	var root string
-	if err := env.conn.QueryRowContext(env.ctx, `SELECT root_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=? AND node_id=root_id`, env.sessionID, "terminal-cache").Scan(&root); err != nil {
-		t.Fatal(err)
-	}
-	handle := env.install.RunnerHandle
-	batch := handle.batchFor(jobbatch.ID(root))
-	if batch == nil {
-		t.Fatal("submitted batch not retained")
-	}
-	if _, err := batch.Wait(env.ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.install.Runner.Release(env.ctx, jobbatch.ID(root)); err != nil && !errors.Is(err, jobbatch.ErrReleased) {
-		t.Fatal(err)
-	}
-	_, err = env.install.Runner.Output(env.ctx, jobbatch.ID(root)+".1", 0)
-	if !errors.Is(err, jobbatch.ErrReleased) {
-		t.Fatalf("runner output after release: %v", err)
-	}
-	control := NewInstalledBatchModelControl(handle, env.install.Delivery, env.store, nil, batchTestSessions(env.sessionID), env.install.Runtime.cfg.Host, env.install.Runtime.cfg.RunnerID, nil, nil).(*installedBatchModelControl)
-	live, err := control.Output(env.ctx, env.sessionID, root, root+".1", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	chunk, ok := live.(map[string]any)
-	if !ok || chunk["data"] != "ok" {
-		t.Fatalf("released output handoff: %#v", live)
-	}
-	seconds.Store(seconds.Load() + int64(batchOutputTTL/time.Second))
-	expired, err := control.Output(env.ctx, env.sessionID, root, root+".1", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta, ok := expired.(map[string]any)
-	if !ok || fmt.Sprint(meta["output_status"]) != "output_expired" {
-		t.Fatalf("expiry marker: %#v", expired)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		env := newBatchInventoryEnv(t, "view")
+		result, err := env.invoke("terminal-cache", "view")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("invoke failed: %s", result.Content)
+		}
+		var root string
+		if err := env.conn.QueryRowContext(env.ctx, `SELECT root_id FROM batch_nodes WHERE owner_session_id=? AND tool_call_id=? AND node_id=root_id`, env.sessionID, "terminal-cache").Scan(&root); err != nil {
+			t.Fatal(err)
+		}
+		handle := env.install.RunnerHandle
+		batch := handle.batchFor(jobbatch.ID(root))
+		if batch == nil {
+			t.Fatal("submitted batch not retained")
+		}
+		if _, err := batch.Wait(env.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.install.Runner.Release(env.ctx, jobbatch.ID(root)); err != nil && !errors.Is(err, jobbatch.ErrReleased) {
+			t.Fatal(err)
+		}
+		_, err = env.install.Runner.Output(env.ctx, jobbatch.ID(root)+".1", 0)
+		if !errors.Is(err, jobbatch.ErrReleased) {
+			t.Fatalf("runner output after release: %v", err)
+		}
+		control := NewInstalledBatchModelControl(handle, env.install.Delivery, env.store, nil, batchTestSessions(env.sessionID), env.install.Runtime.cfg.Host, env.install.Runtime.cfg.RunnerID, nil, nil).(*installedBatchModelControl)
+		live, err := control.Output(env.ctx, env.sessionID, root, root+".1", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunk, ok := live.(map[string]any)
+		if !ok || chunk["data"] != "ok" {
+			t.Fatalf("released output handoff: %#v", live)
+		}
+		time.Sleep(batchOutputTTL)
+		expired, err := control.Output(env.ctx, env.sessionID, root, root+".1", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, ok := expired.(map[string]any)
+		if !ok || fmt.Sprint(meta["output_status"]) != "output_expired" {
+			t.Fatalf("expiry marker: %#v", expired)
+		}
+	})
 }

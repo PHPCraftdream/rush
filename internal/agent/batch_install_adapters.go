@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
-	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -29,452 +29,124 @@ type batchRunnerAdapter struct {
 	outputCache *batchOutputCache
 	runner      *jobbatch.Runner
 	credentials *batchCredentialEscrow
-	// rootLeases is the per-root disk-binding lease store built at install
-	// time; the runtime and the model control share this one instance.
-	rootLeases *batchRootLeaseStore
-	mu         sync.Mutex
-	started    map[jobbatch.ID]*jobbatch.Batch
-	owners     map[jobbatch.ID]string
+	state       batchadapter.RunnerState
+
+	// Compatibility views for SubmitCLIRef's paired update. The state owns
+	// both maps and their lock; these are not separate storage.
+	mu      *sync.Mutex
+	started map[jobbatch.ID]*jobbatch.Batch
+	owners  map[jobbatch.ID]string
 }
 
 func newBatchRunnerAdapter(runner *jobbatch.Runner) *batchRunnerAdapter {
-	return &batchRunnerAdapter{runner: runner, credentials: newBatchCredentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
+	return bindBatchRunnerAdapter(runner, nil, newBatchCredentialEscrow())
+}
+
+func bindBatchRunnerAdapter(runner *jobbatch.Runner, cache *batchOutputCache, credentials *batchCredentialEscrow) *batchRunnerAdapter {
+	a := &batchRunnerAdapter{runner: runner, outputCache: cache, credentials: credentials, state: batchadapter.NewRunnerState()}
+	a.mu, a.started, a.owners = a.state.CLIState()
+	return a
 }
 
 var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
 
 func (a *batchRunnerAdapter) OutputCache() *batchOutputCache { return a.outputCache }
 
-// Submit starts the caller-supplied root. The returned ID is always the
-// requested root (ingress contract: runner root must equal requested root).
-func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error) {
-	batch, err := a.submitBatch(ctx, req)
-	if err != nil {
-		return "", err
+func (a *batchRunnerAdapter) engineAdapter() *batchadapter.Runner {
+	return &batchadapter.Runner{
+		Engine:             func() *jobbatch.Runner { return a.runner },
+		Stamp:              stampBatchCallCredentials,
+		Register:           a.registerCredentials,
+		ReleaseCredentials: a.credentials.releaseRoot,
+		State:              &a.state,
 	}
-	_ = batch
-	return req.Root, nil
 }
 
-func (a *batchRunnerAdapter) SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error) {
-	batch, err := a.submitBatch(ctx, req)
-	if err != nil {
-		return "", nil, err
-	}
-	return req.Root, batch, nil
-}
-
-func (a *batchRunnerAdapter) submitBatch(ctx context.Context, req jobbatch.SubmitRequest) (*jobbatch.Batch, error) {
-	// R11F P1-6: a deferred install binds the real Runner at Start. An
-	// Invoke that races ahead of Start has no Runner and fails closed.
-	if a.runner == nil {
-		return nil, errors.New("batch runner adapter: runner not constructed yet (Start did not run)")
-	}
-	var err error
-	req.Spec, err = stampBatchCallCredentials(ctx, req.Spec)
-	if err != nil {
-		return nil, err
-	}
-	if req.Spec.Task != nil {
-		if req.Spec.Batch != nil {
-			return nil, jobbatch.ErrInvalidSpec
-		}
-		req.Spec = jobbatch.OneItem(*req.Spec.Task)
-	} else if req.Spec.Batch == nil {
-		return nil, jobbatch.ErrInvalidSpec
-	}
-	registrations, err := a.credentialRegistrations(ctx, string(req.Root), req.Spec)
-	if err != nil {
-		return nil, err
-	}
-	if len(registrations) > 0 && a.credentials == nil {
-		return nil, errBatchCredentialEscrowMissing
-	}
-	release := func() {}
-	if a.credentials != nil {
-		release, err = a.credentials.registerBatch(registrations)
+func (a *batchRunnerAdapter) registerCredentials(ctx context.Context, root string, specs []jobbatch.Spec) (func(), error) {
+	var registrations []batchadapter.CredentialRegistration
+	for _, spec := range specs {
+		entries, err := batchadapter.CollectCredentialRegistrations(root, spec, batchKindAgent, callCredentialsFrom(ctx), decodeBatchCredentialRegistration)
 		if err != nil {
 			return nil, err
-		}
-	}
-	batch, err := a.runner.Submit(ctx, jobbatch.SubmitRequest{Root: req.Root, Spec: req.Spec, Ref: req.Ref})
-	if err != nil {
-		release()
-		return nil, err
-	}
-	a.mu.Lock()
-	if a.started == nil {
-		a.started = make(map[jobbatch.ID]*jobbatch.Batch)
-	}
-	a.started[req.Root] = batch
-	a.mu.Unlock()
-	return batch, nil
-}
-
-// Stop requests cancellation of one root.
-func (a *batchRunnerAdapter) Stop(ctx context.Context, id jobbatch.ID) error {
-	return a.runner.Stop(ctx, id)
-}
-
-// Release disposes a settled root's retained execution (the batchReleaseHandle
-// seam): the ingress/model control adopt this as the automatic post-Done
-// disposal trigger, so the adapter must surface the real Runner's Release.
-func (a *batchRunnerAdapter) Release(ctx context.Context, id jobbatch.ID) error {
-	err := a.runner.Release(ctx, id)
-	if err == nil && a.credentials != nil {
-		a.credentials.releaseRoot(string(id))
-	}
-	return err
-}
-
-func (a *batchRunnerAdapter) Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error) {
-	view, err := a.runner.View(ctx, req.Parent)
-	if err != nil {
-		return nil, err
-	}
-	root := string(view.Root)
-	registrations := make([]batchCredentialRegistration, 0)
-	stamped := make([]jobbatch.Spec, len(req.Items))
-	for i, spec := range req.Items {
-		var err error
-		stamped[i], err = stampBatchCallCredentials(ctx, spec)
-		if err != nil {
-			return nil, err
-		}
-	}
-	req.Items = stamped
-	for _, spec := range req.Items {
-		entries, collectErr := a.credentialRegistrations(ctx, root, spec)
-		if collectErr != nil {
-			return nil, collectErr
 		}
 		registrations = append(registrations, entries...)
 	}
-	if a.credentials == nil {
-		if len(registrations) > 0 {
-			return nil, errBatchCredentialEscrowMissing
-		}
-		ids, err := a.runner.Add(ctx, req)
-		return ids, err
+	if a.credentials != nil {
+		return a.credentials.RegisterBatch(registrations)
 	}
-	release, err := a.credentials.registerBatch(registrations)
-	if err != nil {
-		return nil, err
+	if len(registrations) > 0 {
+		return nil, errBatchCredentialEscrowMissing
 	}
-	ids, err := a.runner.Add(ctx, req)
-	if err != nil {
-		release()
-	}
-	return ids, err
+	return func() {}, nil
 }
 
-func (a *batchRunnerAdapter) credentialRegistrations(ctx context.Context, root string, spec jobbatch.Spec) ([]batchCredentialRegistration, error) {
-	if spec.Task != nil {
-		if spec.Task.Kind != batchKindAgent {
-			return nil, nil
-		}
-		var p batchLeafPayload
-		if err := json.Unmarshal(spec.Task.Payload, &p); err != nil {
-			return nil, err
-		}
-		if p.Tool != "agent" && p.Tool != "agentic_fetch" {
-			return nil, nil
-		}
-		if !p.CallCredentials {
-			return nil, nil
-		}
-		if callCredentialsFrom(ctx) == nil {
-			return nil, errBatchCredentialEscrowMissing
-		}
-		return []batchCredentialRegistration{{key: batchCredentialKeyFor(p), root: root, creds: callCredentialsFrom(ctx)}}, nil
-	}
-	if spec.Batch == nil {
-		return nil, jobbatch.ErrInvalidSpec
-	}
-	var all []batchCredentialRegistration
-	for _, item := range spec.Batch.Items {
-		entries, err := a.credentialRegistrations(ctx, root, item)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, entries...)
-	}
-	return all, nil
+func (a *batchRunnerAdapter) Submit(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, error) {
+	return a.engineAdapter().Submit(ctx, req)
+}
+
+func (a *batchRunnerAdapter) SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error) {
+	return a.engineAdapter().SubmitBound(ctx, req)
+}
+
+func (a *batchRunnerAdapter) Stop(ctx context.Context, id jobbatch.ID) error {
+	return a.engineAdapter().Stop(ctx, id)
+}
+
+func (a *batchRunnerAdapter) Release(ctx context.Context, id jobbatch.ID) error {
+	return a.engineAdapter().Release(ctx, id)
+}
+
+func (a *batchRunnerAdapter) Add(ctx context.Context, req jobbatch.AddRequest) ([]jobbatch.ID, error) {
+	return a.engineAdapter().Add(ctx, req)
 }
 
 func (a *batchRunnerAdapter) Snapshot(ctx context.Context, id jobbatch.ID) (jobbatch.BatchView, error) {
-	return a.runner.Snapshot(ctx, id)
+	return a.engineAdapter().Snapshot(ctx, id)
 }
 
 func (a *batchRunnerAdapter) View(ctx context.Context, id jobbatch.ID) (jobbatch.NodeView, error) {
-	return a.runner.View(ctx, id)
+	return a.engineAdapter().View(ctx, id)
 }
 
 func (a *batchRunnerAdapter) Output(ctx context.Context, id jobbatch.ID, cursor uint64) (jobbatch.OutputChunk, error) {
-	return a.runner.Output(ctx, id, cursor)
+	return a.engineAdapter().Output(ctx, id, cursor)
+}
+
+func (a *batchRunnerAdapter) credentialRegistrations(ctx context.Context, root string, spec jobbatch.Spec) ([]batchCredentialRegistration, error) {
+	entries, err := batchadapter.CollectCredentialRegistrations(root, spec, batchKindAgent, callCredentialsFrom(ctx), decodeBatchCredentialRegistration)
+	if len(entries) == 0 {
+		return nil, err
+	}
+	result := make([]batchCredentialRegistration, len(entries))
+	for i, entry := range entries {
+		k := entry.Key
+		result[i] = batchCredentialRegistration{key: batchCredentialKey{registryID: k.RegistryID, sessionID: k.SessionID, messageID: k.MessageID, callID: k.CallID, tool: k.Tool}, root: entry.Root, creds: entry.Credentials}
+	}
+	return result, err
 }
 
 // batchFor returns the in-process Batch of a root started by THIS adapter,
 // or nil (a root attached after a restart is polled durably instead).
 func (a *batchRunnerAdapter) batchFor(root jobbatch.ID) *jobbatch.Batch {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.started[root]
-}
-
-func (a *batchRunnerAdapter) rememberOwner(root jobbatch.ID, owner string) {
-	a.mu.Lock()
-	a.owners[root] = owner
-	a.mu.Unlock()
+	return a.state.BatchFor(root)
 }
 
 func (a *batchRunnerAdapter) ownerFor(root jobbatch.ID) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.owners[root]
+	return a.state.OwnerFor(root)
 }
 
-// batchAttachAdapter adapts session.BatchStore onto the R11B attach seam.
+// Compatibility for cutover store access and existing installer tests.
 type batchAttachAdapter struct{ store *session.BatchStore }
 
-var _ batchAttachStore = batchAttachAdapter{}
-
-// ProbeLive is the read-only fence probe; reservations happen in the commit
-// hook at Submit, never here.
 func (a batchAttachAdapter) ProbeLive(ctx context.Context, p batchAttachProbe) (jobbatch.ID, bool, error) {
-	root, ok, err := a.store.BatchProbeLive(ctx, session.BatchLiveProbe{
-		Owner: p.Owner, Host: p.Host, RunnerID: p.RunnerID,
-		ToolCallID: p.ToolCallID, InputHash: p.InputHash,
-		SubmittedMessageID: p.SubmittedMessageID, SubmittedRegistryID: p.SubmittedRegistryID,
-	})
-	return jobbatch.ID(root), ok, err
+	return (batchadapter.StoreAttach{Store: a.store}).ProbeLive(ctx, p)
 }
 
-// batchStoreDoneSource implements the R11D completion seam over the in-process
-// Runner and the durable response envelope. It NEVER invents a result: every
-// returned envelope is the executor's own ToolResponse, or the store's
-// persisted projection of it.
-type batchStoreDoneSource struct {
-	store *session.BatchStore
-	// batches resolves a root started in this process (nil-able lookup).
-	batches func(jobbatch.ID) *jobbatch.Batch
-	// poll is the durable re-read cadence for roots without a live Batch;
-	// zero selects batchDonePollInterval.
-	poll time.Duration
-	// finalizationGate, when non-nil, withholds completion reads until the
-	// owner's finalization record leaves its active phases (W1a wires it).
-	finalizationGate coresession.FinalizationTerminalGate
-}
-
-var _ batchDoneSource = (*batchStoreDoneSource)(nil)
-
-// batchDonePollInterval is the fallback durable poll cadence.
-const batchDonePollInterval = 250 * time.Millisecond
-
-// AwaitDone waits for the root's REAL completion: a live Batch blocks on the
-// engine (never a stop acknowledgement), then loads the persisted envelope;
-// a foreign root polls the durable envelope only. ok=false means held
-// termination or a caller-cancelled wait, never a fabricated settlement.
-func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return fantasy.ToolResponse{}, false, err
-	}
-	if b := d.batches(root); b != nil {
-		if _, err := b.Wait(ctx); err != nil {
-			return fantasy.ToolResponse{}, false, err
-		}
-		resp, ok, err := d.LoadDone(ctx, owner, root)
-		return resp, ok, callerCancelOr(ctx, err)
-	}
-	if d.finalizationGate != nil {
-		// Gated durable wait: hold until the owner's record leaves the active
-		// phases, then read once; no busy poll under the gate.
-		e, ok, err := coresession.FinalizationAwaitGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
-		if err != nil || !ok {
-			return fantasy.ToolResponse{}, ok, callerCancelOr(ctx, err)
-		}
-		resp, convErr := d.envelopeResult(e)
-		if convErr != nil {
-			return fantasy.ToolResponse{}, false, convErr
-		}
-		return resp, true, nil
-	}
-	tick := time.NewTicker(d.pollInterval())
-	defer tick.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return fantasy.ToolResponse{}, false, err
-		}
-		resp, ok, err := d.LoadDone(ctx, owner, root)
-		if err != nil || ok {
-			return resp, ok, callerCancelOr(ctx, err)
-		}
-		select {
-		case <-ctx.Done():
-			return fantasy.ToolResponse{}, false, ctx.Err()
-		case <-tick.C:
-		}
-	}
-}
-
-// LoadDone reads an already-persisted completion without waiting (R11F
-// P1-2): the one-item completion read — the root envelope when present, else
-// the settled single task child's envelope (the Settled commit hook writes
-// the envelope on the settled NODE, root.1, not the root). Envelope
-// details carry the executor's full ToolResponse (batchEnvelope); a settled
-// row without details is projected honestly from its stored summary and
-// outcome state (state failed => IsError), never fabricated.
-// When the finalization gate is set, the read is withheld until the owner's
-// finalization record seals.
-func (d *batchStoreDoneSource) LoadDone(ctx context.Context, owner string, root jobbatch.ID) (fantasy.ToolResponse, bool, error) {
-	e, ok, err := coresession.FinalizationGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
-	if err != nil || !ok {
-		return fantasy.ToolResponse{}, ok, err
-	}
-	resp, convErr := d.envelopeResult(e)
-	if convErr != nil {
-		return fantasy.ToolResponse{}, false, convErr
-	}
-	return resp, true, nil
-}
-
-// envelopeResult projects one persisted completion envelope into the
-// executor response: the full ToolResponse from Details when present, else
-// the honest projection from the stored summary and outcome state.
-func (d *batchStoreDoneSource) envelopeResult(e coresession.BatchDeliveryEnvelope) (fantasy.ToolResponse, error) {
-	if len(e.Details) > 0 {
-		var resp fantasy.ToolResponse
-		if err := json.Unmarshal(e.Details, &resp); err != nil {
-			return fantasy.ToolResponse{}, fmt.Errorf("batch done source: envelope %s: %w", e.Ref, err)
-		}
-		return resp, nil
-	}
-	resp := fantasy.NewTextResponse(e.Summary)
-	// interrupted is the recovery outcome of a lost host: an error-shaped result, never a success.
-	resp.IsError = e.State == "failed" || e.State == "timed_out" || e.State == "cancelled" || e.State == "interrupted"
-	return resp, nil
-}
-
-// readEnvelope matches coresession.FinalizationBatchResultRead so the
-// finalization gate helpers can wrap the plain completion read.
-func (d *batchStoreDoneSource) readEnvelope(ctx context.Context, owner, root string) (coresession.BatchDeliveryEnvelope, bool, error) {
-	return d.store.BatchDeliveryOneItemCompletion(ctx, owner, root)
-}
-
-func (d *batchStoreDoneSource) pollInterval() time.Duration {
-	if d.poll > 0 {
-		return d.poll
-	}
-	return batchDonePollInterval
-}
-
-// batchStoreElector implements the R8 election seam over the typed store
-// elections. CAS semantics: exactly one winner, losers report false and
-// insert no history (session.ErrBatchAnnouncementLost maps to won=false).
-type batchStoreElector struct {
-	store    *session.BatchStore
-	messages message.Service
-}
-
-var _ batchElector = batchStoreElector{}
-
-// ElectStarted wins-or-loses the durable started history for the root.
-func (e batchStoreElector) ElectStarted(ctx context.Context, owner string, root jobbatch.ID) (bool, error) {
-	params := message.CreateMessageParams{
-		Role:                message.User,
-		Parts:               []message.ContentPart{message.TextContent{Text: batchStartedNoticeText(root)}},
-		AutoResumed:         true,
-		BackgroundJobNotice: true,
-	}
-	_, won, err := e.store.BatchDeliveryElectStarted(ctx, e.messages, owner, string(root), params)
-	return won, err
-}
-
-// ElectInline publishes the elected completion exactly once. The history
-// message carries the envelope's content; a media-only response is serialised
-// so no payload is lost.
-func (e batchStoreElector) ElectInline(ctx context.Context, owner string, root jobbatch.ID, envelope fantasy.ToolResponse) (bool, error) {
-	_, won, err := e.store.BatchDeliveryElectInline(ctx, e.messages, owner, string(root),
-		batchCompletionMessageParams(batchEnvelopeText(envelope)))
-	return won, err
-}
-
-func batchStartedNoticeText(root jobbatch.ID) string {
-	return fmt.Sprintf("batch root %s started; completions arrive as selected notices. Call await_tasks to wait for it.", root)
-}
-
-func batchCompletionMessageParams(text string) message.CreateMessageParams {
-	return message.CreateMessageParams{
-		Role:                message.User,
-		Parts:               []message.ContentPart{message.TextContent{Text: text}},
-		AutoResumed:         true,
-		BackgroundJobNotice: true,
-	}
-}
-
-// batchEnvelopeText renders a completion envelope for history: the content
-// when present, else the serialised envelope (media/metadata preserved).
-func batchEnvelopeText(envelope fantasy.ToolResponse) string {
-	if envelope.Content != "" {
-		return envelope.Content
-	}
-	raw, err := json.Marshal(envelope)
-	if err != nil {
-		return ""
-	}
-	return string(raw)
-}
-
-// batchStoreNoticePull implements the drain seam over the R8 outbox pull.
-// Pull consumes only ALREADY-SELECTED notices; it never waits for running
-// batch work.
-type batchStoreNoticePull struct {
-	store    *session.BatchStore
-	messages message.Service
-	owner    string
-}
-
-var _ batchNoticePull = batchStoreNoticePull{}
-
-// Pull drains the owner's pending selected notices and reports the count
-// actually delivered into history.
-func (p batchStoreNoticePull) Pull(ctx context.Context) (int, error) {
-	pulled, err := p.store.BatchPullNotices(ctx, p.messages, p.owner, batchPulledNoticeParams)
-	if err != nil {
-		return 0, err
-	}
-	return len(pulled), nil
-}
-
-// batchPulledNoticeParams formats one selected notice for history from the
-// row's own facts; nothing is re-derived from live state.
-func batchPulledNoticeParams(row session.BatchNoticeRow) message.CreateMessageParams {
-	origin := message.OriginWeb
-	if row.OriginCLI {
-		origin = message.OriginCLI
-	}
-	return message.CreateMessageParams{
-		Role:                message.User,
-		Parts:               []message.ContentPart{message.TextContent{Text: batchNoticeText(row)}},
-		AutoResumed:         true,
-		BackgroundJobNotice: true,
-		Origin:              origin,
-	}
-}
-
-func batchNoticeText(row session.BatchNoticeRow) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "batch %s node %s: kind %q state %q", row.RootID, row.NodeID, row.Kind, row.State)
-	if row.Cause != "" {
-		fmt.Fprintf(&b, " cause %q", row.Cause)
-	}
-	if row.OutcomeCode != "" || row.OutcomeSummary != "" {
-		fmt.Fprintf(&b, " outcome %s %s", row.OutcomeCode, row.OutcomeSummary)
-	}
-	fmt.Fprintf(&b, " counts pending=%d active=%d completed=%d failed=%d cancelled=%d timed_out=%d interrupted=%d skipped=%d",
-		row.Pending, row.Active, row.Completed, row.Failed, row.Cancelled, row.TimedOut, row.Interrupted, row.Skipped)
-	return b.String()
-}
+var (
+	_ batchDoneSource = (*batchadapter.StoreDoneSource)(nil)
+	_ batchElector    = batchadapter.StoreElector{}
+	_ batchNoticePull = batchadapter.StoreNoticePull{}
+)
 
 // Runner's router: generic and MCP leaves through the pinned policy leaf,
 // shell/argv with their retained handles, agent delegation via R7c.
@@ -618,8 +290,8 @@ func (i *BatchInstall) BindFinalizationResultGate(gate coresession.FinalizationT
 	if i == nil {
 		return
 	}
-	if done, ok := i.Done.(*batchStoreDoneSource); ok && done != nil {
-		done.finalizationGate = gate
+	if done, ok := i.Done.(*batchadapter.StoreDoneSource); ok && done != nil {
+		done.BindFinalizationResultGate(gate)
 	}
 }
 
@@ -707,9 +379,9 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		owner = batchDormantInstallOwner
 	}
 	cache := newBatchOutputCache()
-	runnerAdapter := &batchRunnerAdapter{outputCache: cache, credentials: deps.Registries.credentialEscrow(), started: make(map[jobbatch.ID]*jobbatch.Batch), owners: make(map[jobbatch.ID]string)}
-	done := &batchStoreDoneSource{store: deps.Store, batches: runnerAdapter.batchFor, poll: deps.DonePoll}
-	elector := batchStoreElector{store: deps.Store, messages: deps.Messages}
+	runnerAdapter := bindBatchRunnerAdapter(nil, cache, deps.Registries.credentialEscrow())
+	done := batchadapter.NewStoreDoneSource(deps.Store, runnerAdapter.state.BatchFor, deps.DonePoll)
+	elector := batchadapter.NewStoreElector(deps.Store, deps.Messages)
 	delivery, err := newBatchDelivery(batchDeliveryDeps{
 		Owner: owner, Done: done, Elect: elector, Runner: runnerAdapter, ArmSupervision: deps.ArmSupervision,
 		ToolResultReceipt: func(ctx context.Context, owner string, root jobbatch.ID, callID string, sink *toolResultReceiptSink) error {
@@ -724,14 +396,14 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 			if !n.ToolCallID.Valid || n.ToolCallID.String == "" || n.ToolCallID.String != callID || n.OwnerSessionID != owner || n.RootID != string(root) || n.NodeID != n.RootID || n.HostID == "" || n.RunnerID == "" {
 				return errors.New("batch tool result: root identity mismatch")
 			}
-			return sink.add(toolResultReceipt{
-				identity: session.BatchToolResultIdentity{Owner: owner, RootID: n.RootID, NodeID: n.NodeID, HostID: n.HostID, RunnerID: n.RunnerID, ToolCallID: n.ToolCallID.String},
-				persist: func(ctx context.Context, params message.CreateMessageParams) (message.Message, bool, error) {
+			return sink.Add(batchmeta.NewReceipt(
+				session.BatchToolResultIdentity{Owner: owner, RootID: n.RootID, NodeID: n.NodeID, HostID: n.HostID, RunnerID: n.RunnerID, ToolCallID: n.ToolCallID.String},
+				func(ctx context.Context, params message.CreateMessageParams) (message.Message, bool, error) {
 					return deps.Store.BatchConsumeToolResult(ctx, deps.Messages, owner,
 						session.BatchToolResultIdentity{Owner: owner, RootID: n.RootID, NodeID: n.NodeID, HostID: n.HostID, RunnerID: n.RunnerID, ToolCallID: n.ToolCallID.String},
 						params)
 				},
-			})
+			))
 		},
 	})
 	if err != nil {
@@ -743,7 +415,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	// The capability manager drops identity-index entries when a construction
 	// record dies — the index is a lookup, never an ownership counter.
 	deps.DiskBindings.setRegistryDrop(deps.Registries.Delete)
-	runnerAdapter.rootLeases = newBatchRootLeaseStore(deps.DiskBindings)
+	rootLeases := newBatchRootLeaseStore(deps.DiskBindings)
 	// R12-H2 3c: the runtime is constructed BEFORE the executor env so the
 	// env can carry a lazy ingress accessor — the App binds the ingress only
 	// AFTER install (BindRuntimeIngress), so an eager value copy would stay
@@ -754,7 +426,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		Resolver: deps.Resolver, Leaves: deps.Registries.Resolve,
 		RegistryCount: deps.Registries.Count,
 		DiskBindings:  deps.DiskBindings,
-		RootLeases:    runnerAdapter.rootLeases,
+		RootLeases:    rootLeases,
 		Attach:        batchAttachAdapter{store: deps.Store}, Delivery: delivery, Runner: runnerAdapter,
 	})
 	if err != nil {
@@ -819,10 +491,10 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 		// R11F P1-5(d): the notice-pull drain adapter has NO production
 		// consumer yet — it is consumed by the web drain surface in
 		// R12/R15b; wired inertly until then. Do not invent a consumer.
-		NoticePull:   batchStoreNoticePull{store: deps.Store, messages: deps.Messages, owner: owner},
+		NoticePull:   batchadapter.NewStoreNoticePull(deps.Store, deps.Messages, owner),
 		Sessions:     deps.Sessions,
 		DiskBindings: deps.DiskBindings,
-		RootLeases:   runnerAdapter.rootLeases,
+		RootLeases:   rootLeases,
 		OutputCache:  cache,
 		runnerCfg:    runnerCfg,
 	}

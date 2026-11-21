@@ -67,7 +67,7 @@ func TestFinalizationRootBindCreatesRecordAndCarriesAuthority(t *testing.T) {
 	// The registered execution is cancellable through the coordinator
 	// interrupt while the cleanup has not run yet.
 	w.hooks.OnCancel("session")
-	require.True(t, exec.gate.cancelled)
+	requireFinalizationCancelled(t, exec.gate, true)
 
 	cleanup()
 	require.Nil(t, w.authorities.Lookup("session"))

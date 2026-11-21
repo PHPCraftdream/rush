@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
@@ -147,35 +148,13 @@ func filterNonEmpty(parts ...string) []string {
 }
 
 // FormatAsyncCompletion makes a completed job visible to the model and UI.
-// The TimedOut branch's wording matches
-// docs/plans/2026-09-27-wake-tools-contract.md §5.1 verbatim.
+// It preserves the agent API; batchmeta owns the formatting rules.
 func FormatAsyncCompletion(completion AsyncCompletion) string {
-	content := tools.TruncateOutput(strings.TrimSpace(completion.Content))
-	if content == "" {
-		content = "(no output)"
-	}
-	if completion.TimedOut {
-		return fmt.Sprintf("Async job %s (%s) timed out after %ds and was stopped. Partial output:\n\n%s",
-			completion.ToolCallID, completion.ToolName, completion.TimeoutSeconds, content)
-	}
-	if completion.Stopped {
-		return fmt.Sprintf("Async job %s (%s) was stopped (batch_stop). Partial output before the stop:\n\n%s",
-			completion.ToolCallID, completion.ToolName, content)
-	}
-	if completion.Cancelled {
-		return fmt.Sprintf("Async job %s (%s) was cancelled (session stopped). Partial output:\n\n%s",
-			completion.ToolCallID, completion.ToolName, content)
-	}
-	if completion.Interrupted {
-		return fmt.Sprintf("Async job %s (%s) was interrupted: its host process ended before the job finished.\n\n%s",
-			completion.ToolCallID, completion.ToolName, content)
-	}
-	status := "finished"
-	if completion.IsError {
-		status = "failed"
-	}
-	return fmt.Sprintf("Async job %s (%s) %s.\n\n%s",
-		completion.ToolCallID, completion.ToolName, status, content)
+	return batchmeta.FormatAsyncCompletion(batchmeta.CompletionPresentation{
+		ToolCallID: completion.ToolCallID, ToolName: completion.ToolName, Content: completion.Content,
+		IsError: completion.IsError, TimedOut: completion.TimedOut, TimeoutSeconds: completion.TimeoutSeconds,
+		Stopped: completion.Stopped, Cancelled: completion.Cancelled, Interrupted: completion.Interrupted,
+	})
 }
 
 // notifyAsyncCompletion is the completion wake callback the batch delivery

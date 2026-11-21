@@ -37,7 +37,7 @@ func TestCoordinatorBatchStopAnswersPendingAfterNaturalSettlement(t *testing.T) 
 	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
 	require.NoError(t, err)
 	coordinatorBatchBindings.Store(c, &batchCoordinatorBinding{ingress: ingress, live: env.live})
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(c) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 	originalRunner := env.install.Runtime.cfg.Runner
 	runner := &retryStopRunner{batchRunnerHandle: originalRunner}
 	env.install.Runtime.cfg.Runner = runner

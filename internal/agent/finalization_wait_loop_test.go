@@ -21,7 +21,7 @@ type finalizationWaitFactsStub struct {
 }
 
 func newFinalizationWaitFactsStub() *finalizationWaitFactsStub {
-	return &finalizationWaitFactsStub{facts: finalizationFacts{complete: true}}
+	return &finalizationWaitFactsStub{facts: finalizationFacts{Complete: true}}
 }
 
 func (s *finalizationWaitFactsStub) read(context.Context) (finalizationFacts, error) {
@@ -93,8 +93,8 @@ func newFinalizationWaitFixture(t *testing.T) *finalizationWaitFixture {
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	stamp := ts.finalizationStamp
 	identity := message.FinalizationIdentity{
-		Key: env.execution.logicalID, Generation: stamp.epoch,
-		Revision: stamp.durableRevision, Serial: stamp.serial,
+		Key: env.execution.logicalID, Generation: stamp.Epoch(),
+		Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 	}
 	require.NoError(t, created.MarkFinalizationCandidate(identity))
 	created.CheckpointGeneration = 1
@@ -112,8 +112,8 @@ func (f *finalizationWaitFixture) composeStub(t *testing.T) FinalizationComposeF
 		f.composes++
 		f.mu.Unlock()
 		identity := message.FinalizationIdentity{
-			Key: in.Execution.logicalID, Generation: in.Stamp.epoch,
-			Revision: in.Stamp.durableRevision, Serial: in.Stamp.serial,
+			Key: in.Execution.logicalID, Generation: in.Stamp.Epoch(),
+			Revision: in.Stamp.DurableRevision(), Serial: in.Stamp.Serial(),
 		}
 		created, err := f.env.messages.Create(ctx, "session", message.CreateMessageParams{
 			Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "recomposed"}},
@@ -135,7 +135,7 @@ func (f *finalizationWaitFixture) composeCount() int {
 // trySeal sees the current stamp as stale.
 func bumpGateRevision(t *testing.T, gate *finalizationGate) {
 	t.Helper()
-	release, err := gate.admitMutation(false)
+	release, err := gate.AdmitMutation(false)
 	require.NoError(t, err)
 	release()
 }
@@ -174,7 +174,7 @@ func TestFinalizationWaitLoopQuietFactsSealOnce(t *testing.T) {
 
 func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.descendants = 1 })
+	f.facts.set(func(x *finalizationFacts) { x.Descendants = 1 })
 	var entered sync.Once
 	enteredWait := make(chan struct{})
 	hook := f.hook(func(d *FinalizationWaitDeps) {
@@ -193,11 +193,11 @@ func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 		// which stales that stamp and recomposes a second time. With the bump
 		// first, the facts are quiet only after the revision reached its
 		// final value, so exactly one recomposition remains.
-		release, err := f.env.execution.gate.admitMutation(false)
+		release, err := f.env.execution.gate.AdmitMutation(false)
 		if err == nil {
 			release()
 		}
-		f.facts.set(func(x *finalizationFacts) { x.descendants = 0 })
+		f.facts.set(func(x *finalizationFacts) { x.Descendants = 0 })
 	}()
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
@@ -206,7 +206,7 @@ func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 
 func TestFinalizationWaitLoopPollSeesExternalFactChange(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.descendants = 1 })
+	f.facts.set(func(x *finalizationFacts) { x.Descendants = 1 })
 	var entered sync.Once
 	enteredWait := make(chan struct{})
 	hook := f.hook(func(d *FinalizationWaitDeps) {
@@ -222,7 +222,7 @@ func TestFinalizationWaitLoopPollSeesExternalFactChange(t *testing.T) {
 	// can wake the loop.
 	go func() {
 		<-enteredWait
-		f.facts.set(func(x *finalizationFacts) { x.descendants = 0 })
+		f.facts.set(func(x *finalizationFacts) { x.Descendants = 0 })
 	}()
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
@@ -231,7 +231,7 @@ func TestFinalizationWaitLoopPollSeesExternalFactChange(t *testing.T) {
 
 func TestFinalizationWaitLoopHeldQuestionPausesWithoutPublishing(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.heldQuestion = true })
+	f.facts.set(func(x *finalizationFacts) { x.HeldQuestion = true })
 	hook := f.hook(nil)
 	err := hook(t.Context(), f.ts)
 	var awaited *AwaitingAnswerError
@@ -246,9 +246,9 @@ func TestFinalizationWaitLoopHeldQuestionPausesWithoutPublishing(t *testing.T) {
 
 func TestFinalizationWaitLoopDebtSettledOnceThenSeals(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.debt = 1 })
+	f.facts.set(func(x *finalizationFacts) { x.Debt = 1 })
 	settler := &finalizationSettlerStub{onCall: func() {
-		f.facts.set(func(x *finalizationFacts) { x.debt = 0 })
+		f.facts.set(func(x *finalizationFacts) { x.Debt = 0 })
 	}}
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.Compose = f.composeStub(t)
@@ -261,7 +261,7 @@ func TestFinalizationWaitLoopDebtSettledOnceThenSeals(t *testing.T) {
 
 func TestFinalizationWaitLoopCancelDuringWaitReturnsContextError(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.descendants = 1 })
+	f.facts.set(func(x *finalizationFacts) { x.Descendants = 1 })
 	ctx, cancel := context.WithCancel(t.Context())
 	var entered sync.Once
 	enteredWait := make(chan struct{})
@@ -288,7 +288,7 @@ func TestFinalizationWaitLoopRecomposeLimitIsHonest(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
 	// A stale entry stamp forces the first recomposition, so the budget is
 	// actually exercised.
-	f.ts.finalizationStamp.revision++
+	bumpGateRevision(t, f.env.execution.gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.MaxRecompositions = 2
 		d.Compose = func(ctx context.Context, in FinalizationComposeInput) (persistedFinalizationCandidate, error) {
@@ -309,12 +309,12 @@ func TestFinalizationWaitLoopRecomposeLimitIsHonest(t *testing.T) {
 
 func TestFinalizationWaitLoopStaleStampComposesExactlyOnce(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.ts.finalizationStamp.revision++
+	bumpGateRevision(t, f.env.execution.gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) { d.Compose = f.composeStub(t) })
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
 	require.Equal(t, 1, f.composeCount())
-	require.Greater(t, f.ts.finalizationStamp.serial, uint64(1), "recomposition takes a fresh stamp")
+	require.Greater(t, f.ts.finalizationStamp.Serial(), uint64(1), "recomposition takes a fresh stamp")
 }
 
 func TestFinalizationWaitLoopSealAfterSealIsIdempotent(t *testing.T) {
@@ -336,7 +336,7 @@ func TestFinalizationWaitLoopSealAfterSealIsIdempotent(t *testing.T) {
 
 func TestFinalizationWaitLoopZeroBudgetRefusesWithoutComposing(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.ts.finalizationStamp.revision++
+	bumpGateRevision(t, f.env.execution.gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.MaxRecompositions = 0
 		d.Compose = f.composeStub(t)

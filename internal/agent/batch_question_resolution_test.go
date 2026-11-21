@@ -97,7 +97,7 @@ func TestBatchAgentInjectResolvesNoticeWithSequence(t *testing.T) {
 	tl := newQuestionTestTimeline(t)
 	e, factory, rec, reader := resolutionRig(t, tl)
 	resolutionWaitHeldPublished(t, e, factory, tl)
-	req := e.requestSnapshot()
+	req := e.snapshotExecutionRequest()
 	require.NoError(t, jobbatch.Messenger(e).Inject(context.Background(),
 		json.RawMessage(`{"depth":1,"sequence":1,"text":"x"}`)), "the matching answer is accepted")
 	tl.addf("inject sequence=1 accepted")

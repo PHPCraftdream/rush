@@ -47,7 +47,7 @@ func NewFinalizationRecoverScopeHook(messages message.Service) func(context.Cont
 			return session.AgentFinalizationNoCandidate, err
 		}
 		if !finalizationRecordPhaseActive(record.Phase) {
-			execution.gate.resumeCandidateSerial(uint64(record.CandidateSerial))
+			execution.gate.ResumeCandidateSerial(uint64(record.CandidateSerial))
 			return session.AgentFinalizationNoCandidate, nil
 		}
 		return recoverFinalizationCandidate(ctx, messages, execution.scope, execution.gate)

@@ -64,7 +64,7 @@ func bindBatchInventoryControls(t *testing.T, coord *coordinator) {
 		diskBindings: NewDiskProviderRegistry(),
 	}
 	coordinatorBatchBindings.Store(coord, bind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(coord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(coord) })
 }
 
 // batchInventoryBuildNames runs ONE buildTools with trusted call state
@@ -312,7 +312,7 @@ func TestWorkerStopScopeComesFromTrustedCoordinatorBuild(t *testing.T) {
 		diskBindings: NewDiskProviderRegistry(),
 	}
 	coordinatorBatchBindings.Store(coord, bind)
-	t.Cleanup(func() { coordinatorBatchBindings.Delete(coord) })
+	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(coord) })
 
 	build := func(isSubAgent bool, callID string) {
 		t.Helper()

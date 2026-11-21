@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
@@ -227,21 +228,11 @@ func guardRefused(result fantasy.ToolResultContent) bool {
 	return guard.ProgressGuard.Refused != ""
 }
 
-// asyncCapMetadata is the JSON shape the async-cap refusal emits as its
-// ClientMetadata tag.
-type asyncCapMetadata struct {
-	AsyncCap struct {
-		Running    int `json:"running"`
-		Limit      int `json:"limit"`
-		WaitTimers int `json:"wait_timers"`
-	} `json:"async_cap"`
-}
-
 // AsyncCapRefused reports whether result carries the async-cap tag of
 // the deleted async-tool cap branch: admission refused the launch, so the tool
 // never ran and took no claim -- the tool's own refusal, not the guard's.
 func AsyncCapRefused(result fantasy.ToolResultContent) bool {
-	var meta asyncCapMetadata
+	var meta batchmeta.AsyncCapMetadata
 	if json.Unmarshal([]byte(result.ClientMetadata), &meta) != nil {
 		return false
 	}

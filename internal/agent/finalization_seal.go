@@ -7,7 +7,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// sealFinalizationCandidate is gate.trySeal's durable publication: it presents
+// sealFinalizationCandidate is gate.TrySeal's durable publication: it presents
 // the persisted candidate to the session-level TrySeal. It must only run from
 // the admission gate's publish step while the owner gate is held; without an
 // installed scope or facts reader it refuses without touching the database.
@@ -22,7 +22,7 @@ func sealFinalizationCandidate(ctx context.Context, execution *finalizationExecu
 	if !ok {
 		return message.Message{}, ErrFinalizationFactsUnavailable
 	}
-	sealed, ok := session.CandidateOf(candidate.messageID, candidate.hash, identity)
+	sealed, ok := session.CandidateOf(candidate.MessageID, candidate.Hash, identity)
 	if !ok {
 		return message.Message{}, ErrFinalizationScopeChanged
 	}

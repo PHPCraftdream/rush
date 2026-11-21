@@ -753,18 +753,19 @@ func TestBatchScopeDeliverRejectsStopped(t *testing.T) {
 	_, err := s.hold(1)
 	require.NoError(t, err)
 	s.beginStop()
-	require.ErrorIs(t, s.deliver(batchAgentInjectMessage{Depth: 1}), ErrBatchAgentStopped)
+	require.ErrorIs(t, s.state.Deliver(batchAgentInjectMessage{Depth: 1}), ErrBatchAgentStopped)
 
 	s2 := newBatchAgentScope()
-	h, err := s2.hold(2)
+	_, err = s2.hold(2)
 	require.NoError(t, err)
-	s2.mu.Lock()
-	h.sequence = 1 // Штамп публикации в этом локальном scope fixture.
-	s2.mu.Unlock()
-	require.NoError(t, s2.deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}))
-	require.ErrorIs(t, s2.deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentNotHeld)
+	require.NoError(t, s2.PublishQuestion(func(sequence uint64) error {
+		require.EqualValues(t, 1, sequence)
+		return nil
+	}))
+	require.NoError(t, s2.state.Deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}))
+	require.ErrorIs(t, s2.state.Deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentNotHeld)
 	s2.beginStop()
-	require.ErrorIs(t, s2.deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentStopped)
+	require.ErrorIs(t, s2.state.Deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentStopped)
 }
 
 type batchAgentStaticFactory struct{ turn batchAgentTurn }

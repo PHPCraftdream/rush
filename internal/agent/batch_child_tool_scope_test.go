@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -82,7 +83,7 @@ func (i *pctScopeIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf 
 			h.Accepted()
 		}
 		if claim {
-			if pctCapturedAgentToolFromTool(leaf) == nil || pctCapturedAgentToolFromTool(leaf).pctClaim(tools.GetSessionFromContext(ctx)+"\x00"+call.ID) != h {
+			if pctCapturedAgentToolFromTool(leaf) == nil || pctCapturedAgentToolFromTool(leaf).ClaimCapturedHandoff(tools.GetSessionFromContext(ctx)+"\x00"+call.ID) != h {
 				return fantasy.ToolResponse{}, errors.New("captured handoff not claimable")
 			}
 		}
@@ -97,7 +98,7 @@ type pctScopeFixture struct {
 	child    *toolwrap.PctChildToolScope
 	parent   *buildResourceScope
 	view     *batchIngressTool
-	captured *pctCapturedAgentTool
+	captured *childagent.PctCapturedAgentTool
 	outer    *batchIngressTool
 	registry string
 }
@@ -131,7 +132,7 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 	require.NotEmpty(t, viewBuild.RegistryID, "inner tool registry is pinned")
 	view, ok := viewBuild.Tools[0].(*batchIngressTool)
 	require.True(t, ok, "inner tool is armed through the batch ingress")
-	captured := &pctCapturedAgentTool{AgentTool: &countingTool{name: AgentToolName}, scope: child}
+	captured := childagent.NewPctCapturedAgentTool(&countingTool{name: AgentToolName}, child)
 	outerBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{captured}, parent, false)
 	require.NoError(t, err, "build outer tool through captured wrapper")
 	require.NotEmpty(t, outerBuild.RegistryID, "outer registry is pinned")
@@ -169,9 +170,9 @@ func TestBatchChildToolScope_ParentCloseBeforeFirstTool(t *testing.T) {
 	_, err := f.ingress.Registry(f.registry)
 	require.NoError(t, err, "outer execution lease preserves registry after parent close")
 	f.pctRunView(t, "first")
-	f.captured.mu.Lock()
-	defer f.captured.mu.Unlock()
-	require.Empty(t, f.captured.handoffs, "execution claim removes the handoff from the captured map")
+	replacement := &toolwrap.PctDelegationHandoff{}
+	require.True(t, f.captured.RegisterCapturedHandoff("pct-parent\x00start-before-first", replacement), "execution claim frees the invocation key")
+	t.Cleanup(replacement.Release)
 }
 
 func TestBatchChildToolScope_SecondReaction(t *testing.T) {
@@ -269,16 +270,16 @@ func TestBatchChildToolScope_AcceptedWithoutDriver(t *testing.T) {
 	h.ReleaseUnstarted()
 	_, count = f.caps.ownerCounts()
 	require.Zero(t, count, "root-Done-style cleanup releases accepted unstarted handoff once")
-	f.captured.mu.Lock()
-	defer f.captured.mu.Unlock()
-	require.Empty(t, f.captured.handoffs, "cleanup removes the expected handoff map entry")
+	replacement := &toolwrap.PctDelegationHandoff{}
+	require.True(t, f.captured.RegisterCapturedHandoff("pct-parent\x00accepted-no-driver", replacement), "cleanup frees the invocation key")
+	t.Cleanup(replacement.Release)
 }
 
 // Production registration (BatchLeafRegistryStore.Register) wraps every agent
 // leaf in *batchCredentialLeaf, so the executor-side lookup must see through
 // it; a nil here leaves the handoff unclaimed in production.
 func TestBatchChildToolScope_LookupSeesThroughCredentialLeaf(t *testing.T) {
-	captured := &pctCapturedAgentTool{}
+	captured := childagent.NewPctCapturedAgentTool(nil, nil)
 	wrapped := &batchCredentialLeaf{AgentTool: captured}
 	require.Same(t, captured, pctCapturedAgentToolFromTool(wrapped), "credential wrapper is unwrapped")
 	require.Same(t, captured, pctCapturedAgentToolFromTool(&batchCredentialLeaf{AgentTool: toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{captured}, newRunner(t, `exit 0`), false)[0]}), "wrapper over a hooked tool is unwrapped")

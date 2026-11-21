@@ -67,7 +67,7 @@ func TestBatchPrebindFailureSettlesScope(t *testing.T) {
 			e := execution.(*batchAgentExecution)
 			t.Cleanup(func() {
 				// Останавливаем regression-mutant watcher, не превращая incomplete в успех в product.
-				e.markNoChildSelected()
+				e.recordExecutionNoChild()
 				_ = e.Stop(context.Background())
 			})
 			select {

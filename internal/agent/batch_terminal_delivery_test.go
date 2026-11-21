@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -17,8 +18,8 @@ import (
 
 // batchTerminalTestDoneSource builds a done source over the raw store with a
 // NIL batch lookup (no live engine batch): every read is the durable path.
-func batchTerminalTestDoneSource(store *session.BatchStore) *batchStoreDoneSource {
-	return &batchStoreDoneSource{store: store, batches: func(jobbatch.ID) *jobbatch.Batch { return nil }, poll: time.Millisecond}
+func batchTerminalTestDoneSource(store *session.BatchStore) *batchadapter.StoreDoneSource {
+	return batchadapter.NewStoreDoneSource(store, func(jobbatch.ID) *jobbatch.Batch { return nil }, time.Millisecond)
 }
 
 // batchTerminalTestReserve reserves a one-item root directly against the

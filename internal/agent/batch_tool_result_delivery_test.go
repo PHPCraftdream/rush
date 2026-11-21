@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -54,6 +55,13 @@ func pdcSinkContext() (context.Context, *toolResultReceiptSink) {
 	return context.WithValue(context.Background(), toolReceiptContextKey{}, sink), sink
 }
 
+func pdcSyncInvocation() BatchInvocation {
+	inv := deliveryTestInvocation(batchDeliverySync)
+	inv.BackgroundEscape = batchEscapeNever
+	inv.CallID = "call-1"
+	return inv
+}
+
 // TestPdcDeliveryReceiptNoSinkNoOp pins the byte-identical fallback.
 // Mutation caught: making receipt registration unconditional (or erroring
 // without a sink in ctx) would break every non-stream delivery caller whose
@@ -65,7 +73,7 @@ func TestPdcDeliveryReceiptNoSinkNoOp(t *testing.T) {
 	done.finish(envelope)
 	receipt := &pdcRecordingReceipt{}
 	impl := pdcDeliveryWithReceipt(t, done, &fakeElector{}, receipt, nil)
-	got, err := impl.deliverSync(context.Background(), "owner-1", "root-1", "call-1")
+	got, err := impl.DeliverBatch(context.Background(), "root-1", pdcSyncInvocation())
 	require.NoError(t, err)
 	require.Equal(t, envelope, got, "envelope byte-identical without a sink")
 	require.Zero(t, receipt.calls(), "no receipt without a per-step sink in ctx")
@@ -83,7 +91,7 @@ func TestPdcDeliverySyncRegistersReceipt(t *testing.T) {
 	receipt := &pdcRecordingReceipt{}
 	impl := pdcDeliveryWithReceipt(t, done, &fakeElector{}, receipt, nil)
 	ctx, sink := pdcSinkContext()
-	got, err := impl.deliverSync(ctx, "owner-1", "root-1", "call-1")
+	got, err := impl.DeliverBatch(ctx, "root-1", pdcSyncInvocation())
 	require.NoError(t, err)
 	require.Equal(t, envelope, got, "envelope unchanged when the receipt registers")
 	require.Equal(t, 1, receipt.calls())
@@ -105,7 +113,7 @@ func TestPdcDeliveryReceiptErrorPropagates(t *testing.T) {
 	receipt := &pdcRecordingReceipt{err: errors.New("batch tool result: root identity mismatch")}
 	impl := pdcDeliveryWithReceipt(t, done, &fakeElector{}, receipt, nil)
 	ctx, _ := pdcSinkContext()
-	_, err := impl.deliverSync(ctx, "owner-1", "root-1", "call-1")
+	_, err := impl.DeliverBatch(ctx, "root-1", pdcSyncInvocation())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "root identity mismatch")
 }
@@ -210,7 +218,7 @@ func TestPdcDeliveryWindowCompletionRegistersReceipt(t *testing.T) {
 
 // TestPdcTurnStreamOnToolResultConsumesRoot drives the REAL onToolResult
 // consume branch over a REAL session store: the receipt is registered through
-// the production adapter shape (store.Read identity validation + sink.add,
+// the production adapter shape (store.Read identity validation + sink.Add,
 // mirroring batch_install_adapters.go's ToolResultReceipt closure), then
 // onToolResult persists the tool message FUSED with the root consumption.
 //
@@ -291,12 +299,11 @@ func TestPdcTurnStreamOnToolResultConsumesRoot(t *testing.T) {
 		Owner: owner, RootID: n.RootID, NodeID: n.NodeID,
 		HostID: n.HostID, RunnerID: n.RunnerID, ToolCallID: n.ToolCallID.String,
 	}
-	require.NoError(t, sink.add(toolResultReceipt{
-		identity: identity,
-		persist: func(ctx context.Context, params message.CreateMessageParams) (message.Message, bool, error) {
+	require.NoError(t, sink.Add(batchmeta.NewReceipt(identity,
+		func(ctx context.Context, params message.CreateMessageParams) (message.Message, bool, error) {
 			return store.BatchConsumeToolResult(ctx, svc, owner, identity, params)
 		},
-	}))
+	)))
 
 	// The turn's real callback: onToolResult must take the receipt, persist
 	// the tool message fused with the consume, and skip ordinary persistence.

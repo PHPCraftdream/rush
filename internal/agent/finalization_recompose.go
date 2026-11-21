@@ -14,7 +14,7 @@ var ErrFinalizationComposeUnavailable = errors.New("finalization compose unavail
 
 // FinalizationComposeInput carries what a recomposition needs: the turn, its
 // execution, the cloned provisional answer, and a fresh stamp from
-// gate.beginCandidate.
+// gate.BeginCandidate.
 type FinalizationComposeInput struct {
 	Turn        *turnStream
 	Execution   *finalizationExecution
@@ -39,7 +39,7 @@ func composeFinalizationCandidate(ctx context.Context, ts *turnStream, execution
 	}
 	snapshot := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
-	stamp, err := execution.gate.beginCandidate(ctx, execution.read)
+	stamp, err := execution.gate.BeginCandidate(ctx, execution.read)
 	if err != nil {
 		return fmt.Errorf("finalization fresh stamp failed: %w", err)
 	}
@@ -68,8 +68,8 @@ func defaultComposeFinalizationCandidate(ctx context.Context, ts *turnStream, ex
 		return persistedFinalizationCandidate{}, fmt.Errorf("%w: the provisional answer carries no recomposable candidate footer", ErrFinalizationComposeUnavailable)
 	}
 	identity := message.FinalizationIdentity{
-		Key: execution.logicalID, Generation: stamp.epoch,
-		Revision: stamp.durableRevision, Serial: stamp.serial,
+		Key: execution.logicalID, Generation: stamp.Epoch(),
+		Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 	}
 	if err := snapshot.MarkFinalizationCandidate(identity); err != nil {
 		return persistedFinalizationCandidate{}, err
@@ -77,14 +77,14 @@ func defaultComposeFinalizationCandidate(ctx context.Context, ts *turnStream, ex
 	return persistFinalizationCandidate(ctx, ts.a.sessions, ts.a.messages, execution.scope, identity, snapshot)
 }
 
-// finalizationPublishClosure builds the publication gate.trySeal calls back:
+// finalizationPublishClosure builds the publication gate.TrySeal calls back:
 // it presents the turn's persisted candidate, verifies the accepted row, and
 // reports a durable scope change through the scopeChanged flag so the loop can
 // wait instead of recomposing. It runs only under the gate's mutex.
 func finalizationPublishClosure(ts *turnStream, execution *finalizationExecution, scopeChanged *bool) func(context.Context, finalizationCandidate) error {
 	return func(ctx context.Context, candidate finalizationCandidate) error {
 		persisted := ts.finalizationCandidate
-		if candidate.messageID != persisted.messageID || candidate.hash != persisted.hash {
+		if candidate.MessageID != persisted.MessageID || candidate.Hash != persisted.Hash {
 			*scopeChanged = true
 			return ErrFinalizationScopeChanged
 		}
@@ -98,13 +98,13 @@ func finalizationPublishClosure(ts *turnStream, execution *finalizationExecution
 		// A successful publication clears the flag: the flag survives only
 		// while the durable side keeps answering "not yet".
 		finish := accepted.FinishPart()
-		if !accepted.IsFinished() || accepted.ID != candidate.messageID || accepted.SessionID != ts.call.SessionID ||
+		if !accepted.IsFinished() || accepted.ID != candidate.MessageID || accepted.SessionID != ts.call.SessionID ||
 			finish == nil || finish.Reason != message.FinishReasonEndTurn ||
 			finish.FinalizationKey != persisted.identity.Key ||
 			finish.FinalizationGeneration != persisted.identity.Generation ||
 			finish.FinalizationRevision != persisted.identity.Revision ||
 			finish.FinalizationSerial != persisted.identity.Serial ||
-			finish.FinalizationHash != candidate.hash {
+			finish.FinalizationHash != candidate.Hash {
 			return fmt.Errorf("%w: publisher returned no matching accepted row", ErrFinalizationFactsUnavailable)
 		}
 		ts.mu.Lock()

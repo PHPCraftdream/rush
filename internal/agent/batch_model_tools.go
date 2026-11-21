@@ -8,46 +8,19 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-const batchModelOutputLimit = 16 << 10
-
 type (
-	batchModelSpec struct {
-		Mode          string           `json:"mode"`
-		MaxAgentDepth *int             `json:"max_agent_depth,omitempty"`
-		OnFail        string           `json:"on_fail,omitempty"`
-		Notify        string           `json:"notify,omitempty"`
-		MaxParallel   int              `json:"max_parallel,omitempty"`
-		Items         []batchModelItem `json:"items"`
-	}
-	batchModelItem struct {
-		Tool    string          `json:"tool,omitempty"`
-		Input   json.RawMessage `json:"input,omitempty"`
-		Timeout string          `json:"timeout,omitempty"`
-		Batch   *batchModelSpec `json:"batch,omitempty"`
-	}
-	batchModelControl interface {
-		Run(context.Context, BatchInvocation, *toolwrap.PolicyLeafRegistry, batchModelSpec) (jobbatch.ID, error)
-		Add(context.Context, string, string, string, BatchInvocation, *toolwrap.PolicyLeafRegistry, []batchModelItem) ([]jobbatch.ID, error)
-		StatusNode(context.Context, string, string, string) (any, error)
-		Output(context.Context, string, string, string, uint64) (any, error)
-		Stop(context.Context, string, string, string) (any, error)
-	}
+	batchModelSpec    = modelcontrol.Spec
+	batchModelItem    = modelcontrol.Item
+	batchModelControl = modelcontrol.Control[BatchInvocation]
+	batchModelParams  = modelcontrol.Params
 )
-
-type batchModelParams struct {
-	Spec   batchModelSpec   `json:"spec,omitempty"`
-	Root   string           `json:"root_id,omitempty"`
-	Parent string           `json:"parent_id,omitempty"`
-	Items  []batchModelItem `json:"items,omitempty"`
-	Node   string           `json:"node_id,omitempty"`
-	Cursor uint64           `json:"cursor,omitempty"`
-}
 
 func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantasy.ToolCall) (BatchInvocation, error) {
 	inv.SessionID = tools.GetSessionFromContext(ctx)
@@ -96,284 +69,165 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 }
 
 func withoutBatchControlPlaceholders(list []fantasy.AgentTool) []fantasy.AgentTool {
-	out := list[:0]
-	for _, tool := range list {
-		switch tool.Info().Name {
-		case "batch_run", "batch_add", "batch_status", "batch_output", "batch_stop":
-			continue
-		default:
-			out = append(out, tool)
-		}
-	}
-	return out
+	return modelcontrol.WithoutPlaceholders(list)
 }
 
 func newBatchControlPlaceholder(name string) fantasy.AgentTool {
-	return fantasy.NewAgentTool(name, "Reserved batch control; requires an enabled batch runtime.", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-		return fantasy.NewTextErrorResponse("batch runtime control is not installed"), nil
-	})
+	return modelcontrol.NewPlaceholder(name)
 }
 
 func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) []fantasy.AgentTool {
-	mk := func(n, d string, run func(context.Context, batchModelParams, fantasy.ToolCall) (any, error)) fantasy.AgentTool {
-		return fantasy.NewAgentTool(n, d, func(ctx context.Context, p batchModelParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			v, e := run(ctx, p, call)
-			if e != nil {
-				return fantasy.NewTextErrorResponse(e.Error()), nil
-			}
-			raw, e := json.Marshal(v)
-			if e != nil {
-				return fantasy.NewTextErrorResponse(e.Error()), nil
-			}
-			return fantasy.NewTextResponse(string(raw)), nil
-		})
-	}
-	return []fantasy.AgentTool{
-		mk("batch_run", "Run explicit recursive batch spec: {mode,on_fail,notify,max_parallel,items}; item is {tool,input,timeout} or {batch:{...}}. Omitted notify defaults all; each is explicit. Tool names resolve only in this calling toolset.", func(ctx context.Context, p batchModelParams, call fantasy.ToolCall) (any, error) {
-			callInv, err := modelInvocationAtCall(ctx, inv, call)
-			if err != nil {
-				return nil, err
-			}
-			return c.Run(ctx, callInv, reg, p.Spec)
-		}),
-		mk("batch_add", "Add items (batch_run item schema) to an owned live batch root. Added children inherit the target parent's notification mode. Optional parent_id selects a nested batch.", func(ctx context.Context, p batchModelParams, call fantasy.ToolCall) (any, error) {
-			callInv, err := modelInvocationAtCall(ctx, inv, call)
-			if err != nil {
-				return nil, err
-			}
-			return c.Add(ctx, callInv.SessionID, p.Root, p.Parent, callInv, reg, p.Items)
-		}),
-		mk("batch_status", "Read structured status for an owned root; incomplete reads remain nonterminal.", func(ctx context.Context, p batchModelParams, call fantasy.ToolCall) (any, error) {
-			return c.StatusNode(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node)
-		}),
-		mk("batch_output", "Best-effort detached output cache (10-minute TTL; pressure eviction or process exit may end it sooner). Newest 1 MiB/task, 32 MiB/App. Read output_expired/output_truncated statuses; provide root_id,node_id,cursor and continue at next_cursor.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
-			v, err := c.Output(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node, p.Cursor)
-			if err != nil {
-				return nil, err
-			}
-			switch chunk := v.(type) {
-			case jobbatch.OutputChunk:
-				return outputResponse(chunk, chunk.Next, int(chunk.Next), chunk.Truncated), nil
-			case map[string]any:
-				return chunk, nil
-			default:
-				return nil, errors.New("batch output returned invalid chunk")
-			}
-		}),
-		mk("batch_stop", "Request durable stop of an owned root or descendant. Workers are restricted to their own batch trees; accepted is cancellation intent, not termination.", func(ctx context.Context, p batchModelParams, _ fantasy.ToolCall) (any, error) {
-			if inv.WorkerStopScope {
-				ctx = context.WithValue(ctx, batchWorkerStopScopeKey{}, true)
-			}
-			return c.Stop(ctx, tools.GetSessionFromContext(ctx), p.Root, p.Node)
-		}),
-	}
+	return modelcontrol.NewTools(c, reg, func(ctx context.Context, call fantasy.ToolCall) (BatchInvocation, string, error) {
+		bound, err := modelInvocationAtCall(ctx, inv, call)
+		return bound, bound.SessionID, err
+	}, inv.WorkerStopScope)
 }
 
 func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) (jobbatch.Spec, error) {
-	if !inv.AgentDepthSet {
-		inv.AgentDepth = DefaultAgentDepth
-		inv.AgentDepthSet = true
-	}
-	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
-		return jobbatch.Spec{}, errors.New("agent depth must be between 0 and 32")
-	}
-	return modelBatchSpecAt(raw, inv, reg, "", nil, false)
+	return buildModelBatchSpec(raw, inv, reg, nil, false)
 }
 
 func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver) (jobbatch.Spec, error) {
-	if !inv.AgentDepthSet {
-		inv.AgentDepth = DefaultAgentDepth
-		inv.AgentDepthSet = true
-	}
-	if inv.AgentDepth < 0 || inv.AgentDepth > 32 {
-		return jobbatch.Spec{}, errors.New("agent depth must be between 0 and 32")
-	}
-	return modelBatchSpecAt(raw, inv, reg, "", resolver, true)
+	return buildModelBatchSpec(raw, inv, reg, resolver, true)
 }
 
-func modelBatchSpecAt(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, path string, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
-	inherited := inv.AgentDepth
+func buildModelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
+	depth := inv.AgentDepth
 	if !inv.AgentDepthSet {
-		inherited = DefaultAgentDepth
+		depth = DefaultAgentDepth
 	}
-	if raw.MaxAgentDepth != nil {
-		if *raw.MaxAgentDepth < 0 || *raw.MaxAgentDepth > inherited {
-			return jobbatch.Spec{}, errors.New("nested max_agent_depth may only narrow the inherited cap")
+	return modelcontrol.BuildSpec(raw, depth, modelcontrol.SpecDeps{
+		HasRegistry: reg != nil, MaxDepth: batchDefaultMaxDepth, MaxNodes: batchDefaultMaxNodes,
+		Measure: measureModelBatchSpecs,
+		BuildLeaf: func(it batchModelItem, path string, leafCap int) (*jobbatch.TaskSpec, error) {
+			return buildModelBatchLeaf(it, path, leafCap, inv, reg, resolver, admission)
+		},
+	})
+}
+
+func measureModelBatchSpecs(specs []jobbatch.Spec) (int, int, error) {
+	depth, nodes, _, err := batchSpecNodes(specs)
+	return depth, nodes, err
+}
+
+func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver) ([]jobbatch.Spec, error) {
+	return modelcontrol.BuildAddNodes(items, inv.AgentDepth, inv.CallID, func(raw batchModelSpec, depth int) (jobbatch.Spec, error) {
+		wrapped := inv
+		wrapped.AgentDepth = depth
+		return modelBatchSpecForAdmission(raw, wrapped, reg, resolver)
+	}, rewriteModelBatchLeaf)
+}
+
+// Keep the executor's full payload encoding so retry hashes stay byte-identical.
+func rewriteModelBatchLeaf(task *jobbatch.TaskSpec, callID string, maxDepth *int) error {
+	var payload batchLeafPayload
+	if err := json.Unmarshal(task.Payload, &payload); err != nil {
+		return err
+	}
+	if maxDepth != nil && (payload.Tool == AgentToolName || payload.Tool == tools.AgenticFetchToolName) &&
+		(payload.AgentDepth == nil || *payload.AgentDepth > *maxDepth) {
+		return errors.New("batch_add agent leaf exceeds trusted depth")
+	}
+	payload.ToolCallID = callID
+	raw, err := json.Marshal(payload)
+	if err == nil {
+		task.Payload = raw
+	}
+	return err
+}
+
+func buildModelBatchLeaf(it batchModelItem, callPath string, leafCap int, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver, admission bool) (*jobbatch.TaskSpec, error) {
+	if batchControlTarget(it.Tool) {
+		return nil, fmt.Errorf("control-plane tool %q cannot be a batch leaf", it.Tool)
+	}
+	leaf, e := reg.ResolveForContext(withRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
+	if e != nil || leaf == nil {
+		return nil, fmt.Errorf("tool %q unavailable in calling pinned toolset", it.Tool)
+	}
+	input, e := batchCanonicalInput(string(it.Input))
+	if e != nil {
+		return nil, fmt.Errorf("tool %q input: %w", it.Tool, e)
+	}
+	var selectedRoleContract *session.RoleContract
+	if it.Tool == AgentToolName {
+		if err := validateAgentRoleInput(input); err != nil {
+			return nil, err
 		}
-		if path == "" {
-			inv.AgentDepth = *raw.MaxAgentDepth
-			inv.AgentDepthSet = true
+		var selected struct {
+			Role RequestedModelRole `json:"role"`
 		}
-	}
-	if reg == nil {
-		return jobbatch.Spec{}, errors.New("calling pinned tool registry is unavailable")
-	}
-	mode := jobbatch.Mode(raw.Mode)
-	if mode != "parallel" && mode != "sequential" {
-		return jobbatch.Spec{}, errors.New("mode must be parallel or sequential")
-	}
-	onFail := jobbatch.OnFail(raw.OnFail)
-	if mode == jobbatch.ModeSequential {
-		if onFail == "" {
-			onFail = jobbatch.OnFailStop
+		if err := json.Unmarshal(input, &selected); err != nil {
+			return nil, err
 		}
-		if onFail != jobbatch.OnFailStop && onFail != jobbatch.OnFailContinue {
-			return jobbatch.Spec{}, errors.New("on_fail must be stop or continue")
-		}
-	} else if onFail != "" {
-		return jobbatch.Spec{}, errors.New("on_fail is only valid for sequential batches")
-	}
-	notify := jobbatch.Notify(raw.Notify)
-	if notify == "" {
-		notify = jobbatch.NotifyAll
-	}
-	if notify != "all" && notify != "each" {
-		return jobbatch.Spec{}, errors.New("notify must be all or each")
-	}
-	if raw.MaxParallel < 0 {
-		return jobbatch.Spec{}, errors.New("max_parallel must not be negative")
-	}
-	if len(raw.Items) == 0 {
-		return jobbatch.Spec{}, errors.New("items must not be empty")
-	}
-	items := make([]jobbatch.Spec, 0, len(raw.Items))
-	for index, it := range raw.Items {
-		if it.Tool == "" && it.Batch == nil {
-			return jobbatch.Spec{}, errors.New("item must contain a task or nested batch")
-		}
-		if (it.Batch != nil) == (it.Tool != "") {
-			return jobbatch.Spec{}, errors.New("each item must contain exactly one of tool or batch")
-		}
-		childPath := fmt.Sprintf("%s%d.", path, index)
-		if it.Batch != nil {
-			nestedPath := childPath
-			nestedInv := inv
-			nestedInv.AgentDepth = inv.AgentDepth
-			if !inv.AgentDepthSet {
-				nestedInv.AgentDepth = DefaultAgentDepth
+		if selected.Role != "" && !selected.Role.Builtin() {
+			cfg, cfgErr := configForBatchInvocation(inv)
+			if cfgErr != nil {
+				return nil, cfgErr
 			}
-			nestedInv.AgentDepthSet = true
-			if it.Batch.MaxAgentDepth != nil {
-				if *it.Batch.MaxAgentDepth < 0 || *it.Batch.MaxAgentDepth > nestedInv.AgentDepth {
-					return jobbatch.Spec{}, errors.New("nested max_agent_depth may only narrow the inherited cap")
-				}
-				nestedInv.AgentDepth = *it.Batch.MaxAgentDepth
-			}
-			nested, e := modelBatchSpecAt(*it.Batch, nestedInv, reg, nestedPath, resolver, admission)
+			selectedRoleContract, e = ResolveRoleContract(cfg, string(selected.Role), inv.Policy.RoleContract)
 			if e != nil {
-				return jobbatch.Spec{}, e
-			}
-			items = append(items, nested)
-			continue
-		}
-		if batchControlTarget(it.Tool) {
-			return jobbatch.Spec{}, fmt.Errorf("control-plane tool %q cannot be a batch leaf", it.Tool)
-		}
-		leaf, e := reg.ResolveForContext(withRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
-		if e != nil || leaf == nil {
-			return jobbatch.Spec{}, fmt.Errorf("tool %q unavailable in calling pinned toolset", it.Tool)
-		}
-		input, e := batchCanonicalInput(string(it.Input))
-		if e != nil {
-			return jobbatch.Spec{}, fmt.Errorf("tool %q input: %w", it.Tool, e)
-		}
-		var selectedRoleContract *session.RoleContract
-		if it.Tool == AgentToolName {
-			if err := validateAgentRoleInput(input); err != nil {
-				return jobbatch.Spec{}, err
-			}
-			var selected struct {
-				Role RequestedModelRole `json:"role"`
-			}
-			if err := json.Unmarshal(input, &selected); err != nil {
-				return jobbatch.Spec{}, err
-			}
-			if selected.Role != "" && !selected.Role.Builtin() {
-				cfg, cfgErr := configForBatchInvocation(inv)
-				if cfgErr != nil {
-					return jobbatch.Spec{}, cfgErr
-				}
-				selectedRoleContract, e = ResolveRoleContract(cfg, string(selected.Role), inv.Policy.RoleContract)
-				if e != nil {
-					return jobbatch.Spec{}, e
-				}
+				return nil, e
 			}
 		}
-		// Normalize the leaf's own tool-input timeout intent once, at
-		// ingress, exactly like the direct path: a terminate intent feeds
-		// the SAME timeout variable the explicit string form fills, a
-		// wake_only intent rides durably in the payload.
-		intent, e := batchParseTimeoutParam(it.Tool, string(input))
-		if e != nil {
-			return jobbatch.Spec{}, e
+	}
+	// Normalize the leaf's own tool-input timeout intent once, at
+	// ingress, exactly like the direct path: a terminate intent feeds
+	// the SAME timeout variable the explicit string form fills, a
+	// wake_only intent rides durably in the payload.
+	intent, e := batchParseTimeoutParam(it.Tool, string(input))
+	if e != nil {
+		return nil, e
+	}
+	if it.Timeout != "" && intent != nil {
+		// An item deadline and a nested tool-input timeout are two
+		// unresolvable authorities on one leaf: refuse rather than
+		// silently prefer one.
+		return nil, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
+	}
+	leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s", inv.CallID, callPath), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute, SelectedRoleContract: cloneRoleContractForCall(selectedRoleContract)}
+	if it.Tool == AgentToolName || it.Tool == tools.AgenticFetchToolName {
+		leafPayload.AgentDepth = &leafCap
+	}
+	timeout := time.Duration(0)
+	if it.Timeout != "" {
+		timeout, e = time.ParseDuration(it.Timeout)
+		if e != nil || timeout <= 0 {
+			return nil, errors.New("timeout must be a positive duration")
 		}
-		if it.Timeout != "" && intent != nil {
-			// An item deadline and a nested tool-input timeout are two
-			// unresolvable authorities on one leaf: refuse rather than
-			// silently prefer one.
-			return jobbatch.Spec{}, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
-		}
-		leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s%d", inv.CallID, path, index), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute, SelectedRoleContract: cloneRoleContractForCall(selectedRoleContract)}
-		leafCap := inv.AgentDepth
-		if !inv.AgentDepthSet {
-			leafCap = DefaultAgentDepth
-		}
-		if raw.MaxAgentDepth != nil {
-			if *raw.MaxAgentDepth < 0 || *raw.MaxAgentDepth > leafCap {
-				return jobbatch.Spec{}, errors.New("nested max_agent_depth may only narrow the inherited cap")
-			}
-			leafCap = *raw.MaxAgentDepth
-		}
-		if it.Tool == AgentToolName || it.Tool == tools.AgenticFetchToolName {
-			leafPayload.AgentDepth = &leafCap
-		}
-		timeout := time.Duration(0)
-		if it.Timeout != "" {
-			timeout, e = time.ParseDuration(it.Timeout)
-			if e != nil || timeout <= 0 {
-				return jobbatch.Spec{}, errors.New("timeout must be a positive duration")
-			}
-		} else if intent != nil {
-			if intent.Kind == batchTimeoutTerminateAndWake {
-				timeout = intent.Duration
-			} else {
-				leafPayload.Timeout = &batchLeafTimeoutSpec{
-					Kind:    batchTimeoutWakeOnly,
-					Seconds: intent.Seconds,
-				}
-			}
-		}
-		payload, e := json.Marshal(leafPayload)
-		if e != nil {
-			return jobbatch.Spec{}, e
-		}
-		kind := batchLeafKind(it.Tool)
-		group := ""
-		if kind == batchKindMCP {
-			if resolver != nil {
-				mcp, ok := resolver(kind, it.Tool)
-				if !ok {
-					return jobbatch.Spec{}, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
-				}
-				group, _, e = classifyBatchLeaf(kind, it.Tool, mcp)
-				if e != nil {
-					return jobbatch.Spec{}, e
-				}
-			} else if admission {
-				return jobbatch.Spec{}, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
-			}
+	} else if intent != nil {
+		if intent.Kind == batchTimeoutTerminateAndWake {
+			timeout = intent.Duration
 		} else {
-			group, _, e = classifyBatchLeaf(kind, it.Tool, batchMCPCapability{})
-			if e != nil {
-				return jobbatch.Spec{}, e
+			leafPayload.Timeout = &batchLeafTimeoutSpec{
+				Kind:    batchTimeoutWakeOnly,
+				Seconds: intent.Seconds,
 			}
 		}
-		items = append(items, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: kind, Group: group, Payload: payload, Timeout: timeout}})
 	}
-	if depth, nodes, _, err := batchSpecNodes([]jobbatch.Spec{{Batch: &jobbatch.BatchSpec{Items: items}}}); err != nil {
-		return jobbatch.Spec{}, err
-	} else if depth > batchDefaultMaxDepth || nodes > batchDefaultMaxNodes {
-		return jobbatch.Spec{}, errors.New("batch spec exceeds depth or node budget")
+	payload, e := json.Marshal(leafPayload)
+	if e != nil {
+		return nil, e
 	}
-	return jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: mode, OnFail: onFail, Notify: notify, MaxParallel: raw.MaxParallel, Items: items}}, nil
+	kind := batchLeafKind(it.Tool)
+	group := ""
+	if kind == batchKindMCP {
+		if resolver != nil {
+			mcp, ok := resolver(kind, it.Tool)
+			if !ok {
+				return nil, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
+			}
+			group, _, e = classifyBatchLeaf(kind, it.Tool, mcp)
+			if e != nil {
+				return nil, e
+			}
+		} else if admission {
+			return nil, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
+		}
+	} else {
+		group, _, e = classifyBatchLeaf(kind, it.Tool, batchMCPCapability{})
+		if e != nil {
+			return nil, e
+		}
+	}
+	return &jobbatch.TaskSpec{Kind: kind, Group: group, Payload: payload, Timeout: timeout}, nil
 }

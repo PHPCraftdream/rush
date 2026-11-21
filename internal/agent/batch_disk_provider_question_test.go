@@ -576,10 +576,12 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 		resolver = batchStoreQuestionResolver{store: store}
 	}
 	agentDeps.QuestionResolver = resolver
+	ingress := &batchWorkIngress{registries: registries, diskBindings: bindings}
 	executor := newBatchExecutor(
 		batchLeafEnv{
 			Leaves:       registries.Resolve,
 			DiskBindings: bindings,
+			Ingress:      func() BatchWorkIngress { return ingress },
 		},
 		newBatchExecutorFamilies(agentDeps),
 	)
@@ -599,8 +601,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	// agent driver through env.Ingress (batch_exec_agent.go start, via
 	// callIngress). Production wiring binds the install ingress here the
 	// same way app_batch_install.go does.
-	ingress := &batchWorkIngress{rt: install.Runtime, registries: registries, diskBindings: bindings}
-	executor.env.Ingress = func() BatchWorkIngress { return ingress }
+	ingress.rt = install.Runtime
 	BindRuntimeIngress(install.Runtime, ingress)
 	return &questionInstall{
 		t: t, store: store, conn: conn, sessions: sessions, messages: messages,

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -44,10 +45,10 @@ func TestBatchCredentialRegistrationIsTransactional(t *testing.T) {
 	escrow := newBatchCredentialEscrow()
 	oldKey := batchCredentialKey{registryID: "r", sessionID: "s", callID: "old", tool: "agent"}
 	newKey := batchCredentialKey{registryID: "r", sessionID: "s", callID: "new", tool: "agent"}
-	require.NoError(t, escrow.register(oldKey, "root", escrowTestCreds("old")))
-	_, err := escrow.registerBatch([]batchCredentialRegistration{
-		{key: newKey, root: "root", creds: escrowTestCreds("new")},
-		{key: oldKey, root: "root", creds: escrowTestCreds("replacement")},
+	require.NoError(t, escrow.Register(oldKey.adapterKey(), "root", escrowTestCreds("old")))
+	_, err := escrow.RegisterBatch([]batchadapter.CredentialRegistration{
+		{Key: newKey.adapterKey(), Root: "root", Credentials: escrowTestCreds("new")},
+		{Key: oldKey.adapterKey(), Root: "root", Credentials: escrowTestCreds("replacement")},
 	})
 	require.Error(t, err)
 	creds, complete, err := escrow.consume(oldKey, "root.1")

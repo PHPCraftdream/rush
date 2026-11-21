@@ -24,7 +24,7 @@ func (s *sessionScopeStub) FinalizationSealScopeFacts(context.Context, *sql.Tx) 
 func TestFinalizationSealWrapperIsInertWithoutScope(t *testing.T) {
 	env := testEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
-	candidate := finalizationCandidate{messageID: "m", hash: "h"}
+	candidate := finalizationCandidate{MessageID: "m", Hash: "h"}
 	messageCount := func() int64 {
 		var n int64
 		require.NoError(t, env.conn.QueryRowContext(t.Context(),
@@ -71,9 +71,9 @@ func TestFinalizationSealWrapperSealsThroughGate(t *testing.T) {
 	execution.scope = finalizationStoredScope(t, env, id)
 	execution.scopeFacts = &sessionScopeStub{AgentFinalizationScopeFacts: session.AgentFinalizationScopeFacts{Complete: true}}
 	candidate := finalizationStoredCandidate(t, env, execution.scope, id)
-	stamp, err := execution.gate.beginCandidate(t.Context(), execution.read)
+	stamp, err := execution.gate.BeginCandidate(t.Context(), execution.read)
 	require.NoError(t, err)
-	verdict, err := execution.gate.trySeal(t.Context(), stamp, candidate, execution.read, func(ctx context.Context, c finalizationCandidate) error {
+	verdict, err := execution.gate.TrySeal(t.Context(), stamp, candidate, execution.read, func(ctx context.Context, c finalizationCandidate) error {
 		_, err := sealFinalizationCandidate(ctx, execution, env.messages, id, c)
 		return err
 	})
@@ -82,15 +82,15 @@ func TestFinalizationSealWrapperSealsThroughGate(t *testing.T) {
 	record, err := execution.scope.store.Snapshot(t.Context(), execution.scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
-	require.Equal(t, candidate.messageID, record.CandidateMessageID)
-	require.Equal(t, candidate.hash, record.CandidateHash)
-	stored, err := env.messages.Get(t.Context(), candidate.messageID)
+	require.Equal(t, candidate.MessageID, record.CandidateMessageID)
+	require.Equal(t, candidate.Hash, record.CandidateHash)
+	stored, err := env.messages.Get(t.Context(), candidate.MessageID)
 	require.NoError(t, err)
 	finish := stored.FinishPart()
 	require.NotNil(t, finish)
 	require.False(t, finish.Partial)
 	require.Equal(t, message.FinishReasonEndTurn, finish.Reason)
-	require.Equal(t, candidate.hash, finish.FinalizationHash)
+	require.Equal(t, candidate.Hash, finish.FinalizationHash)
 }
 
 // Revert-check: a wrapper that maps a deterministic refusal to a hard error
@@ -106,19 +106,20 @@ func TestFinalizationSealWrapperMapsRefusalsToScopeChanges(t *testing.T) {
 	candidate := finalizationStoredCandidate(t, env, execution.scope, id)
 	_, err := execution.scope.store.Admit(t.Context(), execution.scope.identity, "productive-write")
 	require.NoError(t, err)
-	stamp, err := execution.gate.beginCandidate(t.Context(), execution.read)
+	stamp, err := execution.gate.BeginCandidate(t.Context(), execution.read)
 	require.NoError(t, err)
-	verdict, err := execution.gate.trySeal(t.Context(), stamp, candidate, execution.read, func(ctx context.Context, c finalizationCandidate) error {
+	verdict, err := execution.gate.TrySeal(t.Context(), stamp, candidate, execution.read, func(ctx context.Context, c finalizationCandidate) error {
 		_, err := sealFinalizationCandidate(ctx, execution, env.messages, id, c)
 		return err
 	})
 	require.NoError(t, err)
 	require.Equal(t, finalizationCompose, verdict)
-	require.NoError(t, execution.gate.failure, "a deterministic not-yet must never latch a gate failure")
+	_, _, err = execution.gate.WaitState(t.Context(), execution.read)
+	require.NoError(t, err, "a deterministic not-yet must never latch a gate failure")
 	record, err := execution.scope.store.Snapshot(t.Context(), execution.scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase)
-	stored, err := env.messages.Get(t.Context(), candidate.messageID)
+	stored, err := env.messages.Get(t.Context(), candidate.MessageID)
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
 	_, err = sealFinalizationCandidate(t.Context(), execution, env.messages, id, candidate)
@@ -146,7 +147,7 @@ func TestFinalizationSealWrapperMapsPersistedCancel(t *testing.T) {
 	after, err := execution.scope.store.Snapshot(t.Context(), execution.scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, before, after)
-	stored, err := env.messages.Get(t.Context(), candidate.messageID)
+	stored, err := env.messages.Get(t.Context(), candidate.MessageID)
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
 }

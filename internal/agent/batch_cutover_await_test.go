@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -322,7 +323,7 @@ func leafItemCalls(callID string, items int) []string {
 // JSON (Tool matching the registered gated leaf, unique ToolCallID,
 // SessionID=this owner -- the commit hook's OwnerFor walks batch items).
 // After Submit succeeds the root is ANNOUNCED through the production
-// election API (the same batchStoreElector.ElectStarted deliverDetached
+// election API (the same batchadapter.StoreElector.ElectStarted deliverDetached
 // runs): without it the root's selected completion debt rows are invisible
 // to every announced-gated read (BatchOutboxPending/DebtNodes require
 // announced=1). Returns the requested root id.
@@ -347,7 +348,7 @@ func (e *cutoverEnv) submitBatchRoot(callID string, items int, leaf *gatedLeaf) 
 		Ref: callID,
 	})
 	require.NoError(e.t, err, "%s: runner submit", callID)
-	won, err := batchStoreElector{store: e.store, messages: e.messages}.
+	won, err := batchadapter.NewStoreElector(e.store, e.messages).
 		ElectStarted(e.ctx, e.sessionID, jobbatch.ID(root))
 	require.NoError(e.t, err, "%s: started election", callID)
 	require.True(e.t, won, "%s: the started election must win on first announce", callID)

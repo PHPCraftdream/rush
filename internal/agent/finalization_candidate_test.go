@@ -28,17 +28,17 @@ func TestPersistFinalizationCandidateCommitsMessageAndIdentityTogether(t *testin
 
 	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 	require.NoError(t, err)
-	require.Equal(t, m.ID, persisted.messageID)
+	require.Equal(t, m.ID, persisted.MessageID)
 	record, err := scope.store.Snapshot(t.Context(), scope.identity)
 	require.NoError(t, err)
-	require.Equal(t, persisted.messageID, record.CandidateMessageID)
-	require.Equal(t, persisted.hash, record.CandidateHash)
+	require.Equal(t, persisted.MessageID, record.CandidateMessageID)
+	require.Equal(t, persisted.Hash, record.CandidateHash)
 	require.EqualValues(t, 1, record.CandidateSerial)
 	require.Equal(t, "executing", record.Phase, "a candidate is provisional, not accepted")
 	stored, err := env.messages.Get(t.Context(), m.ID)
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
-	require.NoError(t, stored.VerifyFinalizationCandidate(id, persisted.hash))
+	require.NoError(t, stored.VerifyFinalizationCandidate(id, persisted.Hash))
 
 	accepted, err := publishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, persisted.finalizationCandidate)
 	require.NoError(t, err, "publication follows the candidate commit")
@@ -71,8 +71,8 @@ func TestPersistFinalizationCandidateStaleWritesNothing(t *testing.T) {
 func TestPublicationRefusesCandidateIdentityOrHashMismatch(t *testing.T) {
 	for name, mutate := range map[string]func(*message.FinalizationIdentity, *finalizationCandidate){
 		"serial":  func(id *message.FinalizationIdentity, _ *finalizationCandidate) { id.Serial = 9 },
-		"hash":    func(_ *message.FinalizationIdentity, c *finalizationCandidate) { c.hash = "other" },
-		"message": func(_ *message.FinalizationIdentity, c *finalizationCandidate) { c.messageID = "other" },
+		"hash":    func(_ *message.FinalizationIdentity, c *finalizationCandidate) { c.Hash = "other" },
+		"message": func(_ *message.FinalizationIdentity, c *finalizationCandidate) { c.MessageID = "other" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := testEnv(t)
@@ -102,15 +102,15 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 	m := newFinalizationCandidateMessage(t, env, id)
 	_, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 	require.NoError(t, err)
-	quiet := func(context.Context) (finalizationFacts, error) { return finalizationFacts{complete: true}, nil }
+	quiet := func(context.Context) (finalizationFacts, error) { return finalizationFacts{Complete: true}, nil }
 
 	restarted := newFinalizationGate(1)
 	verdict, err := recoverFinalizationCandidate(t.Context(), env.messages, scope, restarted)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateAdopted, verdict)
-	stamp, err := restarted.beginCandidate(t.Context(), quiet)
+	stamp, err := restarted.BeginCandidate(t.Context(), quiet)
 	require.NoError(t, err)
-	require.EqualValues(t, 6, stamp.serial, "a restarted owner continues above the durable high-water mark")
+	require.EqualValues(t, 6, stamp.Serial(), "a restarted owner continues above the durable high-water mark")
 
 	_, err = env.conn.ExecContext(t.Context(), `DELETE FROM messages WHERE id=?`, m.ID)
 	require.NoError(t, err)
@@ -118,9 +118,9 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 	verdict, err = recoverFinalizationCandidate(t.Context(), env.messages, scope, failedGate)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateFailed, verdict)
-	stamp, err = failedGate.beginCandidate(t.Context(), quiet)
+	stamp, err = failedGate.BeginCandidate(t.Context(), quiet)
 	require.NoError(t, err)
-	require.EqualValues(t, 6, stamp.serial, "a failed candidate still raises the counter")
+	require.EqualValues(t, 6, stamp.Serial(), "a failed candidate still raises the counter")
 }
 
 func finalizationCandidateStream(env fakeEnv, scope finalizationPublicationScope, m *message.Message) *turnStream {
@@ -144,7 +144,7 @@ func TestPersistStepFinishRecordsFinalizationCandidate(t *testing.T) {
 	ts := finalizationCandidateStream(env, scope, &m)
 
 	require.NoError(t, ts.persistStepFinish())
-	require.Equal(t, m.ID, ts.finalizationCandidate.messageID)
+	require.Equal(t, m.ID, ts.finalizationCandidate.MessageID)
 	require.Equal(t, id, ts.finalizationCandidate.identity)
 	record, err := scope.store.Snapshot(t.Context(), scope.identity)
 	require.NoError(t, err)
@@ -156,7 +156,7 @@ func TestPersistStepFinishRecordsFinalizationCandidate(t *testing.T) {
 	next := newFinalizationCandidateMessage(t, env, message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 2})
 	ts.currentAssistant = &next
 	require.NoError(t, ts.persistStepFinish())
-	require.Empty(t, ts.finalizationCandidate.messageID)
+	require.Empty(t, ts.finalizationCandidate.MessageID)
 	record, err = scope.store.Snapshot(t.Context(), scope.identity)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, record.CandidateMessageID)

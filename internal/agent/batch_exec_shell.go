@@ -4,55 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
-
-// batchShellHandle separates physical control from authoritative completion.
-type batchShellHandle interface {
-	Stop(context.Context) error
-	Done() <-chan struct{}
-	GetOutput() (string, string, bool, error)
-	ReadOutput(context.Context, uint64) (shell.ExecutionOutput, error)
-	Dispose(context.Context) error
-}
 
 type batchShellFamily struct{}
 
 var _ batchLeafFamily = batchShellFamily{}
-
-type batchShellExecution struct {
-	cache          *batchOutputCache
-	nodeID, rootID jobbatch.ID
-	mu             sync.RWMutex
-	calls          sync.RWMutex
-	handle         batchShellHandle
-	cancel         context.CancelFunc
-	stopped        bool
-	disposed       bool
-	finished       chan struct{}
-	published      chan struct{}
-}
-
-var (
-	_ jobbatch.Execution    = (*batchShellExecution)(nil)
-	_ jobbatch.OutputReader = (*batchShellExecution)(nil)
-	_ jobbatch.Disposer     = (*batchShellExecution)(nil)
-)
 
 func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if p.Tool != tools.BashToolName {
-		return nil, &batchStartError{batchCodeBadPayload, errors.New("shell kind requires bash")}
+		return nil, newBatchStartError(batchCodeBadPayload, errors.New("shell kind requires bash"))
 	}
 	if p.Policy != nil && p.Policy.RoleContract != nil && !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
-		return nil, &batchStartError{batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool)}
+		return nil, newBatchStartError(batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
 	}
 	leaf, err := env.resolveLeaf(p)
 	if err != nil {
@@ -71,121 +42,19 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.
 	if p.SelectedRoleContract != nil {
 		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
 	}
-	e := &batchShellExecution{cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID), cancel: cancel, finished: make(chan struct{}), published: make(chan struct{})}
-	runCtx = tools.WithShellLeaf(runCtx, tools.ShellLeaf{OnStart: func(h *shell.BackgroundExecution) { e.mu.Lock(); e.handle = h; close(e.published); e.mu.Unlock() }})
-	go e.run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)
+	e := newRetainedShell(cancel, env.OutputCache, l.ID, batchOutputRoot(l.ID))
+	runCtx = e.WithShellHandle(runCtx)
+	go e.Run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)
 	return e, nil
 }
 
-func (e *batchShellExecution) run(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall, report func(jobbatch.Result)) {
-	var resp fantasy.ToolResponse
-	var err error
-	func() {
-		defer func() {
-			if recover() != nil {
-				err = errors.New("shell leaf panic")
-			}
-		}()
-		resp, err = leaf.Run(ctx, call)
-	}()
-	e.mu.RLock()
-	h := e.handle
-	e.mu.RUnlock()
-	// A panic/Run return cannot stand in for a live handle's real completion.
-	if h != nil {
-		<-h.Done()
-	}
-	e.mu.Lock()
-	stopped := e.stopped
-	result := batchResultFromResponse(resp, err, stopped)
-	if h != nil && !stopped {
-		_, _, _, exitErr := h.GetOutput()
-		if code := shell.ExitCode(exitErr); code != 0 {
-			result.State = jobbatch.StateFailed
-			result.Code = fmt.Sprintf("exit_%d", code)
+func newRetainedShell(cancel context.CancelFunc, cache *batchOutputCache, id, root jobbatch.ID) *batchexec.ShellExecution {
+	output := batchExecutionOutput(cache, id, root, batchOutputCursorClamp)
+	var capture func(jobbatch.OutputReader)
+	if cache != nil {
+		capture = func(reader jobbatch.OutputReader) {
+			_ = batchOutputCapture(cache, id, root, reader, batchOutputCursorClamp)
 		}
 	}
-	if h != nil {
-		_ = batchOutputCapture(e.cache, e.nodeID, e.rootID, shellOutputReader{h}, batchOutputCursorClamp)
-	} else if e.cache != nil {
-		e.cache.putFor(e.nodeID, e.rootID, jobbatch.OutputChunk{Data: []byte(resp.Content), Next: uint64(len(resp.Content)), EOF: true})
-	}
-	close(e.finished)
-	e.mu.Unlock()
-	e.cancel()
-	report(result)
-}
-
-type shellOutputReader struct{ h batchShellHandle }
-
-func (r shellOutputReader) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
-	c, err := r.h.ReadOutput(ctx, cursor)
-	return jobbatch.OutputChunk{Data: c.Data, Next: c.Next, Oldest: c.Oldest, EOF: c.EOF, Truncated: c.Truncated}, err
-}
-
-// Stop holds its physical-call barrier until actual return. Context bounds
-// handle dispatch, not a running kill; Runner supplies logical control timeout.
-func (e *batchShellExecution) Stop(ctx context.Context) error {
-	e.calls.RLock()
-	defer e.calls.RUnlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	if e.disposed {
-		e.mu.Unlock()
-		return jobbatch.ErrReleased
-	}
-	e.stopped = true
-	h := e.handle
-	if h == nil {
-		e.cancel()
-		e.mu.Unlock()
-		return nil
-	}
-	e.mu.Unlock()
-	// Cancel Run only after physical feedback, avoiding a callback winning and
-	// hiding its error from this control invocation.
-	err := h.Stop(ctx)
-	e.cancel()
-	return err
-}
-
-func (e *batchShellExecution) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
-	e.calls.RLock()
-	defer e.calls.RUnlock()
-	e.mu.RLock()
-	h, disposed := e.handle, e.disposed
-	e.mu.RUnlock()
-	if disposed {
-		return jobbatch.OutputChunk{}, jobbatch.ErrReleased
-	}
-	if h == nil {
-		return jobbatch.OutputChunk{}, jobbatch.ErrNotStarted
-	}
-	c, err := h.ReadOutput(ctx, cursor)
-	return jobbatch.OutputChunk{Data: c.Data, Next: c.Next, Oldest: c.Oldest, EOF: c.EOF, Truncated: c.Truncated}, err
-}
-
-func (e *batchShellExecution) Dispose(ctx context.Context) error {
-	select {
-	case <-e.finished:
-	default:
-		return shell.ErrExecutionNotDone
-	}
-	e.calls.Lock()
-	defer e.calls.Unlock()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.disposed {
-		return nil
-	}
-	if e.handle != nil {
-		if err := e.handle.Dispose(ctx); err != nil {
-			return err
-		}
-	}
-	e.disposed = true
-	e.handle = nil
-	return nil
+	return batchexec.NewShell(cancel, output, capture)
 }
