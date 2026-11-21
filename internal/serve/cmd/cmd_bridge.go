@@ -23,6 +23,7 @@ import (
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	proc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/sesskit"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
@@ -34,7 +35,7 @@ import (
 // setup path needs. It touches no command-tree variables, so referencing it
 // from webAppFactory's initializer creates no initialization cycle.
 func installCfgSeams() {
-	cmdkit.UseCommandLoadOptions(commandLoadOptions)
+	cmdkit.UseCommandLoadOptions(modelatoms.CommandLoadOptions)
 }
 
 // init installs the seam for the whole process. Commands that moved out of this
@@ -182,7 +183,7 @@ func InstallProcessStop() func() { return proc.InstallProcessStop() }
 
 // SetupApp is exported for package cli (lane K2 crossing): cli's
 // webAppFactory test seam needs the cfg-seam-aware setup path that lives in
-// this package. Forwards to cmdkit.SetupApp with commandLoadOptions installed.
+// this package. Forwards to cmdkit.SetupApp with modelatoms.CommandLoadOptions installed.
 func SetupApp(c *cobra.Command) (*app.App, error) {
 	installCfgSeams()
 	return cmdkit.SetupApp(c)

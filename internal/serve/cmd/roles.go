@@ -8,6 +8,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
 	"github.com/spf13/cobra"
 )
 
@@ -92,7 +93,7 @@ func runCustomRoleSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	cfg, _ := store.Snapshot()
-	selected, _, err := parseAtomOrRaw(args[1], func(value string) (string, string, bool, error) {
+	selected, _, err := modelatoms.ParseAtomOrRaw(args[1], func(value string) (string, string, bool, error) {
 		return app.ResolveConfiguredModel(cfg, value)
 	})
 	if err != nil {
@@ -222,7 +223,7 @@ func printCustomRoleViews(cmd *cobra.Command, views []customRoleView, single boo
 		}
 		model := view.Role.Provider + "/" + view.Role.Model
 		if view.Role.ReasoningEffort != "" || view.Role.ServiceTier != "" {
-			model += "@" + effortWithTier(view.Role.ReasoningEffort, view.Role.ServiceTier)
+			model += "@" + modelatoms.EffortWithTier(view.Role.ReasoningEffort, view.Role.ServiceTier)
 		}
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", view.Name, view.Source, model, tools); err != nil {
 			return err

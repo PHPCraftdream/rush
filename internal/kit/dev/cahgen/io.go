@@ -426,7 +426,7 @@ func (OSWriter) Rename(a, b string) error { return os.Rename(a, b) }
 func (OSWriter) Remove(p string) error    { return os.Remove(p) }
 
 const (
-	CmdPath   = "internal/serve/cmd/models_cah_gen.go"
+	CmdPath   = "internal/serve/cmd/modelctl/models/atoms/models_cah_gen.go"
 	SpecsPath = "internal/agent/provider/cliprovider/clipspec/models_cah_gen.go"
 )
 

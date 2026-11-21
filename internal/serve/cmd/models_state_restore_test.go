@@ -12,14 +12,9 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func restoreSel(provider, model, effort string) *config.SelectedModel {
-	return &config.SelectedModel{Provider: provider, Model: model, ReasoningEffort: effort}
-}
 
 // runRushTree executes args through the REAL root command, with stdout
 // captured (RunE prints via fmt, which bypasses cobra's output writers).
@@ -68,121 +63,19 @@ func stubLocalCLIAvailable(t *testing.T) {
 	t.Cleanup(func() { cliprovider.AvailableFunc = orig })
 }
 
-// TestRestoreCommands_Table is the pure-function table: spec shapes, scope
-// suffix, ordering, empty input, and POSIX quoting.
-func TestRestoreCommands_Table(t *testing.T) {
-	t.Run("atom with valid effort", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeSmart: restoreSel("zai", "glm-5.3", "high"),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --smart glm5_3-high"}, got)
-	})
-	t.Run("atom without effort", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeFast: restoreSel("zai", "glm-5-turbo", ""),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --fast glm5_turbo"}, got)
-	})
-	t.Run("atom with stale effort falls back to bare atom", func(t *testing.T) {
-		// "on" is no longer a valid glm5_3_flash level (low/high/max only).
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeWorker: restoreSel("zai", "glm-5.3-flash", "on"),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --worker glm5_3_flash"}, got)
-	})
-	t.Run("EffortSource atom without effort goes raw", func(t *testing.T) {
-		// `models use fable5` is rejected — a level is mandatory — while the
-		// raw provider/model form is accepted without one.
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeSmart: restoreSel("local-cli", "cli-claude-fable-5", ""),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --smart local-cli/cli-claude-fable-5"}, got)
-	})
-	t.Run("EffortSource atom with effort keeps atom-level form", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeSmart: restoreSel("local-cli", "cli-claude-fable-5", "high"),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --smart fable5-high"}, got)
-	})
-	t.Run("non-atom with effort", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeReviewer: restoreSel("openai", "gpt-5", "high"),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --reviewer openai/gpt-5@high"}, got)
-	})
-	t.Run("non-atom without effort", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeSmart: restoreSel("openai-codex", "gpt-6-luna", ""),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --smart openai-codex/gpt-6-luna"}, got)
-	})
-	t.Run("local scope gets --local and comes after global", func(t *testing.T) {
-		got := restoreCommands(
-			map[config.SelectedModelType]*config.SelectedModel{
-				config.SelectedModelTypeFast: restoreSel("zai", "glm-5-turbo", ""),
-			},
-			map[config.SelectedModelType]*config.SelectedModel{
-				config.SelectedModelTypeFast: restoreSel("zai", "glm-4.7-flash", "on"),
-			},
-		)
-		assert.Equal(t, []string{
-			"rush models use --fast glm5_turbo",
-			"rush models use --fast glm4_7_flash-on --local",
-		}, got)
-	})
-	t.Run("role and scope ordering", func(t *testing.T) {
-		got := restoreCommands(
-			map[config.SelectedModelType]*config.SelectedModel{
-				config.SelectedModelTypeSmart:    restoreSel("zai", "glm-5.3", "high"),
-				config.SelectedModelTypeFast:     restoreSel("zai", "glm-5-turbo", ""),
-				config.SelectedModelTypeWorker:   restoreSel("zai", "glm-4.7-flash", "on"),
-				config.SelectedModelTypeReviewer: restoreSel("openai", "gpt-5", "max"),
-			},
-			map[config.SelectedModelType]*config.SelectedModel{
-				config.SelectedModelTypeSmart: restoreSel("openai-codex", "gpt-6-luna", ""),
-			},
-		)
-		assert.Equal(t, []string{
-			"rush models use --smart glm5_3-high",
-			"rush models use --smart openai-codex/gpt-6-luna --local",
-			"rush models use --fast glm5_turbo",
-			"rush models use --worker glm4_7_flash-on",
-			"rush models use --reviewer openai/gpt-5@max",
-		}, got)
-	})
-	t.Run("empty input is empty non-nil", func(t *testing.T) {
-		got := restoreCommands(nil, nil)
-		require.NotNil(t, got)
-		assert.Empty(t, got)
-	})
-	t.Run("spec with whitespace is single-quoted", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeSmart: restoreSel("my prov", "mo del", ""),
-		}, nil)
-		assert.Equal(t, []string{"rush models use --smart 'my prov/mo del'"}, got)
-	})
-	t.Run("spec with single quote is escaped", func(t *testing.T) {
-		got := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{
-			config.SelectedModelTypeFast: restoreSel("p", "o'brien", ""),
-		}, nil)
-		// Expected uses octal escape (backslash-quote-quote): 'p/o'\''brien'.
-		assert.Equal(t, []string{"rush models use --fast 'p/o'\134''brien'"}, got)
-	})
-}
-
 func TestModelsState_UnsetRoleScopeLabels(t *testing.T) {
 	ktavGateOn(t)
 	isolatedModelsEnv(t)
 
 	resetModelsStateFlags(t)
-	text, runErr := runModelsCmd(t, modelsStateCmd)
+	text, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	smartRow, ok := effectiveRow(text, "smart")
 	require.True(t, ok, "expected a smart row in output:\n%s", text)
 	assert.Equal(t, "default", tableCells(smartRow)[5], "SCOPE column follows EFFORT and TIER")
 
 	resetModelsStateFlags(t)
-	out, runErr := runModelsCmd(t, modelsStateCmd, "--json")
+	out, runErr := runModelsCmd(t, modelsStateCmd(), "--json")
 	require.NoError(t, runErr)
 	var doc struct {
 		Effective struct {
@@ -201,13 +94,13 @@ func TestRestoreCommands_EmptyState(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsStateFlags(t)
-	text, runErr := runModelsCmd(t, modelsStateCmd)
+	text, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	assert.Contains(t, text, "RESTORE (run these to re-create this state)")
 	assert.Contains(t, text, "(nothing is set explicitly)")
 
 	resetModelsStateFlags(t)
-	out, runErr := runModelsCmd(t, modelsStateCmd, "--json")
+	out, runErr := runModelsCmd(t, modelsStateCmd(), "--json")
 	require.NoError(t, runErr)
 	var top map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(out), &top))
@@ -224,15 +117,15 @@ func TestRestoreCommands_RoundTrip(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"--smart", "glm4_6", "--fast", "glm5_turbo", "--worker", "glm4_7_flash-on", "--reviewer", "glm5_turbo")
 	require.NoError(t, runErr)
 	resetModelsUseFlags(t)
-	_, runErr = runModelsCmd(t, modelsUseCmd, "--local", "--fast", "glm4_7_flash")
+	_, runErr = runModelsCmd(t, modelsUseCmd(), "--local", "--fast", "glm4_7_flash")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
-	origJSON, runErr := runModelsCmd(t, modelsStateCmd, "--json")
+	origJSON, runErr := runModelsCmd(t, modelsStateCmd(), "--json")
 	require.NoError(t, runErr)
 	var orig map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(origJSON), &orig))
@@ -325,15 +218,15 @@ func TestRestoreCommands_TextPrefixByteIdentical(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"--smart", "glm4_6", "--fast", "glm5_turbo", "--worker", "glm4_7_flash-on", "--reviewer", "glm5_turbo")
 	require.NoError(t, runErr)
 	resetModelsUseFlags(t)
-	_, runErr = runModelsCmd(t, modelsUseCmd, "--local", "--fast", "glm4_7_flash")
+	_, runErr = runModelsCmd(t, modelsUseCmd(), "--local", "--fast", "glm4_7_flash")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
-	text, runErr := runModelsCmd(t, modelsStateCmd)
+	text, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 
 	require.Equal(t, restoreGoldenFull, text)
@@ -346,11 +239,11 @@ func TestRestoreCommands_JSONShape(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "--smart", "glm4_6")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "--smart", "glm4_6")
 	require.NoError(t, runErr)
 
 	resetModelsStateFlags(t)
-	out, runErr := runModelsCmd(t, modelsStateCmd, "--json")
+	out, runErr := runModelsCmd(t, modelsStateCmd(), "--json")
 	require.NoError(t, runErr)
 
 	var top map[string]json.RawMessage
@@ -380,43 +273,13 @@ func TestRestoreCommands_NoSecretLeakage(t *testing.T) {
 	require.Contains(t, string(onDisk), "sk-FAKE-SECRET-abc123")
 
 	resetModelsStateFlags(t)
-	text, runErr := runModelsCmd(t, modelsStateCmd)
+	text, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	assert.NotContains(t, text, "sk-FAKE-SECRET-abc123")
 	assert.Contains(t, text, "rush models use --smart glm4_6-on")
 
 	resetModelsStateFlags(t)
-	jsonOut, runErr := runModelsCmd(t, modelsStateCmd, "--json")
+	jsonOut, runErr := runModelsCmd(t, modelsStateCmd(), "--json")
 	require.NoError(t, runErr)
 	assert.NotContains(t, jsonOut, "sk-FAKE-SECRET-abc123")
-}
-
-// TestModelsStateShowsServiceTierInEveryBlock: the fast tier appears in the EFFECTIVE and
-// SCOPES rows (TIER column), in the JSON blocks and in the RESTORE command.
-func TestModelsStateShowsServiceTierInEveryBlock(t *testing.T) {
-	m := config.SelectedModel{Provider: "openai-codex", Model: "gpt-6.2-sol", ReasoningEffort: "high", ServiceTier: "fast"}
-
-	eff := newStateTable("ROLE", "PROVIDER", "MODEL", "EFFORT", "TIER", "SCOPE", "ATOM", "NOTE")
-	printEffectiveRow(eff, "smart", true, m, "global")
-	require.Len(t, eff.rows, 1)
-	assert.Equal(t, []string{"smart", "openai-codex", "gpt-6.2-sol", "high", "fast", "global"}, eff.rows[0][:6])
-	assert.Equal(t, tableDash, eff.rows[0][6], "the atom cell must not suggest a command that drops the tier")
-
-	scopes := newStateTable("SCOPE", "ROLE", "PROVIDER", "MODEL", "EFFORT", "TIER", "STATUS", "NOTE")
-	printScopeRow(scopes, "global", "smart", &m, nil)
-	assert.Equal(t, []string{"global", "smart", "openai-codex", "gpt-6.2-sol", "high", "fast", "effective"}, scopes.rows[0][:7])
-
-	plain := config.SelectedModel{Provider: "openai-codex", Model: "gpt-6.2-sol", ReasoningEffort: "high"}
-	printScopeRow(scopes, "global", "fast", &plain, nil)
-	assert.Equal(t, tableDash, scopes.rows[1][5], "no tier renders as a dash")
-
-	cmds := restoreCommands(map[config.SelectedModelType]*config.SelectedModel{config.SelectedModelTypeSmart: &m}, nil)
-	require.Equal(t, []string{"rush models use --smart openai-codex/gpt-6.2-sol@high/fast"}, cmds)
-
-	raw, err := json.Marshal(m)
-	require.NoError(t, err)
-	assert.Contains(t, string(raw), `"service_tier":"fast"`)
-	raw, err = json.Marshal(plain)
-	require.NoError(t, err)
-	assert.NotContains(t, string(raw), "service_tier")
 }

@@ -21,9 +21,8 @@ import (
 )
 
 func TestLockUnlock_GlobalLocalAndRelock(t *testing.T) {
-	path := isolatedModelsEnv(t)
-	defer resetModelsUseFlags(t)
-	workspace, dataDir := t.TempDir(), t.TempDir()
+	global, workspace, dataDir := isolateLockEnv(t)
+	path := filepath.Join(global, "rush.json")
 	out, stderr, err := runLockTree(t, workspace, dataDir, "lock", "correct")
 	require.NoError(t, err)
 	require.Empty(t, stderr)
@@ -72,14 +71,11 @@ func TestPassword_PreRunDeniesWrongGlobalSettingsPassword(t *testing.T) {
 }
 
 func TestPassword_FlagSetsProcessPasswordAndAuthorizesModelsUse(t *testing.T) {
-	globalPath := isolatedModelsEnv(t)
-	defer resetModelsUseFlags(t)
+	global, workspace, dataDir := isolateLockEnv(t)
+	globalPath := filepath.Join(global, "rush.json")
 	config.SetProcessPassword("")
 	require.NoError(t, os.WriteFile(globalPath, []byte(`{"sync_rev":"`+config.HashPassword("models-pass")+`","providers":{"zai":{"api_key":"test-zai-key"}}}`), 0o600))
-	if modelsCmd.Parent() != rootCmd {
-		rootCmd.AddCommand(modelsCmd)
-	}
-	_, _, err := runLockTree(t, filepath.Dir(globalPath), filepath.Join(filepath.Dir(globalPath), "test-data"), "--password", "models-pass", "models", "use", "glm4_6", "glm5_turbo")
+	_, _, err := runLockTree(t, workspace, dataDir, "--password", "models-pass", "models", "use", "glm4_6", "glm5_turbo")
 	require.NoError(t, err)
 }
 
@@ -98,15 +94,11 @@ func TestPassword_SetupAppLiteRejectsWrongLocalPasswordBeforeWrite(t *testing.T)
 }
 
 func TestSettingsLock_ScopePriorityAndModelsUseRefusal(t *testing.T) {
-	globalPath := isolatedModelsEnv(t)
-	defer resetModelsUseFlags(t)
-	workspaceA, dataA := t.TempDir(), t.TempDir()
+	global, workspaceA, dataA := isolateLockEnv(t)
+	globalPath := filepath.Join(global, "rush.json")
 	workspaceB, dataB := t.TempDir(), t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(workspaceA, ".rush"), 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Join(workspaceB, ".rush"), 0o700))
-	if modelsCmd.Parent() != rootCmd {
-		rootCmd.AddCommand(modelsCmd)
-	}
 
 	_, _, err := runLockTree(t, workspaceA, dataA, "lock", "--local", "local-pass")
 	require.NoError(t, err)
@@ -301,6 +293,10 @@ func isolateLockEnv(t *testing.T) (string, string, string) {
 
 func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, stderr string, runErr error) {
 	t.Helper()
+	modelsUseCmd, remaining, err := rootCmd.Find([]string{"models", "use"})
+	require.NoError(t, err)
+	require.Empty(t, remaining)
+	require.Equal(t, "use", modelsUseCmd.Name())
 	oldPassword, _ := rootCmd.PersistentFlags().GetString("password")
 	defer func() { config.SetProcessPassword(oldPassword) }()
 	oldRootCtx, oldModelsCtx := rootCmd.Context(), modelsUseCmd.Context()
@@ -310,9 +306,6 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 		rootCmd.SetContext(oldRootCtx)
 		modelsUseCmd.SetContext(oldModelsCtx)
 	}()
-	if modelsCmd.Parent() != rootCmd {
-		rootCmd.AddCommand(modelsCmd)
-	}
 	// Snapshot root flag state before resetting or setting any models flag:
 	// inherited flags may share the root flag's Value pointer.
 	rootFlags := rootCmd.PersistentFlags()
@@ -347,7 +340,7 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 		_ = passRootFlag.Value.Set(origPass)
 		passRootFlag.Changed = origPassChanged
 	}()
-	resetLockFlags()
+	resetLockFlags(modelsUseCmd)
 	_ = rootFlags.Set("cwd", cwd)
 	_ = rootFlags.Set("data-dir", dataDir)
 	_ = rootFlags.Set("password", "")
@@ -367,7 +360,7 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 	_ = wErr.Close()
 	os.Stdout, os.Stderr = origOut, origErr
 	_ = os.Chdir(origWD)
-	resetLockFlags()
+	resetLockFlags(modelsUseCmd)
 
 	config.SetProcessPassword("")
 	<-doneOut
@@ -378,7 +371,7 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 	return stdout, stderr, runErr
 }
 
-func resetLockFlags() {
+func resetLockFlags(modelsUseCmd *cobra.Command) {
 	for _, c := range []*cobra.Command{lockCmd, unlockCmd} {
 		for _, name := range []string{"global", "local"} {
 			if f := c.Flags().Lookup(name); f != nil {

@@ -1,0 +1,303 @@
+// Fork patch: batch 11 — `rush models use <smart> <fast>` replaces the older
+// `rush models set --smart X --fast Y` with positional args + atom registry.
+package modeluse
+
+import (
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
+	"github.com/spf13/cobra"
+)
+
+var modelsUseCmd = &cobra.Command{
+	Use:   "use [<smart> <fast>]",
+	Short: "Set any of the four model slots from atom names — all at once or one at a time",
+	Long: `Activate model slots using the atom syntax. Each value is either an atom
+name (e.g. "opus-high", "glm5_turbo") OR a raw "provider/model[@level]"
+string for models not in the atom registry.
+
+The chosen scope is written to rush.json:
+  --global (default)  ~/.local/share/rush/rush.json
+  --local             ./.rush/rush.json
+
+The current value in the OTHER scope is preserved; effective resolution
+remains "local if set, else global".
+
+Two forms are supported — never mix them in the same call:
+
+  1. Positional (sets smart + fast together):
+       rush models use <smart> <fast>
+
+  2. Flags (set any subset of the four slots independently — e.g. only the
+     fast model, leaving smart/worker/reviewer untouched):
+       rush models use --fast <atom>
+       rush models use --smart <atom> --reviewer <atom>
+
+--worker and --reviewer (see ` + "`rush models --help`" + ` for what each is for)
+are ALWAYS flag-only, in both forms, and are resolved/written independently
+of smart/fast. Omit a flag to leave that slot untouched.
+
+Every one of the four slots accepts an effort suffix right here — either
+"<atom>-<level>" (e.g. "glm5_3-max") or "provider/model@level" — no separate
+step needed. See ` + "`rush models efforts [model]`" + ` to list the levels a model
+supports, and ` + "`rush models bump <role> up|down`" + ` to nudge an already-set
+effort later.
+
+See ` + "`rush models list`" + ` for the full atom table.`,
+	Args: cobra.MaximumNArgs(2),
+	Example: `
+# Short codes: Opus 4.7 xhigh (1M ctx) + Haiku 4.5 low (200k ctx)
+rush models use o3x h1l
+
+# Sonnet 4.6 high (200k ctx) + Haiku 4.5 low — cheaper than Opus, still smart
+rush models use s2h h1l
+
+# Max thinking on smart (1M ctx), fast on fast
+rush models use o3xx h1l
+
+# Z.AI stack
+rush models use glm5_3 glm5_turbo
+
+# Mixed: Opus xhigh (1M ctx) + Z.AI turbo
+rush models use o3x glm5_turbo
+
+# Long-form atom syntax still works
+rush models use opus-high sonnet-low
+
+# Also set the worker slot (cheap sub-agent model) in the same call
+rush models use o3x h1l --worker glm5_turbo
+
+# Also set the reviewer slot (strongest model, --role reviewer only)
+rush models use o3x h1l --reviewer oxx
+
+# Set effort on a role slot in the same call: "<atom>-<level>" or "provider/model@level"
+rush models use o3x h1l --reviewer glm5_3-max
+
+# Set worker and reviewer together with smart/fast
+rush models use o3x h1l --worker h1l --reviewer oxx
+
+# Workspace-only override (writes ./.rush/rush.json, leaves global untouched).
+rush models use --local o3x h1l
+
+# Raw "provider/model[@level]" syntax for models not in the registry.
+rush models use openai/gpt-5@high zai/glm-5-turbo
+
+# Change ONLY the fast slot, leaving smart/worker/reviewer untouched
+rush models use --fast glm4_7_flash
+
+# Change ONLY the smart slot
+rush models use --smart o3x
+
+# --smart and --fast together, still without touching worker/reviewer
+rush models use --smart o3x --fast h1l
+
+# After running, verify with:
+rush models state
+  `,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		scope, err := cmdkit.ScopeFromFlags(cmd, config.ScopeGlobal)
+		if err != nil {
+			return err
+		}
+		smartFlag, _ := cmd.Flags().GetString("smart")
+		fastFlag, _ := cmd.Flags().GetString("fast")
+		workerArg, _ := cmd.Flags().GetString("worker")
+		reviewerArg, _ := cmd.Flags().GetString("reviewer")
+
+		// Exactly one of the two forms documented above may be used per
+		// call: positional <smart> <fast>, or --smart/--fast flags. Never
+		// both — a call with both would leave it ambiguous which value
+		// actually wins, and silently preferring one over the other is
+		// worse than just refusing.
+		var smartArg, fastArg string
+		switch len(args) {
+		case 2:
+			if smartFlag != "" || fastFlag != "" {
+				return fmt.Errorf("cannot combine positional <smart> <fast> args with --smart/--fast flags — use one form or the other (see `rush models use --help`)")
+			}
+			smartArg, fastArg = args[0], args[1]
+		case 0:
+			smartArg, fastArg = smartFlag, fastFlag
+		default:
+			return fmt.Errorf("expected 0 positional args (use --smart/--fast to update individual slots) or exactly 2 (<smart> <fast>) — got %d", len(args))
+		}
+
+		if smartArg == "" && fastArg == "" && workerArg == "" && reviewerArg == "" {
+			return fmt.Errorf("nothing to set — provide <smart> <fast> positionally, or at least one of --smart/--fast/--worker/--reviewer")
+		}
+
+		a, err := cmdkit.SetupAppLite(cmd)
+		if err != nil {
+			return err
+		}
+		defer a.Shutdown()
+
+		if a.Store().ModelsIntegrity() != nil {
+			modelatoms.WarnModelsEditedDirectly()
+		}
+
+		resolve := func(modelPart string) (string, string, bool, error) {
+			provider, modelID, known, rerr := a.ResolveModel(modelPart)
+			return provider, modelID, known, rerr
+		}
+
+		var verification []modelVerification
+		verifyUnknown := func(label string, sel config.SelectedModel) {
+			verification = append(verification, modelVerification{label: label, selection: sel, cfg: a.Config(), resolver: a.Store().Resolver()})
+		}
+
+		// Pass 1: parse + validate EVERY provided argument before writing
+		// anything. This must have zero side effects — no config writes —
+		// so that a validation failure on a later field (e.g. --reviewer)
+		// can never leave an earlier field (smart/fast/--worker) already
+		// persisted. See CLAUDE.md task tracking / bug report: previously
+		// smart and fast were written immediately after being parsed, so a
+		// bad --reviewer value failed the command AFTER smart/fast (and
+		// worker) were already durably written to disk — a silent partial
+		// write masquerading as a no-op failure.
+		var smartSel config.SelectedModel
+		if smartArg != "" {
+			var lerr error
+			var known bool
+			smartSel, known, lerr = modelatoms.ParseAtomOrRaw(smartArg, resolve)
+			if lerr != nil {
+				return fmt.Errorf("smart: %w", lerr)
+			}
+			if !known {
+				verifyUnknown("smart", smartSel)
+			}
+		}
+
+		var fastSel config.SelectedModel
+		if fastArg != "" {
+			var serr error
+			var known bool
+			fastSel, known, serr = modelatoms.ParseAtomOrRaw(fastArg, resolve)
+			if serr != nil {
+				return fmt.Errorf("fast: %w", serr)
+			}
+			if !known {
+				verifyUnknown("fast", fastSel)
+			}
+		}
+
+		var workerSel config.SelectedModel
+		if workerArg != "" {
+			var werr error
+			var known bool
+			workerSel, known, werr = modelatoms.ParseAtomOrRaw(workerArg, resolve)
+			if werr != nil {
+				return fmt.Errorf("worker: %w", werr)
+			}
+			if !known {
+				verifyUnknown("worker", workerSel)
+			}
+		}
+
+		var reviewerSel config.SelectedModel
+		if reviewerArg != "" {
+			var rerr error
+			var known bool
+			reviewerSel, known, rerr = modelatoms.ParseAtomOrRaw(reviewerArg, resolve)
+			if rerr != nil {
+				return fmt.Errorf("reviewer: %w", rerr)
+			}
+			if !known {
+				verifyUnknown("reviewer", reviewerSel)
+			}
+		}
+
+		// Pass 2: every provided argument validated successfully — now, and
+		// only now, write. All slots are written in a single call to
+		// UpdatePreferredModels, which batches them into one SetConfigFields
+		// write (one atomicWriteFile) instead of one write per slot — so
+		// there's no window, even for an I/O-level failure, where only some
+		// of the provided slots landed on disk. This reuses the same
+		// batch-write primitive `rush providers patch` already relies on
+		// (config.ConfigStore.SetConfigFields), rather than inventing a new
+		// mechanism.
+		toWrite := map[config.SelectedModelType]config.SelectedModel{}
+		if smartArg != "" {
+			toWrite[config.SelectedModelTypeSmart] = smartSel
+		}
+		if fastArg != "" {
+			toWrite[config.SelectedModelTypeFast] = fastSel
+		}
+		if workerArg != "" {
+			toWrite[config.SelectedModelTypeWorker] = workerSel
+		}
+		if reviewerArg != "" {
+			toWrite[config.SelectedModelTypeReviewer] = reviewerSel
+		}
+
+		if err := a.Store().UpdatePreferredModels(scope, toWrite); err != nil {
+			if errors.Is(err, config.ErrSettingsLocked) || errors.Is(err, config.ErrWrongPassword) {
+				return err
+			}
+			return fmt.Errorf("write models: %w", err)
+		}
+		verifyModelSelections(verification, func(format string, args ...any) { cmd.PrintErrf(format, args...) })
+
+		if smartArg != "" {
+			fmt.Fprintf(os.Stderr, "set smart = %s/%s%s in %s scope\n",
+				smartSel.Provider, smartSel.Model, modelatoms.EffortSuffix(modelatoms.EffortWithTier(smartSel.ReasoningEffort, smartSel.ServiceTier)), scope)
+		}
+		if fastArg != "" {
+			fmt.Fprintf(os.Stderr, "set fast = %s/%s%s in %s scope\n",
+				fastSel.Provider, fastSel.Model, modelatoms.EffortSuffix(modelatoms.EffortWithTier(fastSel.ReasoningEffort, fastSel.ServiceTier)), scope)
+		}
+		if workerArg != "" {
+			fmt.Fprintf(os.Stderr, "set worker = %s/%s%s in %s scope\n",
+				workerSel.Provider, workerSel.Model, modelatoms.EffortSuffix(modelatoms.EffortWithTier(workerSel.ReasoningEffort, workerSel.ServiceTier)), scope)
+		}
+		if reviewerArg != "" {
+			fmt.Fprintf(os.Stderr, "set reviewer = %s/%s%s in %s scope\n",
+				reviewerSel.Provider, reviewerSel.Model, modelatoms.EffortSuffix(modelatoms.EffortWithTier(reviewerSel.ReasoningEffort, reviewerSel.ServiceTier)), scope)
+		}
+
+		return nil
+	},
+}
+
+// NewUseCmd returns a fresh command.
+func NewUseCmd() *cobra.Command {
+	cmd := cmdkit.DeepFreshCmd(modelsUseCmd)
+	cmd.Flags().Bool("global", false, "Target the global config (default when neither --global nor --local is given)")
+	cmd.Flags().Bool("local", false, "Target the workspace config (./.rush/rush.json)")
+	cmd.MarkFlagsMutuallyExclusive("global", "local")
+	cmd.Flags().String("smart", "", "Set only the smart slot (atom or provider/model[@level]) — cannot combine with positional args")
+	cmd.Flags().String("fast", "", "Set only the fast slot (atom or provider/model[@level]) — cannot combine with positional args")
+	cmd.Flags().String("worker", "", "Also set the optional worker slot (atom or provider/model[@level])")
+	cmd.Flags().String("reviewer", "", "Also set the optional reviewer slot (atom or provider/model[@level])")
+
+	return cmd
+}
+
+// ResolveModelRole maps a --role value (as accepted by `rush run` and
+// `rush ping`) to the model slot it selects. The empty string is rejected
+// here; callers that want to default it (e.g. `rush ping`) must handle ""
+// before calling. Keeping the vocabulary and error text in one place stops
+// the two commands' role parsing from drifting apart.
+//
+// "reviewer" is the strongest model slot and is never selected
+// automatically — it must be requested explicitly via --role reviewer by
+// an operator or a senior agent. "worker" is a cheap slot intended for
+// manual sub-task delegation.
+func ResolveModelRole(role string) (config.SelectedModelType, error) {
+	switch role {
+	case string(config.SelectedModelTypeSmart):
+		return config.SelectedModelTypeSmart, nil
+	case string(config.SelectedModelTypeFast):
+		return config.SelectedModelTypeFast, nil
+	case string(config.SelectedModelTypeWorker):
+		return config.SelectedModelTypeWorker, nil
+	case string(config.SelectedModelTypeReviewer):
+		return config.SelectedModelTypeReviewer, nil
+	default:
+		return "", fmt.Errorf("--role: invalid value %q (allowed: smart, fast, worker, reviewer)", role)
+	}
+}

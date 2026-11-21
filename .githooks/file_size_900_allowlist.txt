@@ -32,6 +32,5 @@ internal/config/load_providers.go 910
 internal/config/store_config_disk_sync_test.go 987
 internal/serve/cmd/migrate.go 929
 internal/serve/cmd/migrate_test.go 954
-internal/serve/cmd/providers_peak_hours.go 958
 # MV2 retires the moved lock and childgroup 900-line exemptions. The test-only lock file remains over the ceiling.
 internal/session/proc/sessionlock/lock_test.go 986

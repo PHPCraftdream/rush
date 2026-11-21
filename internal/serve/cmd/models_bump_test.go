@@ -21,12 +21,12 @@ import (
 func resetModelsBumpFlags(t *testing.T) {
 	t.Helper()
 	for _, fl := range []string{"global", "local"} {
-		if f := modelsBumpCmd.Flags().Lookup(fl); f != nil {
+		if f := modelsBumpCmd().Flags().Lookup(fl); f != nil {
 			_ = f.Value.Set(f.DefValue)
 			f.Changed = false
 		}
 	}
-	modelsBumpCmd.SetArgs(nil)
+	modelsBumpCmd().SetArgs(nil)
 }
 
 // setupBumpEnv wires modelsBumpCmd into the isolated harness alongside
@@ -38,10 +38,10 @@ func resetModelsBumpFlags(t *testing.T) {
 func setupBumpEnv(t *testing.T) (globalPath string) {
 	t.Helper()
 	globalPath = isolatedModelsEnv(t)
-	ensureRootFlagStandIns(modelsBumpCmd, os.Getenv("RUSH_GLOBAL_DATA"))
+	ensureRootFlagStandIns(modelsBumpCmd(), os.Getenv("RUSH_GLOBAL_DATA"))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	modelsBumpCmd.SetContext(ctx)
+	modelsBumpCmd().SetContext(ctx)
 	return globalPath
 }
 
@@ -72,13 +72,13 @@ func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
 	require.NoError(t, runErr)
 
 	levels := []string{"low", "high", "max"}
 	for i := 1; i < len(levels); i++ {
 		resetModelsBumpFlags(t)
-		_, runErr := runModelsCmd(t, modelsBumpCmd, "reviewer", "up")
+		_, runErr := runModelsCmd(t, modelsBumpCmd(), "reviewer", "up")
 		require.NoError(t, runErr, "step %d (up)", i)
 		// Release the SQLite connection this setupApp call opened
 		// (ref-counted per data dir; see internal/db/connect.go) before the
@@ -109,7 +109,7 @@ func TestModelsBump_GLM53FullStepUp(t *testing.T) {
 	// One final `models state` call confirms the same fact through the
 	// user-facing resolution path too.
 	resetModelsStateFlags(t)
-	state, runErr := runModelsCmd(t, modelsStateCmd)
+	state, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	reviewerRow, _ := effectiveRow(state, "reviewer")
 	assert.Contains(t, reviewerRow, "glm5_3-max", "the ATOM column carries the stepped level")
@@ -121,13 +121,13 @@ func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
 	require.NoError(t, runErr)
 
 	levels := []string{"low", "high", "max"}
 	for i := len(levels) - 2; i >= 0; i-- {
 		resetModelsBumpFlags(t)
-		_, runErr := runModelsCmd(t, modelsBumpCmd, "reviewer", "down")
+		_, runErr := runModelsCmd(t, modelsBumpCmd(), "reviewer", "down")
 		require.NoError(t, runErr, "step down to index %d", i)
 		// See the comment in TestModelsBump_GLM53FullStepUp: release the
 		// per-data-dir SQLite connection between iterations to avoid a
@@ -143,7 +143,7 @@ func TestModelsBump_GLM53FullStepDown(t *testing.T) {
 	}
 
 	resetModelsStateFlags(t)
-	state, runErr := runModelsCmd(t, modelsStateCmd)
+	state, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	reviewerRow, _ := effectiveRow(state, "reviewer")
 	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
@@ -158,16 +158,16 @@ func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "reviewer", "up")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "reviewer", "up")
 	require.NoError(t, runErr, "boundary condition must be a clean, non-error exit")
 
 	// The effort must remain unchanged at the boundary.
 	resetModelsStateFlags(t)
-	state, runErr := runModelsCmd(t, modelsStateCmd)
+	state, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	reviewerRow, _ := effectiveRow(state, "reviewer")
 	assert.Contains(t, reviewerRow, "glm5_3-max", "the ATOM column carries the stepped level")
@@ -181,15 +181,15 @@ func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "reviewer", "down")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "reviewer", "down")
 	require.NoError(t, runErr, "boundary condition must be a clean, non-error exit")
 
 	resetModelsStateFlags(t)
-	state, runErr := runModelsCmd(t, modelsStateCmd)
+	state, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	reviewerRow, _ := effectiveRow(state, "reviewer")
 	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
@@ -206,11 +206,11 @@ func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
 	// "glm5_3" with no "-<level>" suffix -> ReasoningEffort left empty
 	// (Z.AI/ReasoningLevels-backed atoms make the suffix optional; see
 	// parseAtom in models_atoms.go).
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "reviewer", "up")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "reviewer", "up")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -218,7 +218,7 @@ func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
 	assert.Contains(t, string(data), `"low"`, "up from unset must land on the lowest level (low), got: %s", data)
 
 	resetModelsStateFlags(t)
-	state, runErr := runModelsCmd(t, modelsStateCmd)
+	state, runErr := runModelsCmd(t, modelsStateCmd())
 	require.NoError(t, runErr)
 	reviewerRow, _ := effectiveRow(state, "reviewer")
 	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
@@ -232,14 +232,14 @@ func TestModelsBump_UnsetEffort_DownReportsAlreadyLowest(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
 	before, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "reviewer", "down")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "reviewer", "down")
 	require.NoError(t, runErr, "down-from-unset must be a clean, non-error exit")
 
 	after, err := os.ReadFile(globalPath)
@@ -268,7 +268,7 @@ func TestModelsBump_NonAtomModel_ReportsCleanly(t *testing.T) {
 	}}`), 0o644))
 
 	resetModelsBumpFlags(t)
-	out, runErr := runModelsCmd(t, modelsBumpCmd, "reviewer", "up")
+	out, runErr := runModelsCmd(t, modelsBumpCmd(), "reviewer", "up")
 	require.NoError(t, runErr, "non-atom model must report cleanly, not error")
 	_ = out
 
@@ -319,11 +319,11 @@ func TestModelsBump_AllFourRoles(t *testing.T) {
 			case "reviewer":
 				args = append(args, "--reviewer", tc.seedAtom)
 			}
-			_, runErr := runModelsCmd(t, modelsUseCmd, args...)
+			_, runErr := runModelsCmd(t, modelsUseCmd(), args...)
 			require.NoError(t, runErr)
 
 			resetModelsBumpFlags(t)
-			_, runErr = runModelsCmd(t, modelsBumpCmd, tc.role, "up")
+			_, runErr = runModelsCmd(t, modelsBumpCmd(), tc.role, "up")
 			require.NoError(t, runErr)
 
 			data, err := os.ReadFile(globalPath)
@@ -341,11 +341,11 @@ func TestModelsBump_WritePersists_RawFileContent(t *testing.T) {
 	globalPath := setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-high")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-high")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "reviewer", "up")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "reviewer", "up")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -363,11 +363,11 @@ func TestModelsBump_InvalidRole_RejectedCleanly(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-off", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "bogus-role", "up")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "bogus-role", "up")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "expected smart|fast|worker|reviewer")
 }
@@ -378,11 +378,11 @@ func TestModelsBump_InvalidDirection_RejectedCleanly(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_7_flash-off", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_7_flash-off", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsBumpFlags(t)
-	_, runErr = runModelsCmd(t, modelsBumpCmd, "smart", "sideways")
+	_, runErr = runModelsCmd(t, modelsBumpCmd(), "smart", "sideways")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "expected up|down")
 }
@@ -393,18 +393,6 @@ func TestModelsBump_RoleNotSet_ReportsCleanly(t *testing.T) {
 	setupBumpEnv(t)
 
 	resetModelsBumpFlags(t)
-	_, runErr := runModelsCmd(t, modelsBumpCmd, "worker", "up")
+	_, runErr := runModelsCmd(t, modelsBumpCmd(), "worker", "up")
 	require.NoError(t, runErr, "an unset role must report cleanly, not error")
-}
-
-// TestModelsBump_RegisteredAsSubcommand sanity-checks init() registration.
-func TestModelsBump_RegisteredAsSubcommand(t *testing.T) {
-	found := false
-	for _, sub := range modelsCmd.Commands() {
-		if sub.Name() == "bump" {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "modelsBumpCmd must be registered under modelsCmd")
 }
