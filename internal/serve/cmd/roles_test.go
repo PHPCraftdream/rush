@@ -24,7 +24,8 @@ func runRolesTestCommand(t *testing.T, globalPath string, args ...string) (strin
 }
 
 func TestRolesCLISetShowUpdateAndRemove(t *testing.T) {
-	globalPath := isolatedModelsEnv(t)
+	globalDir, _, _ := isolateLockEnv(t)
+	globalPath := filepath.Join(globalDir, "rush.json")
 	output, err := runRolesTestCommand(t, globalPath, "set", "reader", "zai/glm-5.3", "--tools", "[]", "--json")
 	require.NoError(t, err, output)
 	var view customRoleView
@@ -62,7 +63,8 @@ func TestRolesCLISetShowUpdateAndRemove(t *testing.T) {
 }
 
 func TestRolesCLIInvalidInputDoesNotWrite(t *testing.T) {
-	globalPath := isolatedModelsEnv(t)
+	globalDir, _, _ := isolateLockEnv(t)
+	globalPath := filepath.Join(globalDir, "rush.json")
 	before, err := os.ReadFile(globalPath)
 	require.NoError(t, err)
 	for _, args := range [][]string{

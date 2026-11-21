@@ -121,7 +121,7 @@
 #   - docs/checkpoints/**, docs/reviews/**, docs/plans/**  -- dated session
 #     snapshots and planning docs describing past states of the repo, not
 #     current behavior.
-#   - internal/serve/cmd/models_set.go                           -- the hidden
+#   - internal/serve/cmd/modelctl/models/opts/models_set.go                         -- the hidden
 #     `rush models set` redirect stub; its one "large"/"small" mention is
 #     a Go comment explaining why DisableFlagParsing exists (a legacy
 #     caller may still pass --large/--small), not a live claim that those
@@ -203,7 +203,7 @@ matches="$(git grep -n -E "$PATTERN" -- \
 	':!:node_modules/**' ':!:**/node_modules/**' \
 	':!:CHANGELOG.md' ':!:CHANGELOG.fork.md' \
 	':!:docs/checkpoints/**' ':!:docs/reviews/**' ':!:docs/plans/**' \
-	':!:internal/serve/cmd/models_set.go' \
+	':!:internal/serve/cmd/modelctl/models/opts/models_set.go' \
 	':!:internal/config/load_files_unknown_slots_test.go' \
 	2>/dev/null)"
 

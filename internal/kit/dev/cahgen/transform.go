@@ -405,7 +405,7 @@ func uncodedNotes(out Output) []string {
 
 func renderCmd(version string, names map[string]Name, notes []string) ([]byte, error) {
 	var b bytes.Buffer
-	header(&b, version, "cmd")
+	header(&b, version, "modelatoms")
 	b.WriteString("// cahNameMap is an exact (not prefix) code lookup, independent of legacy atoms.\ntype cahName struct { Provider, Slug, Effort, Model, Display string; Context int64 }\nvar cahNameMap = map[string]cahName{\n")
 	keys := make([]string, 0, len(names))
 	for k := range names {

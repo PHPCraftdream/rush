@@ -39,7 +39,7 @@ func TestModelsUse_InvalidReviewerEffort_ZeroWrites(t *testing.T) {
 	require.NoError(t, err)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo", "--reviewer", "glm5_3-hihg")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "reviewer:")
@@ -62,7 +62,7 @@ func TestModelsUse_InvalidReviewerEffort_WorkerAlsoNotWritten(t *testing.T) {
 	require.NoError(t, err)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo",
 		"--worker", "glm4_7_flash",
 		"--reviewer", "glm5_3-hihg")
@@ -88,7 +88,7 @@ func TestModelsUse_InvalidSmartPositional_ShortCircuitsBeforeWorkerReviewer(t *t
 	require.NoError(t, err)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"not-a-real-atom-xyz", "glm5_turbo",
 		"--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.Error(t, runErr)
@@ -108,7 +108,7 @@ func TestModelsUse_AllFourValid_StillWritesAll(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo",
 		"--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)

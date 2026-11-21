@@ -20,6 +20,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -172,7 +173,7 @@ func isolatedModelsEnv(t *testing.T) (globalPath string) {
 		waitForSQLiteHandleRelease(t, workDir)
 	})
 
-	for _, cmd := range []*cobra.Command{modelsUseCmd, modelsStateCmd, modelsUnsetCmd} {
+	for _, cmd := range []*cobra.Command{modelsUseCmd(), modelsStateCmd(), modelsUnsetCmd()} {
 		ensureRootFlagStandIns(cmd, tmp)
 		cmd.SetContext(ctx)
 	}
@@ -277,7 +278,7 @@ func TestModelsUse_TwoPositionalRegression(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -303,11 +304,11 @@ func TestModelsUse_FastFlagOnly_LeavesSmartUntouched(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsUseFlags(t)
-	_, runErr = runModelsCmd(t, modelsUseCmd, "--fast", "glm4_7_flash")
+	_, runErr = runModelsCmd(t, modelsUseCmd(), "--fast", "glm4_7_flash")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -333,11 +334,11 @@ func TestModelsUse_SmartFlagOnly_LeavesFastUntouched(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsUseFlags(t)
-	_, runErr = runModelsCmd(t, modelsUseCmd, "--smart", "glm4_7_flash")
+	_, runErr = runModelsCmd(t, modelsUseCmd(), "--smart", "glm4_7_flash")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -361,7 +362,7 @@ func TestModelsUse_SmartAndFastFlagsTogether(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "--smart", "glm4_6", "--fast", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "--smart", "glm4_6", "--fast", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -381,7 +382,7 @@ func TestModelsUse_PositionalAndSmartFlagConflict_Rejected(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo", "--smart", "glm4_7_flash")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_6", "glm5_turbo", "--smart", "glm4_7_flash")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "cannot combine positional")
 }
@@ -394,7 +395,7 @@ func TestModelsUse_OnePositionalArg_RejectedAsAmbiguous(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_6")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "got 1")
 }
@@ -406,7 +407,7 @@ func TestModelsUse_NoArgsNoFlags_RejectedAsNoOp(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd)
+	_, runErr := runModelsCmd(t, modelsUseCmd())
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "nothing to set")
 }
@@ -419,11 +420,11 @@ func TestModelsUse_WorkerOnlyViaFlags_NoPositionals(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd, "glm4_6", "glm5_turbo")
+	_, runErr := runModelsCmd(t, modelsUseCmd(), "glm4_6", "glm5_turbo")
 	require.NoError(t, runErr)
 
 	resetModelsUseFlags(t)
-	_, runErr = runModelsCmd(t, modelsUseCmd, "--worker", "glm4_7_flash")
+	_, runErr = runModelsCmd(t, modelsUseCmd(), "--worker", "glm4_7_flash")
 	require.NoError(t, runErr)
 
 	data, err := os.ReadFile(globalPath)
@@ -439,7 +440,7 @@ func TestModelsUse_WorkerAndReviewerFlags(t *testing.T) {
 	globalPath := isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NoError(t, runErr)
 
@@ -458,10 +459,8 @@ func TestModelsUse_WorkerViaShortCode(t *testing.T) {
 	// applies to the new --worker/--reviewer flags, not just smart/fast.
 	globalPath := isolatedModelsEnv(t)
 
-	defer setMockEffortLevels([]string{"low", "medium", "high", "xhigh", "max"})()
-
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo", "--worker", "fl")
 	require.NoError(t, runErr)
 
@@ -471,7 +470,9 @@ func TestModelsUse_WorkerViaShortCode(t *testing.T) {
 
 	// "fl" is the generated top Fable code, effort low.
 	assert.Contains(t, content, `"local-cli"`)
-	assert.Contains(t, content, `"`+cahNameMap["fl"].Slug+`"`)
+	entry, ok := modelatoms.LookupShortCode("fl")
+	require.True(t, ok)
+	assert.Contains(t, content, `"`+entry.Slug+`"`)
 	assert.Contains(t, content, `"low"`)
 }
 
@@ -479,7 +480,7 @@ func TestModelsUse_UnknownWorkerAtomFailsCleanly(t *testing.T) {
 	isolatedModelsEnv(t)
 
 	resetModelsUseFlags(t)
-	_, runErr := runModelsCmd(t, modelsUseCmd,
+	_, runErr := runModelsCmd(t, modelsUseCmd(),
 		"glm4_6", "glm5_turbo", "--worker", "not-a-real-atom-xyz")
 	require.Error(t, runErr)
 	assert.Contains(t, runErr.Error(), "worker:")
@@ -491,30 +492,44 @@ func TestModelsUse_UnknownWorkerAtomFailsCleanly(t *testing.T) {
 func resetModelsUseFlags(t *testing.T) {
 	t.Helper()
 	for _, fl := range []string{"global", "local", "smart", "fast", "worker", "reviewer"} {
-		if f := modelsUseCmd.Flags().Lookup(fl); f != nil {
+		if f := modelsUseCmd().Flags().Lookup(fl); f != nil {
 			_ = f.Value.Set(f.DefValue)
 			f.Changed = false
 		}
 	}
-	modelsUseCmd.SetArgs(nil)
+	modelsUseCmd().SetArgs(nil)
 }
 
 func resetModelsUnsetFlags(t *testing.T) {
 	t.Helper()
 	for _, fl := range []string{"global", "local"} {
-		if f := modelsUnsetCmd.Flags().Lookup(fl); f != nil {
+		if f := modelsUnsetCmd().Flags().Lookup(fl); f != nil {
 			_ = f.Value.Set(f.DefValue)
 			f.Changed = false
 		}
 	}
-	modelsUnsetCmd.SetArgs(nil)
+	modelsUnsetCmd().SetArgs(nil)
 }
 
 func resetModelsStateFlags(t *testing.T) {
 	t.Helper()
-	if f := modelsStateCmd.Flags().Lookup("json"); f != nil {
+	if f := modelsStateCmd().Flags().Lookup("json"); f != nil {
 		_ = f.Value.Set(f.DefValue)
 		f.Changed = false
 	}
-	modelsStateCmd.SetArgs(nil)
+	modelsStateCmd().SetArgs(nil)
+}
+
+// Find the live model leaves instead of replacing them with package templates.
+func modelsUseCmd() *cobra.Command   { return mustFindModelsLeaf("use") }
+func modelsStateCmd() *cobra.Command { return mustFindModelsLeaf("state") }
+func modelsUnsetCmd() *cobra.Command { return mustFindModelsLeaf("unset") }
+func modelsBumpCmd() *cobra.Command  { return mustFindModelsLeaf("bump") }
+
+func mustFindModelsLeaf(name string) *cobra.Command {
+	cmd, rest, err := rootCmd.Find([]string{"models", name})
+	if err != nil || len(rest) != 0 || cmd.Name() != name {
+		panic("missing models " + name + " command")
+	}
+	return cmd
 }
