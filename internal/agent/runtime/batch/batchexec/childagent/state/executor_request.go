@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -116,6 +117,24 @@ func MarkNoChildSelected[P, I any](mu *sync.Mutex, req *RunRequest[P, I]) {
 	mu.Lock()
 	req.NoChildSelected = true
 	mu.Unlock()
+}
+
+// ResolvePublishedQuestions closes the durable notices published for this incarnation after an answer or cancellation.
+func ResolvePublishedQuestions[P, I any](ctx context.Context, resolver QuestionResolver, snapshot func() RunRequest[P, I], timeout time.Duration, sequence uint64) error {
+	if resolver == nil {
+		return nil
+	}
+	req := snapshot()
+	if req.SessionID == "" || req.NodeID == "" || req.ChildSessionID == "" || req.Token == 0 || sequence == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	if err := resolver.ResolveChildQuestions(ctx, req.SessionID, string(req.NodeID), req.ChildSessionID, int64(req.Token), int64(sequence)); err != nil {
+		slog.Warn("Batch question resolution failed", "node", string(req.NodeID), "err", err)
+		return err
+	}
+	return nil
 }
 
 // Launch invokes the factory with panic containment. The caller supplies the

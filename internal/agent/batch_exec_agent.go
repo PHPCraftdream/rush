@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -315,20 +314,7 @@ func (e *batchAgentExecution) Stop(ctx context.Context) error {
 
 // Резолюция должна зафиксироваться до принятия ответа в held scope.
 func (e *batchAgentExecution) resolvePublishedQuestions(ctx context.Context, sequence uint64) error {
-	if e.deps.QuestionResolver == nil {
-		return nil
-	}
-	req := e.snapshotExecutionRequest()
-	if req.SessionID == "" || req.NodeID == "" || req.ChildSessionID == "" || req.Token == 0 || sequence == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchQuestionPersistenceTimeout)
-	defer cancel()
-	if err := e.deps.QuestionResolver.ResolveChildQuestions(ctx, req.SessionID, string(req.NodeID), req.ChildSessionID, int64(req.Token), int64(sequence)); err != nil {
-		slog.Warn("Batch question resolution failed", "node", string(req.NodeID), "err", err)
-		return err
-	}
-	return nil
+	return state.ResolvePublishedQuestions(ctx, e.deps.QuestionResolver, e.snapshotExecutionRequest, batchQuestionPersistenceTimeout, sequence)
 }
 
 // Inject delivers an answer or message into this incarnation. It is rejected

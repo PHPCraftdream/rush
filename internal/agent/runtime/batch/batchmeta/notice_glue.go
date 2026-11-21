@@ -4,22 +4,16 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/batch/sessionbatch"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
-// CompletionPresentation contains only the fields used to render a completion.
-type CompletionPresentation struct {
-	ToolCallID, ToolName, Content                      string
-	IsError, TimedOut, Stopped, Cancelled, Interrupted bool
-	TimeoutSeconds                                     int
-}
-
 // FormatAsyncCompletion makes a completed job visible to the model and UI.
 // The TimedOut branch's wording matches
 // docs/plans/2026-09-27-wake-tools-contract.md §5.1 verbatim.
-func FormatAsyncCompletion(completion CompletionPresentation) string {
+func FormatAsyncCompletion(completion batchdispatch.AsyncCompletion) string {
 	content := tools.TruncateOutput(strings.TrimSpace(completion.Content))
 	if content == "" {
 		content = "(no output)"
@@ -61,7 +55,7 @@ func BuildBatchNoticeMessageParams(row sessionbatch.BatchNoticeRow) message.Crea
 	// not keep Stopped. Cancelled is kept as-is: State "interrupted" never
 	// equals "cancelled", so a recovered node can never read as Cancelled.
 	recovered := row.State == "interrupted" || row.OutcomeCode == "host_lost"
-	completion := CompletionPresentation{
+	completion := batchdispatch.AsyncCompletion{
 		ToolCallID: row.ToolCallID,
 		ToolName:   "",
 		Content:    row.OutcomeSummary,

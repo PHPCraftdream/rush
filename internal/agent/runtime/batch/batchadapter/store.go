@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -29,6 +31,8 @@ type StoreDoneSource struct {
 	// owner's finalization record leaves its active phases (W1a wires it).
 	finalizationGate coresession.FinalizationTerminalGate
 }
+
+var _ batchcore.DoneSource = (*StoreDoneSource)(nil)
 
 // NewStoreDoneSource requires a non-nil batches callback.
 // If the callback returns nil, the source uses only the durable store.
@@ -166,6 +170,8 @@ func (e StoreElector) ElectStarted(ctx context.Context, owner string, root jobba
 	return won, err
 }
 
+var _ batchcore.Elector = StoreElector{}
+
 // ElectInline publishes the elected completion exactly once. The history
 // message carries the envelope's content; a media-only response is serialised
 // so no payload is lost.
@@ -225,6 +231,8 @@ func (p StoreNoticePull) Pull(ctx context.Context) (int, error) {
 	}
 	return len(pulled), nil
 }
+
+var _ batchlife.NoticePull = StoreNoticePull{}
 
 // batchPulledNoticeParams formats one selected notice for history from the
 // row's own facts; nothing is re-derived from live state.

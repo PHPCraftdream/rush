@@ -19,6 +19,20 @@
 # declaration owner correction is tracked separately in
 # 2026-11-16-sprint0-agent-execution.tsv; DM-W code merged separately.
 # DM5a execution declaration rows with receiver_disposition=not receiver inventory row may use receiver_component=target_symbol=<spelling> to override only the destination spelling; see 2026-11-16-sprint0-agent-dm5a-diagnostics.tsv.
+# DM5a note: for DM5a declaration records with receiver_disposition=not receiver
+# inventory row, the receiver_target_file field may carry human evidence tagged
+# dm5a_port:, dm5a_moved:, or dm5a_consolidated:. Those fields are NOT receiver paths and must not be
+# read as destinations; the physical target still comes from the target_file
+# basename plus target_package_path.
+# dm5a_port: for root retentions, a dm5a_port: evidence note must end with the
+# mandatory suffix `; lower=runtime/batch/.../file.go|kind|Symbol`, where the
+# path is relative to internal/agent and names the lowered implementation
+# checked by replay against an independent frozen AST pin. A dm5a_port: note
+# for a symbol already ported (e.g. row 1042) does not need this suffix.
+# dm5a_consolidated: marks a pre-existing lowered implementation whose root
+# wrapper was removed (e.g. row 947).
+# The 117 prior exact root retentions are unchanged; the # dm5a-root records
+# below are a file inventory, not a list of those declarations. DM5c is unchanged.
 #
 # Physical allocation: each # dm5a-package record is TAB-separated:
 # record tag, directory relative to internal/agent/runtime/batch, Go package
