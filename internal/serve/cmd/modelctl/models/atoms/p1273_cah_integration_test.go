@@ -2,6 +2,8 @@ package modelatoms
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"regexp"
 	"slices"
 	"sort"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	"github.com/spf13/cobra"
@@ -126,6 +129,9 @@ func TestCAHEveryCodeRealResolver(t *testing.T) {
 	cmdtest.SeedAuditDir(t)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	config.ResetProviderCacheForTests()
+	// Pre-initialise the once-only logger so SetupAppLite does not open a log handle inside the temp dir (it would lock the file and break TempDir cleanup on Windows).
+	rushlog.Setup("", false)
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Chdir(t.TempDir())
 	cmd := &cobra.Command{Use: "use"}
 	cmd.Flags().String("data-dir", t.TempDir(), "")
