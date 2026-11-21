@@ -12,12 +12,14 @@ package agent
 
 import (
 	"context"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/wakectl"
 )
 
 func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bool) error {
-	return newWakeComponent(c).wakeSession(ctx, sessionID, fact)
+	return wakectl.WakeSession(c.wakeLaunchPorts(), ctx, sessionID, fact)
 }
 
 func (c *coordinator) handleDrainBuildError(sessionID string, buildErr error) error {
-	return newWakeComponent(c).handleDrainBuildError(sessionID, buildErr)
+	return wakectl.HandleDrainBuildError(c.wakeBuildErrorPorts(), sessionID, buildErr)
 }

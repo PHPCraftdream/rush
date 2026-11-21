@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -118,7 +119,7 @@ func (h coordinatorSubAgentHost) runWithUnauthorizedRetry(ctx context.Context, p
 }
 
 func (h coordinatorSubAgentHost) isUnauthorized(err error) bool {
-	return h.coordinator.isUnauthorized(err)
+	return modelkit.IsUnauthorized(err)
 }
 
 func (h coordinatorSubAgentHost) childQuestionPreamble(childSessionID string) string {

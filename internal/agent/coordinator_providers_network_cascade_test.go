@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -86,7 +87,7 @@ func TestProviderProxyCascade(t *testing.T) {
 			coord := &coordinator{cfg: newNetworkTestStore(t, &config.Options{
 				Network: &config.NetworkConfig{Proxy: global.URL()},
 			})}
-			client, err := coord.resolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
+			client, err := modelkit.ResolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
 				ID:      "probe",
 				Network: tc.providerNet(global.URL(), provider.URL()),
 			})
@@ -106,7 +107,7 @@ func TestProviderProxyCascade(t *testing.T) {
 func TestProviderProxyNoneWithoutGlobalProxyIsDirect(t *testing.T) {
 	t.Parallel()
 	coord := &coordinator{cfg: newNetworkTestStore(t, nil)}
-	client, err := coord.resolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
+	client, err := modelkit.ResolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
 		ID:      "probe",
 		Network: &config.NetworkConfig{Proxy: config.ProxyNone},
 	})
@@ -122,7 +123,7 @@ func TestProviderProxyNoneKeepsGlobalResolver(t *testing.T) {
 	coord := &coordinator{cfg: newNetworkTestStore(t, &config.Options{
 		Network: &config.NetworkConfig{Proxy: "http://127.0.0.1:1", DNSServer: "1.1.1.1"},
 	})}
-	client, err := coord.resolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
+	client, err := modelkit.ResolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
 		ID:      "probe",
 		Network: &config.NetworkConfig{Proxy: config.ProxyNone},
 	})
@@ -145,7 +146,7 @@ func TestProviderProxyNoneIsNotMalformed(t *testing.T) {
 			opts.Network = &config.NetworkConfig{Proxy: global}
 		}
 		coord := &coordinator{cfg: newNetworkTestStore(t, opts)}
-		_, err := coord.resolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
+		_, err := modelkit.ResolveProviderHTTPClient(coord.cfg.Config(), config.ProviderConfig{
 			ID:      "probe",
 			Network: &config.NetworkConfig{Proxy: "none"},
 		})

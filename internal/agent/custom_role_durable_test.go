@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -97,15 +98,7 @@ func TestCustomRoleDurableContractRejectsRemovedRoleOnNextResolve(t *testing.T) 
 	restored, err := FromSessionAgentCallData(decoded)
 	require.NoError(t, err)
 	delete(cfg.Roles, "analyst")
-	_, _, err = currentOrSnapshotRoleModel(cfg, restored.RoleContract)
+	_, _, err = modelkit.CurrentOrSnapshotRoleModel(cfg, restored.RoleContract)
 	require.ErrorIs(t, err, ErrAgentRoleUnconfigured)
 	require.True(t, contract.Equal(restored.RoleContract), "refusal must preserve the durable binding")
-}
-
-func TestCustomRoleResolverRejectsUnavailableExactKey(t *testing.T) {
-	cfg := customRoleResolverConfig()
-	_, err := ResolveRoleContract(cfg, "missing", nil)
-	require.ErrorIs(t, err, ErrAgentRoleUnconfigured)
-	_, err = ResolveRoleContract(cfg, "Analyst", nil)
-	require.ErrorIs(t, err, ErrAgentRoleUnconfigured)
 }

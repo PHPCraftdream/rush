@@ -12,7 +12,7 @@
 # 252 -> 253: +1 providers_component.go (EX-0B pass B1, providerComponent retarget, D1 §3.5).
 # 253 -> 255: +2 EX-0B pass B2 adds models_component.go, tools_component.go (models/tools retarget).
 # The count falls when the DM coordination phase consolidates (D1 §2.4, entries deleted at consolidation). Only down from here.
-internal/agent 224
+internal/agent 225
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81

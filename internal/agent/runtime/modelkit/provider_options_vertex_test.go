@@ -1,4 +1,4 @@
-package agent
+package modelkit
 
 import (
 	"testing"
@@ -21,7 +21,7 @@ func TestGetProviderOptionsVertexThinkingOptions(t *testing.T) {
 		{name: "newer model thinking level", modelID: "gemini-3-pro-preview", effort: "high", wantLevel: "high"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			model := Model{
+			model := providerModel{
 				CatwalkCfg: catwalk.Model{
 					ID:              tc.modelID,
 					CanReason:       true,
@@ -31,7 +31,7 @@ func TestGetProviderOptionsVertexThinkingOptions(t *testing.T) {
 			}
 			providerCfg := config.ProviderConfig{ID: "vertexai", Type: catwalk.TypeVertexAI}
 
-			opts := getProviderOptions("test-session", model, providerCfg)
+			opts := GetProviderOptions("test-session", model, providerCfg)
 
 			raw, ok := opts[google.Name]
 			require.True(t, ok, "Vertex AI should use Google's provider options")
@@ -56,12 +56,12 @@ func TestGetProviderOptionsVertexThinkingOptions(t *testing.T) {
 func TestGetProviderOptionsGoogleAndVertexThinkingOptionsMatch(t *testing.T) {
 	for _, modelID := range []string{"gemini-2.5-pro", "gemini-3-pro-preview"} {
 		t.Run(modelID, func(t *testing.T) {
-			model := Model{
+			model := providerModel{
 				CatwalkCfg: catwalk.Model{ID: modelID, CanReason: true, ReasoningLevels: []string{"low", "high"}},
 				ModelCfg:   config.SelectedModel{Provider: "google", ReasoningEffort: "high"},
 			}
-			googleOptions := getProviderOptions("test-session", model, config.ProviderConfig{ID: "google", Type: catwalk.TypeGoogle})[google.Name]
-			vertexOptions := getProviderOptions("test-session", model, config.ProviderConfig{ID: "vertexai", Type: catwalk.TypeVertexAI})[google.Name]
+			googleOptions := GetProviderOptions("test-session", model, config.ProviderConfig{ID: "google", Type: catwalk.TypeGoogle})[google.Name]
+			vertexOptions := GetProviderOptions("test-session", model, config.ProviderConfig{ID: "vertexai", Type: catwalk.TypeVertexAI})[google.Name]
 			require.NotNil(t, googleOptions)
 			require.NotNil(t, vertexOptions)
 			require.Equal(t, googleOptions, vertexOptions)

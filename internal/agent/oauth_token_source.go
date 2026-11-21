@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
@@ -17,7 +18,6 @@ func (c *coordinator) withOAuthBearerClient(pc config.ProviderConfig, client *ht
 
 type oauthBearerClientHost interface {
 	oauthTokenConfigStore() *config.ConfigStore
-	resolveProviderHTTPClient(cfg *config.Config, pc config.ProviderConfig) (*http.Client, error)
 }
 
 func (c *coordinator) oauthTokenConfigStore() *config.ConfigStore {
@@ -47,6 +47,6 @@ func (o *oauthBearerClientComponent) withOAuthBearerClient(pc config.ProviderCon
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	copied.Transport = provauth.NewBearerTransport(base, provauth.NewOAuthTokenSource(pc.ID, o.host.oauthTokenConfigStore(), o.host.resolveProviderHTTPClient), pc.ID)
+	copied.Transport = provauth.NewBearerTransport(base, provauth.NewOAuthTokenSource(pc.ID, o.host.oauthTokenConfigStore(), modelkit.ResolveProviderHTTPClient), pc.ID)
 	return &copied
 }

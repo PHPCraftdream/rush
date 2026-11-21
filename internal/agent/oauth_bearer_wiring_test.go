@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
@@ -77,8 +78,8 @@ func TestOAuthBearerBuilderRotation(t *testing.T) {
 			// cached cfg would go stale across token rotation and logout.
 			oauthLookupStore := &countedLiveOAuthStore{store: store}
 			tr := wrapped.Transport.(*provauth.BearerTransport)
-			wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(id, oauthLookupStore, coord.resolveProviderHTTPClient), id)
-			provider, err := coord.buildOpenaiCompatProvider(store.Config(), server.URL, "static", headers, nil, id, true, wrapped)
+			wrapped.Transport = provauth.NewBearerTransport(tr.Base(), provauth.NewOAuthTokenSource(id, oauthLookupStore, modelkit.ResolveProviderHTTPClient), id)
+			provider, err := modelkit.BuildOpenaiCompatProvider(store.Config(), server.URL, "static", headers, nil, id, true, wrapped)
 			require.NoError(t, err)
 			model, err := provider.LanguageModel(t.Context(), "test-model")
 			require.NoError(t, err)
@@ -187,7 +188,7 @@ func TestOAuthBearerAPIKeyAndStaticBuilderFallback(t *testing.T) {
 				client := &http.Client{Transport: tr}
 				wrapped := coord.withOAuthBearerClient(pc, client)
 				require.Same(t, client, wrapped)
-				provider, err := coord.buildOpenaiCompatProvider(store.Config(), "http://local.invalid", "literal", nil, nil, id, false, wrapped)
+				provider, err := modelkit.BuildOpenaiCompatProvider(store.Config(), "http://local.invalid", "literal", nil, nil, id, false, wrapped)
 				require.NoError(t, err)
 				model, err := provider.LanguageModel(t.Context(), "test-model")
 				require.NoError(t, err)
@@ -229,7 +230,7 @@ func TestOAuthBearerBuilderLoggedOut1302(t *testing.T) {
 	source := &rootOAuthBearerSource{token: oauth.Token{AccessToken: "old"}, present: true}
 	tr := wrapped.Transport.(*provauth.BearerTransport)
 	wrapped.Transport = provauth.NewBearerTransport(tr.Base(), source, pc.ID)
-	provider, err := coord.buildOpenaiCompatProvider(store.Config(), "http://local.invalid", "synthetic", nil, nil, pc.ID, true, wrapped)
+	provider, err := modelkit.BuildOpenaiCompatProvider(store.Config(), "http://local.invalid", "synthetic", nil, nil, pc.ID, true, wrapped)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	defer cancel()

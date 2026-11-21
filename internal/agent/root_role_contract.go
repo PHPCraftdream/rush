@@ -6,19 +6,20 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
 func bindRootRoleContract(ctx context.Context, sessions session.Service, call SessionAgentCall) error {
 	var contract *session.RoleContract
 	if call.CallOptions != nil && call.CallOptions.RoleContract != nil {
-		contract = cloneRoleContractForCall(call.CallOptions.RoleContract)
+		contract = agentcall.CloneRoleContractForCall(call.CallOptions.RoleContract)
 	}
 	if call.RoleContract != nil {
 		if contract != nil && !contract.Equal(call.RoleContract) {
 			return ErrAgentRoleMismatch
 		}
-		contract = cloneRoleContractForCall(call.RoleContract)
+		contract = agentcall.CloneRoleContractForCall(call.RoleContract)
 	}
 	if contract != nil && call.LogicalCallID == "" {
 		return fmt.Errorf("%w: root role contract requires a logical call id", ErrAgentRoleUnconfigured)

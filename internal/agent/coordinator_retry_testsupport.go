@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 )
 
 // SetTurnRetryBackoffForTest shrinks the coordinator's first backoff before it
@@ -18,7 +20,7 @@ func SetTurnRetryBackoffForTest(base time.Duration) (restore func()) {
 	if !testing.Testing() {
 		panic("agent.SetTurnRetryBackoffForTest called outside a test binary")
 	}
-	old := streamStallRetryBaseBackoff
-	streamStallRetryBaseBackoff = base
-	return func() { streamStallRetryBaseBackoff = old }
+	old := modelkit.StreamStallRetryBaseBackoff
+	modelkit.StreamStallRetryBaseBackoff = base
+	return func() { modelkit.StreamStallRetryBaseBackoff = old }
 }

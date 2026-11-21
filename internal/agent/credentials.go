@@ -20,10 +20,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
-
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -342,7 +342,7 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 	}
 
 	if customRole != "" && !customCredentialCovered && creds.AllowConfiguredRoleFallback {
-		selected, _, modelErr := currentOrSnapshotRoleModel(cfg, customContract)
+		selected, _, modelErr := modelkit.CurrentOrSnapshotRoleModel(cfg, customContract)
 		if modelErr != nil {
 			return nil, modelErr
 		}

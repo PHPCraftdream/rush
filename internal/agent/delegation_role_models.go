@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
-
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -49,7 +49,7 @@ func requestedRoleSlot(cfg *config.Config, parent session.Session, role Requeste
 }
 
 func (c *coordinator) resolveRequestedDelegationModel(ctx context.Context, cfg *config.Config, parentID string, role RequestedModelRole) (delegationRoleModel, error) {
-	if contract := selectedRoleContractFrom(ctx); contract != nil {
+	if contract := modelkit.SelectedRoleContractFrom(ctx); contract != nil {
 		if contract.Name == "" || contract.Name != string(role) {
 			return delegationRoleModel{}, ErrAgentRoleMismatch
 		}
@@ -127,7 +127,7 @@ func (c *coordinator) resolveRoleContractModel(ctx context.Context, cfg *config.
 			return delegationRoleModel{}, fmt.Errorf("%w: tenant does not cover %s", ErrAgentRoleUnconfigured, contract.Name)
 		}
 	}
-	selected, source, err := currentOrSnapshotRoleModel(cfg, contract)
+	selected, source, err := modelkit.CurrentOrSnapshotRoleModel(cfg, contract)
 	if err != nil {
 		return delegationRoleModel{}, err
 	}

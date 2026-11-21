@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -300,7 +301,7 @@ func TestCodexWebSocketProviderFailureClassifiesLikeSSE(t *testing.T) {
 			require.Equal(t, tc.hard, IsHardQuotaLimit(sseErr), "SSE reference classification")
 			require.Equal(t, IsHardQuotaLimit(sseErr), IsHardQuotaLimit(wsErr), "WebSocket must classify a hard limit like SSE")
 			require.Equal(t, sseProvider.IsContextTooLarge(), wsProvider.IsContextTooLarge())
-			require.True(t, responsesWSReplayForbidden(wsErr), "a sent WebSocket request must stay non-replayable")
+			require.True(t, modelkit.ResponsesWSReplayForbidden(wsErr), "a sent WebSocket request must stay non-replayable")
 			require.Equal(t, classTerminal, classifyProviderError(wsErr))
 			require.EqualValues(t, 1, peer.requests.Load())
 			require.Zero(t, peer.http.Load())

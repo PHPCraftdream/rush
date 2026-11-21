@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -86,7 +88,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		} else if driver.slotRole != "" && call.Credentials == nil {
 			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.slotRole); ok {
 				call = applyDrainModelOptions(call, refreshed)
-				call.ProviderOptions = getProviderOptions(sessionID, refreshed, providerCfg)
+				call.ProviderOptions = modelkit.GetProviderOptions(sessionID, refreshed, providerCfg)
 			}
 		}
 		c.freshenDrainClient(ctx, &call)
@@ -196,14 +198,14 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		call.LogicalCallID = rootLogicalID
 	}
 
-	call.RoleContract = cloneRoleContractForCall(rootRoleContract)
+	call.RoleContract = agentcall.CloneRoleContractForCall(rootRoleContract)
 	call.CallOptions = func() *CallOptions {
 		if opts := callOptionsFrom(ctx); opts != nil {
 			copy := *opts
-			copy.RoleContract = cloneRoleContractForCall(rootRoleContract)
+			copy.RoleContract = agentcall.CloneRoleContractForCall(rootRoleContract)
 			return &copy
 		}
-		return &CallOptions{RoleContract: cloneRoleContractForCall(rootRoleContract)}
+		return &CallOptions{RoleContract: agentcall.CloneRoleContractForCall(rootRoleContract)}
 	}()
 	// Idempotent stamping: keeps DiskRequirement on the struct itself even
 	// though the ctx-carried options already carry it (R12-H2b §2.3).

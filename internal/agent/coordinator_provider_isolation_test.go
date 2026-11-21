@@ -15,6 +15,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/assert"
@@ -105,8 +106,6 @@ func TestBuildAnthropicProviderPreservesEnvironmentAndAuthSelection(t *testing.T
 	}))
 	t.Cleanup(server.Close)
 
-	store := config.NewLibraryStore(&config.Config{Options: &config.Options{}}, t.TempDir())
-	coord := &coordinator{cfg: store}
 	tests := []struct {
 		name        string
 		providerID  string
@@ -145,7 +144,7 @@ func TestBuildAnthropicProviderPreservesEnvironmentAndAuthSelection(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			requestHeaders = nil
 			wantHeaders := maps.Clone(tc.headers)
-			provider, err := coord.buildAnthropicProvider(server.URL, tc.apiKey, tc.headers, tc.providerID, nil)
+			provider, err := modelkit.BuildAnthropicProvider(server.URL, tc.apiKey, tc.headers, tc.providerID, nil)
 			require.NoError(t, err)
 			assert.Equal(t, wantHeaders, tc.headers)
 			model, err := provider.LanguageModel(context.Background(), "probe-model")
@@ -206,7 +205,7 @@ func TestBuildAnthropicProviderConcurrentHeterogeneousBuildsPreserveEnvironment(
 			go func() {
 				defer wg.Done()
 				<-start
-				_, err := coord.buildAnthropicProvider("", tc.apiKey, map[string]string{"aUtHoRiZaTiOn": "operator", "X-API-KEY": "operator-key"}, tc.providerID, nil)
+				_, err := modelkit.BuildAnthropicProvider("", tc.apiKey, map[string]string{"aUtHoRiZaTiOn": "operator", "X-API-KEY": "operator-key"}, tc.providerID, nil)
 				if err != nil {
 					errs <- err
 				}
@@ -242,8 +241,6 @@ func TestBuildAnthropicProviderSendsNoBlankAuthHeaders(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	store := config.NewLibraryStore(&config.Config{Options: &config.Options{}}, t.TempDir())
-	coord := &coordinator{cfg: store}
 	custom := &http.Client{}
 	tests := []struct {
 		name       string
@@ -261,7 +258,7 @@ func TestBuildAnthropicProviderSendsNoBlankAuthHeaders(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			requestHeaders = nil
-			provider, err := coord.buildAnthropicProvider(server.URL, tc.apiKey, nil, tc.providerID, tc.client)
+			provider, err := modelkit.BuildAnthropicProvider(server.URL, tc.apiKey, nil, tc.providerID, tc.client)
 			require.NoError(t, err)
 			model, err := provider.LanguageModel(context.Background(), "probe-model")
 			require.NoError(t, err)

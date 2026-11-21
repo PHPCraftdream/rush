@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
@@ -34,7 +35,7 @@ type AgentParams struct {
 }
 
 const (
-	AgentToolName = "agent"
+	AgentToolName = modelkit.AgentToolName
 )
 
 func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) {

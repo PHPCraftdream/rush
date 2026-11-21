@@ -15,6 +15,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -771,7 +772,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 				if !batchWorkTarget(name) {
 					continue
 				}
-				inv := BatchInvocation{Origin: "coordinator", Delivery: batchFamilyDelivery(name), BackgroundEscape: batchEscapeNever, WaiterRank: 0, Policy: batchLeafPolicyContext{RestrictedToolset: fingerprint, RoleContract: cloneRoleContractForCall(roleContract)}}
+				inv := BatchInvocation{Origin: "coordinator", Delivery: batchFamilyDelivery(name), BackgroundEscape: batchEscapeNever, WaiterRank: 0, Policy: batchLeafPolicyContext{RestrictedToolset: fingerprint, RoleContract: agentcall.CloneRoleContractForCall(roleContract)}}
 				if name == tools.BashToolName {
 					if inlineWindowDisabledFor(bind) {
 						inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
@@ -814,7 +815,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 					BackgroundEscape: batchEscapeNever,
 					WorkerStopScope:  isSubAgent,
 					roleConfig:       cfg,
-					Policy:           batchLeafPolicyContext{RegistryID: built.RegistryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: cloneRoleContractForCall(roleContract)},
+					Policy:           batchLeafPolicyContext{RegistryID: built.RegistryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: agentcall.CloneRoleContractForCall(roleContract)},
 				}
 				inv.SessionID, inv.MessageID = tools.GetSessionFromContext(ctx), tools.GetMessageFromContext(ctx)
 				inv.AgentDepth, inv.AgentDepthSet = DefaultAgentDepth, true

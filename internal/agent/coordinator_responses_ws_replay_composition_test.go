@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -410,9 +411,9 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 
 			// Add synthetic owner classification after the real SessionAgent/
 			// Fantasy retry boundary.
-			previousBackoff := streamStallRetryBaseBackoff
-			streamStallRetryBaseBackoff = time.Millisecond
-			t.Cleanup(func() { streamStallRetryBaseBackoff = previousBackoff })
+			previousBackoff := modelkit.StreamStallRetryBaseBackoff
+			modelkit.StreamStallRetryBaseBackoff = time.Millisecond
+			t.Cleanup(func() { modelkit.StreamStallRetryBaseBackoff = previousBackoff })
 			coord.refreshOAuth2TokenFn = func(context.Context, config.ProviderConfig) error {
 				refreshCalls.Add(1)
 				trace.recordOwner("OAuth refresh callback invoked", nil, nil)
@@ -459,11 +460,11 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			require.Error(t, runErr)
 			_, modelBoundaryErrors, _, ownerErrors, _, _ := trace.snapshot()
 			require.Len(t, modelBoundaryErrors, 1, "the real public bridge error must reach the model boundary once")
-			require.True(t, responsesWSReplayForbidden(modelBoundaryErrors[0]), "the bridge error must carry NoReplay before coordinator owner classification")
+			require.True(t, modelkit.ResponsesWSReplayForbidden(modelBoundaryErrors[0]), "the bridge error must carry NoReplay before coordinator owner classification")
 			require.Len(t, ownerErrors, 1, "the real SessionAgent owner must return exactly one raw error")
-			require.True(t, responsesWSReplayForbidden(ownerErrors[0]), "the actual SessionAgent error must preserve the bridge NoReplay guard")
+			require.True(t, modelkit.ResponsesWSReplayForbidden(ownerErrors[0]), "the actual SessionAgent error must preserve the bridge NoReplay guard")
 			require.EqualValues(t, 1, trace.ownerRuns.Load(), "the coordinator must not invoke its SessionAgent owner again")
-			require.True(t, responsesWSReplayForbidden(runErr), "the joined coordinator error must preserve the real bridge replay guard")
+			require.True(t, modelkit.ResponsesWSReplayForbidden(runErr), "the joined coordinator error must preserve the real bridge replay guard")
 			require.ErrorIs(t, runErr, ownerErrors[0], "the joined coordinator error must retain the unchanged real owner error")
 			if tc.noProgress {
 				// A plain 503 is retryable; the joined live bridge NoReplay error must veto it.

@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"errors"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/wakectl"
 )
 
 type SessionWakeDispatcher interface {
@@ -10,14 +11,7 @@ type SessionWakeDispatcher interface {
 }
 
 func DispatchSessionWake(ctx context.Context, c Coordinator, owner string) error {
-	if c == nil {
-		return errors.New("session wake dispatcher: nil coordinator")
-	}
-	d, ok := c.(SessionWakeDispatcher)
-	if !ok {
-		return errors.New("session wake dispatcher: unsupported coordinator type")
-	}
-	return d.WakeSession(ctx, owner, true)
+	return wakectl.DispatchSessionWake(ctx, c, owner)
 }
 
 func (c *coordinator) WakeSession(ctx context.Context, owner string, fact bool) error {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
@@ -272,7 +273,7 @@ func (ts *turnStream) handleStreamFailure(
 		// R2-5: this generic finish is the diagnostic path that persists
 		// raw error text into the transcript's finish details; redact
 		// URL secrets (userinfo/query) before it lands on disk.
-		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, redactNetworkURLs(LocalizeResetHint(err.Error(), time.Now())))
+		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, modelkit.RedactNetworkURLs(LocalizeResetHint(err.Error(), time.Now())))
 	}
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()

@@ -14,6 +14,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -26,10 +27,10 @@ import (
 // from a t.Parallel() test.
 func shrinkRateLimitVars(t *testing.T, base, maxWait, budget, tick, backoff time.Duration) {
 	t.Helper()
-	ob, om, obu, ot, osb := rateLimitBaseWait, rateLimitMaxWait, rateLimitBudget, rateLimitWaitTick, streamStallRetryBaseBackoff
-	rateLimitBaseWait, rateLimitMaxWait, rateLimitBudget, rateLimitWaitTick, streamStallRetryBaseBackoff = base, maxWait, budget, tick, backoff
+	ob, om, obu, ot, osb := rateLimitBaseWait, rateLimitMaxWait, rateLimitBudget, rateLimitWaitTick, modelkit.StreamStallRetryBaseBackoff
+	rateLimitBaseWait, rateLimitMaxWait, rateLimitBudget, rateLimitWaitTick, modelkit.StreamStallRetryBaseBackoff = base, maxWait, budget, tick, backoff
 	t.Cleanup(func() {
-		rateLimitBaseWait, rateLimitMaxWait, rateLimitBudget, rateLimitWaitTick, streamStallRetryBaseBackoff = ob, om, obu, ot, osb
+		rateLimitBaseWait, rateLimitMaxWait, rateLimitBudget, rateLimitWaitTick, modelkit.StreamStallRetryBaseBackoff = ob, om, obu, ot, osb
 	})
 }
 

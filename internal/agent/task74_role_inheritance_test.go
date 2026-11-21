@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func TestTask74RoleContractInheritsRejectsInvalidParentContracts(t *testing.T) {
 func TestTask74RoleContractInheritsPreservesValidCeilingsAndRejectsMismatch(t *testing.T) {
 	parentTools := []string{"view", "batch_status"}
 	parent := task74RoleContract("parent", &parentTools, [][]string{{"view"}})
-	want, err := inheritedRoleCeilings(parent)
+	want, err := modelkit.InheritedRoleCeilings(parent)
 	require.NoError(t, err)
 	child := task74RoleContract("analyst", nil, want)
 
