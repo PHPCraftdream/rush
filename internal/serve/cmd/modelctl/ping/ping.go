@@ -28,6 +28,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -478,6 +479,7 @@ func buildPingProviderRaw(ctx context.Context, store *config.ConfigStore, provid
 	if headers == nil {
 		headers = make(map[string]string)
 	}
+	headers = modelkit.WithOpenCodeSessionHeader(providerCfg.ID, headers)
 
 	// Handle special headers for anthropic thinking
 	if providerCfg.Type == anthropic.Name && modelCfg.Think {
