@@ -173,6 +173,7 @@ func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerC
 	if err != nil {
 		return nil, err
 	}
+	httpClient = modelkit.WrapOpenCodeHTTPClient(providerCfg.ID, httpClient)
 
 	switch providerCfg.ID {
 	case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
