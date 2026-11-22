@@ -12,7 +12,7 @@ import (
 func newFinalizationRecomposeFixture(t *testing.T) *finalizationWaitFixture {
 	t.Helper()
 	f := newFinalizationWaitFixture(t)
-	bumpGateRevision(t, f.env.execution.gate)
+	bumpGateRevision(t, f.env.execution.Gate)
 	return f
 }
 
@@ -23,11 +23,11 @@ func TestFinalizationRecomposeDefaultRebuildsAndSeals(t *testing.T) {
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
 	require.Greater(t, f.ts.finalizationStamp.Serial(), previous.Serial(), "recomposition takes a fresh stamp")
-	require.NotEmpty(t, f.ts.finalizationCandidate.MessageID)
-	stored, err := f.env.messages.Get(t.Context(), f.ts.finalizationCandidate.MessageID)
+	require.NotEmpty(t, f.ts.finalizationCandidate.Candidate.MessageID)
+	stored, err := f.env.messages.Get(t.Context(), f.ts.finalizationCandidate.Candidate.MessageID)
 	require.NoError(t, err)
 	require.True(t, stored.IsFinished())
-	require.Equal(t, f.ts.finalizationCandidate.MessageID, f.ts.currentAssistant.ID)
+	require.Equal(t, f.ts.finalizationCandidate.Candidate.MessageID, f.ts.currentAssistant.ID)
 }
 
 func TestFinalizationRecomposeWithoutProvisionalFailsClosed(t *testing.T) {
@@ -54,7 +54,7 @@ func TestFinalizationRecomposeWithoutProvisionalFailsClosed(t *testing.T) {
 			hook := f.hook(func(d *FinalizationWaitDeps) { d.Compose = nil })
 			err := hook(t.Context(), f.ts)
 			require.ErrorIs(t, err, ErrFinalizationComposeUnavailable)
-			record, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+			record, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 			require.NoError(t, err)
 			require.Equal(t, "executing", record.Phase)
 			if f.ts.currentAssistant != nil {

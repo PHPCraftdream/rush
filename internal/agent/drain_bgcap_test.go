@@ -497,7 +497,13 @@ func TestBGShellCap_ArrivalHoldsTheGateBetweenInsertAndSlotDecision(t *testing.T
 	}
 	var heldBetween, rowVisible bool
 	seam := func() {
-		heldBetween = len(f.coord.bgArrival.ch) == 1
+		lockCtx, cancelLockCheck := context.WithTimeout(ctx, 100*time.Millisecond)
+		lockErr := f.coord.bgArrival.Lock(lockCtx)
+		cancelLockCheck()
+		heldBetween = lockErr == context.DeadlineExceeded
+		if lockErr == nil {
+			f.coord.bgArrival.Unlock()
+		}
 		rowVisible = f.hasDebt(ctx)
 	}
 	bgArrivalInsertedSeam.Store(&seam)
@@ -507,7 +513,10 @@ func TestBGShellCap_ArrivalHoldsTheGateBetweenInsertAndSlotDecision(t *testing.T
 
 	require.True(t, rowVisible, "the row is durable before the decision")
 	require.True(t, heldBetween, "and the gate is held across the insert and the slot decision")
-	require.Zero(t, len(f.coord.bgArrival.ch), "released afterwards")
+	releaseCtx, cancelRelease := context.WithTimeout(ctx, time.Second)
+	defer cancelRelease()
+	require.NoError(t, f.coord.bgArrival.Lock(releaseCtx), "the gate is released afterwards")
+	f.coord.bgArrival.Unlock()
 	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID))
 }
 

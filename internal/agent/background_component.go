@@ -10,13 +10,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -115,9 +114,9 @@ func (h coordinatorBackgroundHost) coordinatorBatchCutoverFacts() BatchCutoverFa
 }
 
 func (h coordinatorBackgroundHost) bgArrivalLock(ctx context.Context) error {
-	return h.coordinator.bgArrival.lock(ctx)
+	return h.coordinator.bgArrival.Lock(ctx)
 }
-func (h coordinatorBackgroundHost) bgArrivalUnlock() { h.coordinator.bgArrival.unlock() }
+func (h coordinatorBackgroundHost) bgArrivalUnlock() { h.coordinator.bgArrival.Unlock() }
 func (h coordinatorBackgroundHost) sessionNoticeStore() *session.SessionNoticeStore {
 	return h.coordinator.sessionNoticeStore()
 }
@@ -134,18 +133,6 @@ func (h coordinatorBackgroundHost) claimAutoResumeSlot(sessionID string, rowID i
 	return h.coordinator.claimAutoResumeSlot(sessionID, rowID, eligible)
 }
 func (h coordinatorBackgroundHost) arb() *arbiter { return &h.coordinator.arb }
-
-// filterNonEmpty returns the subset of inputs that are non-empty after
-// trimming surrounding whitespace. Used to join stdout/stderr cleanly.
-func filterNonEmpty(parts ...string) []string {
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if strings.TrimSpace(p) != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
 
 // FormatAsyncCompletion makes a completed job visible to the model and UI.
 // It preserves the agent API; batchmeta owns the formatting rules.
@@ -203,19 +190,6 @@ func (c *backgroundComponent) notifyAsyncCompletion(completion AsyncCompletion) 
 // CLIScope against the DB, waiting on WaitForHint (with
 // its bounded 5s fallback) instead of draining a memory queue.
 
-// backgroundJobSummary formats a finished background command for injection
-// into the owning session. Pure and deterministic so it can be unit-tested
-// without a running shell.
-func backgroundJobSummary(id, command string, stdout, stderr string, exitCode int, elapsed time.Duration) string {
-	out := strings.TrimSpace(strings.Join(filterNonEmpty(stdout, stderr), "\n"))
-	out = tools.TruncateOutput(out)
-	if out == "" {
-		out = "(no output)"
-	}
-	return fmt.Sprintf("Background job %s (`%s`) finished: exit %d, ran %s.\n\n%s",
-		id, command, exitCode, elapsed.Round(time.Second), out)
-}
-
 // notifyBackgroundJobDone handles an SDK background shell's completion
 // (doc sec.2: a completion with no batch root of its own). Step 3: the fact is
 // persisted FIRST, durably, as a session_notices row (kind
@@ -237,7 +211,7 @@ func (c *backgroundComponent) notifyBackgroundJobDone(sessionID string, sh *shel
 		return
 	}
 	stdout, stderr, _, runErr := sh.GetOutput()
-	summary := backgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed())
+	summary := subagents.BackgroundJobSummary(sh.ID, sh.Command, stdout, stderr, shell.ExitCode(runErr), sh.Elapsed(), tools.TruncateOutput)
 
 	// The wake notice and the slot decision are one step (persistBGShellCompletion);
 	// the shell's own row is closed by the observer registered at claim time.
@@ -317,54 +291,33 @@ func (c *backgroundComponent) isSessionBusy(sessionID string) bool {
 // exists for a child, and reports the error: the launch decision that follows
 // (wakeSession) is drainPermitted's, which refuses whatever the policy refuses.
 func (c *backgroundComponent) delegatedChildDriven(ctx context.Context, sessionID string) (bool, error) {
-	parent := ""
-	if c.host.sessions() != nil {
-		sess, err := c.host.sessions().Get(ctx, sessionID)
-		switch {
-		case err == nil:
-			parent = sess.ParentSessionID
-		case !errors.Is(err, sql.ErrNoRows):
-			// The session row is unreadable (not merely absent): the parent
-			// cannot be resolved, so fall back to the driver registration
-			// and surface the read error, exactly like an unreadable
-			// delegation read.
+	return subagents.DelegatedChildDriven(
+		ctx,
+		sessionID,
+		func(ctx context.Context, sessionID string) (string, error) {
+			if c.host.sessions() == nil {
+				return "", nil
+			}
+			sess, err := c.host.sessions().Get(ctx, sessionID)
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", nil
+			}
+			if err != nil {
+				return "", err
+			}
+			return sess.ParentSessionID, nil
+		},
+		func(ctx context.Context, parent, child string) (bool, error) {
+			return c.host.coordinatorBatchCutoverFacts().LiveDelegationChildOf(ctx, parent, child)
+		},
+		func(sessionID string) bool {
 			_, registered := c.host.subAgentDrivers().get(sessionID)
-			return registered, err
-		}
-	}
-	if parent != "" {
-		running, err := c.host.coordinatorBatchCutoverFacts().LiveDelegationChildOf(ctx, parent, sessionID)
-		if err == nil {
-			return running, nil
-		}
-		_, registered := c.host.subAgentDrivers().get(sessionID)
-		return registered, err
-	}
-	_, registered := c.host.subAgentDrivers().get(sessionID)
-	return registered, nil
+			return registered
+		},
+	)
 }
 
-// ctxMutex is a mutex whose waiter can give up with its context. The zero value
-// is ready to use.
-type ctxMutex struct {
-	once sync.Once
-	ch   chan struct{}
-}
-
-func (m *ctxMutex) init() { m.once.Do(func() { m.ch = make(chan struct{}, 1) }) }
-
-// lock acquires m, or returns ctx's error.
-func (m *ctxMutex) lock(ctx context.Context) error {
-	m.init()
-	select {
-	case m.ch <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (m *ctxMutex) unlock() { <-m.ch }
+type ctxMutex = subagents.ContextMutex
 
 // bgArrivalInsertedSeam is a test-only hook called between the notice insert and
 // the slot decision of persistBGShellCompletion, still under bgArrival.

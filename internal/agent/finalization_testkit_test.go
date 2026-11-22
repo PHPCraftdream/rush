@@ -78,16 +78,16 @@ func newFinalizationDriverSeamEnv(t *testing.T) finalizationDriverSeamEnv {
 	require.NoError(t, err)
 	env.stub = &finalizationSeamScopeStub{}
 	env.reader = session.NewAgentFinalizationScopeReader(env.identity.SessionID, env.stub, env.stub, env.stub, env.stub)
-	env.scope = finalizationPublicationScope{store: coresession.NewAgentFinalizationStore(env.conn), identity: env.identity}
+	env.scope = finalizationPublicationScope{Store: coresession.NewAgentFinalizationStore(env.conn), Identity: env.identity}
 	env.execution = &finalizationExecution{
-		sessionID: env.identity.SessionID,
-		logicalID: env.identity.LogicalCallID,
-		gate:      newFinalizationGate(uint64(env.identity.Generation)),
-		read: func(context.Context) (finalizationFacts, error) {
+		SessionID: env.identity.SessionID,
+		LogicalID: env.identity.LogicalCallID,
+		Gate:      newFinalizationGate(uint64(env.identity.Generation)),
+		Read: func(context.Context) (finalizationFacts, error) {
 			return finalizationFacts{Complete: true}, nil
 		},
-		scope:      env.scope,
-		scopeFacts: env.reader,
+		Scope:      env.scope,
+		ScopeFacts: env.reader,
 	}
 	env.call = SessionAgentCall{SessionID: env.identity.SessionID, LogicalCallID: env.identity.LogicalCallID}
 	env.ctx, err = withFinalizationExecution(t.Context(), env.execution)

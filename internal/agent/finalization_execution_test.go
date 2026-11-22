@@ -6,14 +6,15 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
 func testFinalizationExecution() *finalizationExecution {
 	return &finalizationExecution{
-		sessionID: "session", logicalID: "logical", gate: newFinalizationGate(7),
-		read: func(context.Context) (finalizationFacts, error) {
+		SessionID: "session", LogicalID: "logical", Gate: gate.New(7),
+		Read: func(context.Context) (finalizationFacts, error) {
 			return finalizationFacts{Complete: true}, nil
 		},
 	}
@@ -36,7 +37,7 @@ func TestFinalizationExecutionDoesNotLeakIntoAnotherCall(t *testing.T) {
 	require.Same(t, execution, newTurnStream(turnStreamConfig{ctx: ctx, call: call}).finalization)
 	require.Nil(t, finalizationExecutionFor(context.Background(), call))
 	require.Nil(t, newTurnStream(turnStreamConfig{call: call}).finalization)
-	_, err = withFinalizationExecution(ctx, &finalizationExecution{sessionID: "session", logicalID: "logical"})
+	_, err = withFinalizationExecution(ctx, &finalizationExecution{SessionID: "session", LogicalID: "logical"})
 	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
 }
 
@@ -46,7 +47,7 @@ func TestFinalizationStepRefreshesStampAfterOwnedWork(t *testing.T) {
 	ts := &turnStream{finalization: execution}
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	first := ts.finalizationStamp
-	release, err := execution.gate.AdmitMutation(true)
+	release, err := execution.Gate.AdmitMutation(true)
 	require.NoError(t, err)
 	release()
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
@@ -58,11 +59,11 @@ func TestFinalizationStepRefreshesStampAfterOwnedWork(t *testing.T) {
 		publications++
 		return nil
 	}
-	verdict, err := execution.gate.TrySeal(t.Context(), first, candidate, execution.read, publish)
+	verdict, err := execution.Gate.TrySeal(t.Context(), first, candidate, execution.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationCompose, verdict)
 	require.Zero(t, publications)
-	verdict, err = execution.gate.TrySeal(t.Context(), second, candidate, execution.read, publish)
+	verdict, err = execution.Gate.TrySeal(t.Context(), second, candidate, execution.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
@@ -74,7 +75,7 @@ func TestFinalizationStepReadFailureClearsPreviousStamp(t *testing.T) {
 	ts := &turnStream{finalization: execution}
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	require.NotZero(t, ts.finalizationStamp.Serial())
-	execution.read = nil
+	execution.Read = nil
 	require.ErrorIs(t, ts.beginFinalizationStep(t.Context()), ErrFinalizationFactsUnavailable)
 	require.Zero(t, ts.finalizationStamp.Serial())
 }
@@ -103,7 +104,7 @@ func TestFinalizationStepFinishIsProvisionalBeforeUsageFailure(t *testing.T) {
 	finish := ts.currentAssistant.FinishPart()
 	require.NotNil(t, finish)
 	require.True(t, finish.Partial)
-	require.Equal(t, execution.logicalID, finish.FinalizationKey)
+	require.Equal(t, execution.LogicalID, finish.FinalizationKey)
 	require.Equal(t, ts.finalizationStamp.Serial(), finish.FinalizationSerial)
 	require.EqualValues(t, 1, ts.currentAssistant.CheckpointGeneration)
 }
@@ -112,8 +113,8 @@ func TestPrepareStepCapturesFinalizationForEveryProviderStep(t *testing.T) {
 	f := newAttemptFixture(t, "finalization-step-boundary", attemptFixtureOpts{noIdle: true})
 	ts := guardPrepareStream(t, f, f.model, 0)
 	execution := testFinalizationExecution()
-	execution.sessionID = f.sessID
-	ts.call.LogicalCallID = execution.logicalID
+	execution.SessionID = f.sessID
+	ts.call.LogicalCallID = execution.LogicalID
 	ts.finalization = execution
 	created := 0
 	ts.call.OnAssistantMessageCreated = func(string) { created++ }
@@ -122,14 +123,14 @@ func TestPrepareStepCapturesFinalizationForEveryProviderStep(t *testing.T) {
 	require.NoError(t, err)
 	first := ts.finalizationStamp
 	require.NotZero(t, first.Serial(), "the actual PrepareStep must acquire a stamp")
-	release, err := execution.gate.AdmitMutation(true)
+	release, err := execution.Gate.AdmitMutation(true)
 	require.NoError(t, err)
 	release()
 	_, _, err = ts.prepareStep(t.Context(), options)
 	require.NoError(t, err)
 	require.Greater(t, ts.finalizationStamp.Serial(), first.Serial())
 	require.Equal(t, 2, created)
-	execution.read = nil
+	execution.Read = nil
 	_, _, err = ts.prepareStep(t.Context(), options)
 	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
 	require.Zero(t, ts.finalizationStamp.Serial())
@@ -149,7 +150,7 @@ func TestFinalizationCandidateFencesAnOlderCheckpoint(t *testing.T) {
 	old.CheckpointGeneration = 3
 	require.NoError(t, env.messages.Update(t.Context(), old))
 	checkpoint := &turnCheckpointWriter{generation: 3}
-	execution.scope = finalizationStoredScope(t, env, message.FinalizationIdentity{Key: "logical", Generation: 7})
+	execution.Scope = finalizationStoredScope(t, env, message.FinalizationIdentity{Key: "logical", Generation: 7})
 	ts := &turnStream{
 		a: &sessionAgent{sessions: env.sessions, messages: env.messages}, genCtx: t.Context(),
 		call:         SessionAgentCall{SessionID: "session", LogicalCallID: "logical"},

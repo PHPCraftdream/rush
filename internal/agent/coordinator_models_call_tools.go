@@ -7,6 +7,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -118,8 +119,7 @@ func withoutCallOptions(ctx context.Context) context.Context {
 			// persistedAgentDepthContextKey is agent-owned; the batchflow
 			// mask covers only the runtime/batch question keys.
 			Foreign: func(key any) bool {
-				_, masked := key.(persistedAgentDepthContextKey)
-				return masked
+				return delegation.IsPersistedAgentDepthKey(key)
 			},
 		}, callOptionsContextKey{}, (*CallOptions)(nil)),
 		false)

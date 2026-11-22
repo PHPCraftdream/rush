@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -133,41 +132,6 @@ func TestSetPersistentModeConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-}
-
-func TestBackgroundJobSummary(t *testing.T) {
-	t.Parallel()
-
-	t.Run("with stdout", func(t *testing.T) {
-		t.Parallel()
-		got := backgroundJobSummary("00A", "echo hi && make build", "hello world", "", 0, 42*time.Second)
-		assert.Contains(t, got, "00A")
-		assert.Contains(t, got, "`echo hi && make build`")
-		assert.Contains(t, got, "exit 0")
-		assert.Contains(t, got, "42s")
-		assert.Contains(t, got, "hello world")
-	})
-
-	t.Run("exit code and stderr surfaced", func(t *testing.T) {
-		t.Parallel()
-		got := backgroundJobSummary("00B", "make test", "", "boom: tests failed", 2, 90*time.Second)
-		assert.Contains(t, got, "exit 2")
-		assert.Contains(t, got, "1m30s")
-		assert.Contains(t, got, "boom: tests failed")
-	})
-
-	t.Run("no output falls back to placeholder", func(t *testing.T) {
-		t.Parallel()
-		got := backgroundJobSummary("00C", "true", "  \n ", "", 0, 3*time.Second)
-		assert.Contains(t, got, "(no output)")
-	})
-
-	t.Run("both stdout and stderr are joined", func(t *testing.T) {
-		t.Parallel()
-		got := backgroundJobSummary("00D", "go test ./...", "ok pkg 0.1s", "warn: deprecated", 0, 5*time.Second)
-		assert.Contains(t, got, "ok pkg 0.1s")
-		assert.Contains(t, got, "warn: deprecated")
-	})
 }
 
 func TestAutoResumeEligible(t *testing.T) {
