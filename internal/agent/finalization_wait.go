@@ -151,7 +151,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 		// Status facts are read directly, without re-entering the gate:
 		// that helper requires the gate's mutex, which this loop does not
 		// hold; trySeal re-reads and refuses under the lock.
-		facts, err := execution.read(ctx)
+		facts, err := execution.Read(ctx)
 		if err != nil {
 			facts = finalizationFacts{}
 		}
@@ -160,7 +160,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 			return ctx.Err()
 		}
 		deps.emit(FinalizationPhaseSealing, facts)
-		verdict, err := execution.gate.TrySeal(ctx, ts.finalizationStamp, ts.finalizationCandidate.finalizationCandidate, execution.read, publish)
+		verdict, err := execution.Gate.TrySeal(ctx, ts.finalizationStamp, ts.finalizationCandidate.Candidate, execution.Read, publish)
 		if err != nil {
 			// An already sealed gate answers Accepted plus ErrFinalizationSealed;
 			// sealing twice is idempotent and must not publish again.
@@ -184,7 +184,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 				deps.emit(FinalizationPhaseWaiting, facts)
 				// The durable side said "not yet": time heals, recomposition
 				// cannot, so settle debts and wait instead of burning budget.
-				if err := settleFinalizationDebts(ctx, deps.Settler, execution.sessionID); err != nil {
+				if err := settleFinalizationDebts(ctx, deps.Settler, execution.SessionID); err != nil {
 					return err
 				}
 				if err := waitFinalizationRound(ctx, poll, nil); err != nil {
@@ -204,10 +204,10 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 			}
 		case finalizationWaitWork:
 			deps.emit(FinalizationPhaseWaiting, facts)
-			if err := settleFinalizationDebts(ctx, deps.Settler, execution.sessionID); err != nil {
+			if err := settleFinalizationDebts(ctx, deps.Settler, execution.SessionID); err != nil {
 				return err
 			}
-			waitVerdict, changed, err := execution.gate.WaitState(ctx, execution.read)
+			waitVerdict, changed, err := execution.Gate.WaitState(ctx, execution.Read)
 			if err != nil {
 				deps.emit(FinalizationPhaseFailed, facts)
 				return fmt.Errorf("finalization wait state read failed: %w", err)

@@ -77,7 +77,7 @@ func newFinalizationWaitFixture(t *testing.T) *finalizationWaitFixture {
 	t.Helper()
 	env := newFinalizationDriverSeamEnv(t)
 	facts := newFinalizationWaitFactsStub()
-	env.execution.read = facts.read
+	env.execution.Read = facts.read
 	created, err := env.messages.Create(t.Context(), "session", message.CreateMessageParams{
 		Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "provisional"}},
 	})
@@ -93,7 +93,7 @@ func newFinalizationWaitFixture(t *testing.T) *finalizationWaitFixture {
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	stamp := ts.finalizationStamp
 	identity := message.FinalizationIdentity{
-		Key: env.execution.logicalID, Generation: stamp.Epoch(),
+		Key: env.execution.LogicalID, Generation: stamp.Epoch(),
 		Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 	}
 	require.NoError(t, created.MarkFinalizationCandidate(identity))
@@ -112,7 +112,7 @@ func (f *finalizationWaitFixture) composeStub(t *testing.T) FinalizationComposeF
 		f.composes++
 		f.mu.Unlock()
 		identity := message.FinalizationIdentity{
-			Key: in.Execution.logicalID, Generation: in.Stamp.Epoch(),
+			Key: in.Execution.LogicalID, Generation: in.Stamp.Epoch(),
 			Revision: in.Stamp.DurableRevision(), Serial: in.Stamp.Serial(),
 		}
 		created, err := f.env.messages.Create(ctx, "session", message.CreateMessageParams{
@@ -121,7 +121,7 @@ func (f *finalizationWaitFixture) composeStub(t *testing.T) FinalizationComposeF
 		require.NoError(t, err)
 		require.NoError(t, created.MarkFinalizationCandidate(identity))
 		created.CheckpointGeneration = 1
-		return persistFinalizationCandidate(ctx, f.env.sessions, f.env.messages, in.Execution.scope, identity, created)
+		return persistFinalizationCandidate(ctx, f.env.sessions, f.env.messages, in.Execution.Scope, identity, created)
 	}
 }
 
@@ -143,7 +143,7 @@ func bumpGateRevision(t *testing.T, gate *finalizationGate) {
 // recordAccepted asserts the durable and message receipts of a sealed owner.
 func recordAccepted(t *testing.T, f *finalizationWaitFixture) {
 	t.Helper()
-	record, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+	record, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
 }
@@ -193,7 +193,7 @@ func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 		// which stales that stamp and recomposes a second time. With the bump
 		// first, the facts are quiet only after the revision reached its
 		// final value, so exactly one recomposition remains.
-		release, err := f.env.execution.gate.AdmitMutation(false)
+		release, err := f.env.execution.Gate.AdmitMutation(false)
 		if err == nil {
 			release()
 		}
@@ -238,7 +238,7 @@ func TestFinalizationWaitLoopHeldQuestionPausesWithoutPublishing(t *testing.T) {
 	require.ErrorAs(t, err, &awaited)
 	require.Equal(t, "session", awaited.SessionID)
 	require.ErrorIs(t, err, errAwaitingAnswer)
-	record, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+	record, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase, "a pause must not publish")
 	require.False(t, f.ts.currentAssistant.IsFinished())
@@ -278,7 +278,7 @@ func TestFinalizationWaitLoopCancelDuringWaitReturnsContextError(t *testing.T) {
 	})
 	err := hook(ctx, f.ts)
 	require.ErrorIs(t, err, context.Canceled)
-	record, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+	record, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase, "cancellation must not publish")
 	require.Equal(t, 0, f.composeCount())
@@ -288,7 +288,7 @@ func TestFinalizationWaitLoopRecomposeLimitIsHonest(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
 	// A stale entry stamp forces the first recomposition, so the budget is
 	// actually exercised.
-	bumpGateRevision(t, f.env.execution.gate)
+	bumpGateRevision(t, f.env.execution.Gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.MaxRecompositions = 2
 		d.Compose = func(ctx context.Context, in FinalizationComposeInput) (persistedFinalizationCandidate, error) {
@@ -298,7 +298,7 @@ func TestFinalizationWaitLoopRecomposeLimitIsHonest(t *testing.T) {
 			}
 			// Every recomposition is immediately invalidated again, so the
 			// loop would keep composing forever without a budget.
-			bumpGateRevision(t, f.env.execution.gate)
+			bumpGateRevision(t, f.env.execution.Gate)
 			return persisted, nil
 		}
 	})
@@ -309,7 +309,7 @@ func TestFinalizationWaitLoopRecomposeLimitIsHonest(t *testing.T) {
 
 func TestFinalizationWaitLoopStaleStampComposesExactlyOnce(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	bumpGateRevision(t, f.env.execution.gate)
+	bumpGateRevision(t, f.env.execution.Gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) { d.Compose = f.composeStub(t) })
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
@@ -325,10 +325,10 @@ func TestFinalizationWaitLoopSealAfterSealIsIdempotent(t *testing.T) {
 		}
 	})
 	require.NoError(t, hook(t.Context(), f.ts))
-	before, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+	before, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.NoError(t, hook(t.Context(), f.ts))
-	after, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+	after, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, before, after, "an already sealed gate must not publish again")
 	require.Equal(t, 0, f.composeCount())
@@ -336,7 +336,7 @@ func TestFinalizationWaitLoopSealAfterSealIsIdempotent(t *testing.T) {
 
 func TestFinalizationWaitLoopZeroBudgetRefusesWithoutComposing(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	bumpGateRevision(t, f.env.execution.gate)
+	bumpGateRevision(t, f.env.execution.Gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.MaxRecompositions = 0
 		d.Compose = f.composeStub(t)

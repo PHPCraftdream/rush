@@ -28,19 +28,19 @@ func TestPersistFinalizationCandidateCommitsMessageAndIdentityTogether(t *testin
 
 	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 	require.NoError(t, err)
-	require.Equal(t, m.ID, persisted.MessageID)
-	record, err := scope.store.Snapshot(t.Context(), scope.identity)
+	require.Equal(t, m.ID, persisted.Candidate.MessageID)
+	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
-	require.Equal(t, persisted.MessageID, record.CandidateMessageID)
-	require.Equal(t, persisted.Hash, record.CandidateHash)
+	require.Equal(t, persisted.Candidate.MessageID, record.CandidateMessageID)
+	require.Equal(t, persisted.Candidate.Hash, record.CandidateHash)
 	require.EqualValues(t, 1, record.CandidateSerial)
 	require.Equal(t, "executing", record.Phase, "a candidate is provisional, not accepted")
 	stored, err := env.messages.Get(t.Context(), m.ID)
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
-	require.NoError(t, stored.VerifyFinalizationCandidate(id, persisted.Hash))
+	require.NoError(t, stored.VerifyFinalizationCandidate(id, persisted.Candidate.Hash))
 
-	accepted, err := publishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, persisted.finalizationCandidate)
+	accepted, err := publishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, persisted.Candidate)
 	require.NoError(t, err, "publication follows the candidate commit")
 	require.True(t, accepted.IsFinished())
 }
@@ -50,12 +50,12 @@ func TestPersistFinalizationCandidateStaleWritesNothing(t *testing.T) {
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 	scope := finalizationStoredScope(t, env, id)
 	m := newFinalizationCandidateMessage(t, env, id)
-	_, err := scope.store.Admit(t.Context(), scope.identity, "late-work")
+	_, err := scope.Store.Admit(t.Context(), scope.Identity, "late-work")
 	require.NoError(t, err)
 
 	_, err = persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 	require.ErrorIs(t, err, ErrFinalizationScopeChanged)
-	record, err := scope.store.Snapshot(t.Context(), scope.identity)
+	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
 	require.Empty(t, record.CandidateMessageID)
 	stored, err := env.messages.Get(t.Context(), m.ID)
@@ -81,14 +81,14 @@ func TestPublicationRefusesCandidateIdentityOrHashMismatch(t *testing.T) {
 			m := newFinalizationCandidateMessage(t, env, id)
 			persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 			require.NoError(t, err)
-			presented, candidate := id, persisted.finalizationCandidate
+			presented, candidate := id, persisted.Candidate
 			mutate(&presented, &candidate)
 			_, err = publishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, presented, candidate)
 			require.Error(t, err)
 			stored, err := env.messages.Get(t.Context(), m.ID)
 			require.NoError(t, err)
 			require.False(t, stored.IsFinished(), "a mismatched presentation must not publish")
-			record, err := scope.store.Snapshot(t.Context(), scope.identity)
+			record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 			require.NoError(t, err)
 			require.Equal(t, "executing", record.Phase)
 		})
@@ -104,8 +104,12 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 	require.NoError(t, err)
 	quiet := func(context.Context) (finalizationFacts, error) { return finalizationFacts{Complete: true}, nil }
 
-	restarted := newFinalizationGate(1)
-	verdict, err := recoverFinalizationCandidate(t.Context(), env.messages, scope, restarted)
+	execution := testFinalizationExecution()
+	execution.Gate = newFinalizationGate(1)
+	execution.Scope = scope
+	hook := NewFinalizationRecoverScopeHook(env.messages)
+	restarted := execution.Gate
+	verdict, err := hook(t.Context(), execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateAdopted, verdict)
 	stamp, err := restarted.BeginCandidate(t.Context(), quiet)
@@ -114,8 +118,11 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 
 	_, err = env.conn.ExecContext(t.Context(), `DELETE FROM messages WHERE id=?`, m.ID)
 	require.NoError(t, err)
-	failedGate := newFinalizationGate(1)
-	verdict, err = recoverFinalizationCandidate(t.Context(), env.messages, scope, failedGate)
+	execution = testFinalizationExecution()
+	execution.Gate = newFinalizationGate(1)
+	execution.Scope = scope
+	failedGate := execution.Gate
+	verdict, err = hook(t.Context(), execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateFailed, verdict)
 	stamp, err = failedGate.BeginCandidate(t.Context(), quiet)
@@ -125,7 +132,7 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 
 func finalizationCandidateStream(env fakeEnv, scope finalizationPublicationScope, m *message.Message) *turnStream {
 	execution := testFinalizationExecution()
-	execution.scope = scope
+	execution.Scope = scope
 	return &turnStream{
 		a:                &sessionAgent{sessions: env.sessions, messages: env.messages},
 		genCtx:           context.Background(),
@@ -144,20 +151,20 @@ func TestPersistStepFinishRecordsFinalizationCandidate(t *testing.T) {
 	ts := finalizationCandidateStream(env, scope, &m)
 
 	require.NoError(t, ts.persistStepFinish())
-	require.Equal(t, m.ID, ts.finalizationCandidate.MessageID)
-	require.Equal(t, id, ts.finalizationCandidate.identity)
-	record, err := scope.store.Snapshot(t.Context(), scope.identity)
+	require.Equal(t, m.ID, ts.finalizationCandidate.Candidate.MessageID)
+	require.Equal(t, id, ts.finalizationCandidate.Identity)
+	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, record.CandidateMessageID)
 
 	// A later step that is already stale records nothing and is not a turn error.
-	_, err = scope.store.Admit(t.Context(), scope.identity, "work")
+	_, err = scope.Store.Admit(t.Context(), scope.Identity, "work")
 	require.NoError(t, err)
 	next := newFinalizationCandidateMessage(t, env, message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 2})
 	ts.currentAssistant = &next
 	require.NoError(t, ts.persistStepFinish())
-	require.Empty(t, ts.finalizationCandidate.MessageID)
-	record, err = scope.store.Snapshot(t.Context(), scope.identity)
+	require.Empty(t, ts.finalizationCandidate.Candidate.MessageID)
+	record, err = scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, record.CandidateMessageID)
 }
@@ -185,7 +192,7 @@ func TestPersistStepFinishWithoutFinalizationKeepsPlainWrite(t *testing.T) {
 	stored, err := env.messages.Get(t.Context(), m.ID)
 	require.NoError(t, err)
 	require.NotNil(t, stored.FinishPart(), "with the feature off the step is written exactly as before")
-	record, err := scope.store.Snapshot(t.Context(), scope.identity)
+	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
 	require.Empty(t, record.CandidateMessageID, "the feature-off path never touches the finalization record")
 }

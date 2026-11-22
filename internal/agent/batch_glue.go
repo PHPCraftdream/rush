@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -313,7 +314,7 @@ func (h coordinatorBatchGlueHost) batchGlueDriverClaimer() BatchDriverClaimer {
 	return h.coordinator.batchDriverClaimer
 }
 
-func (h coordinatorBatchGlueHost) batchGlueBGArrival() *ctxMutex {
+func (h coordinatorBatchGlueHost) batchGlueBGArrival() *subagents.ContextMutex {
 	return &h.coordinator.bgArrival
 }
 
@@ -374,10 +375,10 @@ func (g *batchCutoverGlueComponent) readTurnFactsBatch(ctx context.Context, fact
 	if seam := readTurnFactsGateSeam.Load(); seam != nil {
 		(*seam)()
 	}
-	if err := h.batchGlueBGArrival().lock(ctx); err != nil {
+	if err := h.batchGlueBGArrival().Lock(ctx); err != nil {
 		return f, fmt.Errorf("turn facts: bg arrival: %w", err)
 	}
-	defer h.batchGlueBGArrival().unlock()
+	defer h.batchGlueBGArrival().Unlock()
 	rows, err := facts.PendingInclusiveDebt(ctx, sessionID)
 	if err != nil {
 		return f, fmt.Errorf("turn facts: batch debt rows: %w", err)

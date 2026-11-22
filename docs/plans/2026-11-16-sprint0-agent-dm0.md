@@ -3616,6 +3616,10 @@ These are **named execution choices only**. In every bullet the linked split man
 * `turnstep` (9): `turnstep` progress/admission/UI and `turnbudget` summarize/compaction under `runtime/exec/`; move summarizeQueue with turnBudget, but do not claim raw struct-member projection proves that field move.
 * Reconciliation of old labels: D1 `usage` now projects to 5 target files, `modelkit` to 7, both within 7; `batchrun` is dissolved into batchinst; `agenticfetch`, `subagents`, `wakectl` have no active target declarations and are dissolved. `callbeat` has 2 target files and remains in the SCC. Do not use historical original-12 lists/counts as current limits.
 
+DM6 physical targets are `runtime/batch/batchcore/finalize` and `runtime/batch/batchadapter/delegation`. EX-0D portable background policies (`ContextMutex`, summary/filter, delegated-child driving) are targeted separately in `runtime/batch/batchadapter/subagents`; the legacy `subagents` logical owner is dissolved. The nested destinations preserve the seven-child limit: `.githooks/check_dir_entries.sh:115-128,165-179` counts ancestor child directories, so a direct `finalize` child under `batch` would make eight.
+
+Finalization holds proof: `internal/agent/finalization_holds_providers.go:49-53` calls lease `Roots()`, and `:136` calls `OwnerForRoot()`; implementations are `internal/agent/runtime/batch/batchflow/lease.go:172` and `:161`.
+
 ### Concrete execution order
 
 Do not claim a topological order for the residual SCC. This is a dependency-preserving sequence, not a DAG proof. Retarget overlapping coordinator/sessionAgent work serially; each lane uses declaration selectors in the execution manifest, not whole-file moves.
