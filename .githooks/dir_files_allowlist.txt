@@ -31,7 +31,10 @@ internal/app 272
 internal/config 213
 internal/config/discover 27
 internal/kit/sys/shell 46
-internal/serve/server 173
+# internal/serve/server/server is born over the 21-file limit: the composer moves down with the 133
+# cross-cutting test files that lanes L5/L6/L7 have not re-homed yet (5 production files + 133 tests = 138).
+# The count falls as those tests move to their subject packages; no other change in this lane.
+internal/serve/server/server 138
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 37
 # MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.

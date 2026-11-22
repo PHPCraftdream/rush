@@ -10,7 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app"
-	"github.com/PHPCraftdream/rush/internal/serve/server"
+	"github.com/PHPCraftdream/rush/internal/serve/server/server"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

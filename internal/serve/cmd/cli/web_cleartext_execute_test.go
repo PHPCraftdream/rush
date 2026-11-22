@@ -14,7 +14,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/serve/server"
+	"github.com/PHPCraftdream/rush/internal/serve/server/server"
 	"github.com/spf13/cobra"
 )
 

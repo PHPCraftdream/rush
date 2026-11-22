@@ -45,7 +45,6 @@ internal/config/discover 13
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/serve/server 46
 internal/session 13
 # MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.

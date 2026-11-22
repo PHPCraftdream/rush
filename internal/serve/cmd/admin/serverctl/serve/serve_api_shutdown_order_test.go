@@ -9,7 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/serve/server"
+	"github.com/PHPCraftdream/rush/internal/serve/server/server"
 )
 
 func TestServeStopsFlusherBeforeAppShutdown(t *testing.T) {

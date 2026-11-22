@@ -359,7 +359,7 @@ func HandleSetProviderPeakHours(a *appPkg.App, c *hub.Client, msg wirePkg.WSMess
 }
 
 func HandleSetMCPDisabled(ctx context.Context, a *appPkg.App, c *hub.Client, msg wirePkg.WSMessage) {
-	handleSetMCPDisabled(ctx, a, c, msg)
+	SetMCPDisabled(ctx, a, c, msg)
 }
 
 func handleSetProviderPeakHours(a *appPkg.App, c *hub.Client, msg wirePkg.WSMessage) {
@@ -424,7 +424,7 @@ func handleSetProviderPeakHours(a *appPkg.App, c *hub.Client, msg wirePkg.WSMess
 // MCP server configuration handlers: enable/disable, add, remove, and
 // update of configured MCP servers.
 
-func handleSetMCPDisabled(ctx context.Context, a *appPkg.App, c *hub.Client, msg wirePkg.WSMessage) {
+func SetMCPDisabled(ctx context.Context, a *appPkg.App, c *hub.Client, msg wirePkg.WSMessage) {
 	var p wirePkg.SetMCPDisabledPayload
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.Reply(msg.ID, wirePkg.EventError, nil, "invalid payload")

@@ -3,15 +3,19 @@ import os
 import subprocess
 
 package = os.environ['TEST_PACKAGE']
-if package == './internal/serve/server':
+if package == './internal/serve/server/server':
     tests = '^Test(PanicTimelineReportsOnlyOnFailure|ListenerReportOnlyOnFailure|ListenerSnapshotCountsConnectionStates)$'
     mutants = [
-        ('panic-unconditional', 'internal/serve/server/panic_timeline_test.go', 'if !t.Failed() {', 'if false {', 'successful test emitted diagnostics'),
-        ('panic-missing', 'internal/serve/server/panic_timeline_test.go', 'if !t.Failed() {', 'if true {', 'report lacks'),
-        ('panic-no-state', 'internal/serve/server/panic_timeline_test.go', 'state = snapshot()', 'state = ""', 'report lacks'),
-        ('listener-unconditional', 'internal/serve/server/listener_failure_report_test.go', 'if !t.Failed() {', 'if false {', 'successful test emitted or collected listener diagnostics'),
-        ('listener-missing', 'internal/serve/server/listener_failure_report_test.go', 'if !t.Failed() {', 'if true {', 'snapshot calls=0'),
-        ('listener-no-timeline', 'internal/serve/server/listener_failure_report_test.go', '+ tl.String() +', '+ "" +', 'report lacks'),
+        ('listener-unconditional', 'internal/serve/server/server/listener_failure_report_test.go', 'if !t.Failed() {', 'if false {', 'successful test emitted or collected listener diagnostics'),
+        ('listener-missing', 'internal/serve/server/server/listener_failure_report_test.go', 'if !t.Failed() {', 'if true {', 'snapshot calls=0'),
+        ('listener-no-timeline', 'internal/serve/server/server/listener_failure_report_test.go', '+ tl.String() +', '+ "" +', 'report lacks'),
+    ]
+elif package == './internal/serve/server/hub':
+    tests = '^TestPanicTimelineReportsOnlyOnFailure$'
+    mutants = [
+        ('panic-unconditional', 'internal/serve/server/hub/panic_timeline_test.go', 'if !t.Failed() {', 'if false {', 'successful test emitted diagnostics'),
+        ('panic-missing', 'internal/serve/server/hub/panic_timeline_test.go', 'if !t.Failed() {', 'if true {', 'report lacks'),
+        ('panic-no-state', 'internal/serve/server/hub/panic_timeline_test.go', 'state = snapshot()', 'state = ""', 'report lacks'),
     ]
 elif package == './internal/session':
     tests = '^Test(PumpReportOnlyOnFailure|PumpQueueReportRetainsReadErrors|PumpQueueSnapshotBeforeFirstLeaseAndOnReadError|PumpFailureReportCarriesTimelineAndPumpState)$'
