@@ -242,3 +242,7 @@ func TestExecuteServeCobraUsageExitCode(t *testing.T) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
+
+func normalizedServeError(value string) string {
+	return strings.Join(strings.Fields(value), "")
+}
