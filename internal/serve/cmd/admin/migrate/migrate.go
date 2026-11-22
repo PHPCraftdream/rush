@@ -167,7 +167,6 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 		if walkErr != nil {
 			return walkErr
 		}
-
 	} else {
 		// Single-dir mode: handle root's .crush/ and crush.json.
 		rootRenamed, rootRefused, rootFailed, rootFoundAny := migrateRootLocation(cmd, root, dryRun)
