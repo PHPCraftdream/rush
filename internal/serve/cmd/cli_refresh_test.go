@@ -125,7 +125,11 @@ func TestCLIRefresh_LocalNoLegacyNoExisting(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCLIRefresh_GlobalMode(t *testing.T) {
-	isolateGlobalPaths(t)
+	configDir, dataDir := t.TempDir(), t.TempDir()
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

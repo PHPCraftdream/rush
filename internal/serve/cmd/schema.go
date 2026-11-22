@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"sync"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -67,15 +66,4 @@ func setProviderTypeEnum(schema *jsonschema.Schema) {
 // the sprint0 cmd split replaced rootCmd.AddCommand with constructors).
 func NewSchemaCmd() *cobra.Command {
 	return deepFreshCmd(schemaCmd)
-}
-
-// NewMigrateCmd returns a fresh migrate command from the registered template.
-var newMigrateCmdOnce sync.Once
-
-func NewMigrateCmd() *cobra.Command {
-	newMigrateCmdOnce.Do(func() {
-		migrateCmd.Flags().BoolP("recursive", "r", false, "Recursively walk the directory tree")
-		migrateCmd.Flags().Bool("dry-run", false, "Report what would happen without making changes")
-	})
-	return deepFreshCmd(migrateCmd)
 }

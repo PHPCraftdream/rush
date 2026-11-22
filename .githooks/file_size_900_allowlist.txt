@@ -30,7 +30,5 @@ internal/app/app_run_reviewer_evidence.go 908
 # 915 -> 916: +1 import line (envresolve) from the D2-1 move of the shell variable resolver; deliberate, only down from here.
 internal/config/load_providers.go 910
 internal/config/store_config_disk_sync_test.go 987
-internal/serve/cmd/migrate.go 929
-internal/serve/cmd/migrate_test.go 954
 # MV2 retires the moved lock and childgroup 900-line exemptions. The test-only lock file remains over the ceiling.
 internal/session/proc/sessionlock/lock_test.go 986
