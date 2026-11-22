@@ -26,7 +26,7 @@ internal/app 52
 # internal/serve/cmd 165 -> 167: +2 for internal/serve/cmd/queue and internal/serve/cmd/notification
 # moved in (stage C). The count falls with the package split (stage D2).
 # 136 guard-verified rc0 on 2026-11-17 (M1 scan pass; value unchanged).
-internal/serve/cmd 78
+internal/serve/cmd 64
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).

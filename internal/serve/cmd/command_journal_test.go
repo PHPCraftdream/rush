@@ -297,6 +297,8 @@ func TestExitWithAudit(t *testing.T) {
 	clijournal.SetExitFunc(recorder.Exit)
 	t.Cleanup(func() { clijournal.SetExitFunc(oldExit) })
 
+	logsPathCmd, _, err := rootCmd.Find([]string{"logs", "path"})
+	require.NoError(t, err)
 	journalCommandStart(logsPathCmd, nil)
 	exitWithAudit(7)
 	cmdtest.AwaitClosed(t, recorder.First, "first exitWithAudit")
@@ -501,6 +503,8 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 		audit.SetDirFunc(clijournal.JournalAuditDir)
 	})
 	resetCommandJournalForTests()
+	logsPathCmd, _, findErr := rootCmd.Find([]string{"logs", "path"})
+	require.NoError(t, findErr)
 	require.NotPanics(t, func() {
 		audit.SetDirFunc(func() string { return filepath.Join(blockedParent, "sub") })
 		journalCommandStart(logsPathCmd, nil)

@@ -66,7 +66,7 @@ func TestCancelSignalsCatchSIGTERM(t *testing.T) {
 
 func TestRunAndLoginSignalCallsExcludeSIGKILL(t *testing.T) {
 	callWithKill := regexp.MustCompile(`(?s)signal\.Notify(?:Context)?\s*\((?:[^()]|\([^()]*\))*os\.Kill`)
-	for _, name := range []string{"run/run.go", "login.go"} {
+	for _, name := range []string{"run/run.go", "admin/login/login.go"} {
 		t.Run(name, func(t *testing.T) {
 			contents, err := os.ReadFile(filepath.Clean(name))
 			require.NoError(t, err)
