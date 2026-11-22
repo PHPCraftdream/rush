@@ -372,7 +372,12 @@ func runLockTree(t *testing.T, cwd, dataDir string, args ...string) (stdout, std
 }
 
 func resetLockFlags(modelsUseCmd *cobra.Command) {
-	for _, c := range []*cobra.Command{lockCmd, unlockCmd} {
+	// Lane M6 moved lock/unlock to admin/settings; NewRootCmd registers
+	// fresh copies, so resolve the registered children from the installed
+	// root instead of stale package-level templates.
+	lockC, _, _ := rootCmd.Find([]string{"lock"})
+	unlockC, _, _ := rootCmd.Find([]string{"unlock"})
+	for _, c := range []*cobra.Command{lockC, unlockC} {
 		for _, name := range []string{"global", "local"} {
 			if f := c.Flags().Lookup(name); f != nil {
 				_ = f.Value.Set(f.DefValue)

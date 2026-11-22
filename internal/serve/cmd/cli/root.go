@@ -16,11 +16,15 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	cmdpkg "github.com/PHPCraftdream/rush/internal/serve/cmd"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/diag"
+	install "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/install"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/install/targets"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/login"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/migrate"
+	reports "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/reports"
 	apictl "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/api"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/queuecmd"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/serve"
+	settingsctl "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/settings"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	out "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
@@ -226,23 +230,23 @@ authenticate — it is never transmitted as part of the URL.
 	// The moved journal/exit-code helpers need the live tree objects before
 	// any RunE runs (formerly installed by package cmd's init phase).
 	apiCmd := apictl.NewAPICmd()
-	tokensCmd := cmdpkg.NewTokensCmd()
+	tokensCmd := settingsctl.NewTokensCmd()
 	serveCmd := serve.NewServeCmd()
 	journal.UseJournalRoot(root)
 	out.SetInvocationCommands(root, apiCmd, tokensCmd, serveCmd)
 
 	root.AddCommand(
-		cmdpkg.NewLockCmd(),
-		cmdpkg.NewUnlockCmd(),
+		settingsctl.NewLockCmd(),
+		settingsctl.NewUnlockCmd(),
 		run.NewRunCmd(),
-		cmdpkg.NewDirsCmd(),
-		cmdpkg.NewProjectsCmd(),
-		cmdpkg.NewUpdateProvidersCmd(),
+		settingsctl.NewDirsCmd(),
+		reports.NewProjectsCmd(),
+		settingsctl.NewUpdateProvidersCmd(),
 		diag.NewLogsCmd(),
-		cmdpkg.NewSchemaCmd(),
+		settingsctl.NewSchemaCmd(),
 		diag.NewPsCmd(),
 		login.NewLoginCmd(),
-		cmdpkg.NewStatsCmd(),
+		reports.NewStatsCmd(),
 		tokensCmd,
 		apiCmd,
 		cmdpkg.NewSessionsCmd(),
@@ -255,25 +259,25 @@ authenticate — it is never transmitted as part of the URL.
 		queuecmd.NewBatchCmd(),
 		providers.NewProvidersCmd(),
 		wtree.NewWorktreeCmd(),
-		cmdpkg.NewMcpCmd(),
-		cmdpkg.NewClaudeInitCmd(),
-		cmdpkg.NewClaudeDelCmd(),
-		cmdpkg.NewCliRefreshCmd(),
-		cmdpkg.NewCodexInitCmd(),
-		cmdpkg.NewCodexDelCmd(),
-		cmdpkg.NewGeminiInitCmd(),
-		cmdpkg.NewGeminiDelCmd(),
-		cmdpkg.NewGrokInitCmd(),
-		cmdpkg.NewGrokDelCmd(),
-		cmdpkg.NewOmpInitCmd(),
-		cmdpkg.NewOmpDelCmd(),
-		cmdpkg.NewOpencodeInitCmd(),
-		cmdpkg.NewOpencodeDelCmd(),
-		cmdpkg.NewQwenInitCmd(),
-		cmdpkg.NewQwenDelCmd(),
-		cmdpkg.NewResultCmd(),
-		cmdpkg.NewRolesCmd(),
-		cmdpkg.NewSystemPromptCmd(),
+		settingsctl.NewMcpCmd(),
+		install.NewClaudeInitCmd(),
+		install.NewClaudeDelCmd(),
+		install.NewCliRefreshCmd(),
+		targets.NewCodexInitCmd(),
+		targets.NewCodexDelCmd(),
+		targets.NewGeminiInitCmd(),
+		targets.NewGeminiDelCmd(),
+		targets.NewGrokInitCmd(),
+		targets.NewGrokDelCmd(),
+		targets.NewOmpInitCmd(),
+		targets.NewOmpDelCmd(),
+		targets.NewOpencodeInitCmd(),
+		targets.NewOpencodeDelCmd(),
+		targets.NewQwenInitCmd(),
+		targets.NewQwenDelCmd(),
+		reports.NewResultCmd(),
+		reports.NewRolesCmd(),
+		reports.NewSystemPromptCmd(),
 		web,
 	)
 	return root
