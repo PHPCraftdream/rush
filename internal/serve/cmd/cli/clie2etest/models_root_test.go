@@ -71,7 +71,7 @@ func TestModelsUse_SmartAndFastFlagsTogether(t *testing.T) {
 func TestModelsUse_PositionalAndSmartFlagConflict_Rejected(t *testing.T) {
 	result := runModelsCLI(t, newModelsCLIFixture(t), false, "models", "use", "glm4_6", "glm5_turbo", "--smart", "glm4_7_flash")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, "cannot combine positional")
+	assert.Contains(t, normalizedText(result.Stderr), "cannot combine positional")
 }
 
 func TestModelsUse_OnePositionalArg_RejectedAsAmbiguous(t *testing.T) {
@@ -83,7 +83,7 @@ func TestModelsUse_OnePositionalArg_RejectedAsAmbiguous(t *testing.T) {
 func TestModelsUse_NoArgsNoFlags_RejectedAsNoOp(t *testing.T) {
 	result := runModelsCLI(t, newModelsCLIFixture(t), false, "models", "use")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, "nothing to set")
+	assert.Contains(t, normalizedText(result.Stderr), "nothing to set")
 }
 
 func TestModelsUse_WorkerOnlyViaFlags_NoPositionals(t *testing.T) {
@@ -128,7 +128,7 @@ func TestModelsUse_WorkerViaShortCode(t *testing.T) {
 func TestModelsUse_UnknownWorkerAtomFailsCleanly(t *testing.T) {
 	result := runModelsCLI(t, newModelsCLIFixture(t), false, "models", "use", "glm4_6", "glm5_turbo", "--worker", "not-a-real-atom-xyz")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, "worker:")
+	assert.Contains(t, normalizedText(result.Stderr), "worker:")
 }
 
 func checkModelsStateLocalRestoreUsesWorkspaceConfig(t *testing.T) {
@@ -150,7 +150,7 @@ func checkModelsStateLocalRestoreUsesWorkspaceConfig(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(state.Stdout), &payload))
 	assert.Contains(t, string(payload.Local["fast"]), `"glm-4.7-flash"`)
 	assert.Contains(t, string(payload.Local["smart"]), `"glm-4.6"`)
-	assert.Empty(t, payload.Global["fast"], "the global fast model must remain unset")
+	assert.Contains(t, []string{"", "null"}, string(payload.Global["fast"]), "the global fast model must remain unset")
 	localAfter, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 	assert.Contains(t, string(localAfter), `"glm-4.7-flash"`)
@@ -166,8 +166,8 @@ func TestModelsUse_InvalidReviewerEffort_ZeroWrites(t *testing.T) {
 	require.NoError(t, err)
 	result := runModelsCLI(t, fixture, false, "models", "use", "glm4_6", "glm5_turbo", "--reviewer", "glm5_3-hihg")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, "reviewer:")
-	assert.Contains(t, result.Stderr, "not a valid level")
+	assert.Contains(t, normalizedText(result.Stderr), "reviewer:")
+	assert.Contains(t, normalizedText(result.Stderr), "not a valid level")
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after), "failed models use must leave global config byte-identical")
@@ -180,7 +180,7 @@ func TestModelsUse_InvalidReviewerEffort_WorkerAlsoNotWritten(t *testing.T) {
 	require.NoError(t, err)
 	result := runModelsCLI(t, fixture, false, "models", "use", "glm4_6", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3-hihg")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, "reviewer:")
+	assert.Contains(t, normalizedText(result.Stderr), "reviewer:")
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after), "failed reviewer validation must not write worker either")
@@ -193,7 +193,7 @@ func TestModelsUse_InvalidSmartPositional_ShortCircuitsBeforeWorkerReviewer(t *t
 	require.NoError(t, err)
 	result := runModelsCLI(t, fixture, false, "models", "use", "not-a-real-atom-xyz", "glm5_turbo", "--worker", "glm4_7_flash", "--reviewer", "glm5_3")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, "smart:")
+	assert.Contains(t, normalizedText(result.Stderr), "smart:")
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after), "invalid smart positional must leave global config byte-identical")
@@ -223,7 +223,7 @@ func TestModelsIntegrityCmd_SessionsListAborts(t *testing.T) {
 	seedTamperedModelsCLI(t, fixture)
 	result := runModelsCLI(t, fixture, false, "sessions", "list")
 	require.NotZero(t, result.ExitCode)
-	assert.Contains(t, result.Stderr, config.ErrModelsEditedDirectly.Error())
+	assert.Contains(t, normalizedText(result.Stderr), normalizedText(config.ErrModelsEditedDirectly.Error()))
 }
 
 func TestModelsIntegrityCmd_ModelsStateWarns(t *testing.T) {
@@ -284,7 +284,7 @@ func TestModelsIntegrityCmd_LockedMissingKeyAborts(t *testing.T) {
 	seedLockedModelsMissingRevCLI(t, fixture)
 	aborts := runModelsCLI(t, fixture, true, "sessions", "list")
 	require.NotZero(t, aborts.ExitCode)
-	assert.Contains(t, aborts.Stderr, config.ErrModelsEditedDirectly.Error())
+	assert.Contains(t, normalizedText(aborts.Stderr), normalizedText(config.ErrModelsEditedDirectly.Error()))
 	lite := runModelsCLI(t, fixture, true, "models", "state")
 	require.Equal(t, 0, lite.ExitCode, lite.Stderr)
 }

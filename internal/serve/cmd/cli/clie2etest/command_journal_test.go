@@ -77,6 +77,7 @@ func TestTokensExitCodeHonorsExitCoder(t *testing.T) {
 
 func runRushTree(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	cmdtest.RestoreWorkingDir(t)
 	root := cli.NewRootCmd()
 	cmdtest.ResetCommandContexts(root)
 	root.SetArgs(args)

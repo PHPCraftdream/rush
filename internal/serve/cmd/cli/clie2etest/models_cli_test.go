@@ -141,6 +141,12 @@ func runModelsCLIRequest(t *testing.T, fixture modelsCLIFixture, request modelsC
 	return result
 }
 
+// normalizedText lowercases and collapses whitespace: the real CLI prints
+// errors in a padded, width-wrapped box, so substring checks compare this form.
+func normalizedText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
+
 func seedTamperedModelsCLI(t *testing.T, fixture modelsCLIFixture) string {
 	t.Helper()
 	const badRev = "0000000000000000000000000000000000000000000000000000000000000000"

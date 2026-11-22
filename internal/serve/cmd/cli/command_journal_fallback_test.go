@@ -218,6 +218,7 @@ func isolateLockEnv(t *testing.T) (string, string, string) {
 
 func runLockTree(t *testing.T, workspace, dataDir string, args ...string) (stdout, stderr string, runErr error) {
 	t.Helper()
+	cmdtest.RestoreWorkingDir(t)
 	root := NewRootCmd()
 	root.SetArgs(append([]string{"--cwd", workspace, "--data-dir", dataDir}, args...))
 	stdout, stderr = cmdtest.CaptureStdoutAndStderr(t, func() {

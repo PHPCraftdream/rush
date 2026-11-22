@@ -93,6 +93,17 @@ func SeedAuditDir(t *testing.T) string {
 	return dataDir
 }
 
+// RestoreWorkingDir returns the process to its current directory when the
+// test ends. A command run in-process with --cwd chdirs into the workspace,
+// which Windows then refuses to remove; call it after the test's TempDirs
+// exist so the restore runs before their cleanup.
+func RestoreWorkingDir(t *testing.T) {
+	t.Helper()
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+}
+
 func AwaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
 	select {
