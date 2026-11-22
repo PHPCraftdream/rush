@@ -110,6 +110,16 @@ func TestRunCustomRoleCLIChildDispatch(t *testing.T) {
 			fixture := `{"options":{"disable_default_providers":true},"models":{"smart":{"provider":"local-cli","model":"cli-role-smart-default"}},"roles":{"` + runRoleChildRoleName + `":{"provider":"local-cli","model":"cli-role-custom-child","reasoning_effort":"high","tools":["view"]}}}`
 			require.NoError(t, os.WriteFile(filepath.Join(dataDir, "rush.json"), []byte(fixture), 0o600))
 			if tc.deleted {
+				// Init lists local CLIs from PATH detection; stub it so the
+				// fixture's two models exist on hosts without a `claude`.
+				originalAvailable := cliprovider.AvailableFunc
+				cliprovider.AvailableFunc = func() []cliprovider.CLISpec {
+					return []cliprovider.CLISpec{
+						{ModelID: "cli-role-smart-default", ModelName: "Role smart"},
+						{ModelID: "cli-role-custom-child", ModelName: "Role custom"},
+					}
+				}
+				t.Cleanup(func() { cliprovider.AvailableFunc = originalAvailable })
 				store, initErr := config.Init(cwd, dataDir, false, config.WithCLIModels(cliprovider.AvailableCLIModels))
 				require.NoError(t, initErr)
 				role := store.Config().Roles[runRoleChildRoleName]

@@ -13,6 +13,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli"
 	"github.com/stretchr/testify/require"
 )
@@ -106,7 +107,7 @@ func runModelsCLIRequest(t *testing.T, fixture modelsCLIFixture, request modelsC
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestExecuteHelperProcess$")
+	cmd := platform.Command(ctx, executable, "-test.run=^TestExecuteHelperProcess$")
 	cmd.Dir = fixture.cwd
 	cmd.Env = overrideEnv(os.Environ(), map[string]string{
 		modelsCLIHelperEnv:              "1",
