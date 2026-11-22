@@ -3,7 +3,7 @@
 // it (buildRunResult, buildSessionUsageInfo), and their small text
 // helpers (tailN, synthesiseEmptyFinalSummary).
 
-package app
+package review
 
 import (
 	"errors"
@@ -96,7 +96,22 @@ type RunResult struct {
 	// finalTextWarnings is the subset of Warnings that describes THIS turn's
 	// final_text (empty, truncated, reduced). Not on the wire: the `rush run`
 	// loop drops it for a turn another turn superseded as the answer.
-	finalTextWarnings []string
+	FinalTextWarnings []string `json:"-"`
+}
+
+// FinishedWork preserves durable results without consuming their pending notices.
+type FinishedWork struct {
+	SessionID string `json:"session_id"`
+	JobID     string `json:"job_id"`
+	State     string `json:"state"`
+	Result    string `json:"result"`
+}
+
+// PendingChildQuestion keeps the child's finish metadata intact for a later answer.
+type PendingChildQuestion struct {
+	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
+	Details   string `json:"details"`
 }
 
 // RecoveredPartial describes an orphaned partial assistant message found
@@ -182,7 +197,7 @@ type SessionUsageInfo struct {
 // buildSessionUsageInfo converts a message-layer usage report into the
 // envelope shape. Returns nil when the session has no recorded usage at all,
 // so `usage.session` is absent rather than a misleading all-zero object.
-func buildSessionUsageInfo(report message.UsageReport) *SessionUsageInfo {
+func BuildSessionUsageInfo(report message.UsageReport) *SessionUsageInfo {
 	if len(report.ByModel) == 0 {
 		return nil
 	}
@@ -226,7 +241,7 @@ func buildSessionUsageInfo(report message.UsageReport) *SessionUsageInfo {
 // non-empty, OVERRIDES the model's finalReason so the envelope tells
 // the orchestrator "you asked for JSON, it didn't validate" instead of
 // the model's optimistic "stop"/"end_turn".
-func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, err error, canceled bool, toolCounts map[string]int, deltaTokens int64, deltaCost float64, duration time.Duration, finalErrTitle, finalErrDetails string, strippedBytes int, stripErrMsg, stripErrReason string, subAgentOutputs []SubAgentOutput, reductionWarning string) RunResult {
+func BuildRunResult(sessionID, finalText, assistantNotes, finalReason string, err error, canceled bool, toolCounts map[string]int, deltaTokens int64, deltaCost float64, duration time.Duration, finalErrTitle, finalErrDetails string, strippedBytes int, stripErrMsg, stripErrReason string, subAgentOutputs []SubAgentOutput, reductionWarning string) RunResult {
 	reason := finalReason
 	unconfirmedCanceledTerminal := canceled && err != nil && reason == string(message.FinishReasonEndTurn)
 	if errors.Is(err, ErrRunQueued) {
@@ -446,7 +461,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 		},
 		DurationMs: duration.Milliseconds(),
 
-		finalTextWarnings: textWarnings,
+		FinalTextWarnings: textWarnings,
 	}
 }
 

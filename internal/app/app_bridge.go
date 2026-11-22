@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/app/apprecovery"
+	"github.com/PHPCraftdream/rush/internal/app/apprun/review"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -543,3 +544,86 @@ var cliLoopTurnDoneSeam func()
 // which an operator's `sessions cancel` can land after the check. nil in every
 // production path.
 var cliLoopBeforeDrainSeam func()
+
+// ---------------------------------------------------------------------------
+// Temporary D2-3 bottom-plane bridge: package review
+// (internal/app/apprun/review) owns these names now. Lane D2-4 deletes this
+// block together with the rest of app_bridge.go.
+// ---------------------------------------------------------------------------
+
+// RunResult forwards to package review.
+type RunResult = review.RunResult
+
+// RecoveredPartial forwards to package review.
+type RecoveredPartial = review.RecoveredPartial
+
+// ToolCallStat forwards to package review.
+type ToolCallStat = review.ToolCallStat
+
+// SubAgentOutput forwards to package review.
+type SubAgentOutput = review.SubAgentOutput
+
+// UsageInfo forwards to package review.
+type UsageInfo = review.UsageInfo
+
+// SessionUsageInfo forwards to package review.
+type SessionUsageInfo = review.SessionUsageInfo
+
+// RunIncompleteError forwards to package review.
+type RunIncompleteError = review.RunIncompleteError
+
+// runIncompleteError is the package-app spelling of review.RunIncompleteError.
+type runIncompleteError = review.RunIncompleteError
+
+// runQueuedError is the package-app spelling of review.RunQueuedError.
+type runQueuedError = review.RunQueuedError
+
+// agentTurnResponse is the package-app spelling of review.AgentTurnResponse.
+type agentTurnResponse = review.AgentTurnResponse
+
+// credentialsRunner is the package-app spelling of review.CredentialsRunner.
+type credentialsRunner = review.CredentialsRunner
+
+// FinishedWork forwards to package review.
+type FinishedWork = review.FinishedWork
+
+// PendingChildQuestion forwards to package review.
+type PendingChildQuestion = review.PendingChildQuestion
+
+const (
+	reviewerPassMarker       = review.ReviewerPassMarker
+	reviewerPassPrompt       = review.ReviewerPassPrompt
+	reviewerPassTimeout      = review.ReviewerPassTimeout
+	reviewerStallMaxAttempts = review.ReviewerStallMaxAttempts
+)
+
+// ErrInvalidStripJSON forwards to package review.
+var ErrInvalidStripJSON = review.ErrInvalidStripJSON
+
+// ErrRunQueued forwards to package review.
+var ErrRunQueued = review.ErrRunQueued
+
+// ErrReviewerUnresponsive forwards to package review.
+var ErrReviewerUnresponsive = review.ErrReviewerUnresponsive
+
+// NewRunIncompleteError forwards to package review.
+func NewRunIncompleteError(reason, detail string) *RunIncompleteError {
+	return review.NewRunIncompleteError(reason, detail)
+}
+
+var (
+	buildSessionUsageInfo       = review.BuildSessionUsageInfo
+	buildRunResult              = review.BuildRunResult
+	stripAndExtractJSON         = review.StripAndExtractJSON
+	stripAndValidateJSON        = review.StripAndValidateJSON
+	stripJSONEnvelope           = review.StripJSONEnvelope
+	isSessionsIDConstraintError = review.IsSessionsIDConstraintError
+	runFailed                   = review.RunFailed
+	isPeakHoursStop             = review.IsPeakHoursStop
+	sessionBusyGuidance         = review.SessionBusyGuidance
+	cancelledRunError           = review.CancelledRunError
+	turnRefusedByOwner          = review.TurnRefusedByOwner
+	runAgentTurnRecovered       = review.RunAgentTurnRecovered
+	drainOutcomeError           = review.DrainOutcomeError
+	retryStalledReviewerPass    = review.RetryStalledReviewerPass
+)

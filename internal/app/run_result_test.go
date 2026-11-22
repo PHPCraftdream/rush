@@ -333,7 +333,7 @@ func TestRunFailed(t *testing.T) {
 
 func TestBuildRunResult_QueuedAlwaysOverridesCapturedOwnerFinish(t *testing.T) {
 	result := buildRunResult(
-		"s1", "owner text", "", "stop", &runQueuedError{sessionID: "s1"}, false,
+		"s1", "owner text", "", "stop", &runQueuedError{SessionID: "s1"}, false,
 		nil, 0, 0, 0, "", "", 0, "", "", nil, "",
 	)
 
@@ -345,9 +345,9 @@ func TestBuildRunResult_QueuedAlwaysOverridesCapturedOwnerFinish(t *testing.T) {
 // without detail (it drives stderr diagnostics on a non-zero exit).
 func TestRunIncompleteError_Message(t *testing.T) {
 	assert.Equal(t, "run did not complete cleanly (error): Stream stalled: provider X",
-		(&runIncompleteError{reason: "error", detail: "Stream stalled: provider X"}).Error())
+		(&runIncompleteError{Reason: "error", Detail: "Stream stalled: provider X"}).Error())
 	assert.Equal(t, "run did not complete cleanly (cancelled)",
-		(&runIncompleteError{reason: "cancelled"}).Error())
+		(&runIncompleteError{Reason: "cancelled"}).Error())
 }
 
 func TestSessionBusyGuidance(t *testing.T) {
@@ -379,9 +379,9 @@ func TestCancelledRunError(t *testing.T) {
 		// sees the updated message because the context died first.
 		err := cancelledRunError(peakErr, "", "", "")
 		require.NotNil(t, err)
-		assert.Equal(t, "cancelled", err.reason)
-		assert.Contains(t, err.detail, "peak hours")
-		assert.Contains(t, err.detail, "refusing until 12:00")
+		assert.Equal(t, "cancelled", err.Reason)
+		assert.Contains(t, err.Detail, "peak hours")
+		assert.Contains(t, err.Detail, "refusing until 12:00")
 	})
 
 	t.Run("context.Canceled runErr falls through to event-loop detail", func(t *testing.T) {
@@ -393,17 +393,17 @@ func TestCancelledRunError(t *testing.T) {
 			"Stopped: budget exceeded",
 			"cost $5.00 exceeds max $2.00",
 		)
-		assert.Contains(t, err.detail, "budget exceeded")
+		assert.Contains(t, err.Detail, "budget exceeded")
 	})
 
 	t.Run("genuine unrecorded cancel falls back to bare message", func(t *testing.T) {
 		err := cancelledRunError(context.Canceled, "", "", "")
-		assert.Empty(t, err.detail)
+		assert.Empty(t, err.Detail)
 		assert.Equal(t, "run did not complete cleanly (cancelled)", err.Error())
 	})
 
 	t.Run("non-error finish reason does not leak unrelated finish text", func(t *testing.T) {
 		err := cancelledRunError(context.Canceled, string(message.FinishReasonEndTurn), "some unrelated title", "some unrelated detail")
-		assert.Empty(t, err.detail)
+		assert.Empty(t, err.Detail)
 	})
 }
