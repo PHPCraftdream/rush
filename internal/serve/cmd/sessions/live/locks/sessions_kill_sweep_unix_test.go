@@ -665,7 +665,8 @@ func TestSessionsKillCmdRun_SweepsOrphanedGroupAfterCrash(t *testing.T) {
 	sessionsKillCmd.SetContext(context.Background())
 
 	stderr := cmdtest.CaptureStderr(t, func() {
-		runErr := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessionID})
+		runErr := sessionsKillCmdRunWithBatchNote(sessionsKillCmd, []string{sessionID}, purgeQueuedWorkAfterStopForTest,
+			func(context.Context, string, string) BatchKillScopeState { return BatchKillScopeState{} })
 		require.NoError(t, runErr)
 	})
 	t.Logf("sessions kill stderr:\n%s", stderr)
