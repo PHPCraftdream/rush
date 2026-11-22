@@ -122,19 +122,9 @@ func TestReadmeTimeouts_NameTheDefaultCap(t *testing.T) {
 	require.Contains(t, readme, "It watches turns only")
 }
 
-func TestRushGuidanceTimeLimits_IdleTimeoutWatchesTurnsOnly(t *testing.T) {
-	_, body, err := loadSkillSource("claude_slash_command", skillTargetClaude)
-	require.NoError(t, err)
-	para := timeLimitsParagraph(t, body, "## Time limits")
-	require.Contains(t, para, "default six-hour (6 h) TOTAL wall-clock cap")
-	require.Contains(t, para, "`RUSH_RUN_DEFAULT_HARD_TIMEOUT` overrides the default cap only")
-	require.Contains(t, para, "active work and all waits")
-	require.Contains(t, para, "progress does not reset this cap")
-	require.Contains(t, para, "If the process remains alive 60 seconds later, the hard backstop force-kills it (exit 124)")
-	require.Contains(t, para, "`--idle-timeout` (default `15m`)")
-	require.Contains(t, para, "It watches turns only")
-	require.Contains(t, para, "do not automatically raise `--timeout` or infer deadlock or its absence from a timeout")
-}
+// TestRushGuidanceTimeLimits_IdleTimeoutWatchesTurnsOnly moved with the
+// installer sources to internal/serve/cmd/admin/install
+// (guidance_time_limits_test.go); assertions unchanged.
 
 // R8A-2 / R8C-2: the cancel help states the one-shot flag and the --all scope.
 func TestSessionsCancelHelp_DescribesOneShotFlagAndAllScope(t *testing.T) {

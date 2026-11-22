@@ -457,6 +457,9 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 
 	// Oversized allowlisted values are capped by the audit layer.
 	big := strings.Repeat("S", 5000)
+	systemPromptCmd, _, err := rootCmd.Find([]string{"system-prompt"})
+	require.NoError(t, err)
+	require.NotNil(t, systemPromptCmd)
 	require.NoError(t, systemPromptCmd.Flags().Set("session", big))
 	t.Cleanup(func() {
 		_ = systemPromptCmd.Flags().Set("session", "")
