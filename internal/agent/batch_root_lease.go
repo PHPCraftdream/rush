@@ -69,5 +69,5 @@ func (s *batchRootLeaseStore) acquire(root jobbatch.ID, owner, binding, registry
 	if s == nil {
 		return ErrDiskProviderUnavailable
 	}
-	return s.BatchRootLeaseStore.Acquire(root, owner, binding, registry)
+	return s.Acquire(root, owner, binding, registry)
 }
