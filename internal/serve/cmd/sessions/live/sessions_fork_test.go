@@ -8,11 +8,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-func TestMain(m *testing.M) { cmdtest.Main(m) }
+func TestMain(m *testing.M) {
+	cmdkit.UseCommandLoadOptions(modelatoms.CommandLoadOptions)
+	rushlog.Setup("", false)
+	cmdtest.Main(m)
+}
 
 func countAllSessionsCLI(t *testing.T, ctx context.Context, sqlDB *sql.DB) int64 {
 	t.Helper()

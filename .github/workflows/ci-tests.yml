@@ -220,7 +220,7 @@ jobs:
       - name: process-group and lock-fence suites (Linux, no -short)
         if: inputs.mode == 'full'
         run: |
-          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/serve/cmd/
+          go test -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' ./internal/session/ ./internal/serve/cmd/sessions/live ./internal/serve/cmd/sessions/live/locks
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"

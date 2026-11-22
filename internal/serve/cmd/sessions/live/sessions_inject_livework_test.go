@@ -1,0 +1,148 @@
+package sesslive
+
+// R7C-3: `sessions inject` decided "running" from the session lock alone, so a
+// live `rush run` loop between turns (lock released, driver marker live) was
+// reported as "no process is currently running this session".
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/stretchr/testify/require"
+)
+
+// runInject runs the real `sessions inject` RunE against dataDir.
+func runInject(t *testing.T, dataDir, sessionID string, interrupt, asJSON bool) (stdout, stderr string) {
+	t.Helper()
+	cmd := NewSessionsInjectCmd()
+	ensureSessionsLiveRootFlags(cmd, dataDir)
+	if f := cmd.Flags().Lookup("cwd"); f == nil {
+		cmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, cmd.Flags().Set("cwd", ""))
+	require.NoError(t, cmd.Flags().Set("message", "also update the CHANGELOG"))
+	require.NoError(t, cmd.Flags().Set("file", ""))
+	require.NoError(t, cmd.Flags().Set("interrupt", boolFlag(interrupt)))
+	require.NoError(t, cmd.Flags().Set("json", boolFlag(asJSON)))
+	cmd.SetContext(context.Background())
+	return cmdtest.CaptureStdoutAndStderr(t, func() {
+		require.NoError(t, cmd.RunE(cmd, []string{sessionID}))
+	})
+}
+
+// newLiveWorkApp constructs an App over the command's resolved data directory.
+func newLiveWorkApp(t *testing.T) (*app.App, string) {
+	t.Helper()
+	return newLiveTestEnv(t)
+}
+
+// A loop driving the session between turns: released, aging lock, live marker.
+func TestSessionsInjectCmdRun_LiveLoopBetweenTurnsIsRunning(t *testing.T) {
+	a, dataDir := newLiveWorkApp(t)
+	ctx := context.Background()
+	driven, err := a.Sessions.CreateWithID(ctx, "inject/driven x", "driven between turns")
+	require.NoError(t, err)
+	lone, err := a.Sessions.CreateWithID(ctx, "inject-lone", "no driver")
+	require.NoError(t, err)
+	cmdtest.AgeLock(t, cmdtest.ReleasedLock(t, dataDir, driven.ID), 2*time.Minute)
+	cmdtest.AgeLock(t, cmdtest.ReleasedLock(t, dataDir, lone.ID), 2*time.Minute)
+	driverHost := sessionhosts.NewHostStore(a.DB(), dataDir, os.Getpid(), "inject-driver-fixture")
+	driverHostID, err := driverHost.EnsureHost(ctx)
+	require.NoError(t, err)
+	require.NoError(t, driverHost.ClaimSessionDriver(ctx, driven.ID))
+	// A12 pattern: CloseKeepLock forgets the in-memory handle WITHOUT
+	// releasing the OS lock or deleting the host row/driver markers, so the
+	// marker survives the seed App's Shutdown and the command's host probe
+	// reads the host alive (a second TryAcquireFileLock from this same
+	// process would contend with the held lock, so holdSeedHost is not
+	// used).
+	driverHost.CloseKeepLock()
+	// The pinned lock file stays open for the process lifetime; release it at
+	// test end so the data dir can be removed on Windows.
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(driverHostID) })
+	a.Shutdown()
+
+	decode := func(out string) injectResult {
+		var res injectResult
+		require.NoError(t, json.NewDecoder(strings.NewReader(out)).Decode(&res))
+		return res
+	}
+
+	out, _ := runInject(t, dataDir, driven.ID, false, true)
+	res := decode(out)
+	require.True(t, res.Running, "a loop between turns runs the session")
+	require.Equal(t, "injected", res.Status)
+	require.True(t, res.BetweenTurns)
+	require.Equal(t, os.Getpid(), res.DriverPID)
+
+	out, _ = runInject(t, dataDir, driven.ID, true, true)
+	res = decode(out)
+	require.True(t, res.Running)
+	require.Equal(t, "queued-for-interrupt", res.Status, "the queued row reads as the interrupt it is")
+	require.True(t, res.BetweenTurns, "no turn is running: the flag says so")
+
+	_, stderr := runInject(t, dataDir, driven.ID, true, false)
+	require.Contains(t, stderr, "rush run PID "+strconv.Itoa(os.Getpid()), "the message names the loop")
+	require.Contains(t, stderr, "between turns")
+	require.NotContains(t, stderr, "no process is currently running")
+
+	out, _ = runInject(t, dataDir, lone.ID, false, true)
+	res = decode(out)
+	require.False(t, res.Running, "no lock, no loop: unchanged")
+	require.Equal(t, "persisted-offline", res.Status)
+	require.False(t, res.BetweenTurns)
+}
+
+// R8C-4: a web session between turns with a running own job or a live
+// delegation (no driver marker: only CLI loops claim one) is running, not
+// "persisted-offline".
+//
+// Revert-check: reading only the driver fact from the classifier makes the
+// job and delegation rows report persisted-offline.
+func TestSessionsInjectCmdRun_OwnJobOrDelegationBetweenTurnsIsRunning(t *testing.T) {
+	a, dataDir := newLiveWorkApp(t)
+	ctx := context.Background()
+	mk := func(id string) string {
+		sess, err := a.Sessions.CreateWithID(ctx, id, id)
+		require.NoError(t, err)
+		cmdtest.AgeLock(t, cmdtest.ReleasedLock(t, dataDir, sess.ID), 2*time.Minute)
+		return sess.ID
+	}
+	jobID, delegID, loneID := mk("inject-web-job"), mk("inject-web-deleg"), mk("inject-web-lone")
+	child, err := a.Sessions.CreateTaskSession(ctx, "inject-web-child", delegID, "sub-agent")
+	require.NoError(t, err)
+	claimLiveOwnJob(t, a, jobID, "bash-1")
+	cmdtest.ClaimDelegation(t, a, delegID, "delegate-1", child.ID)
+	a.Shutdown()
+
+	decode := func(out string) injectResult {
+		var res injectResult
+		require.NoError(t, json.NewDecoder(strings.NewReader(out)).Decode(&res))
+		return res
+	}
+	for _, id := range []string{jobID, delegID} {
+		out, _ := runInject(t, dataDir, id, false, true)
+		res := decode(out)
+		require.True(t, res.Running, "%s: live work behind a released lock is running", id)
+		require.Equal(t, "injected", res.Status, id)
+		require.False(t, res.BetweenTurns, "%s: no CLI loop drives it", id)
+		require.Zero(t, res.DriverPID, id)
+	}
+
+	_, stderr := runInject(t, dataDir, jobID, false, false)
+	require.NotContains(t, stderr, "no process is currently running")
+	require.Contains(t, stderr, "waiting on 1 running job(s)", "the message names what keeps the session open")
+
+	out, _ := runInject(t, dataDir, loneID, false, true)
+	res := decode(out)
+	require.False(t, res.Running, "nothing live: unchanged")
+	require.Equal(t, "persisted-offline", res.Status)
+}

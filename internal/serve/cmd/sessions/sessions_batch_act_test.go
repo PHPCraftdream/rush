@@ -1,0 +1,716 @@
+package sessions
+
+// R12-B part 2 coverage: the session action commands guard on batch facts
+// (real SQLite fixtures seeded through session.BatchStore.Reserve/Project,
+// never :memory:): reset refuses or wipes through the R10c batch reset, gc
+// never collects a session with live or unknown batch work, compact refuses
+// while batch work is live, and kill never reports a held-root session at
+// rest.
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
+	sessclean "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/cleanup"
+	sesslive "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/live"
+	sesslocks "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/live/locks"
+	sessbatch "github.com/PHPCraftdream/rush/internal/serve/cmd/sessions/report/batch"
+
+	"github.com/PHPCraftdream/rush/internal/app"
+	"github.com/PHPCraftdream/rush/internal/session"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/db/dbconn"
+	"github.com/PHPCraftdream/rush/internal/store/db/storepath"
+	"github.com/PHPCraftdream/rush/internal/store/message"
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/require"
+)
+
+// These action fixtures intentionally construct a fresh command per test.
+// The legacy root-package helpers configured package-global Cobra commands,
+// which allowed flag values and contexts to leak between tests.
+func isolatedResetEnv(t *testing.T) (*app.App, *cobra.Command) {
+	t.Helper()
+	tmp := cmdtest.IsolateConfigEnvForTests(t)
+	workDir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workDir))
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := sesslive.NewSessionsResetCmd()
+	ensureActRootFlags(t, cmd, "")
+	require.NoError(t, cmd.Flags().Set("data-dir", ""))
+	cmd.SetContext(ctx)
+	built, err := cmdkit.SetupApp(cmd)
+	require.NoError(t, err)
+	dataDir := built.Config().Options.DataDirectory
+	t.Cleanup(func() {
+		built.Shutdown()
+		_ = os.Chdir(orig)
+		cancel()
+		_ = db.Release(dataDir)
+		_ = db.Release(tmp)
+		waitActSQLiteHandleRelease(t, dataDir)
+		waitActSQLiteHandleRelease(t, tmp)
+		waitActSQLiteHandleRelease(t, workDir)
+	})
+	return built, cmd
+}
+
+func isolatedGcEnv(t *testing.T) (*app.App, func(), *cobra.Command) {
+	t.Helper()
+	tmp := cmdtest.IsolateConfigEnvForTests(t)
+	dataDir := filepath.Join(tmp, "gc-batch-data")
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := sessclean.NewSessionsGcCmd(cmdkit.SetupApp)
+	ensureActRootFlags(t, cmd, dataDir)
+	cmd.SetContext(ctx)
+	for name, value := range map[string]string{"dry-run": "false", "older-than": "7d", "jobs-older-than": "", "max-sessions": "0", "json": "false"} {
+		require.NoError(t, cmd.Flags().Set(name, value))
+	}
+	built, err := cmdkit.SetupApp(cmd)
+	require.NoError(t, err)
+	var once sync.Once
+	shutdown := func() { once.Do(func() { built.Shutdown(); _ = db.Release(dataDir) }) }
+	t.Cleanup(func() {
+		shutdown()
+		dir := built.Config().Options.DataDirectory
+		_ = db.Release(dir)
+		waitActSQLiteHandleRelease(t, dir)
+		cancel()
+	})
+	return built, shutdown, cmd
+}
+
+func isolatedCompactEnv(t *testing.T) (string, *app.App, func(t *testing.T, args ...string) (string, string, error)) {
+	t.Helper()
+	tmp := cmdtest.IsolateConfigEnvForTests(t)
+	dataDir := filepath.Join(tmp, "compact-batch-data")
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := sessclean.NewSessionsCompactCmd()
+	ensureActRootFlags(t, cmd, dataDir)
+	cmd.SetContext(ctx)
+	built, err := cmdkit.SetupAppLite(cmd)
+	require.NoError(t, err)
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { built.Shutdown(); _ = db.Release(dataDir); cancel() }) })
+	run := func(t *testing.T, args ...string) (string, string, error) {
+		t.Helper()
+		// Reset ONLY the command's own flags, never the shared root
+		// stand-ins: resetting --data-dir to its empty default would point
+		// the run at a different (empty) database and silently drop the
+		// seeded, bloated fixture.
+		for _, name := range []string{"dry-run", "force", "json"} {
+			f := cmd.Flags().Lookup(name)
+			require.NotNil(t, f, "compact flag --%s must be registered", name)
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		}
+		require.NoError(t, cmd.ParseFlags(args))
+		var runErr error
+		stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() { runErr = cmd.RunE(cmd, nil) })
+		return stdout, stderr, runErr
+	}
+	return dataDir, built, run
+}
+
+func waitActSQLiteHandleRelease(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := os.RemoveAll(dir); err == nil {
+			return
+		} else {
+			lastErr = err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Logf("waitActSQLiteHandleRelease: %s still not removable: %v", dir, lastErr)
+	}
+}
+
+func ensureActRootFlags(t *testing.T, cmd *cobra.Command, dataDir string) {
+	t.Helper()
+	if cmd.Flags().Lookup("debug") == nil {
+		cmd.Flags().Bool("debug", false, "")
+	}
+	if cmd.Flags().Lookup("data-dir") == nil {
+		cmd.Flags().String("data-dir", "", "")
+	}
+	require.NoError(t, cmd.Flags().Set("data-dir", dataDir))
+}
+
+func resetSessionCmdFlags(cmd *cobra.Command) *cobra.Command {
+	if f := cmd.Flags().Lookup("force"); f != nil {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	}
+	return cmd
+}
+
+func bloatCompactDBConn(t *testing.T, conn *sql.DB, wantBytes int) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := conn.ExecContext(ctx, "CREATE TABLE compact_cmd_bloat (id INTEGER PRIMARY KEY, payload BLOB)")
+	require.NoError(t, err)
+	payload := make([]byte, 64*1024)
+	for inserted := 0; inserted < wantBytes; inserted += len(payload) {
+		_, err = conn.ExecContext(ctx, "INSERT INTO compact_cmd_bloat (payload) VALUES (?)", payload)
+		require.NoError(t, err)
+	}
+	_, err = conn.ExecContext(ctx, "DROP TABLE compact_cmd_bloat")
+	require.NoError(t, err)
+	require.NoError(t, dbconn.CheckpointTruncate(ctx, conn))
+}
+
+// seedActMessage puts one user message into the session so the reset tests
+// can assert deletion (or refusal keeps it) by message count.
+func seedActMessage(t *testing.T, a *app.App, owner, text string) {
+	t.Helper()
+	_, err := a.Messages.Create(context.Background(), owner, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: text}},
+	})
+	require.NoError(t, err)
+}
+
+// countActMessages returns the session's message row count through a fresh
+// connection (callers may have shut their seed app down).
+func countActMessages(t *testing.T, dataDir, sessionID string) int {
+	t.Helper()
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	var count int
+	require.NoError(t, conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM messages WHERE session_id = ?`, sessionID).Scan(&count))
+	return count
+}
+
+// resetBatchFixture stands up the reset command env with one seeded batch
+// root (optionally projected to a state) and the seed app shut down, the way
+// RunE needs it.
+func resetBatchFixture(t *testing.T, id, state string) (string, batchReadFixture, *cobra.Command) {
+	t.Helper()
+	a, cmd := isolatedResetEnv(t)
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, id, "batch reset fixture")
+	require.NoError(t, err)
+	seedActMessage(t, a, sess.ID, "history to wipe")
+	f := seedBatchReadRoot(t, a, sess.ID)
+	if state != "" {
+		projectBatchRoot(t, f, state)
+	}
+	dataDir := a.Config().Options.DataDirectory
+	a.Shutdown()
+	// The fixture's HostStore stays open until cleanup, so its OS lock keeps
+	// the host alive for the command run (no second acquire: holdSeedHost
+	// would contend with the held lock).
+	return dataDir, f, cmd
+}
+
+// runBatchReset runs the real reset command expecting success, returning
+// stderr.
+func runBatchReset(t *testing.T, cmd *cobra.Command, sessID string) string {
+	t.Helper()
+	require.NoError(t, resetSessionCmdFlags(cmd).Flags().Set("force", "false"))
+	var runErr error
+	stderr := cmdtest.CaptureStderr(t, func() {
+		runErr = cmd.RunE(cmd, []string{sessID})
+	})
+	require.NoError(t, runErr)
+	return stderr
+}
+
+// runBatchResetErr runs the real reset command expecting the given refusal.
+func runBatchResetErr(t *testing.T, cmd *cobra.Command, sessID string, fragments ...string) {
+	t.Helper()
+	require.NoError(t, resetSessionCmdFlags(cmd).Flags().Set("force", "false"))
+	var runErr error
+	cmdtest.CaptureStderr(t, func() {
+		runErr = cmd.RunE(cmd, []string{sessID})
+	})
+	for _, want := range fragments {
+		require.ErrorContains(t, runErr, want)
+	}
+}
+
+// TestSessionsReset_BatchPendingRootRefuses: a
+// pending batch root refuses the reset; the refusal names the root, and
+// nothing is deleted.
+//
+// Static trace: migrations create batch_nodes with the root CHECK (kind
+// ='batch', tool_call_id, input_hash NOT NULL) and FKs ON -- satisfied by
+// Reserve, which seedBatchReadRoot drives; ctx is non-nil (command context,
+// Background inside the reader); the fixture's own registered host resolves
+// as live like in the part-1 tests.
+func TestSessionsReset_BatchPendingRootRefuses(t *testing.T) {
+	dataDir, f, cmd := resetBatchFixture(t, "reset-batch-pending", "")
+
+	runBatchResetErr(t, cmd, f.owner,
+		"still being worked on",
+		f.rootID,
+		"pending",
+		"nothing was reset")
+	require.Equal(t, 1, countActMessages(t, dataDir, f.owner), "a refused reset deletes nothing")
+}
+
+// TestSessionsReset_BatchCancellingRootRefuses: cancelling counts as
+// held, nonterminal work, surfaced as "stopped but awaiting termination".
+func TestSessionsReset_BatchCancellingRootRefuses(t *testing.T) {
+	dataDir, f, cmd := resetBatchFixture(t, "reset-batch-cancelling", "cancelling")
+
+	runBatchResetErr(t, cmd, f.owner,
+		"still being worked on",
+		"stopped but awaiting termination",
+		"nothing was reset")
+	require.Equal(t, 1, countActMessages(t, dataDir, f.owner), "a refused reset deletes nothing")
+}
+
+// TestSessionsReset_BatchTerminalRootResets: with an all-terminal
+// root, the R10c batch reset runs and reports its outcome. NodesDeleted is BatchResetDeleteOwnerNodes's RowsAffected --
+// the DIRECT DELETE's rows (root rows only; the two task children vanish by
+// FK cascade and are not counted; precedent
+// internal/session/batch_history_reset_test.go:149-152: two root rows ⇒ 2).
+func TestSessionsReset_BatchTerminalRootResets(t *testing.T) {
+	dataDir, f, cmd := resetBatchFixture(t, "reset-batch-done", "completed")
+
+	stderr := runBatchReset(t, cmd, f.owner)
+	require.Contains(t, stderr, "reset session "+f.owner)
+	require.Contains(t, stderr, "batch reset: deleted 1 message(s)")
+	require.Contains(t, stderr, "1 batch node(s)", "RowsAffected counts the direct DELETE's root row only")
+	require.Equal(t, 0, countActMessages(t, dataDir, f.owner), "the wipe removed the history")
+}
+
+// seedGcBatchSession creates an old empty session with a pending batch root
+// on the given app and returns its fixture.
+func seedGcBatchSession(t *testing.T, a *app.App, id string) batchReadFixture {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, id, "gc batch fixture")
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE sessions SET created_at = ? WHERE id = ?`,
+		time.Now().Add(-8*24*time.Hour).Unix(), sess.ID)
+	require.NoError(t, err)
+	return seedBatchReadRoot(t, a, sess.ID)
+}
+
+// runBatchGc runs the real gc command with the given flags, returning
+// (stdout, stderr).
+func runBatchGc(t *testing.T, cmd *cobra.Command, dryRun bool) (string, string) {
+	t.Helper()
+	for name, value := range map[string]string{"dry-run": boolStr(dryRun), "jobs-older-than": "", "json": "false"} {
+		if f := cmd.Flags().Lookup(name); f != nil {
+			f.Changed = false
+		}
+		require.NoError(t, cmd.Flags().Set(name, value))
+	}
+	var runErr error
+	stdout, stderr := cmdtest.CaptureStdoutAndStderr(t, func() {
+		runErr = cmd.RunE(cmd, nil)
+	})
+	require.NoError(t, runErr)
+	return stdout, stderr
+}
+
+// TestSessionsGc_BatchHeldRootProtectsSession: gc refuses to collect a session whose batch root is pending; dry-run reports
+// the keep, the real run purges nothing.
+//
+// Static trace: same Reserve-satisfied batch_nodes CHECK/FKs and live own
+// host as the reset fixture; ctx non-nil throughout.
+func TestSessionsGc_BatchHeldRootProtectsSession(t *testing.T) {
+	a, shutdownSeed, cmd := isolatedGcEnv(t)
+	f := seedGcBatchSession(t, a, "gc-batch-protected")
+	dataDir := a.Config().Options.DataDirectory
+	shutdownSeed()
+
+	_, stderr := runBatchGc(t, cmd, true)
+	require.Contains(t, stderr, "kept session", "dry run must report the protected keep")
+	_, stderr = runBatchGc(t, cmd, false)
+	require.Contains(t, stderr, "kept session", "the real run keeps it too")
+
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	var count int
+	require.NoError(t, conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sessions WHERE id = ?`, f.owner).Scan(&count))
+	require.Equal(t, 1, count, "the session with a held batch root was never collected")
+	require.Equal(t, 0, countActMessages(t, dataDir, f.owner), "and its data is untouched")
+}
+
+func TestSessionsGc_LockedPingRetainedAndUnlockedPingDeleted(t *testing.T) {
+	a, shutdownSeed, cmd := isolatedGcEnv(t)
+	ctx := context.Background()
+	locked, err := a.Sessions.CreateWithID(ctx, "ping-x", "locked ping")
+	require.NoError(t, err)
+	unlocked, err := a.Sessions.CreateWithID(ctx, "ping-y", "unlocked ping")
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx, `UPDATE sessions SET created_at = ? WHERE id IN (?, ?)`, time.Now().Add(-2*time.Hour).Unix(), locked.ID, unlocked.ID)
+	require.NoError(t, err)
+	lock, err := sessionlock.TryAcquireSessionLock(a.Config().Options.DataDirectory, locked.ID)
+	require.NoError(t, err)
+	defer lock.Release()
+	dataDir := a.Config().Options.DataDirectory
+	shutdownSeed()
+
+	_, stderr := runBatchGc(t, cmd, false)
+	require.Contains(t, stderr, "kept session")
+	require.Contains(t, stderr, "a turn holds the session lock")
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	for id, want := range map[string]int{locked.ID: 1, unlocked.ID: 0} {
+		var count int
+		require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, id).Scan(&count))
+		require.Equal(t, want, count, "session %s", id)
+	}
+}
+
+func TestSessionsGc_LiveRunOwnerProtectsSession(t *testing.T) {
+	a, shutdownSeed, cmd := isolatedGcEnv(t)
+	ctx := context.Background()
+	sess, err := a.Sessions.CreateWithID(ctx, "gc-live-run-owner", "live driver")
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx, `UPDATE sessions SET created_at = ? WHERE id = ?`, time.Now().Add(-8*24*time.Hour).Unix(), sess.ID)
+	require.NoError(t, err)
+	host := sessionhosts.NewHostStore(a.DB(), a.Config().Options.DataDirectory, 4321, "gc-live-owner")
+	require.NoError(t, host.ClaimSessionDriver(ctx, sess.ID))
+	hostID := host.HostID()
+	host.CloseKeepLock()
+	t.Cleanup(func() { sessionhosts.ReleaseRetainedHostLocksForTest(hostID) })
+	dataDir := a.Config().Options.DataDirectory
+	shutdownSeed()
+
+	_, stderr := runBatchGc(t, cmd, false)
+	require.Contains(t, stderr, "kept session")
+	require.Contains(t, stderr, "live `rush run` loop still drives it")
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	var count int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, sess.ID).Scan(&count))
+	require.Equal(t, 1, count, "GC must preserve the session owned by a live run loop")
+}
+
+// TestSessionsGc_BatchRetentionSummary: the --jobs-older-than run reports
+// the batch-side numbers through the R10c retention API as an additive JSON
+// line.
+func TestSessionsGc_BatchRetentionSummary(t *testing.T) {
+	_, shutdownSeed, cmd := isolatedGcEnv(t)
+	shutdownSeed()
+
+	require.NoError(t, cmd.Flags().Set("dry-run", "false"))
+	require.NoError(t, cmd.Flags().Set("jobs-older-than", "1d"))
+	require.NoError(t, cmd.Flags().Set("json", "true"))
+	stdout, _ := cmdtest.CaptureStdoutAndStderr(t, func() {
+		require.NoError(t, cmd.RunE(cmd, nil))
+	})
+	lines := splitNonEmpty(stdout)
+	require.Len(t, lines, 1, "flag ON emits only the batch_retention line: %q", stdout)
+	require.Contains(t, lines[0], `"kind":"batch_retention"`)
+	require.Contains(t, lines[0], `"batch_nodes":0`, "a fresh database has no expired batch roots")
+	require.NotContains(t, stdout, `"kind":"async_jobs"`)
+}
+
+// TestSessionsGc_BatchRetentionHonoursAge: the --jobs-older-than
+// cutoff honours the caller-chosen age through BatchRetentionRoots. An 8-day-
+// old debt-free terminal root is NOT expired at a 30d cutoff (this is what
+// fails against the old fixed-7d behavior) and IS purged at a 1d cutoff.
+//
+// Static trace: db.Connect ran the real migrations; the fixture satisfies the
+// batch_nodes CHECKs/FKs (Reserve). BatchRetentionRoots (batch_recovery.sql)
+// qualifies the root: node_id = root_id, updated_at < cutoff (backdated to
+// -8d), no pending control requests, no live/debt row in the root (all three
+// rows completed, delivery 'none', wake 0), no delegation links, no
+// child-session notices. The session is kept fresh so gc's old-empty rule
+// cannot collect it (batch_nodes.owner_session_id cascades on session
+// delete, which would silently remove the rows under test).
+func TestSessionsGc_BatchRetentionHonoursAge(t *testing.T) {
+	a, shutdownSeed, cmd := isolatedGcEnv(t)
+	ctx := context.Background()
+	f := seedGcBatchSession(t, a, "gc-batch-age")
+	dataDir := a.Config().Options.DataDirectory
+	projectBatchRoot(t, f, "completed")
+	_, err := a.DB().ExecContext(ctx,
+		`UPDATE sessions SET created_at = ? WHERE id = ?`, time.Now().Unix(), f.owner)
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET updated_at = ? WHERE root_id = ?`,
+		time.Now().Add(-8*24*time.Hour).Unix(), f.rootID)
+	require.NoError(t, err)
+	shutdownSeed()
+	// The root is unannounced and the fixture's HostStore lock stays held
+	// until cleanup, so no other process's recovery can delete it.
+
+	// 30d cutoff: the 8-day-old rows are retained.
+	require.NoError(t, cmd.Flags().Set("dry-run", "false"))
+	require.NoError(t, cmd.Flags().Set("jobs-older-than", "30d"))
+	require.NoError(t, cmd.Flags().Set("json", "true"))
+	stdout, _ := cmdtest.CaptureStdoutAndStderr(t, func() {
+		require.NoError(t, cmd.RunE(cmd, nil))
+	})
+	lines := splitNonEmpty(stdout)
+	require.Len(t, lines, 1, "only the batch_retention line is expected: %q", stdout)
+	require.Contains(t, lines[0], `"kind":"batch_retention"`)
+	require.Contains(t, lines[0], `"batch_nodes":0`, "8-day-old rows survive a 30d cutoff")
+	require.Equal(t, 3, countBatchNodes(t, dataDir, f.rootID), "nothing was purged at the 30d cutoff")
+
+	// 1d cutoff: the same rows are now expired; the real run purges the root.
+	require.NoError(t, cmd.Flags().Set("jobs-older-than", "1d"))
+	stdout, _ = cmdtest.CaptureStdoutAndStderr(t, func() {
+		require.NoError(t, cmd.RunE(cmd, nil))
+	})
+	require.Contains(t, stdout, `"batch_nodes":1`, "the root count is purged at the 1d cutoff")
+	require.Equal(t, 0, countBatchNodes(t, dataDir, f.rootID), "the rows are gone")
+}
+
+// TestSessionsCompact_BatchLiveRootRefuses: a
+// database holding a live batch root refuses compaction even with --force;
+// once the root is terminal the compaction proceeds.
+//
+// Static trace: same Reserve-satisfied root CHECK/FKs; host probing resolves
+// the fixture's own live host; the terminal projection makes every root
+// state batchRootHeld=false, clearing the gate.
+func TestSessionsCompact_BatchLiveRootRefuses(t *testing.T) {
+	_, built, run := isolatedCompactEnv(t)
+	ctx := context.Background()
+	sess, err := built.Sessions.CreateWithID(ctx, "compact-batch-sess", "compact batch fixture")
+	require.NoError(t, err)
+	f := seedBatchReadRoot(t, built, sess.ID)
+	bloatCompactDBConn(t, built.DB(), 2<<20)
+
+	// Offender strings render as "<session hash prefix> (batch root <short
+	// root> (tool call ...) is pending)" inside the refusal error.
+	_, stderr, runErr := run(t, "--force")
+	require.ErrorContains(t, runErr, "refusing to compact")
+	require.ErrorContains(t, runErr, "live or unknown batch work")
+	require.ErrorContains(t, runErr, cliout.Short(coresession.HashID(sess.ID)), "the refusal names the session's hash prefix")
+	require.ErrorContains(t, runErr, f.rootID[:8], "the reason names the offending root's short id")
+	require.NotContains(t, stderr, "batch gate: LIVE", "a real run refuses before printing gate lines")
+
+	projectBatchRoot(t, f, "completed")
+	// Release the fixture's host lock so the host gate cannot mask the
+	// (now cleared) batch gate.
+	if f.closeAsync != nil {
+		f.closeAsync()
+	}
+	_, _, runErr = run(t, "--force")
+	require.NoError(t, runErr, "a terminal batch root clears the gate")
+}
+
+// TestSessionsKill_BatchHeldRootNote: killing a
+// session whose batch root is pending must not read as "nothing running" --
+// an additive note names the live batch work even when no lock file exists.
+//
+// Static trace: the fixture's migrations create batch_nodes with FKs ON and
+// the root CHECK (kind='batch', tool_call_id, input_hash) which Reserve
+// satisfies; ctx is Background (non-nil); the host lock is held by this live
+// test process, so host probing resolves it like the part-1 EnsureHost
+// tests.
+func TestSessionsKill_BatchHeldRootNote(t *testing.T) {
+	dataDir, sessID, closeFixture := seedKillBatchFixture(t)
+	defer closeFixture()
+	isolateKillCmdEnv(t, dataDir)
+
+	stderr := cmdtest.CaptureStderr(t, func() {
+		err := sessionsKillCmd.RunE(sessionsKillCmd, []string{sessID})
+		require.ErrorIs(t, err, sesslocks.ErrBatchKillScopeUnconfirmed)
+		require.ErrorContains(t, err, "queued work is preserved")
+	})
+	require.Contains(t, stderr, "no lock file at")
+	require.Contains(t, stderr, "batch work for session "+sessID, "the note must report the held batch work")
+	require.Contains(t, stderr, "pending", "and the root's state")
+}
+
+// isolateKillCmdEnv points sessionsKillCmd at the fixture data dir in an
+// isolated config env, mirroring TestSessionsKillCmdRun_HonorsConfiguredDataDir.
+func isolateKillCmdEnv(t *testing.T, dataDir string) {
+	t.Helper()
+	cmdtest.IsolateConfigEnvForTests(t)
+	workDir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workDir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	ensureActRootFlags(t, sessionsKillCmd, dataDir)
+	if f := sessionsKillCmd.Flags().Lookup("cwd"); f == nil {
+		sessionsKillCmd.Flags().StringP("cwd", "c", "", "")
+	}
+	require.NoError(t, sessionsKillCmd.Flags().Set("cwd", ""))
+	require.NoError(t, sessionsKillCmd.Flags().Set("keep-lock", "false"))
+	require.NoError(t, sessionsKillCmd.Flags().Set("wait", "2s"))
+	sessionsKillCmd.SetContext(context.Background())
+}
+
+// seedKillBatchFixture builds a standalone data directory (no app) whose
+// database holds a session with a pending batch root hosted by this live
+// test process, and returns its path, the session id, and a closer.
+func seedKillBatchFixture(t *testing.T) (string, string, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	ctx := context.Background()
+	conn, err := db.Connect(ctx, dir)
+	require.NoError(t, err)
+	store := sessionhosts.NewHostStore(conn, dir, os.Getpid(), "kill-batch-fixture")
+	_, err = db.New(conn).CreateSession(ctx, db.CreateSessionParams{ID: "kill-batch-sess", Title: "kill batch fixture", Origin: "cli"})
+	require.NoError(t, err)
+	host, err := store.EnsureHost(ctx)
+	require.NoError(t, err)
+	seedKillBatchRoot(t, conn, host, "kill-batch-sess")
+	closed := false
+	return dir, "kill-batch-sess", func() {
+		if closed {
+			return
+		}
+		closed = true
+		_ = store.Close(context.Background())
+		_ = db.ReleaseConn(conn)
+	}
+}
+
+// seedKillBatchRoot reserves one minimal pending batch root (kind=batch with
+// tool call and input hash, no children) for owner on the given host.
+func seedKillBatchRoot(t *testing.T, conn *sql.DB, host, owner string) {
+	t.Helper()
+	_, err := session.NewBatchStore(conn).Reserve(context.Background(), session.BatchReservation{
+		Owner: owner, Host: host, RunnerID: "kill-batch-runner",
+		ToolCallID: "kill-batch-call", InputHash: "kill-batch-hash", Sequence: 1,
+		Root: session.BatchReservationNode{Values: db.ReserveBatchNodeParams{
+			Kind: "batch", Mode: sql.NullString{String: "parallel", Valid: true},
+			State: "pending", ControlState: "none",
+		}},
+	})
+	require.NoError(t, err)
+}
+
+// splitNonEmpty splits command output into non-empty lines.
+func splitNonEmpty(s string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// boolStr is a tiny literal helper for flag setting.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// TestSessionsGc_TerminalRootDebtProtectsSession: terminal completion
+// debt -- a completed root's selected, unreacted notice -- must protect the
+// session from gc exactly like live work, and the protection is the debt,
+// not the terminal root: once the notice stops being debt the session is
+// collected.
+//
+// Static trace: the fixture satisfies the batch_nodes CHECKs (root kind=
+// 'batch' with tool_call_id/input_hash; children opposite). The debt-seeding
+// UPDATEs satisfy the raw CHECKs: the root gets announced=1 WITH
+// announce_message_id NOT NULL; the task gets notice_selected=1 with
+// notice_kind/state/cause NOT NULL, notice_sequence > 0, notice_ordinal >= 0
+// and delivery='pending' (not 'none'), wake=1 -- exactly what
+// BatchOutboxDebtNodes selects (it joins r.announced=1 and has NO state
+// filter, so the TERMINAL root's node debt counts). NO message is seeded:
+// the old-empty gc rule needs MessageCount == 0, so the session IS a gc
+// candidate and the protection proof is the debt alone.
+func TestSessionsGc_TerminalRootDebtProtectsSession(t *testing.T) {
+	a, shutdownSeed, cmd := isolatedGcEnv(t)
+	ctx := context.Background()
+	f := seedGcBatchSession(t, a, "gc-batch-debt")
+	dataDir := a.Config().Options.DataDirectory
+	projectBatchRoot(t, f, "completed")
+	_, err := a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET announced = 1, announce_message_id = 'seed-msg' WHERE node_id = ? AND root_id = ?`,
+		f.rootID, f.rootID)
+	require.NoError(t, err)
+	_, err = a.DB().ExecContext(ctx,
+		`UPDATE batch_nodes SET notice_selected = 1, notice_kind = 'task', notice_state = 'completed',
+		 notice_cause = '', notice_sequence = 1, notice_ordinal = 0, delivery = 'pending', wake = 1
+		 WHERE node_id = ? AND parent_id = ?`, f.nodeA, f.rootID)
+	require.NoError(t, err)
+	shutdownSeed()
+
+	_, stderr := runBatchGc(t, cmd, true)
+	require.Contains(t, stderr, "kept session", "dry run must report the debt keep")
+	require.Contains(t, stderr, "batch delivery debt", "the keep names the debt, not the terminal root")
+	_, stderr = runBatchGc(t, cmd, false)
+	require.Contains(t, stderr, "kept session", "the real run keeps it too")
+	require.Equal(t, 1, countSessions(t, dataDir, f.owner), "terminal completion debt protects from gc")
+	// Protection means nothing was wiped: every batch_nodes row survives.
+	require.Equal(t, 3, countBatchNodes(t, dataDir, f.rootID), "no batch row was deleted while protected")
+
+	// Project the debt away (wake=0): the real run now collects the old,
+	// empty session -- the guard was the debt.
+	conn, err := db.Connect(ctx, dataDir)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `UPDATE batch_nodes SET wake = 0 WHERE node_id = ?`, f.nodeA)
+	require.NoError(t, err)
+	require.NoError(t, db.ReleaseConn(conn))
+
+	_, stderr = runBatchGc(t, cmd, false)
+	require.Contains(t, stderr, "deleted 1 session(s)", "without the debt the terminal root no longer protects")
+	require.Equal(t, 0, countSessions(t, dataDir, f.owner), "the session was collected")
+}
+
+// countBatchNodes returns the batch_nodes row count for one root id.
+func countBatchNodes(t *testing.T, dataDir, rootID string) int {
+	t.Helper()
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	var count int
+	require.NoError(t, conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM batch_nodes WHERE root_id = ?`, rootID).Scan(&count))
+	return count
+}
+
+// countSessions returns the sessions-row count for one id.
+func countSessions(t *testing.T, dataDir, sessionID string) int {
+	t.Helper()
+	conn, err := db.Connect(context.Background(), dataDir)
+	require.NoError(t, err)
+	defer func() { _ = db.ReleaseConn(conn) }()
+	var count int
+	require.NoError(t, conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count))
+	return count
+}
+
+// The kill rescue path reads batch metadata through the real batchKillLiveNote;
+// an absent store must neither be created nor reported as unconfirmed.
+func TestKillBatchScopeAbsentStoreDoesNotCreateDatabase(t *testing.T) {
+	dataDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	state := sessbatch.BatchKillLiveNote(ctx, dataDir, "absent-session")
+	_, err := os.Stat(storepath.StoreV1Path(dataDir))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("absent-store scope=%+v stat_error=%v", state, err)
+		}
+	})
+	require.False(t, state.Unconfirmed)
+	require.Empty(t, state.Note)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}

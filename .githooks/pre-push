@@ -463,7 +463,7 @@ windows)
 *)
 	step "process-group and lock-fence suites (no -short)"
 	run_capped "$RUSH_PROCESS_MEMORY" "$RUSH_PROCESS_TIMEOUT" go test -p 2 -failfast -run 'ChildGroup|Registry|WriteChildGroupFile|VerifyGroupStillPlausible|Sweep|ProbeThenKillHolder|AcquireSessionLockForReset|ForceKillHolder|ForceStillKillsLiveHolder' \
-		./internal/session/ ./internal/serve/cmd/ || fail "process-group/lock-fence suites failed"
+		./internal/session/ ./internal/serve/cmd/sessions/live ./internal/serve/cmd/sessions/live/locks || fail "process-group/lock-fence suites failed"
 	;;
 esac
 

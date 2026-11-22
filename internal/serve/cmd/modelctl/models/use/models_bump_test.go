@@ -1,0 +1,380 @@
+// Tests for `rush models bump <role> <up|down>` — stepping a role's
+// reasoning effort by one level in its model's own ordered Levels() array.
+// Uses the same isolated-config harness as models_use_test.go
+// (isolatedModelsEnv/runModelsCmd) so behavior is asserted against the real
+// RunE, not a reimplementation.
+package modeluse
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// resetModelsBumpFlags clears persisted flag values on the package-level
+// ownerBumpCmd between tests (cobra commands are shared vars).
+func resetModelsBumpFlags(t *testing.T) { resetOwnerBumpFlags(t, ownerBumpCmd) }
+
+// setupBumpEnv wires ownerBumpCmd into the isolated harness alongside
+// ownerUseCmd (needed to seed a role) and ownerStateCmd. isolatedModelsEnv
+// itself only calls cmd.SetContext on ownerUseCmd/ownerStateCmd/
+// modelsUnsetCmd (it predates this command), so ownerBumpCmd needs its own
+// SetContext here too — without it, cmd.Context() inside setupApp returns
+// nil and db.Connect panics on a nil context.
+func setupBumpEnv(t *testing.T) (globalPath string) { return setupOwnerBumpEnv(t) }
+
+// Note on model choice: these tests put the graduated-effort atom on the
+// worker/reviewer slot rather than smart/fast, and smart/fast get
+// glm4_7_flash (boolean off/on) instead.
+//
+// The original reason was specific to glm5_2, which these tests used before
+// 2026-08-18: `models use`'s smart/fast positionals additionally require
+// the resolved model to be found in the provider catalog (a.ResolveModel /
+// c.GetModel — see configureSelectedModels in internal/config/load.go), the
+// isolated harness runs with RUSH_PROVIDER_CACHE_ONLY=1, and glm-5.2 is not
+// in that catalog. The lookup failed, configureSelectedModels silently
+// substituted a default AND persisted it — corrupting the very file these
+// tests read back. worker/reviewer are read straight from cfg.Models by
+// ownerBumpCmd, bypassing that substitution, so they were safe.
+//
+// That hazard does NOT apply to glm5_3, the atom these tests use now:
+// load_providers.go synthesizes a provisional glm-5.3 entry into the Z.AI
+// provider's model list precisely because neither docs.z.ai nor catwalk
+// lists it, so it resolves on the smart slot and round-trips intact
+// (measured directly — `models use glm5_3 glm5_turbo` writes
+// {"model":"glm-5.3","provider":"zai"} to the smart slot under this exact
+// harness). The slot placement below is therefore no longer load-bearing;
+// it is left as-is because moving it would churn every assertion for no
+// gain, not because glm5_3 would break there.
+func TestModelsBump_GLM53FullStepUp(t *testing.T) {
+	globalPath := setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
+	require.NoError(t, runErr)
+
+	levels := []string{"low", "high", "max"}
+	for i := 1; i < len(levels); i++ {
+		resetOwnerBumpFlags(t, ownerBumpCmd)
+		_, runErr := runModelsCmd(t, ownerBumpCmd, "reviewer", "up")
+		require.NoError(t, runErr, "step %d (up)", i)
+		// Release the SQLite connection this setupApp call opened
+		// (ref-counted per data dir; see internal/db/connect.go) before the
+		// next loop iteration opens another one. Without this, ~8 rapid
+		// setupApp cycles sharing one data dir in a single test body was
+		// observed to trigger a Windows-only file-lock race in
+		// t.TempDir()'s cleanup (WAL/SHM handles not always released
+		// immediately after the LAST Close() at the very end of the test).
+		//
+		// db.Release(dataDir), not db.ResetPool(): the former only touches
+		// THIS test's own data dir's ref-counted entry; ResetPool used to
+		// nuke the entire process-wide pool, including any other test's
+		// still-open connection to a different data dir if it happened to
+		// be running concurrently (t.Parallel()) elsewhere in this package's
+		// test binary — a real source of cross-test "process cannot access
+		// the file" flakiness, not just OS handle-release lag.
+		_ = db.Release(filepath.Dir(globalPath))
+
+		// Assert against the raw config file directly — cheaper than
+		// another `rush models state` call and avoids yet another setupApp
+		// cycle.
+		data, err := os.ReadFile(globalPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"reasoning_effort":"`+levels[i]+`"`,
+			"after step %d, expected effort %q; file:\n%s", i, levels[i], data)
+	}
+
+	// One final `models state` call confirms the same fact through the
+	// user-facing resolution path too.
+	resetOwnerStateFlags(t, ownerStateCmd)
+	state, runErr := runModelsCmd(t, ownerStateCmd)
+	require.NoError(t, runErr)
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-max", "the ATOM column carries the stepped level")
+}
+
+// TestModelsBump_GLM53FullStepDown is the symmetric downward walk, starting
+// from the top (max) and stepping down to low.
+func TestModelsBump_GLM53FullStepDown(t *testing.T) {
+	globalPath := setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
+	require.NoError(t, runErr)
+
+	levels := []string{"low", "high", "max"}
+	for i := len(levels) - 2; i >= 0; i-- {
+		resetOwnerBumpFlags(t, ownerBumpCmd)
+		_, runErr := runModelsCmd(t, ownerBumpCmd, "reviewer", "down")
+		require.NoError(t, runErr, "step down to index %d", i)
+		// See the comment in TestModelsBump_GLM53FullStepUp: release the
+		// per-data-dir SQLite connection between iterations to avoid a
+		// Windows-only TempDir-cleanup file-lock race — scoped to this
+		// test's own data dir, not the whole pool.
+		_ = db.Release(filepath.Dir(globalPath))
+
+		// Assert against the raw config file directly (see same comment).
+		data, err := os.ReadFile(globalPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"reasoning_effort":"`+levels[i]+`"`,
+			"after stepping down, expected effort %q; file:\n%s", levels[i], data)
+	}
+
+	resetOwnerStateFlags(t, ownerStateCmd)
+	state, runErr := runModelsCmd(t, ownerStateCmd)
+	require.NoError(t, runErr)
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
+}
+
+// TestModelsBump_TopBoundary_UpIsInformationalNotError confirms that
+// stepping "up" while already at the highest level ("max") produces a
+// clean, non-error exit with an informational message — not a crash or Go
+// error return.
+func TestModelsBump_TopBoundary_UpIsInformationalNotError(t *testing.T) {
+	ktavGateOn(t)
+	setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-on", "glm5_turbo", "--reviewer", "glm5_3-max")
+	require.NoError(t, runErr)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "reviewer", "up")
+	require.NoError(t, runErr, "boundary condition must be a clean, non-error exit")
+
+	// The effort must remain unchanged at the boundary.
+	resetOwnerStateFlags(t, ownerStateCmd)
+	state, runErr := runModelsCmd(t, ownerStateCmd)
+	require.NoError(t, runErr)
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-max", "the ATOM column carries the stepped level")
+}
+
+// TestModelsBump_BottomBoundary_DownIsInformationalNotError is the symmetric
+// bottom-boundary case: stepping "down" while already at the lowest defined
+// level ("low").
+func TestModelsBump_BottomBoundary_DownIsInformationalNotError(t *testing.T) {
+	ktavGateOn(t)
+	setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-low")
+	require.NoError(t, runErr)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "reviewer", "down")
+	require.NoError(t, runErr, "boundary condition must be a clean, non-error exit")
+
+	resetOwnerStateFlags(t, ownerStateCmd)
+	state, runErr := runModelsCmd(t, ownerStateCmd)
+	require.NoError(t, runErr)
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
+}
+
+// TestModelsBump_UnsetEffort_UpLandsOnLowestLevel confirms the chosen
+// unset-handling design: starting from a role set to a bare atom (no effort
+// suffix at all, i.e. ReasoningEffort == ""), "up" must land on the lowest
+// defined level (index 0), not skip it or error.
+func TestModelsBump_UnsetEffort_UpLandsOnLowestLevel(t *testing.T) {
+	globalPath := setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	// "glm5_3" with no "-<level>" suffix -> ReasoningEffort left empty
+	// (Z.AI/ReasoningLevels-backed atoms make the suffix optional; see
+	// parseAtom in models_atoms.go).
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
+	require.NoError(t, runErr)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "reviewer", "up")
+	require.NoError(t, runErr)
+
+	data, err := os.ReadFile(globalPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"low"`, "up from unset must land on the lowest level (low), got: %s", data)
+
+	resetOwnerStateFlags(t, ownerStateCmd)
+	state, runErr := runModelsCmd(t, ownerStateCmd)
+	require.NoError(t, runErr)
+	reviewerRow, _ := effectiveRow(state, "reviewer")
+	assert.Contains(t, reviewerRow, "glm5_3-low", "the ATOM column carries the stepped level")
+}
+
+// TestModelsBump_UnsetEffort_DownReportsAlreadyLowest confirms the symmetric
+// choice: "down" from a fully-unset effort is itself the bottom boundary —
+// it must be a clean, non-error, no-write outcome, not an attempt to go
+// "below" unset.
+func TestModelsBump_UnsetEffort_DownReportsAlreadyLowest(t *testing.T) {
+	globalPath := setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash", "glm5_turbo", "--reviewer", "glm5_3")
+	require.NoError(t, runErr)
+
+	before, err := os.ReadFile(globalPath)
+	require.NoError(t, err)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "reviewer", "down")
+	require.NoError(t, runErr, "down-from-unset must be a clean, non-error exit")
+
+	after, err := os.ReadFile(globalPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "down from unset must not write anything")
+}
+
+// TestModelsBump_NonAtomModel_ReportsCleanly confirms a model that isn't in
+// the atom registry at all (no Levels()) is reported cleanly rather than
+// crashing or returning a Go error.
+//
+// This seeds the config file DIRECTLY with a raw (provider, model) pair
+// rather than going through `models use`, because `models use`'s smart/fast
+// positionals require the model to resolve against the (cached) provider
+// catalog via a.ResolveModel — an extra, unrelated hurdle for a model that
+// isn't expected to be in the catalog at all here. Writing the JSON directly
+// isolates the test to exactly what's under test: ownerBumpCmd's own
+// lookupAtomForModel()==""  branch.
+func TestModelsBump_NonAtomModel_ReportsCleanly(t *testing.T) {
+	globalPath := setupBumpEnv(t)
+
+	require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{
+		"smart":{"provider":"openai","model":"gpt-5"},
+		"fast":{"provider":"openai","model":"gpt-5"},
+		"reviewer":{"provider":"openai","model":"gpt-5","reasoning_effort":"high"}
+	}}`), 0o644))
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	out, runErr := runModelsCmd(t, ownerBumpCmd, "reviewer", "up")
+	require.NoError(t, runErr, "non-atom model must report cleanly, not error")
+	_ = out
+
+	// Confirm nothing was written — the reviewer's effort must remain "high".
+	data, err := os.ReadFile(globalPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"high"`)
+}
+
+// TestModelsBump_AllFourRoles is a table test confirming the bump command
+// works uniformly across all four role slots. smart/fast use
+// glm4_7_flash (boolean off/on — resolves reliably in this harness, see the
+// note on TestModelsBump_GLM53FullStepUp); worker/reviewer use glm5_3's
+// high->max step, since worker/reviewer are read directly from cfg.Models
+// without going through the smart/fast default-substitution path that
+// makes glm-5.3 unreliable for THOSE two slots specifically in this
+// harness.
+func TestModelsBump_AllFourRoles(t *testing.T) {
+	tests := []struct {
+		role      string
+		seedAtom  string
+		wantAfter string
+	}{
+		{"smart", "glm4_7_flash-off", `"on"`},
+		{"fast", "glm4_7_flash-off", `"on"`},
+		{"worker", "glm5_3-high", `"max"`},
+		{"reviewer", "glm5_3-high", `"max"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.role, func(t *testing.T) {
+			globalPath := setupBumpEnv(t)
+
+			resetModelsUseFlags(t, ownerUseCmd)
+			// fast positional defaults to glm5_turbo (no declared effort
+			// levels — irrelevant for the smart/worker/reviewer sub-tests),
+			// but the "fast" sub-test itself needs an atom WITH levels in
+			// that exact slot, so it seeds glm4_7_flash-off there too.
+			fastSeed := "glm5_turbo"
+			if tc.role == "fast" {
+				fastSeed = tc.seedAtom
+			}
+			args := []string{"glm4_7_flash-off", fastSeed}
+			switch tc.role {
+			case "smart", "fast":
+				// already seeded above.
+			case "worker":
+				args = append(args, "--worker", tc.seedAtom)
+			case "reviewer":
+				args = append(args, "--reviewer", tc.seedAtom)
+			}
+			_, runErr := runModelsCmd(t, ownerUseCmd, args...)
+			require.NoError(t, runErr)
+
+			resetOwnerBumpFlags(t, ownerBumpCmd)
+			_, runErr = runModelsCmd(t, ownerBumpCmd, tc.role, "up")
+			require.NoError(t, runErr)
+
+			data, err := os.ReadFile(globalPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(data), tc.wantAfter, "role %s: expected effort to step forward, got: %s", tc.role, data)
+		})
+	}
+}
+
+// TestModelsBump_WritePersists_RawFileContent is the "read the raw file
+// back, not just models state" check requested for this task, mirroring
+// task #72's ZeroWrites/StillWritesAll style: after a successful bump, the
+// on-disk JSON must contain the new effort value directly.
+func TestModelsBump_WritePersists_RawFileContent(t *testing.T) {
+	globalPath := setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-off", "glm5_turbo", "--reviewer", "glm5_3-high")
+	require.NoError(t, runErr)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "reviewer", "up")
+	require.NoError(t, runErr)
+
+	data, err := os.ReadFile(globalPath)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `"reviewer"`)
+	assert.Contains(t, content, `"glm-5.3"`)
+	assert.Contains(t, content, `"max"`)
+	assert.NotContains(t, content, `"high"`, "the old effort value should no longer be present for reviewer after the bump")
+}
+
+// TestModelsBump_InvalidRole_RejectedCleanly confirms cobra-level arg
+// validation rejects an unrecognized role positional.
+func TestModelsBump_InvalidRole_RejectedCleanly(t *testing.T) {
+	setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-off", "glm5_turbo")
+	require.NoError(t, runErr)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "bogus-role", "up")
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "expected smart|fast|worker|reviewer")
+}
+
+// TestModelsBump_InvalidDirection_RejectedCleanly confirms an unrecognized
+// direction positional is rejected.
+func TestModelsBump_InvalidDirection_RejectedCleanly(t *testing.T) {
+	setupBumpEnv(t)
+
+	resetModelsUseFlags(t, ownerUseCmd)
+	_, runErr := runModelsCmd(t, ownerUseCmd, "glm4_7_flash-off", "glm5_turbo")
+	require.NoError(t, runErr)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr = runModelsCmd(t, ownerBumpCmd, "smart", "sideways")
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "expected up|down")
+}
+
+// TestModelsBump_RoleNotSet_ReportsCleanly confirms a role that was never
+// configured in any scope is reported cleanly rather than crashing.
+func TestModelsBump_RoleNotSet_ReportsCleanly(t *testing.T) {
+	setupBumpEnv(t)
+
+	resetOwnerBumpFlags(t, ownerBumpCmd)
+	_, runErr := runModelsCmd(t, ownerBumpCmd, "worker", "up")
+	require.NoError(t, runErr, "an unset role must report cleanly, not error")
+}
