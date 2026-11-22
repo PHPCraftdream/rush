@@ -1,0 +1,103 @@
+package settingsctl
+
+import (
+	"fmt"
+	"log/slog"
+	"sync"
+
+	"charm.land/lipgloss/v2"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
+	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/spf13/cobra"
+)
+
+var updateProvidersSource string
+
+var updateProvidersCmd = &cobra.Command{
+	Use:   "update-providers [path-or-url]",
+	Args:  cobra.MaximumNArgs(1),
+	Short: "Update providers",
+	Long:  `Update provider information from a specified local path or remote URL.`,
+	Example: `
+# Update Catwalk providers remotely (default)
+rush update-providers
+
+# Update Catwalk providers from a custom URL
+rush update-providers https://example.com/providers.json
+
+# Update Catwalk providers from a local file
+rush update-providers /path/to/local-providers.json
+
+# Update Catwalk providers from embedded version
+rush update-providers embedded
+
+# Update Hyper provider information
+rush update-providers --source=hyper
+
+# Update Hyper from a custom URL
+rush update-providers --source=hyper https://hyper.example.com
+`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runUpdateProvidersWithSource(cmd, args, updateProvidersSource)
+	},
+}
+
+func runUpdateProvidersWithSource(cmd *cobra.Command, args []string, source string) error {
+	// NOTE(@andreynering): We want to skip logging output do stdout here.
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+
+	var pathOrURL string
+	if len(args) > 0 {
+		pathOrURL = args[0]
+	}
+
+	var err error
+	switch source {
+	case "catwalk":
+		err = config.UpdateProviders(pathOrURL)
+	case "hyper":
+		err = config.UpdateHyper(pathOrURL)
+	default:
+		return fmt.Errorf("invalid source %q, must be 'catwalk' or 'hyper'", source)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// NOTE(@andreynering): This style is more-or-less copied from Fang's
+	// error message, adapted for success.
+	headerStyle := lipgloss.NewStyle().
+		Foreground(charmtone.Butter).
+		Background(charmtone.Guac).
+		Bold(true).
+		Padding(0, 1).
+		Margin(1).
+		MarginLeft(2).
+		SetString("SUCCESS")
+	textStyle := lipgloss.NewStyle().
+		MarginLeft(2).
+		SetString(fmt.Sprintf("%s provider updated successfully.", source))
+
+	fmt.Printf("%s\n%s\n\n", headerStyle.Render(), textStyle.Render())
+	return nil
+}
+
+var newUpdateProvidersCmdOnce sync.Once
+
+func NewUpdateProvidersCmd() *cobra.Command {
+	newUpdateProvidersCmdOnce.Do(func() {
+		originalSource := updateProvidersSource
+		updateProvidersCmd.Flags().StringVar(&updateProvidersSource, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+		updateProvidersSource = originalSource
+	})
+	var source string
+	fresh := cmdkit.DeepFreshCmdRebind(updateProvidersCmd, map[string]bool{"source": true}, func(fresh *cobra.Command) {
+		fresh.Flags().StringVar(&source, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+	})
+	fresh.RunE = func(cmd *cobra.Command, args []string) error {
+		return runUpdateProvidersWithSource(cmd, args, source)
+	}
+	return fresh
+}

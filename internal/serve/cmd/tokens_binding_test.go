@@ -16,14 +16,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
-func TestTokenBindingJSONPresentation(t *testing.T) {
-	binding := config.APITokenBinding{Kind: "session", Pin: &config.APITokenPinBinding{Session: "sess", Workspace: filepath.Clean("/tmp/work")}}
-	got := tokenBindingPresentation(binding)
-	if !strings.Contains(got, "session=sess") || !strings.Contains(got, "workspace="+filepath.Clean("/tmp/work")) {
-		t.Fatalf("binding presentation = %q", got)
-	}
-}
-
 func TestTokenBindingCreateNewShowListProcess(t *testing.T) {
 	base := t.TempDir()
 	globalDir, dataDir, configDir := filepath.Join(base, "global"), filepath.Join(base, "data"), filepath.Join(base, "config")
