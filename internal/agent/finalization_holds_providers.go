@@ -43,18 +43,14 @@ func diskOwnerKeysOfKind(m *diskCapabilityManager, kinds ...diskOwnerKind) []dis
 }
 
 // batchRootLeaseRoots snapshots the lease ledger's root ids under one lock
-// acquisition.
+// acquisition — delegated to the lease's Roots read (batchflow port via
+// batchRootLeaseStore.roots), one independent observation beside the caps
+// owners snapshot in the caller.
 func batchRootLeaseRoots(s *batchRootLeaseStore) map[jobbatch.ID]struct{} {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	roots := make(map[jobbatch.ID]struct{}, len(s.entries))
-	for root := range s.entries {
-		roots[root] = struct{}{}
-	}
-	return roots
+	return s.Roots()
 }
 
 // NewFinalizationBatchRootHoldsProvider counts the batch-root physical holds
@@ -137,7 +133,7 @@ func NewFinalizationBatchRootHoldsProvider(
 					"outside the lease ledger",
 					ErrFinalizationHoldsUnattributable, root)
 			}
-			owner := leases.ownerForRoot(root)
+			owner := leases.OwnerForRoot(root)
 			if owner == "" {
 				// No owning session recorded — impossible in production
 				// (acquire refuses an empty owner); the check stays as a

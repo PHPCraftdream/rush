@@ -61,7 +61,7 @@ func TestBatchRootOwnerRejectedSubmitReleasesOnlyRootOwner(t *testing.T) {
 	require.NoError(t, store.acquire(root, "provisional-owner", binding, "root-lease-provisional"))
 	_, err := caps.Lookup(binding)
 	require.NoError(t, err) // The Root owner holds the binding before Submit.
-	store.release(root, binding, "root-lease-provisional")
+	store.Release(root, binding, "root-lease-provisional")
 	_, err = caps.Lookup(binding)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable) // Definite rejection drops the Root owner.
 	_, err = registries.Resolve("root-lease-provisional")
@@ -83,7 +83,7 @@ func TestBatchRootOwnerBridgesToSettlement(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resolved)
 	done := make(chan struct{})
-	require.NoError(t, store.adopt(root, done, binding, "root-lease-accepted", nil))
+	require.NoError(t, store.Adopt(root, done, binding, "root-lease-accepted", nil))
 
 	close(done) // Settlement: Done means no further child can start.
 	require.Eventually(t, func() bool {
@@ -105,7 +105,7 @@ func TestBatchRootOwnerDuplicateAndMismatchAdoption(t *testing.T) {
 	root := jobbatch.ID("root-shared")
 	done := make(chan struct{})
 	require.NoError(t, store.acquire(root, "dup-owner", binding1, "root-lease-duplicate"))
-	require.NoError(t, store.adopt(root, done, binding1, "root-lease-duplicate", nil))
+	require.NoError(t, store.Adopt(root, done, binding1, "root-lease-duplicate", nil))
 	// Repeated acquisition of the SAME key is idempotent (R12-H2 §1.1).
 	require.NoError(t, store.acquire(root, "dup-owner", binding1, "root-lease-duplicate"))
 	_, err := caps.Lookup(binding1)
@@ -115,7 +115,7 @@ func TestBatchRootOwnerDuplicateAndMismatchAdoption(t *testing.T) {
 	require.ErrorIs(t, store.acquire(root, "dup-owner", binding2, "root-lease-duplicate"), ErrDiskProviderUnavailable)
 	_, err = caps.Lookup(binding2)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable) // The mismatch took no owner.
-	require.True(t, store.matches(root, binding1, "root-lease-duplicate"))
+	require.True(t, store.Matches(root, binding1, "root-lease-duplicate"))
 	close(done)
 	require.Eventually(t, func() bool {
 		_, lookupErr := caps.Lookup(binding1)
@@ -154,8 +154,9 @@ func (testBatchLeaseExecution) Stop(context.Context) error    { return nil }
 func (testBatchLeaseExecution) Dispose(context.Context) error { return nil }
 
 // TestBatchRootLeaseOwnerRecordedAndForgotten proves acquire records the
-// owning session in the ledger, ownerForRoot reads it back, and forget
-// clears the entry so the reader returns the empty string again.
+// owning session in the ledger, ownerForRoot reads it back, and the adopt
+// watcher clears the entry (before invoking its release callback) so the
+// reader returns the empty string again.
 //
 // Revert-check: dropping the owner from the ledger entry (or reading it
 // from a side index) starves the finalization holds provider of its only
@@ -167,9 +168,23 @@ func TestBatchRootLeaseOwnerRecordedAndForgotten(t *testing.T) {
 	defer releaseConstruction()
 	root := jobbatch.ID("root-owner-read")
 	require.NoError(t, store.acquire(root, "reader-owner", binding, "root-lease-owner-read"))
-	require.Equal(t, "reader-owner", store.ownerForRoot(root))
-	store.forget(root)
-	require.Equal(t, "", store.ownerForRoot(root))
+	require.Equal(t, "reader-owner", store.OwnerForRoot(root))
+	// Deterministic settlement: an already-closed Done runs the watcher's
+	// release+forget before the release callback fires.
+	done := make(chan struct{})
+	close(done)
+	settled := make(chan struct{})
+	require.NoError(t, store.Adopt(root, done, binding, "root-lease-owner-read",
+		func(context.Context, jobbatch.ID) error {
+			close(settled)
+			return nil
+		}))
+	select {
+	case <-settled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settlement callback did not run within 2s")
+	}
+	require.Equal(t, "", store.OwnerForRoot(root))
 }
 
 // TestBatchRootLeaseOwnerConflictPreservesOriginalEntry proves a second
@@ -190,8 +205,8 @@ func TestBatchRootLeaseOwnerConflictPreservesOriginalEntry(t *testing.T) {
 	require.ErrorIs(t,
 		store.acquire(root, "other-owner", binding, "root-lease-owner-dup"),
 		ErrDiskProviderUnavailable)
-	require.Equal(t, "dup-owner", store.ownerForRoot(root))
-	require.True(t, store.matches(root, binding, "root-lease-owner-dup"))
+	require.Equal(t, "dup-owner", store.OwnerForRoot(root))
+	require.True(t, store.Matches(root, binding, "root-lease-owner-dup"))
 }
 
 // TestBatchRootLeaseAcquireRefusesEmptyOwner proves acquire fails closed on
@@ -211,7 +226,7 @@ func TestBatchRootLeaseAcquireRefusesEmptyOwner(t *testing.T) {
 		store.acquire(root, "", binding, "root-lease-owner-empty"),
 		ErrDiskProviderUnavailable)
 	require.ErrorIs(t, store.acquire(root, "", "", ""), ErrDiskProviderUnavailable)
-	require.Equal(t, "", store.ownerForRoot(root))
+	require.Equal(t, "", store.OwnerForRoot(root))
 }
 
 // TestBatchRootLeaseOwnerOnlyPathRecordsWithoutCapsOwner proves the
@@ -231,8 +246,8 @@ func TestBatchRootLeaseOwnerOnlyPathRecordsWithoutCapsOwner(t *testing.T) {
 	require.NoError(t, store.acquire(root, "cli-owner", "", ""))
 	ownersAfter, _ := caps.ownerCounts()
 	require.Equal(t, ownersBefore, ownersAfter) // No capability owner was taken.
-	require.Equal(t, "cli-owner", store.ownerForRoot(root))
-	require.True(t, store.matches(root, "", ""))
+	require.Equal(t, "cli-owner", store.OwnerForRoot(root))
+	require.True(t, store.Matches(root, "", ""))
 }
 
 var (

@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/PHPCraftdream/rush/internal/agent/runtime/batch/gate"
+import "github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 
 // Keep the agent-side names while the remaining finalization wiring stays here.
 type (

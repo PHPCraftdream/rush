@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -53,7 +54,7 @@ func TestFinalizationBatchRootHoldsProviderCountsExactlyByRegistryFacts(t *testi
 
 	// Release without forget leaves a stale ledger entry; the live caps
 	// owner is gone, so A's count must fall to exactly zero.
-	store.release(root1, binding, "holds-root-reg")
+	store.Release(root1, binding, "holds-root-reg")
 	n, err = provider(t.Context(), "A")
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
@@ -100,9 +101,32 @@ func TestFinalizationBatchRootHoldsProviderFailsClosedOnUnattributedRoot(t *test
 	defer releaseConstruction()
 	root := jobbatch.ID("holds-root-c")
 	require.NoError(t, store.acquire(root, "A", binding, "holds-root-reg"))
-	// The adopt watcher can forget the ledger entry while the caps owner is
-	// still live; the provider must refuse, not skip.
-	store.forget(root)
+	// Deterministic settlement: an already-closed Done runs the adopt
+	// watcher's release+forget before the release callback fires — the
+	// forgotten-entry state a racing settlement can reach.
+	done := make(chan struct{})
+	close(done)
+	settled := make(chan struct{})
+	require.NoError(t, store.Adopt(root, done, binding, "holds-root-reg",
+		func(context.Context, jobbatch.ID) error {
+			close(settled)
+			return nil
+		}))
+	select {
+	case <-settled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settlement callback did not run within 2s")
+	}
+	// Re-add a live root-kind caps owner for the now-forgotten root. The
+	// release pruned the binding (the fixture's Construction owner names no
+	// binding), so the ghost key uses an EMPTY binding against the registry
+	// whose construction record stays pinned by the fixture's Construction
+	// owner — reproducing owner-live-but-entry-forgotten; the provider must
+	// refuse, not skip.
+	require.NoError(t, caps.acquire(diskOwnerKey{
+		kind: diskOwnerRoot, instance: string(root),
+		registryID: "holds-root-reg",
+	}))
 
 	provider := NewFinalizationBatchRootHoldsProvider(store, caps)
 	n, err := provider(t.Context(), "A")

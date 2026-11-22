@@ -5,18 +5,12 @@
 package agent
 
 import (
-	"context"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 )
 
 // BatchDriverClaimer is the durable session-driver-marker surface
-// *session.HostStore satisfies: ClaimSessionDriver records this store's host
-// as sessionID's driver, ReleaseSessionDriver deletes it. It returns
-// session.ErrDriverMarkerUnavailable for the "no OS-lock-capable data dir"
-// case, so the coordinator's handling is uniform.
-type BatchDriverClaimer interface {
-	ClaimSessionDriver(ctx context.Context, sessionID string) error
-	ReleaseSessionDriver(ctx context.Context, sessionID string) error
-}
+// *session.HostStore satisfies; the moved declaration lives in batchflow.
+type BatchDriverClaimer = batchflow.BatchDriverClaimer
 
 // driverMarkerStore is the durable driver-marker store the claim/release
 // path consults: the injected HostStore. It returns a TRUE nil interface

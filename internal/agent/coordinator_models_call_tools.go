@@ -7,6 +7,7 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
@@ -112,6 +113,14 @@ func withoutCallOptions(ctx context.Context) context.Context {
 	// (an embedded agent tool's prompt, for instance) from a caller's
 	// per-call scope, exactly what this function exists to prevent.
 	return prompt.WithFolderScoped(
-		context.WithValue(globalQuestionContext{Context: ctx}, callOptionsContextKey{}, (*CallOptions)(nil)),
+		context.WithValue(batchflow.GlobalQuestionContext{
+			Context: ctx,
+			// persistedAgentDepthContextKey is agent-owned; the batchflow
+			// mask covers only the runtime/batch question keys.
+			Foreign: func(key any) bool {
+				_, masked := key.(persistedAgentDepthContextKey)
+				return masked
+			},
+		}, callOptionsContextKey{}, (*CallOptions)(nil)),
 		false)
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
@@ -41,6 +42,21 @@ var awaitTasksWorkerPollInterval = time.Second
 // awaitTasksWorkerSnapshotHook is a test-only synchronization seam. Production
 // leaves it nil; callbacks run after each complete legacy snapshot.
 var awaitTasksWorkerSnapshotHook atomic.Pointer[func(string, string)]
+
+var (
+	awaitTasksWorkerBatchPollIntervalOverride time.Duration
+	awaitTasksWorkerBatchWaitCapOverride      time.Duration
+	awaitTasksWorkerBatchMinWaitOverride      int
+	awaitTasksWorkerBatchMaxWaitOverride      int
+)
+
+// Root-private test overrides for the values awaitTasksForBatchWorker injects
+// into batchflow.BatchAwaitParams (poll interval, wait cap, min bound, max
+// bound). Production leaves them all zero: zero PollInterval/WaitCap falls
+// back to the lower batchAwaitPollInterval/batchAwaitWorkerCap defaults, and
+// zero MinWaitSeconds/MaxWaitBounds keeps the lower 60..21600 validation
+// defaults. Tests set them to shrink timing without exporting any test-only
+// production symbol in batchflow.
 
 // Тестовый барьер после первого чтения held-вопросов, не до него.
 var awaitTasksWorkerQuestionReadHook atomic.Pointer[func(string, string)]
@@ -84,7 +100,7 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 			return tools.AwaitTasksResult{}, errors.New("batch level read incomplete")
 		}
 		for _, node := range level.Subtree {
-			if node.Kind != "task" || batchAwaitTerminalState(node.State) {
+			if node.Kind != "task" || batchflow.BatchAwaitTerminalState(node.State) {
 				continue
 			}
 			waiting = append(waiting, tools.AwaitTaskRef{ToolName: node.TaskKind, ToolCallID: level.Node.ToolCallID, AgeSeconds: int64(time.Since(node.StartedAt).Seconds()), BatchRootID: ref.RootID, BatchNodeID: node.NodeID})
@@ -126,7 +142,7 @@ func batchAwaitNotifyModes(levels session.BatchCapturedLevels) map[session.Batch
 	for _, root := range levels.Roots {
 		mode := root.Node.Notify.String
 		if !root.Node.Notify.Valid || mode == "" {
-			mode = batchNotifyAll
+			mode = batchflow.BatchNotifyAll
 		}
 		modes[root.Ref] = mode
 	}
@@ -142,7 +158,7 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 	capturedHook := false
 	questionHook := false
 	notifyByRef := make(map[session.BatchLiveRef]string)
-	result, err := BatchAwaitWorker(ctx, BatchAwaitParams{
+	result, err := batchflow.BatchAwaitWorker(ctx, batchflow.BatchAwaitParams{
 		Mode: mode, MaxWaitSeconds: maxWaitSeconds,
 		Capture: func(ctx context.Context) session.BatchCapturedRoots {
 			captured = bind.live.BatchCaptured(ctx, []string{sessionID})
@@ -161,6 +177,12 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 		},
 		NotifyModeOf: func(ref session.BatchLiveRef) string { return notifyByRef[ref] },
 		Hints:        func() (<-chan struct{}, func()) { return c.driverHints.subscribe(sessionID) },
+		// Zero overrides fall back to the lower defaults; see the override
+		// var block above.
+		PollInterval:   awaitTasksWorkerBatchPollIntervalOverride,
+		WaitCap:        awaitTasksWorkerBatchWaitCapOverride,
+		MinWaitSeconds: awaitTasksWorkerBatchMinWaitOverride,
+		MaxWaitBounds:  awaitTasksWorkerBatchMaxWaitOverride,
 		// Reaction-independent held-question gate: an unanswered child
 		// question (even one marked reacted by the owner's reaction flow)
 		// breaks the wait instead of blocking in-tool for up to the 40m cap.
@@ -189,7 +211,7 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 		for _, root := range levels.Roots {
 			if root.Ref == unit.Ref {
 				for _, node := range root.Children {
-					if node.Kind == "task" && !batchAwaitTerminalState(node.State) {
+					if node.Kind == "task" && !batchflow.BatchAwaitTerminalState(node.State) {
 						refs = append(refs, tools.AwaitTaskRef{ToolName: node.TaskKind, ToolCallID: unit.ToolCallID, AgeSeconds: int64(time.Since(node.StartedAt).Seconds()), BatchRootID: unit.Ref.RootID, BatchNodeID: node.NodeID})
 					}
 				}

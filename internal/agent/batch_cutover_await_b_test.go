@@ -67,7 +67,7 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 	// exist yet).
 	captured := env.capture()
 	require.Len(t, captured.Refs(), 1, "only R is in the worker's captured set")
-	resCh := env.awaitAsync(batchAwaitModeAll, captured, true, 10*time.Second)
+	resCh := env.awaitAsync("all", captured, true, 10*time.Second)
 
 	// 3. Stop ACCEPTANCE: accepted, submitted, NEVER settles; R stays live.
 	// The executor Stop is BLOCKED in the gate: acceptance returned, the
