@@ -26,32 +26,39 @@ func newAwaitWorkerEnv(t *testing.T) (fakeEnv, *coordinator) {
 	return env, c
 }
 
-// awtShrinkPoll shrinks the worker await's poll interval
-// (batchAwaitPollInterval — awaitTasksForBatchWorker passes no PollInterval,
-// so the default var is live).
+// awtShrinkPoll shrinks the worker await's poll interval via the root-private
+// PollInterval override (awaitTasksForBatchWorker passes it as
+// BatchAwaitParams.PollInterval; zero falls back to the lower
+// batchAwaitPollInterval default).
 func awtShrinkPoll(t *testing.T, d time.Duration) {
 	t.Helper()
-	old := batchAwaitPollInterval
-	batchAwaitPollInterval = d
-	t.Cleanup(func() { batchAwaitPollInterval = old })
+	old := awaitTasksWorkerBatchPollIntervalOverride
+	awaitTasksWorkerBatchPollIntervalOverride = d
+	t.Cleanup(func() { awaitTasksWorkerBatchPollIntervalOverride = old })
 }
 
-// awtShrinkBlockCap shrinks the unconditional worker block cap
-// (batchAwaitWorkerCap — awaitTasksForBatchWorker passes no WaitCap).
+// awtShrinkBlockCap shrinks the unconditional worker block cap via the
+// root-private WaitCap override (BatchAwaitParams.WaitCap).
 func awtShrinkBlockCap(t *testing.T, d time.Duration) {
 	t.Helper()
-	old := batchAwaitWorkerCap
-	batchAwaitWorkerCap = d
-	t.Cleanup(func() { batchAwaitWorkerCap = old })
+	old := awaitTasksWorkerBatchWaitCapOverride
+	awaitTasksWorkerBatchWaitCapOverride = d
+	t.Cleanup(func() { awaitTasksWorkerBatchWaitCapOverride = old })
 }
 
-// awtShrinkMinWait shrinks the max_wait floor (batchAwaitMinWaitSeconds —
-// BatchAwaitWorker validates against it even on the direct worker path).
+// awtShrinkMinWait shrinks the max_wait floor via the root-private bounds
+// overrides (BatchAwaitParams.MinWaitSeconds). The ceiling stays the original
+// 21600 so the override only moves the floor; BatchAwaitWorker validates
+// against these bounds even on the direct worker path.
 func awtShrinkMinWait(t *testing.T, seconds int) {
 	t.Helper()
-	old := batchAwaitMinWaitSeconds
-	batchAwaitMinWaitSeconds = seconds
-	t.Cleanup(func() { batchAwaitMinWaitSeconds = old })
+	oldMin, oldMax := awaitTasksWorkerBatchMinWaitOverride, awaitTasksWorkerBatchMaxWaitOverride
+	awaitTasksWorkerBatchMinWaitOverride = seconds
+	awaitTasksWorkerBatchMaxWaitOverride = awaitTasksMaxWaitSeconds
+	t.Cleanup(func() {
+		awaitTasksWorkerBatchMinWaitOverride = oldMin
+		awaitTasksWorkerBatchMaxWaitOverride = oldMax
+	})
 }
 
 // awtBindControls gives AwaitTasks its flag-ON live binding (bind.live): the
@@ -96,7 +103,7 @@ func awtFinishWork(t *testing.T, conn *sql.DB, owner, root, child string) {
 
 // awtArmCaptureHook registers the test-only first-capture hook BEFORE the
 // awaited goroutine is launched (the batch worker's FIRST capture happens at
-// BatchAwaitWorker entry, coordinator_await_tasks.go:164-169 — a hook stored
+// batchflow.BatchAwaitWorker entry, coordinator_await_tasks.go:164-169 — a hook stored
 // after that fire is never called). Returns the channel the hook closes.
 func awtArmCaptureHook(t *testing.T) <-chan struct{} {
 	t.Helper()
@@ -201,7 +208,7 @@ func TestAwaitTasksWorkerUntilAllWaitsForBothJobs(t *testing.T) {
 		errCh <- err
 	}()
 	// Let the goroutine's initial live-work read happen first: the snapshot
-	// hook fires after the first BatchAwaitWorker capture.
+	// hook fires after the first batchflow.BatchAwaitWorker capture.
 	awtAwaitCaptureArrived(t, captureArrived)
 	awtFinishWork(t, env.conn, child, seeds["call-1"][0], seeds["call-1"][1])
 	select {
@@ -260,7 +267,7 @@ func TestAwaitTasksWorkerCancelUnblocks(t *testing.T) {
 // it calls awaitTasksForWorker directly to bypass the top-level 60s bound.
 func TestAwaitTasksWorkerDeadlineReturnsRemaining(t *testing.T) {
 	awtShrinkPoll(t, 10*time.Millisecond)
-	// BatchAwaitWorker validates max_wait against the shared floor; shrink
+	// BatchAwaitWorker validates max_wait against the injected floor; shrink
 	// it so max_wait=1 still reaches the deadline arm.
 	awtShrinkMinWait(t, 1)
 	env, c := newAwaitWorkerEnv(t)
@@ -335,4 +342,4 @@ func TestAwaitTasksWorkerCapAppliesWithoutMaxWait(t *testing.T) {
 // awaitTasksWorker's identity/InMinimal semantics over session.RootLiveWork
 // (LiveJob/RootLiveWork are removed session symbols). The batch await's
 // identity contract is pinned over BatchCapturedRoots by
-// coordinator_await_tasks_identity_test.go and the BatchAwaitWorker tests.
+// coordinator_await_tasks_identity_test.go and the batchflow.BatchAwaitWorker tests.

@@ -97,7 +97,7 @@ func (c *installedBatchModelControl) modelMutations() modelcontrol.Mutations[Bat
 		deps.Deliver = c.delivery.DeliverBatch
 	}
 	if l := c.rootLeases; l != nil {
-		deps.Leases = modelcontrol.RootLeases{Matches: l.matches, Acquire: l.acquire, Release: l.release, Adopt: l.adopt}
+		deps.Leases = modelcontrol.RootLeases{Matches: l.Matches, Acquire: l.acquire, Release: l.Release, Adopt: l.Adopt}
 	}
 	return deps
 }
