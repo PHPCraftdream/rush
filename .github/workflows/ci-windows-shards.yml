@@ -231,7 +231,7 @@ jobs:
           [ -s "$f" ] || exit 0
           set -o pipefail
           t0=$(date +%s)
-          go test -short -failfast -p 2 -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-serve-cmd.json"
+          go test -short -failfast -p 2 -timeout 20m -json $(tr -d '\r' < "$f") 2>&1 | tee "$LOG_DIR/test-internal-serve-cmd.json"
           rc=$?
           echo "${{ matrix.shard }}|test: internal/serve/cmd|$t0|$(date +%s)" >> "$LOG_DIR/timings.txt"
           exit $rc

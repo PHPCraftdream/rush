@@ -268,15 +268,13 @@ type (
 	BatchAgentDeps             = batchAgentDeps
 	BatchAgentRunFactory       = batchAgentRunFactory
 	BatchAgentDescendantReader = batchAgentDescendantReader
-	BatchMCPCapability         = installwire.MCPCapability
-	BatchMCPCapabilityResolver = installwire.MCPCapabilityResolver
 )
 
 // BatchNonReentrantMCPResolver is the flag-on default MCP admission
 // resolver: every MCP tool is admitted as NON-reentrant (io group). A
 // reentrant MCP tool therefore always fails closed
 // (errBatchReentrantMCPUnannotated), never silently re-enters.
-func BatchNonReentrantMCPResolver() BatchMCPCapabilityResolver {
+func BatchNonReentrantMCPResolver() installwire.MCPCapabilityResolver {
 	return installwire.NonReentrantMCPResolver()
 }
 

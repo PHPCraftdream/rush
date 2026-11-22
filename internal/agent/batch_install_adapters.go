@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -142,12 +143,6 @@ func (a batchAttachAdapter) ProbeLive(ctx context.Context, p batchAttachProbe) (
 	return (batchadapter.StoreAttach{Store: a.store}).ProbeLive(ctx, p)
 }
 
-var (
-	_ batchDoneSource = (*batchadapter.StoreDoneSource)(nil)
-	_ batchElector    = batchadapter.StoreElector{}
-	_ batchNoticePull = batchadapter.StoreNoticePull{}
-)
-
 // Runner's router: generic and MCP leaves through the pinned policy leaf,
 // shell/argv with their retained handles, agent delegation via R7c.
 func newBatchExecutorFamilies(agentDeps batchAgentDeps) map[string]batchLeafFamily {
@@ -190,7 +185,7 @@ type BatchInstallDeps struct {
 	AgentDeps BatchAgentDeps
 	// Resolver resolves MCP admission capabilities (R11A); nil rejects
 	// every MCP leaf as unresolved.
-	Resolver BatchMCPCapabilityResolver
+	Resolver installwire.MCPCapabilityResolver
 	// Limits, CommitTimeout, ControlTimeout and RecordRetention mirror
 	// jobbatch.RunnerConfig; zero values select the engine defaults.
 	Limits                        jobbatch.Limits

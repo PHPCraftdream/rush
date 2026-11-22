@@ -248,19 +248,14 @@ func prepareBatchLeaf(ctx context.Context, env batchLeafEnv, raw json.RawMessage
 	return p, execRelease, nil
 }
 
-// batchLeafLookupID returns the identity leaf resolution is keyed under: the
+// Leaf resolution identity comes from batchdispatch.LeafLookupID: the
 // invocation's pinned registry identity when present, else the legacy
 // session-keyed lookup.
-func batchLeafLookupID(p batchLeafPayload) string {
-	return batchdispatch.LeafLookupID(p.RegistryID, p.SessionID)
-}
-
-// resolveLeaf returns the pinned policy leaf for the payload's tool.
 func (env batchLeafEnv) resolveLeaf(p batchLeafPayload) (fantasy.AgentTool, error) {
 	if env.Leaves == nil {
 		return nil, newBatchStartError(batchCodeNoLeaf, errors.New("no toolset provider"))
 	}
-	registry, err := env.Leaves(batchLeafLookupID(p))
+	registry, err := env.Leaves(batchdispatch.LeafLookupID(p.RegistryID, p.SessionID))
 	if err != nil {
 		return nil, newBatchStartError(batchCodeNoLeaf, err)
 	}

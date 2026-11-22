@@ -92,7 +92,7 @@ func (r *batchRuntime) ingress() BatchWorkIngress {
 }
 
 // LeafEnv builds the executor environment whose leaf resolution is keyed by
-// the payload's pinned registry identity (batchLeafLookupID), never by
+// the payload's pinned registry identity (batchdispatch.LeafLookupID), never by
 // session, closing the section-3 collision gap.
 func (r *batchRuntime) LeafEnv() batchLeafEnv {
 	return batchLeafEnv{Leaves: r.cfg.Leaves, DiskBindings: r.cfg.DiskBindings, Ingress: r.ingress}

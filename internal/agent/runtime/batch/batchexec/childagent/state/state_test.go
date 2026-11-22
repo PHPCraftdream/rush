@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/stretchr/testify/require"
 )
 
 func TestContextIdentityAndValueSnapshots(t *testing.T) {
@@ -28,6 +29,9 @@ func TestContextIdentityAndValueSnapshots(t *testing.T) {
 	if got, ok := BridgeInvocationFrom(invalid); ok || got != (BridgeInvocation{}) {
 		t.Fatalf("empty registry returned invocation=%+v valid=%v", got, ok)
 	}
+	require.Panics(t, func() {
+		_, _ = BridgeInvocationFrom(nil) //nolint:staticcheck // the nil-context lookup order is under test: Value must be read before the ctx == nil guard.
+	}, "nil context interface must panic on Value before reaching the ctx == nil guard")
 }
 
 func TestReactionFactsReadLateValues(t *testing.T) {
