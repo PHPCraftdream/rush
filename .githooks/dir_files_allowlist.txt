@@ -31,7 +31,6 @@ internal/app 272
 internal/config 213
 internal/config/discover 27
 internal/kit/sys/shell 46
-internal/serve/cmd 130
 internal/serve/server 173
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 37

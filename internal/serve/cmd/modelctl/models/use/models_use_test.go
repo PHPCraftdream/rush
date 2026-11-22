@@ -91,6 +91,8 @@ func isolatedModelsEnv(t *testing.T) (globalPath string, command *cobra.Command)
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(workDir))
 
+	// The owned command constructors are the production command instances under test.
+	// Set up the use command here, and the callers supply state/bump instances.
 	globalPath = filepath.Join(dataDir, "rush.json")
 	// Seed a synthetic zai api_key from the start rather than starting
 	// from a bare "{}". Live model resolution (a.ResolveModel /

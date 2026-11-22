@@ -14,7 +14,6 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
-	cmdpkg "github.com/PHPCraftdream/rush/internal/serve/cmd"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/diag"
 	install "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/install"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/install/targets"
@@ -29,10 +28,12 @@ import (
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	out "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models"
+	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/ping"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/providers"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/run"
 	wtree "github.com/PHPCraftdream/rush/internal/serve/cmd/run/wtree"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions"
 	"github.com/PHPCraftdream/rush/internal/serve/server"
 	rushweb "github.com/PHPCraftdream/rush/web"
 	"github.com/atotto/clipboard"
@@ -249,7 +250,7 @@ authenticate — it is never transmitted as part of the URL.
 		reports.NewStatsCmd(),
 		tokensCmd,
 		apiCmd,
-		cmdpkg.NewSessionsCmd(),
+		sessions.NewSessionsCmd(),
 		serveCmd,
 		models.NewModelsCmd(),
 		ping.NewPingCmd(),
@@ -283,6 +284,10 @@ authenticate — it is never transmitted as part of the URL.
 	return root
 }
 
+func init() {
+	cmdkit.UseCommandLoadOptions(modelatoms.CommandLoadOptions)
+}
+
 // settingsPasswordPreRun enforces the --password persistent flag (moved from
 // root.go verbatim).
 func settingsPasswordPreRun(cmd *cobra.Command, _ []string) error {
@@ -299,9 +304,8 @@ func settingsPasswordPreRun(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// webAppFactory is a test seam (moved from root.go); production default is the
-// cmd.SetupApp bridge, which re-installs this package's config options.
-var webAppFactory = cmdpkg.SetupApp
+// webAppFactory is a test seam.
+var webAppFactory = cmdkit.SetupApp
 
 func runWebMode(cmd *cobra.Command) error {
 	host, _ := cmd.Flags().GetString("host")

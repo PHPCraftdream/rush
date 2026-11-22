@@ -1,7 +1,10 @@
 package cliproc
 
 import (
+	"context"
+	"os"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -48,5 +51,20 @@ func TestProcessStopDeadlineDoesNotWaitForTeardown(t *testing.T) {
 	}
 	if exits.Load() != 1 {
 		t.Fatal("deadline did not exit while teardown was blocked")
+	}
+}
+
+func TestProcessStopOwnsCommandSignals(t *testing.T) {
+	restore := SetProcessStopInstalledForTests(true)
+	t.Cleanup(restore)
+	if got := CommandSignals(os.Interrupt, syscall.SIGTERM); len(got) != 0 {
+		t.Fatalf("competing command signals: %v", got)
+	}
+	parent, cancel := context.WithCancel(t.Context())
+	ctx, stop := CommandSignalContext(parent, os.Interrupt)
+	defer stop()
+	cancel()
+	if ctx.Err() != context.Canceled {
+		t.Fatal("caller cancellation must still propagate")
 	}
 }

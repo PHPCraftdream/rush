@@ -6,10 +6,13 @@ import subprocess
 race = os.environ.get('RACE', '').split()
 base = ['go', 'test'] + race + ['-json', '-p', '1', '-parallel', '1', '-count=1', '-timeout=10m']
 commands = {
-    'cmd': base + ['-run', '^Test(ProcessStop|InstallConsoleProcessStop)', './internal/serve/cmd/cli/cmdkit/proc'],
+    # The audit test moved into the proc package, so the broad cmd selector
+    # also matches it. Skip it here (its original scope excluded it) and run
+    # it alone in the audit group below instead of executing it twice.
+    'cmd': base + ['-run', '^Test(ProcessStop|InstallConsoleProcessStop)', '-skip', '^TestProcessStopFirstSignalSkipsCleanupAndRecoversDatabase$', './internal/serve/cmd/cli/cmdkit/proc'],
     'proctrack': base + ['-run', '^TestProcessStop', './internal/kit/sys/proctrack'],
     'main': base + ['-run', '^TestProcessStopInstalledBeforeStartupIO$', '.'],
-    'audit': base + ['-run', '^TestProcessStopFirstSignalSkipsCleanupAndRecoversDatabase$', './internal/serve/cmd'],
+    'audit': base + ['-run', '^TestProcessStopFirstSignalSkipsCleanupAndRecoversDatabase$', './internal/serve/cmd/cli/cmdkit/proc'],
 }
 
 def run(command):
