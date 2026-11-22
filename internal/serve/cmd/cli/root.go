@@ -15,6 +15,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/audit"
 	cmdpkg "github.com/PHPCraftdream/rush/internal/serve/cmd"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/diag"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/login"
+	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/migrate"
 	apictl "github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/api"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/queuecmd"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/admin/serverctl/serve"
@@ -235,10 +238,10 @@ authenticate — it is never transmitted as part of the URL.
 		cmdpkg.NewDirsCmd(),
 		cmdpkg.NewProjectsCmd(),
 		cmdpkg.NewUpdateProvidersCmd(),
-		cmdpkg.NewLogsCmd(),
+		diag.NewLogsCmd(),
 		cmdpkg.NewSchemaCmd(),
-		cmdpkg.NewPsCmd(),
-		cmdpkg.NewLoginCmd(),
+		diag.NewPsCmd(),
+		login.NewLoginCmd(),
 		cmdpkg.NewStatsCmd(),
 		tokensCmd,
 		apiCmd,
@@ -247,7 +250,7 @@ authenticate — it is never transmitted as part of the URL.
 		models.NewModelsCmd(),
 		ping.NewPingCmd(),
 		ping.NewPingFastCmd(),
-		cmdpkg.NewMigrateCmd(),
+		migrate.NewMigrateCmd(),
 		queuecmd.NewQueueCmd(),
 		queuecmd.NewBatchCmd(),
 		providers.NewProvidersCmd(),
