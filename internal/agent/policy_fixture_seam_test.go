@@ -6,6 +6,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 )
 
@@ -74,7 +75,7 @@ func newTestPolicyLeafRegistry(leaves map[string]testPolicyLeaf) *policyLeafRegi
 // the moved captured walks; nil is returned as a nil interface so the
 // ingress's typed-nil normalization keeps working.
 func pctCapturedToolFrom(leaf fantasy.AgentTool) toolwrap.CapturedRegistrar {
-	if captured := pctCapturedAgentToolFromTool(leaf); captured != nil {
+	if captured := childagent.CapturedAgentToolFrom(leaf); captured != nil {
 		return captured
 	}
 	return nil

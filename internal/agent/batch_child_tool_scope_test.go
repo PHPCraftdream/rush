@@ -83,7 +83,7 @@ func (i *pctScopeIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf 
 			h.Accepted()
 		}
 		if claim {
-			if pctCapturedAgentToolFromTool(leaf) == nil || pctCapturedAgentToolFromTool(leaf).ClaimCapturedHandoff(tools.GetSessionFromContext(ctx)+"\x00"+call.ID) != h {
+			if childagent.CapturedAgentToolFrom(leaf) == nil || childagent.CapturedAgentToolFrom(leaf).ClaimCapturedHandoff(tools.GetSessionFromContext(ctx)+"\x00"+call.ID) != h {
 				return fantasy.ToolResponse{}, errors.New("captured handoff not claimable")
 			}
 		}
@@ -281,7 +281,7 @@ func TestBatchChildToolScope_AcceptedWithoutDriver(t *testing.T) {
 func TestBatchChildToolScope_LookupSeesThroughCredentialLeaf(t *testing.T) {
 	captured := childagent.NewPctCapturedAgentTool(nil, nil)
 	wrapped := &batchCredentialLeaf{AgentTool: captured}
-	require.Same(t, captured, pctCapturedAgentToolFromTool(wrapped), "credential wrapper is unwrapped")
-	require.Same(t, captured, pctCapturedAgentToolFromTool(&batchCredentialLeaf{AgentTool: toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{captured}, newRunner(t, `exit 0`), false)[0]}), "wrapper over a hooked tool is unwrapped")
-	require.Nil(t, pctCapturedAgentToolFromTool(&batchCredentialLeaf{}), "wrapper over nothing resolves to no captured tool")
+	require.Same(t, captured, childagent.CapturedAgentToolFrom(wrapped), "credential wrapper is unwrapped")
+	require.Same(t, captured, childagent.CapturedAgentToolFrom(&batchCredentialLeaf{AgentTool: toolwrap.WrapToolsWithHooks([]fantasy.AgentTool{captured}, newRunner(t, `exit 0`), false)[0]}), "wrapper over a hooked tool is unwrapped")
+	require.Nil(t, childagent.CapturedAgentToolFrom(&batchCredentialLeaf{}), "wrapper over nothing resolves to no captured tool")
 }
