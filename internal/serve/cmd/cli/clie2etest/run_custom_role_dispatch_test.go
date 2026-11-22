@@ -82,7 +82,7 @@ func TestRunCustomRoleProviderDispatch(t *testing.T) {
 				requestCount := len(requests) + overflowRequests
 				mu.Unlock()
 				if requestCount > 8 {
-					http.Error(w, "request limit", 429)
+					http.Error(w, "request limit", http.StatusTooManyRequests)
 					return
 				}
 				if request.method != http.MethodPost || request.model == "" {

@@ -64,8 +64,7 @@ func TestListStatusesWithAwaiting_AnnotatesAndWires(t *testing.T) {
 	require.NoError(t, err)
 
 	questionReader := sesskit.SessionQuestionReaderForApp(a)
-	var store sesskit.PendingChildQuestionReader = questionReader
-	statusByID, awaitingByID := sesskit.ListStatusesWithAwaiting(ctx, store, acts, []string{parent.ID})
+	statusByID, awaitingByID := sesskit.ListStatusesWithAwaiting(ctx, questionReader, acts, []string{parent.ID})
 	require.Contains(t, statusByID[parent.ID], "awaiting answer",
 		"a held delegation with a pending child question must be annotated")
 	require.Contains(t, statusByID[parent.ID], "delegating")
