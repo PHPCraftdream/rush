@@ -15,14 +15,13 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/server/ws/wsapi"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
-	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // APIReadStore is the small read seam used by the session and message endpoints.
 type APIReadStore interface {
-	ListSessions(context.Context) ([]session.Session, error)
-	GetSession(context.Context, string) (session.Session, error)
+	ListSessions(context.Context) ([]core.Session, error)
+	GetSession(context.Context, string) (core.Session, error)
 	ListMessages(context.Context, string) ([]message.Message, error)
 	ListModels(context.Context) ([]APIModel, error)
 }
@@ -31,7 +30,7 @@ type apiAppReadStore struct {
 	app *appPkg.App
 }
 
-func (s apiAppReadStore) ListSessions(ctx context.Context) ([]session.Session, error) {
+func (s apiAppReadStore) ListSessions(ctx context.Context) ([]core.Session, error) {
 	items, err := s.app.Sessions.List(ctx)
 	if err != nil {
 		return nil, err
@@ -39,14 +38,14 @@ func (s apiAppReadStore) ListSessions(ctx context.Context) ([]session.Session, e
 	return withoutServiceSessions(items), nil
 }
 
-func (s apiAppReadStore) GetSession(ctx context.Context, id string) (session.Session, error) {
+func (s apiAppReadStore) GetSession(ctx context.Context, id string) (core.Session, error) {
 	return hideServiceSession(s.app.Sessions.Get(ctx, id))
 }
 
 // withoutServiceSessions drops the API service sessions that own batch roots:
 // they are not conversations and are never listed.
-func withoutServiceSessions(items []session.Session) []session.Session {
-	out := make([]session.Session, 0, len(items))
+func withoutServiceSessions(items []core.Session) []core.Session {
+	out := make([]core.Session, 0, len(items))
 	for _, item := range items {
 		if item.Origin != message.OriginAPIService {
 			out = append(out, item)
@@ -57,9 +56,9 @@ func withoutServiceSessions(items []session.Session) []session.Session {
 
 // hideServiceSession makes a service session look missing to the session routes:
 // it never accepts runs, injections, reads or event streams.
-func hideServiceSession(item session.Session, err error) (session.Session, error) {
+func hideServiceSession(item core.Session, err error) (core.Session, error) {
 	if err == nil && item.Origin == message.OriginAPIService {
-		return session.Session{}, sql.ErrNoRows
+		return core.Session{}, sql.ErrNoRows
 	}
 	return item, err
 }
@@ -128,7 +127,7 @@ func apiListSessionsHandler(store APIReadStore) http.HandlerFunc {
 			}
 			return sessions[i].ID < sessions[j].ID
 		})
-		start, ok := CursorStart(sessions, page.After, func(item session.Session) string { return item.ID })
+		start, ok := CursorStart(sessions, page.After, func(item core.Session) string { return item.ID })
 		if !ok {
 			apiInvalidCursor(w, r)
 			return
