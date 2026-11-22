@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,7 +29,13 @@ func TestDepthToolPinningOnlyChangesExhaustedSurface(t *testing.T) {
 
 func TestLegacyExhaustedDepthMarkerRequiresPinnedTools(t *testing.T) {
 	t.Parallel()
-	ctx := context.WithValue(t.Context(), persistedAgentDepthContextKey{}, 0)
+	env := testEnv(t)
+	sess, err := env.sessions.Create(t.Context(), "legacy exhausted depth pinning")
+	require.NoError(t, err)
+	_, err = PersistSessionAgentDepth(t.Context(), env.sessions, sess.ID, 0)
+	require.NoError(t, err)
+	ctx, err := WithPersistedSessionAgentDepth(t.Context(), env.sessions, sess.ID)
+	require.NoError(t, err)
 	require.Nil(t, callOptionsFrom(ctx))
 	require.True(t, scopedCallToolsRequired(ctx), "nil options cannot hide the exhausted durable cap from a tool-build failure")
 	require.False(t, scopedCallToolsRequired(t.Context()), "control: legacy default-depth calls retain their fallback")

@@ -16,7 +16,7 @@ func TestFinalizationSettleNilSettlerFailsClosed(t *testing.T) {
 	hook := f.hook(func(d *FinalizationWaitDeps) { d.Settler = nil })
 	err := hook(t.Context(), f.ts)
 	require.ErrorIs(t, err, ErrFinalizationSettlerUnavailable)
-	record, err := f.env.scope.store.Snapshot(t.Context(), f.env.scope.identity)
+	record, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase, "an unsettled debt must not seal")
 }
@@ -34,7 +34,7 @@ func TestFinalizationSettleReceivesOwnerSessionID(t *testing.T) {
 	require.NoError(t, hook(t.Context(), f.ts))
 	settler.mu.Lock()
 	defer settler.mu.Unlock()
-	require.Equal(t, []string{f.env.execution.sessionID}, settler.owners)
+	require.Equal(t, []string{f.env.execution.SessionID}, settler.owners)
 	require.Equal(t, "session", settler.owners[0])
 }
 
@@ -42,7 +42,7 @@ func TestFinalizationSettleErrorDoesNotAbortTheLoop(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
 	// An open admission makes the facts non-quiet, so the loop enters the
 	// wait branch and settles, even though the debt counter is zero.
-	release, err := f.env.execution.gate.AdmitMutation(false)
+	release, err := f.env.execution.Gate.AdmitMutation(false)
 	require.NoError(t, err)
 	settler := &finalizationSettlerStub{err: errors.New("settler down")}
 	var entered sync.Once

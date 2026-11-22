@@ -13,13 +13,13 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	env := testEnv(t)
 	identity := message.FinalizationIdentity{Key: "logical", Generation: 7, Revision: 2, Serial: 1}
 	scope := finalizationStoredScope(t, env, identity)
-	_, err := scope.store.Admit(t.Context(), scope.identity, "before-driver")
+	_, err := scope.Store.Admit(t.Context(), scope.Identity, "before-driver")
 	require.NoError(t, err)
-	require.NoError(t, scope.store.Release(t.Context(), scope.identity, "before-driver"))
+	require.NoError(t, scope.Store.Release(t.Context(), scope.Identity, "before-driver"))
 	execution := &finalizationExecution{
-		sessionID: "session", logicalID: "logical", gate: newFinalizationGate(7),
-		read: func(ctx context.Context) (finalizationFacts, error) {
-			record, readErr := scope.store.Snapshot(ctx, scope.identity)
+		SessionID: "session", LogicalID: "logical", Gate: newFinalizationGate(7),
+		Read: func(ctx context.Context) (finalizationFacts, error) {
+			record, readErr := scope.Store.Snapshot(ctx, scope.Identity)
 			if readErr != nil {
 				return finalizationFacts{}, readErr
 			}
@@ -49,25 +49,25 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 
 	// A separate store represents work that did not signal this local gate.
 	external := session.NewAgentFinalizationStore(env.conn)
-	_, err = external.Admit(t.Context(), scope.identity, "external-work")
+	_, err = external.Admit(t.Context(), scope.Identity, "external-work")
 	require.NoError(t, err)
-	require.NoError(t, external.Release(t.Context(), scope.identity, "external-work"))
+	require.NoError(t, external.Release(t.Context(), scope.Identity, "external-work"))
 	publications := 0
 	publish := func(ctx context.Context, candidate finalizationCandidate) error {
 		publications++
 		stamp := ts.finalizationStamp
 		_, publishErr := publishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
-			Key: execution.logicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
+			Key: execution.LogicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 		}, candidate)
 		return publishErr
 	}
 	t.Cleanup(func() {
 		if t.Failed() {
-			record, readErr := scope.store.Snapshot(t.Context(), scope.identity)
+			record, readErr := scope.Store.Snapshot(t.Context(), scope.Identity)
 			t.Logf("phase=durable-revision first=%+v current=%+v record=%+v read_error=%v publications=%d", first, ts.finalizationStamp, record, readErr, publications)
 		}
 	})
-	verdict, err := execution.gate.TrySeal(t.Context(), first, candidate, execution.read, publish)
+	verdict, err := execution.Gate.TrySeal(t.Context(), first, candidate, execution.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationCompose, verdict)
 	require.Zero(t, publications, "quiet external work still invalidates pre-work composition")
@@ -75,11 +75,11 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	require.EqualValues(t, 4, ts.finalizationStamp.DurableRevision())
 	require.NoError(t, ts.markFinalizationStep())
 	persistCandidate()
-	verdict, err = execution.gate.TrySeal(t.Context(), ts.finalizationStamp, candidate, execution.read, publish)
+	verdict, err = execution.Gate.TrySeal(t.Context(), ts.finalizationStamp, candidate, execution.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
-	record, err := scope.store.Snapshot(t.Context(), scope.identity)
+	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
 	require.EqualValues(t, 4, record.Revision)

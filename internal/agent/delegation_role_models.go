@@ -4,20 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-type delegationRoleModel struct {
-	Model       Model
-	Provider    config.ProviderConfig
-	Source      string
-	Credentials *CredentialSet
-}
+type delegationRoleModel = delegation.DelegationRoleModel
 
-// requestedRoleSlot reads one built-in profile from an already pinned config snapshot.
+// requestedRoleSlot remains the EX-0L built-in-slot helper.
 func requestedRoleSlot(cfg *config.Config, parent session.Session, role RequestedModelRole) (config.SelectedModel, string, error) {
 	if !role.Valid() || !role.Builtin() {
 		return config.SelectedModel{}, "", ErrAgentRoleInvalid
@@ -56,8 +52,6 @@ func (c *coordinator) resolveRequestedDelegationModel(ctx context.Context, cfg *
 		if !role.Builtin() {
 			return c.resolveRoleContractModel(ctx, cfg, parentID, contract)
 		}
-		// A built-in role's contract only snapshots the inherited tool ceiling;
-		// its model resolves through the built-in slot path below.
 	}
 	if !role.Valid() {
 		return delegationRoleModel{}, ErrAgentRoleInvalid
@@ -146,18 +140,15 @@ func (c *coordinator) resolveRoleContractModel(ctx context.Context, cfg *config.
 }
 
 func parentRoleConfigFrom(ctx context.Context) (*config.Config, bool) {
-	if cfg, ok := ctx.Value(parentRoleConfigContextKey{}).(*config.Config); ok && cfg != nil {
-		return cfg, true
-	}
-	return nil, false
+	return delegation.ParentRoleConfigFrom(ctx)
 }
-
-type parentRoleConfigContextKey struct{}
 
 func WithParentRoleConfigSnapshot(ctx context.Context, cfg *config.Config) context.Context {
-	return context.WithValue(ctx, parentRoleConfigContextKey{}, cfg)
+	return delegation.WithParentRoleConfigSnapshot(ctx, cfg)
 }
 
+// parentRoleContractFrom deliberately remains a documented graph exception:
+// its authority must come from the root toolwrap accessor (role_policy.go:70).
 func parentRoleContractFrom(ctx context.Context) *session.RoleContract {
 	return roleContractFromContext(ctx)
 }

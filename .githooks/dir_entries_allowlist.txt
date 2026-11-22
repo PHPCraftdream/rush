@@ -17,7 +17,7 @@
 # finalization_batch_root_owner_reader.go now live under
 # internal/agent/runtime/batch/batchflow); the batchinst/gate move changes
 # no root count and is recorded by its own rows.
-internal/agent 217
+internal/agent 209
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81

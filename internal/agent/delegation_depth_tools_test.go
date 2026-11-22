@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -11,7 +10,13 @@ import (
 
 func TestDurableDepthMarkerStripsDelegationWithoutCallOptions(t *testing.T) {
 	t.Parallel()
-	ctx := context.WithValue(t.Context(), persistedAgentDepthContextKey{}, 0)
+	env := testEnv(t)
+	sess, err := env.sessions.Create(t.Context(), "legacy exhausted depth marker")
+	require.NoError(t, err)
+	_, err = PersistSessionAgentDepth(t.Context(), env.sessions, sess.ID, 0)
+	require.NoError(t, err)
+	ctx, err := WithPersistedSessionAgentDepth(t.Context(), env.sessions, sess.ID)
+	require.NoError(t, err)
 	require.Nil(t, callOptionsFrom(ctx))
 	original := config.Agent{AllowedTools: []string{AgentToolName, tools.AgenticFetchToolName, "view", "edit"}}
 	coord := &coordinator{}

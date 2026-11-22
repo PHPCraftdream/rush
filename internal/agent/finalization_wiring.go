@@ -204,13 +204,13 @@ func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationE
 		return nil, nil
 	}
 	execution := &finalizationExecution{
-		sessionID:  identity.SessionID,
-		logicalID:  identity.LogicalCallID,
-		gate:       newFinalizationGate(uint64(identity.Generation)),
-		scope:      finalizationPublicationScope{store: w.store, identity: identity},
-		scopeFacts: w.scopeFacts(identity.SessionID),
+		SessionID:  identity.SessionID,
+		LogicalID:  identity.LogicalCallID,
+		Gate:       newFinalizationGate(uint64(identity.Generation)),
+		Scope:      finalizationPublicationScope{Store: w.store, Identity: identity},
+		ScopeFacts: w.scopeFacts(identity.SessionID),
 	}
-	execution.read = func(ctx context.Context) (finalizationFacts, error) {
+	execution.Read = func(ctx context.Context) (finalizationFacts, error) {
 		return w.readFacts(ctx, identity)
 	}
 	return execution, nil
@@ -269,13 +269,13 @@ func (w *finalizationWiring) startExecution(ctx context.Context, call SessionAge
 		// The verdict itself is informational here; adopt/fail side effects
 		// already happened inside the hook.
 		slog.Debug("Finalization recovery verdict",
-			"session_id", execution.sessionID,
-			"logical_call_id", execution.logicalID,
+			"session_id", execution.SessionID,
+			"logical_call_id", execution.LogicalID,
 			"recovery", uint8(recovery),
 		)
 	}
-	w.cancel.register(execution)
-	return execCtx, func() { w.cancel.unregister(execution) }, nil
+	w.cancel.Register(execution)
+	return execCtx, func() { w.cancel.Unregister(execution) }, nil
 }
 
 // finalizeTurn is the driver exit from runTurn. A turn without an execution

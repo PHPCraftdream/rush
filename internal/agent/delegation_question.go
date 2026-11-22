@@ -11,12 +11,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
-)
 
-// childQuestionMaxLen caps the quoted question in the supervision line.
-const childQuestionMaxLen = 300
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
+)
 
 // childAwaitingQuestionSummary is supervision's per-delegation line for a
 // delegation whose child is paused on a question. ok=false when the child is
@@ -45,9 +43,7 @@ func (c *coordinator) childAwaitingQuestionSummary(childID string, elapsed time.
 	if question == "" {
 		return "", false
 	}
-	if len(question) > childQuestionMaxLen {
-		question = strings.TrimSpace(question[:childQuestionMaxLen]) + "..."
-	}
+	question = delegation.TrimChildQuestion(question)
 	delegation := childID
 	ownJobs := 0
 	facts := coordinatorBatchCutoverFacts(c)

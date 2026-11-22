@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -276,12 +277,12 @@ func TestFinalizationWiringNewExecutionIdentityAndEpoch(t *testing.T) {
 	exec, err := w.newExecution(call)
 	require.NoError(t, err)
 	require.NotNil(t, exec)
-	require.Equal(t, "session", exec.sessionID)
-	require.Equal(t, "logical", exec.logicalID)
-	require.EqualValues(t, 7, exec.gate.Epoch())
-	require.Equal(t, identity, exec.scope.identity)
-	require.NotNil(t, exec.scopeFacts)
-	require.NotNil(t, exec.read)
+	require.Equal(t, "session", exec.SessionID)
+	require.Equal(t, "logical", exec.LogicalID)
+	require.EqualValues(t, 7, exec.Gate.Epoch())
+	require.Equal(t, identity, exec.Scope.Identity)
+	require.NotNil(t, exec.ScopeFacts)
+	require.NotNil(t, exec.Read)
 
 	// A call with no finalization requirement stays inert.
 	bare := SessionAgentCall{SessionID: "session", LogicalCallID: "logical"}
@@ -320,13 +321,13 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	require.NoError(t, err)
 	exec := finalizationExecutionFor(execCtx, call)
 	require.NotNil(t, exec)
-	requireFinalizationCancelled(t, exec.gate, false)
+	requireFinalizationCancelled(t, exec.Gate, false)
 
 	// After unregistration the coordinator interrupt no longer reaches this
 	// execution's gate.
 	unregister()
 	w.hooks.OnCancel("session")
-	requireFinalizationCancelled(t, exec.gate, false, "an unregistered execution must not be cancelled")
+	requireFinalizationCancelled(t, exec.Gate, false, "an unregistered execution must not be cancelled")
 
 	// A fresh registration is cancellable and beginCandidate fails closed.
 	execCtx2, unregister2, err := w.startExecution(ctx, call)
@@ -334,8 +335,8 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	exec2 := finalizationExecutionFor(execCtx2, call)
 	require.NotNil(t, exec2)
 	w.hooks.OnCancel("session")
-	requireFinalizationCancelled(t, exec2.gate, true)
-	_, err = exec2.gate.BeginCandidate(t.Context(), exec2.read)
+	requireFinalizationCancelled(t, exec2.Gate, true)
+	_, err = exec2.Gate.BeginCandidate(t.Context(), exec2.Read)
 	require.ErrorIs(t, err, context.Canceled)
 	unregister2()
 
@@ -343,10 +344,12 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 	w.hooks.BindScope = func(context.Context, SessionAgentCall) error { return errors.New("bind refused") }
 	_, _, err = w.startExecution(ctx, call)
 	require.ErrorContains(t, err, "bind refused")
-	w.cancel.mu.Lock()
-	registered := len(w.cancel.byKey["session"])
-	w.cancel.mu.Unlock()
-	require.Zero(t, registered, "a failed start must not register anything")
+	// The bind failure returns no execution/context to inspect. Read only the
+	// private registry map length in this test; a production Len export would
+	// widen the API solely for this oracle.
+	registered := reflect.ValueOf(w.cancel).Elem().FieldByName("byKey")
+	require.True(t, registered.IsValid(), "cancel registry map field exists")
+	require.Zero(t, registered.Len(), "a failed start must not register anything")
 	w.hooks.OnCancel("session") // No-op on the empty registry.
 }
 
@@ -357,7 +360,7 @@ func finalizationWiringPublish(env fakeEnv, ts *turnStream, scope finalizationPu
 		*counter++
 		stamp := ts.finalizationStamp
 		_, err := publishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
-			Key: ts.finalization.logicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
+			Key: ts.finalization.LogicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 		}, candidate)
 		return err
 	}
@@ -408,11 +411,11 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	}
 	persistCandidate := func() {
 		stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
-		_, err := persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.scope, stepID, *ts.currentAssistant)
+		_, err := persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.Scope, stepID, *ts.currentAssistant)
 		require.NoError(t, err)
 	}
 	publications := 0
-	publish := finalizationWiringPublish(env, ts, exec.scope, &publications)
+	publish := finalizationWiringPublish(env, ts, exec.Scope, &publications)
 
 	// Round 1: live work holds the seal as WaitWork, no publication.
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
@@ -421,7 +424,7 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
 	candidate := finalizationCandidate{MessageID: created.ID, Hash: hash}
-	verdict, err := exec.gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.read, publish)
+	verdict, err := exec.Gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationWaitWork, verdict)
 	require.Zero(t, publications, "noisy facts must not publish")
@@ -444,7 +447,7 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
 	require.NoError(t, ts.markFinalizationStep())
 	persistCandidate()
-	verdict, err = exec.gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.read, publish)
+	verdict, err = exec.Gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationAccepted, verdict)
 	require.Equal(t, 1, publications)
@@ -503,13 +506,13 @@ func TestFinalizationWiringTrySealPausesOnHeldQuestion(t *testing.T) {
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
 	require.NoError(t, ts.markFinalizationStep())
 	stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
-	_, err = persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.scope, stepID, *ts.currentAssistant)
+	_, err = persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.Scope, stepID, *ts.currentAssistant)
 	require.NoError(t, err)
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
 	publications := 0
-	publish := finalizationWiringPublish(env, ts, exec.scope, &publications)
-	verdict, err := exec.gate.TrySeal(execCtx, ts.finalizationStamp, finalizationCandidate{MessageID: created.ID, Hash: hash}, exec.read, publish)
+	publish := finalizationWiringPublish(env, ts, exec.Scope, &publications)
+	verdict, err := exec.Gate.TrySeal(execCtx, ts.finalizationStamp, finalizationCandidate{MessageID: created.ID, Hash: hash}, exec.Read, publish)
 	require.NoError(t, err)
 	require.Equal(t, finalizationPauseQuestion, verdict)
 	require.Zero(t, publications)
@@ -545,14 +548,14 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 
 	// Noisy facts (the debt was seeded before the bind): the waiter must come
 	// back as WaitWork with a signal.
-	verdict, changed, err := exec.gate.WaitState(t.Context(), exec.read)
+	verdict, changed, err := exec.Gate.WaitState(t.Context(), exec.Read)
 	require.NoError(t, err)
 	require.Equal(t, finalizationWaitWork, verdict)
 	require.NotNil(t, changed)
 
 	// Cancel first, then observe the unblock with a bounded select.
 	w.hooks.OnCancel("session")
-	requireFinalizationCancelled(t, exec.gate, true)
+	requireFinalizationCancelled(t, exec.Gate, true)
 	select {
 	case <-changed:
 	case <-time.After(2 * time.Second):
@@ -560,7 +563,7 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 	}
 	// The gate refuses its own reads once cancelled; the durable record is
 	// untouched by the in-process cancel (the durable half is RequestCancel).
-	_, _, err = exec.gate.WaitState(t.Context(), exec.read)
+	_, _, err = exec.Gate.WaitState(t.Context(), exec.Read)
 	require.ErrorIs(t, err, context.Canceled)
 
 	// Unregistration plus a repeat interrupt stays silent.

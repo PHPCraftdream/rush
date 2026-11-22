@@ -4,25 +4,6 @@ import (
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-// finalizationLogicalIdentity reads an already trusted capability, never a
-// payload declaration. It does not bind a scope or change an existing call ID.
-func finalizationLogicalIdentity(snapshot session.AgentFinalizationContext, sessionID, logicalID string) (string, error) {
-	requirement := snapshot.Requirement()
-	if requirement == nil {
-		return logicalID, nil
-	}
-	for _, identity := range requirement.Authorities {
-		if identity.SessionID != sessionID {
-			continue
-		}
-		if logicalID != "" && logicalID != identity.LogicalCallID {
-			return "", session.ErrAgentFinalizationChanged
-		}
-		return identity.LogicalCallID, nil
-	}
-	return logicalID, nil
-}
-
 // bindFinalizationIdentity changes only identity transport, not frozen policy,
 // credentials, tools, budgets, model settings or construction owners.
 func (r *subAgentDriverRegistry) bindFinalizationIdentity(agent SessionAgent, call SessionAgentCall) error {

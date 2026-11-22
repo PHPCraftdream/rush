@@ -1,3 +1,6 @@
+# DM6 physical output packages: runtime/batch/batchcore/finalize and runtime/batch/batchadapter/delegation; EX-0D portable policy leaves are runtime/batch/batchadapter/subagents.
+# The subagents logical owner is dissolved. bgshell_claim.go is a removed historical selector; default_job_timeout.go remains coord-owned.
+# These nested paths retain the seven-child direct-directory limit: .githooks/check_dir_entries.sh:115-128,165-179 counts ancestor child directories.
 # DM0 deliverable: machine-readable "file -> package" map of internal/agent.
 # Design: docs/plans/2026-11-15-sprint0-split-agent.md §2.3 (lane DM0, docs/plans/2026-11-15-sprint0-plan.md §5).
 # Legacy format: <file>.go<TAB><logical-owner>; unlisted files default to root in the DM0 projection.
@@ -299,8 +302,7 @@ coordinator_subagents.go	coord
 coordinator_subagent_drivers.go	coord
 coordinator_background.go	coord
 coordinator_bgshell_cap.go	coord
-bgshell_claim.go	subagents
-default_job_timeout.go	subagents
+default_job_timeout.go	coord
 usage_fallback.go	usage
 usage_normalize.go	usage
 usage_record.go	agentrun
