@@ -544,6 +544,9 @@ func TestJournalRecordCapsAndWriteErrors(t *testing.T) {
 }
 
 func TestJournalFallbackWritesWithoutPriorResolver(t *testing.T) {
+	// The fallback resolves the invocation against the tree installed by
+	// NewRootCmd; install it here instead of relying on earlier tests.
+	cli.NewRootCmd()
 	journalTestEnv(t)
 	oldExit := clijournal.ExitFunc()
 	clijournal.SetExitFunc(func(int) {})

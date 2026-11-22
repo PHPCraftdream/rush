@@ -81,8 +81,9 @@ func TestRestoreCommands_RoundTrip(t *testing.T) {
 func TestRestoreCommands_RawLocalCLIFormExecutes(t *testing.T) {
 	fixture := newModelsCLIFixture(t)
 	result := runModelsCLIRequest(t, fixture, modelsCLIRequest{
-		Args:              []string{"--cwd", fixture.cwd, "--data-dir", fixture.dataDir, "models", "use", "--reviewer", "local-cli/cli-claude-fable-5"},
-		KtavGateOn:        true,
+		Args: []string{"--cwd", fixture.cwd, "--data-dir", fixture.dataDir, "models", "use", "--reviewer", "local-cli/cli-claude-fable-5"},
+		// Gate off keeps rush.json the active slot file the test reads below.
+		KtavGateOn:        false,
 		LocalCLIAvailable: true,
 	})
 	require.Equal(t, 0, result.ExitCode, result.Stderr)
