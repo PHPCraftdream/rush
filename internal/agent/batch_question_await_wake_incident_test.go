@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -50,18 +51,18 @@ func TestChildQuestionDebtBreaksAwaitSleepForAnyAndAll(t *testing.T) {
 			live := func(ctx context.Context) session.BatchLiveResult {
 				return env.live.BatchLiveForOwner(ctx, env.sessionID)
 			}
-			facts, err := ReadBatchArbiterFacts(env.ctx, BatchArbiterDeps{Live: live, Debt: debt})
+			facts, err := batchflow.ReadBatchArbiterFacts(env.ctx, batchflow.BatchArbiterDeps{Live: live, Debt: debt})
 			require.NoError(t, err)
 			require.True(t, facts.Complete)
 			require.True(t, facts.LiveRoots, "the worker is still nonterminal")
 			require.True(t, facts.DebtPendingIncl)
 			require.False(t, facts.CompletionOnly, "child_question is non-completion debt")
 			if mode == "all" {
-				require.False(t, facts.SleepHolds(true, BatchSleepBreakers{}), "question debt breaks the all-sleep")
+				require.False(t, facts.SleepHolds(true, batchflow.BatchSleepBreakers{}), "question debt breaks the all-sleep")
 				verdict := coord.drainPolicy(env.ctx, env.sessionID, false)
 				require.Equal(t, drainAllow, verdict.kind, "owner wake is re-evaluated rather than deferred by all-sleep")
 			} else {
-				require.False(t, facts.SleepHolds(false, BatchSleepBreakers{}), "any-mode has no all-sleep hold")
+				require.False(t, facts.SleepHolds(false, batchflow.BatchSleepBreakers{}), "any-mode has no all-sleep hold")
 				verdict := coord.drainPolicy(env.ctx, env.sessionID, false)
 				require.Equal(t, drainAllow, verdict.kind, "owner wake re-evaluates the any-mode wait")
 			}

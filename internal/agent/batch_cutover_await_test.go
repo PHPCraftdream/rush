@@ -23,6 +23,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -518,12 +519,12 @@ func (e *cutoverEnv) capture() session.BatchCapturedRoots {
 	return e.live.BatchCaptured(e.ctx, []string{e.sessionID})
 }
 
-// awaitAsync runs the production BatchAwaitWorker over captured real reads
+// awaitAsync runs the production batchflow.BatchAwaitWorker over captured real reads
 // in a goroutine and returns its result channel.
-func (e *cutoverEnv) awaitAsync(mode string, captured session.BatchCapturedRoots, notifyAll bool, waitCap time.Duration) <-chan BatchAwaitResult {
-	out := make(chan BatchAwaitResult, 1)
+func (e *cutoverEnv) awaitAsync(mode string, captured session.BatchCapturedRoots, notifyAll bool, waitCap time.Duration) <-chan batchflow.BatchAwaitResult {
+	out := make(chan batchflow.BatchAwaitResult, 1)
 	go func() {
-		res, err := BatchAwaitWorker(e.ctx, BatchAwaitParams{
+		res, err := batchflow.BatchAwaitWorker(e.ctx, batchflow.BatchAwaitParams{
 			Mode: mode,
 			Capture: func(context.Context) session.BatchCapturedRoots {
 				return captured
@@ -533,9 +534,9 @@ func (e *cutoverEnv) awaitAsync(mode string, captured session.BatchCapturedRoots
 			},
 			NotifyModeOf: func(session.BatchLiveRef) string {
 				if notifyAll {
-					return batchNotifyAll
+					return batchflow.BatchNotifyAll
 				}
-				return batchNotifyEach
+				return "each"
 			},
 			PollInterval: 5 * time.Millisecond,
 			WaitCap:      waitCap,
@@ -647,7 +648,7 @@ func TestAWa1ChildSettlementNoWakeNoDebt(t *testing.T) {
 	// ALL worker, NotifyAll, captured while the root is live.
 	captured := env.capture()
 	require.Len(t, captured.Refs(), 1)
-	resCh := env.awaitAsync(batchAwaitModeAll, captured, true, 400*time.Millisecond)
+	resCh := env.awaitAsync("all", captured, true, 400*time.Millisecond)
 
 	// Complete ONLY the first child: the real engine settles the item.
 	leaf.letGo(calls[0])
@@ -697,7 +698,7 @@ func TestAWa2RootSettlementUnblocksWorkerDeliveryStillHeld(t *testing.T) {
 
 	captured := env.capture()
 	require.Len(t, captured.Refs(), 1)
-	resCh := env.awaitAsync(batchAwaitModeAny, captured, true, 10*time.Second)
+	resCh := env.awaitAsync("any", captured, true, 10*time.Second)
 
 	// Settle the real root through the real Runner.
 	leaf.letGo("call-a2")

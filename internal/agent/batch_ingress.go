@@ -68,7 +68,7 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	}
 	if inv.Policy.DiskBindingID != "" {
 		fresh.MatchLease = func(root jobbatch.ID) bool {
-			return r.cfg.RootLeases != nil && r.cfg.RootLeases.matches(root, inv.Policy.DiskBindingID, inv.RegistryID)
+			return r.cfg.RootLeases != nil && r.cfg.RootLeases.Matches(root, inv.Policy.DiskBindingID, inv.RegistryID)
 		}
 	}
 	return r.core.Invoke(ctx, probe, fresh, errBatchInvocationMismatch)
@@ -90,8 +90,8 @@ func (r *batchRuntime) submit(ctx context.Context, runner batchRunnerHandle, inv
 	}
 	if leases := r.cfg.RootLeases; leases != nil {
 		params.AcquireRoot = leases.acquire
-		params.ReleaseRoot = leases.release
-		params.AdoptRoot = leases.adopt
+		params.ReleaseRoot = leases.Release
+		params.AdoptRoot = leases.Adopt
 	}
 	return batchcore.Submit(ctx, params)
 }

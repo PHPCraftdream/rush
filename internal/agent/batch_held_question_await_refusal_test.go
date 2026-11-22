@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -267,7 +268,7 @@ func TestBatchAwaitWorkerBreaksWhenQuestionAppearsMidWait(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := BatchAwaitWorker(context.Background(), params)
+		_, err := batchflow.BatchAwaitWorker(context.Background(), params)
 		done <- err
 	}()
 	var heldErr error

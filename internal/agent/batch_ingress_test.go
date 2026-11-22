@@ -312,9 +312,7 @@ func TestInvokeConcurrentMatchingRetriesExecuteOnce(t *testing.T) {
 	runner.settleBatches()
 	require.Eventually(t, func() bool {
 		leases := rt.cfg.RootLeases
-		leases.mu.Lock()
-		defer leases.mu.Unlock()
-		return len(leases.entries) == 0
+		return len(leases.Roots()) == 0
 	}, 2*time.Second, 5*time.Millisecond, "settled roots release their root leases")
 }
 

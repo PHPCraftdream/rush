@@ -1,4 +1,4 @@
-package agent
+package batchflow
 
 // This file is the R10b mapping table: every old await/arbiter/scope
 // function or fact and its batch counterpart, or why it was dropped or

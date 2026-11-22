@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/gate"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 )
 
 func quietFinalizationTestFacts(context.Context) (finalizationFacts, error) {

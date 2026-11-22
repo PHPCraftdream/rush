@@ -1,4 +1,4 @@
-package agent
+package batchflow
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 )
 
 // batchAwaitPollInterval is the batch worker await's fallback re-read cadence;
@@ -34,8 +36,8 @@ const (
 	batchAwaitModeAny = "any"
 	batchAwaitModeAll = "all"
 
-	// batchNotifyAll and batchNotifyEach are the per-root notify modes.
-	batchNotifyAll  = "all"
+	// BatchNotifyAll and batchNotifyEach are the per-root notify modes.
+	BatchNotifyAll  = "all"
 	batchNotifyEach = "each"
 )
 
@@ -74,7 +76,7 @@ type BatchAwaitParams struct {
 	Levels func(context.Context) session.BatchCapturedLevels
 	// Hints returns the level-triggered hint channel and its cancel.
 	Hints func() (<-chan struct{}, func())
-	// NotifyModeOf classifies a captured root: batchNotifyAll or
+	// NotifyModeOf classifies a captured root: BatchNotifyAll or
 	// batchNotifyEach. Chosen as a lookup so the capture stays a value.
 	NotifyModeOf func(session.BatchLiveRef) string
 	// PollInterval is the fallback tick; zero uses batchAwaitPollInterval.
@@ -89,10 +91,10 @@ type BatchAwaitParams struct {
 	// HeldQuestions, when set, is consulted at every evaluation (initial and
 	// after each hint/poll/deadline read). A non-empty actionable held-question
 	// set — or an unreadable read — BREAKS the wait with the
-	// batchHeldQuestionAwaitError refusal, so a worker never blocks in-tool on
+	// batchlife.HeldQuestionAwaitError refusal, so a worker never blocks in-tool on
 	// a question it must answer, including one that appears mid-wait. nil (the
 	// zero value) preserves today's behaviour exactly.
-	HeldQuestions func(context.Context) ([]BatchHeldQuestionRoute, error)
+	HeldQuestions func(context.Context) ([]batchlife.BatchHeldQuestionRoute, error)
 }
 
 // batchAwaitTarget is one captured root with its per-capture notify mode.
@@ -176,7 +178,7 @@ func BatchAwaitWorker(ctx context.Context, p BatchAwaitParams) (BatchAwaitResult
 		}
 		routes, herr := p.HeldQuestions(ctx)
 		if herr != nil || len(routes) > 0 {
-			return fin, rem, batchHeldQuestionAwaitError(routes)
+			return fin, rem, batchlife.HeldQuestionAwaitError(routes)
 		}
 		return fin, rem, nil
 	}
@@ -318,7 +320,7 @@ func batchAwaitEvaluate(targets []batchAwaitTarget, levels session.BatchCaptured
 		}
 		if !target.notifyAll {
 			for _, child := range level.Children {
-				if child.State != "" && batchAwaitTerminalState(child.State) {
+				if child.State != "" && BatchAwaitTerminalState(child.State) {
 					unit.ChildFinished = true
 					break
 				}
@@ -333,9 +335,9 @@ func batchAwaitEvaluate(targets []batchAwaitTarget, levels session.BatchCaptured
 	return finished, remaining, disappeared
 }
 
-// batchAwaitTerminalState mirrors batchReadTerminal's vocabulary without
+// BatchAwaitTerminalState mirrors batchReadTerminal's vocabulary without
 // reaching into the session package's unexported helper.
-func batchAwaitTerminalState(state string) bool {
+func BatchAwaitTerminalState(state string) bool {
 	switch state {
 	case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
 		return true

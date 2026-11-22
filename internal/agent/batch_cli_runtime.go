@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -69,45 +70,29 @@ func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobb
 	// watcher so a settled root's owner entry does not linger — the watcher
 	// releases the never-acquired caps key (a no-op) and forgets the entry.
 	if i.RootLeases != nil {
-		if err := i.RootLeases.acquire(root, owner, "", ""); err != nil {
+		if err := i.RootLeases.Acquire(root, owner, "", ""); err != nil {
 			return nil, fmt.Errorf("batch CLI: record root owner: %w", err)
 		}
-		_ = i.RootLeases.adopt(root, batch.Done(), "", "", nil)
+		_ = i.RootLeases.Adopt(root, batch.Done(), "", "", nil)
 	}
 	return batch, nil
 }
 
+// validateBatchOwnerPayloads decodes the host-owned leaf payload wire
+// struct into the batchflow admission facts.
 func validateBatchOwnerPayloads(owner string, spec jobbatch.Spec) error {
-	if (spec.Task == nil) == (spec.Batch == nil) {
-		return errors.New("batch CLI: every item must be exactly a task or batch")
-	}
-	if spec.Task != nil {
-		var payload batchLeafPayload
-		if err := json.Unmarshal(spec.Task.Payload, &payload); err != nil || payload.SessionID != owner {
-			return errors.New("batch CLI: task owner identity does not match submit owner")
+	return batchflow.ValidateBatchOwnerPayloads(owner, spec, func(raw json.RawMessage) (batchflow.OwnerLeafFacts, error) {
+		var p batchLeafPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return batchflow.OwnerLeafFacts{}, err
 		}
-		if payload.Tool == AgentToolName {
-			var selected struct {
-				Role RequestedModelRole `json:"role"`
-			}
-			if err := json.Unmarshal(payload.Input, &selected); err != nil {
-				return err
-			}
-			if selected.Role != "" && !selected.Role.Builtin() && payload.SelectedRoleContract == nil {
-				return fmt.Errorf("%w: role snapshot was not admitted", ErrAgentRoleUnconfigured)
-			}
-			if selected.Role.Builtin() && payload.SelectedRoleContract != nil {
-				return fmt.Errorf("%w: custom snapshot does not match builtin role", ErrAgentRoleMismatch)
-			}
-		}
-		return nil
-	}
-	for _, child := range spec.Batch.Items {
-		if err := validateBatchOwnerPayloads(owner, child); err != nil {
-			return err
-		}
-	}
-	return nil
+		return batchflow.OwnerLeafFacts{
+			SessionID:            p.SessionID,
+			AgentTool:            p.Tool == AgentToolName,
+			Input:                p.Input,
+			SelectedRoleContract: p.SelectedRoleContract,
+		}, nil
+	})
 }
 
 func (i *BatchInstall) OwnsCLI(root jobbatch.ID) bool {
@@ -136,11 +121,11 @@ func (i *BatchInstall) commitCLIControl(ctx context.Context, request db.BatchCon
 		return session.BatchControlAccepted{}, err
 	}
 	found := snapshot.Node.ID == jobbatch.ID(request.NodeID)
-	terminal := found && isTerminalBatchState(snapshot.Node.State)
+	terminal := found && batchflow.IsTerminalBatchState(snapshot.Node.State)
 	for _, node := range snapshot.Descendants {
 		if node.ID == jobbatch.ID(request.NodeID) {
 			found = true
-			terminal = isTerminalBatchState(node.State)
+			terminal = batchflow.IsTerminalBatchState(node.State)
 			break
 		}
 	}
@@ -162,14 +147,6 @@ func (i *BatchInstall) commitCLIControl(ctx context.Context, request db.BatchCon
 	}
 	i.cliAccepted[request.RequestID] = int64(snapshot.Sequence)
 	return session.BatchControlAccepted{Code: "accepted", Sequence: int64(snapshot.Sequence)}, nil
-}
-
-func isTerminalBatchState(state jobbatch.State) bool {
-	switch state {
-	case jobbatch.StateCompleted, jobbatch.StateFailed, jobbatch.StateCancelled, jobbatch.StateTimedOut, jobbatch.StateInterrupted, jobbatch.StateSkipped:
-		return true
-	}
-	return false
 }
 
 func (i *BatchInstall) PumpCLIControls(ctx context.Context, owner string, root jobbatch.ID) error {
@@ -197,7 +174,7 @@ func (i *BatchInstall) RetainCLIConstruction(root jobbatch.ID, release func()) e
 
 // ErrBatchCLIOutputExpired reports that a released leaf's output is no
 // longer cached; its persisted outcome is still valid.
-var ErrBatchCLIOutputExpired = errors.New("batch CLI: output expired or evicted")
+var ErrBatchCLIOutputExpired = batchflow.ErrBatchCLIOutputExpired
 
 func (i *BatchInstall) CLIOutput(ctx context.Context, owner string, root, node jobbatch.ID) (jobbatch.OutputChunk, error) {
 	if i == nil || i.RunnerHandle == nil || i.Runner == nil || i.CLIOwner(root) != owner {
