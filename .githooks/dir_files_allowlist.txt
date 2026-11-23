@@ -45,10 +45,13 @@ internal/app 265
 # pre-move value was 201 (31 production + 170 test files), and 197 is that exactly.
 internal/config 197
 # internal/config/discover 27 -> 19: same D2-3 tail merge (5 production + 14 test files); row retired.
-# internal/serve/server/server is born over the 21-file limit: the composer moves down with the 133
-# cross-cutting test files that lanes L5/L6/L7 have not re-homed yet (5 production files + 133 tests = 138).
-# The count falls as those tests move to their subject packages; no other change in this lane.
-internal/serve/server/server 138
+# internal/serve/server/server is born over the 21-file limit: the composer holds 5 production files plus
+# the cross-cutting tests that lanes L5/L6 have not re-homed yet.
+# 138 -> 130: server lane 2 moved 8 provable test files out (api 4, apibatch 1, listener 1, wsconfig 2);
+# the other 125 stay because each one calls the composer's own New/ServeAPI or one of its fixtures
+# (startPolicyServer, newAttachmentsTestApp, dialServeWS). Those cannot exist below the composer, so the
+# count falls further only once rest/servertest (plan 4.5) reproduces that surface.
+internal/serve/server/server 130
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 33
 # MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.
@@ -70,7 +73,8 @@ internal/agent/provider/cliprovider/clipstream 22
 # internal/serve/server/ws/wsapi and ws/wsconfig are born over the limit: their production files plus the moved
 # test files (server lane L5). The tests spread over their own packages at stage F; deliberate, only down from here.
 internal/serve/server/ws/wsapi 39
-internal/serve/server/ws/wsconfig 29
+# 29 -> 31: server lane 2 moved the two peak-hours wire tests in (their subject, peakHoursToWire/peakHoursFromWire, is declared in wsconfig/providers.go).
+internal/serve/server/ws/wsconfig 31
 # internal/session/run/sessionrun is born over the limit: 12 production files plus 46 moved test files (lane MV4).
 # The tests spread over their own packages at stage F; deliberate, only down from here.
 # born over the limit (MV3, plan D3); falls at EX lanes

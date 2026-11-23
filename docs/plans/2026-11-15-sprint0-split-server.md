@@ -259,6 +259,29 @@ cmd использует (проверено по `internal/cmd/root.go`, `serve
 
 `TestMain(testguard.Main)` копируется в каждый пакет с тестами, кроме `wire` и `wire/finalgate` (чистые, конфиг не трогают); `TestGlobalConfigPathsAreIsolated` остаётся только в server.
 
+### 2.5a. Проверка §2.5 по живому дереву (lane server-2, 2026-11-23)
+
+Инвентарь снят с дерева, а не с таблицы. У компоновщика `internal/serve/server/server` 133 тестовых файла. 130 из них читают `New`/`Server`/`ServeAPI` (`serve.go`) или общие фикстуры компоновщика (`startPolicyServer`, `newAttachmentsTestApp`, `dialServeWS`) — такой тест нельзя опустить ниже компоновщика, пока нет пакета `rest/servertest` (§4.5): переезд был бы портом, а не переносом. Без нового пакета доказуемо переезжают 8 файлов: они не читают ни одного неэкспортированного идентификатора компоновщика и не зовут ни одного из перечисленных конструкторов.
+
+Переехали (проверено оракулом объявлений и тел; число Test-функций не изменилось):
+
+| Файл | Из | В | Правка, кроме `package` |
+|---|---|---|---|
+| `api_routes_test.go` | server | rest/api | — |
+| `api_session_openapi_test.go` | server | rest/api | — |
+| `api_openapi_docs_golden_test.go` | server | rest/api | путь к `docs/api/openapi.json` на один сегмент глубже (`..`×5) |
+| `api_idempotency_expiry_test.go` | server | rest/api | `newIdempotencyStore`→`NewIdempotencyStore`, `idempotencyMaxEntries`→`IdempotencyMaxEntries`, `idempotencyTTL`→`IdempotencyTTL`, `idempotencyStarted`→`IdempotencyStarted` (только регистр первой буквы) |
+| `api_batch_policy_test.go` | server | rest/apibatch | `batchIntakePolicy`→`BatchIntakePolicy`, `batchIntakeMaxNodes`→`BatchIntakeMaxNodes`, `batchIntakeDefaultTimeout`→`BatchIntakeDefaultTimeout` |
+| `web_cleartext_policy_test.go` | server | listener | — (`IsLoopbackHost` объявлен в listener/policy.go:18) |
+| `peak_hours_wire_json_test.go` | server | ws/wsconfig | типы `wire` квалифицируются как `wirePkg.*` |
+| `peak_hours_wire_v2_test.go` | server | ws/wsconfig | то же плюс `hub.ScopeFor`/`hub.AuthorizeCommand`/`hub.ErrScopeForbidden`/`hub.ErrAdminDisallowed` |
+
+Поправки к §2.5 (премисы, ложные на живом дереве):
+
+- `peak_hours_wire_{json,v2}` принадлежат `ws/wsconfig`, а не `wire`: конверсии `peakHoursToWire`/`peakHoursFromWire` объявлены в `ws/wsconfig/providers.go:101,135`, а `wire` — лист (§2.6) и не может импортировать `hub`, который нужен `peak_hours_wire_v2` для `ScopeFor`/`AuthorizeCommand`. Строка «`wire` 3» неверна: в `wire` один тестовый файл (`p479_usage_wire_test.go`).
+- `server` 41 и остальные строки таблицы §2.5 — проектное намерение Л7, а не текущее состояние: 125 файлов из этого списка всё ещё в компоновщике и ждут `rest/servertest`.
+- Храповики: `internal/serve/server/server` 138 → 130; `internal/serve/server/ws/wsconfig` 29 → 31 (два теста приехали).
+
 ### 2.6. Граф зависимостей (production-импорты, стрелка = «импортирует»)
 
 ```

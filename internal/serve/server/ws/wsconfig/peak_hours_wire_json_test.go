@@ -1,10 +1,11 @@
-package server
+package wsconfig
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	wirePkg "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -18,7 +19,7 @@ func TestPeakHoursWireJSONRejectsMalformedPolicyBeforePersistence(t *testing.T) 
 		`{"timezone":"UTC"}`,
 		`{"start":"","end":"","windows":[]}`,
 	} {
-		var value PeakHoursWirePayload
+		var value wirePkg.PeakHoursWirePayload
 		require.Error(t, json.Unmarshal([]byte(input), &value), input)
 	}
 }
@@ -31,7 +32,7 @@ func TestPeakHoursWireEmptyPolicyRoundTripPreservesDiscriminator(t *testing.T) {
 	data, err := json.Marshal(wire)
 	require.NoError(t, err)
 	require.Equal(t, "[]", gjson.GetBytes(data, "windows").Raw)
-	var decoded PeakHoursWirePayload
+	var decoded wirePkg.PeakHoursWirePayload
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	value, err := peakHoursFromWire(&decoded)
 	require.NoError(t, err)
@@ -45,11 +46,11 @@ func TestPeakHoursWireEmptyPolicyRoundTripPreservesDiscriminator(t *testing.T) {
 
 func TestPeakHoursWireLegacyAndNullWindowsRemainCompatible(t *testing.T) {
 	t.Parallel()
-	legacy := PeakHoursWirePayload{Start: "22:00", End: "06:00", Message: "legacy"}
+	legacy := wirePkg.PeakHoursWirePayload{Start: "22:00", End: "06:00", Message: "legacy"}
 	data, err := json.Marshal(legacy)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"start":"22:00","end":"06:00","message":"legacy"}`, string(data))
-	var decoded PeakHoursWirePayload
+	var decoded wirePkg.PeakHoursWirePayload
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	require.Nil(t, decoded.Windows)
 	value, err := peakHoursFromWire(&decoded)

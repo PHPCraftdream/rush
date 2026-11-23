@@ -34,7 +34,7 @@ func APIRoutes() []APIRoute {
 	routes = append(routes, apiSessionRoutes()...)
 	routes = append(routes, apiRunRoutesWithPlaceholders()...)
 	routes = append(routes, apiPermissionRouteDeclarations()...)
-	routes = append(routes, BatchRoutePlaceholders()...)
+	routes = append(routes, batchRoutePlaceholders()...)
 	return append(routes, apiEventsRoute())
 }
 
@@ -140,14 +140,14 @@ func apiRunWriteRoutesWithRegistry(store APIWriteStore, backend APIRunBackend, r
 	return routes
 }
 
-func ApiRunPlaceholder(w http.ResponseWriter, r *http.Request) {
+func apiRunPlaceholder(w http.ResponseWriter, r *http.Request) {
 	WriteAPIProblem(w, r, http.StatusNotImplemented, "Not Implemented", "run endpoint handler is not wired", "", nil)
 }
 
 func apiRunRoutesWithPlaceholders() []APIRoute {
 	routes := apiRunRoutes()
 	for i := range routes {
-		routes[i].Handler = ApiRunPlaceholder
+		routes[i].Handler = apiRunPlaceholder
 	}
 	return routes
 }
@@ -432,10 +432,10 @@ func BatchRouteDeclarations() []APIRoute {
 	}
 }
 
-func BatchRoutePlaceholders() []APIRoute {
+func batchRoutePlaceholders() []APIRoute {
 	routes := BatchRouteDeclarations()
 	for i := range routes {
-		routes[i].Handler = ApiRunPlaceholder
+		routes[i].Handler = apiRunPlaceholder
 	}
 	return routes
 }

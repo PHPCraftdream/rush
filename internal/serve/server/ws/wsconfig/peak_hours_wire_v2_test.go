@@ -1,10 +1,12 @@
-package server
+package wsconfig
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/serve/server/hub"
+	wirePkg "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,9 +18,9 @@ func TestPeakHoursFromWirePolicyForm(t *testing.T) {
 
 	t.Run("full policy form", func(t *testing.T) {
 		t.Parallel()
-		got, err := peakHoursFromWire(&PeakHoursWirePayload{
+		got, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
 			Timezone: "UTC",
-			Windows:  []PeakHoursWindowWire{{Days: "mon-fri", Start: "09:00", End: "18:00"}},
+			Windows:  []wirePkg.PeakHoursWindowWire{{Days: "mon-fri", Start: "09:00", End: "18:00"}},
 			Message:  "m",
 		})
 		require.NoError(t, err)
@@ -33,8 +35,8 @@ func TestPeakHoursFromWirePolicyForm(t *testing.T) {
 
 	t.Run("whole-day every-day window is valid", func(t *testing.T) {
 		t.Parallel()
-		got, err := peakHoursFromWire(&PeakHoursWirePayload{
-			Windows: []PeakHoursWindowWire{{Days: "", Start: "00:00", End: "24:00"}},
+		got, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
+			Windows: []wirePkg.PeakHoursWindowWire{{Days: "", Start: "00:00", End: "24:00"}},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, got.Policy)
@@ -44,17 +46,17 @@ func TestPeakHoursFromWirePolicyForm(t *testing.T) {
 
 	t.Run("zero-length window fails validation", func(t *testing.T) {
 		t.Parallel()
-		_, err := peakHoursFromWire(&PeakHoursWirePayload{
-			Windows: []PeakHoursWindowWire{{Days: "mon", Start: "12:00", End: "12:00"}},
+		_, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
+			Windows: []wirePkg.PeakHoursWindowWire{{Days: "mon", Start: "12:00", End: "12:00"}},
 		})
 		require.Error(t, err, "a zero-length window must fail policy validation")
 	})
 
 	t.Run("mixing forms is rejected", func(t *testing.T) {
 		t.Parallel()
-		_, err := peakHoursFromWire(&PeakHoursWirePayload{
+		_, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
 			Timezone: "UTC",
-			Windows:  []PeakHoursWindowWire{{Days: "mon", Start: "09:00", End: "10:00"}},
+			Windows:  []wirePkg.PeakHoursWindowWire{{Days: "mon", Start: "09:00", End: "10:00"}},
 			Start:    "09:00",
 		})
 		require.Error(t, err)
@@ -63,7 +65,7 @@ func TestPeakHoursFromWirePolicyForm(t *testing.T) {
 
 	t.Run("legacy payload still decodes as legacy", func(t *testing.T) {
 		t.Parallel()
-		got, err := peakHoursFromWire(&PeakHoursWirePayload{
+		got, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
 			Start: "09:00", End: "18:00", Message: "m",
 		})
 		require.NoError(t, err, "old clients sending start/end must keep working")
@@ -77,8 +79,8 @@ func TestPeakHoursFromWirePolicyForm(t *testing.T) {
 		// A PRESENT-but-empty windows key selects the policy branch, so
 		// {"windows":[]} is an explicit zero-window policy (off) rather
 		// than an empty legacy shell.
-		got, err := peakHoursFromWire(&PeakHoursWirePayload{
-			Windows: []PeakHoursWindowWire{},
+		got, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
+			Windows: []wirePkg.PeakHoursWindowWire{},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, got)
@@ -90,8 +92,8 @@ func TestPeakHoursFromWirePolicyForm(t *testing.T) {
 
 	t.Run("single-window payload still decodes as a policy", func(t *testing.T) {
 		t.Parallel()
-		got, err := peakHoursFromWire(&PeakHoursWirePayload{
-			Windows: []PeakHoursWindowWire{{Days: "mon", Start: "09:00", End: "10:00"}},
+		got, err := peakHoursFromWire(&wirePkg.PeakHoursWirePayload{
+			Windows: []wirePkg.PeakHoursWindowWire{{Days: "mon", Start: "09:00", End: "10:00"}},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, got.Policy, "a windows-only payload must decode as a policy")
@@ -136,7 +138,7 @@ func TestPeakHoursToWire(t *testing.T) {
 		require.NotNil(t, got)
 		assert.Equal(t, "UTC+08:00", got.Timezone)
 		require.Len(t, got.Windows, 1)
-		assert.Equal(t, PeakHoursWindowWire{Days: "sat", Start: "10:00", End: "12:00"}, got.Windows[0])
+		assert.Equal(t, wirePkg.PeakHoursWindowWire{Days: "sat", Start: "10:00", End: "12:00"}, got.Windows[0])
 		assert.Equal(t, "m", got.Message)
 		assert.Equal(t, "2026-11-09T10:00:00Z", got.PausedUntil)
 		assert.Empty(t, got.Start, "the policy form must not synthesize legacy fields")
@@ -150,7 +152,7 @@ func TestPeakHoursWireJSONShapes(t *testing.T) {
 
 	t.Run("status omits zero optional fields", func(t *testing.T) {
 		t.Parallel()
-		data, err := json.Marshal(PeakHoursStatusWire{
+		data, err := json.Marshal(wirePkg.PeakHoursStatusWire{
 			ProviderID: "p",
 			CheckedAt:  "2026-11-09T12:00:00Z",
 		})
@@ -171,9 +173,9 @@ func TestPeakHoursWireJSONShapes(t *testing.T) {
 
 	t.Run("statuses payload shape", func(t *testing.T) {
 		t.Parallel()
-		data, err := json.Marshal(PeakHoursStatusesWire{
+		data, err := json.Marshal(wirePkg.PeakHoursStatusesWire{
 			CheckedAt: "2026-11-09T12:00:00Z",
-			Statuses: []PeakHoursStatusWire{{
+			Statuses: []wirePkg.PeakHoursStatusWire{{
 				ProviderID: "p",
 				CheckedAt:  "2026-11-09T12:00:00Z",
 			}},
@@ -210,7 +212,7 @@ func TestPauseResumePayloadDecode(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var got PauseProviderPeakHoursPayload
+			var got wirePkg.PauseProviderPeakHoursPayload
 			require.NoError(t, json.Unmarshal([]byte(tc.payload), &got))
 			assert.Equal(t, tc.id, got.ID)
 			assert.Equal(t, tc.duration, got.Duration)
@@ -221,7 +223,7 @@ func TestPauseResumePayloadDecode(t *testing.T) {
 
 	t.Run("resume payload scope", func(t *testing.T) {
 		t.Parallel()
-		var got ResumeProviderPeakHoursPayload
+		var got wirePkg.ResumeProviderPeakHoursPayload
 		require.NoError(t, json.Unmarshal([]byte(`{"id":"p","scope":"local"}`), &got))
 		assert.Equal(t, "p", got.ID)
 		assert.Equal(t, "local", got.Scope)
@@ -234,21 +236,21 @@ func TestScopeTablePeakHoursCommands(t *testing.T) {
 	t.Parallel()
 
 	for _, command := range []string{
-		CmdPauseProviderPeakHours, CmdResumeProviderPeakHours, CmdGetPeakHoursStatus,
+		wirePkg.CmdPauseProviderPeakHours, wirePkg.CmdResumeProviderPeakHours, wirePkg.CmdGetPeakHoursStatus,
 	} {
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
-			scope, ok := ScopeFor(command)
+			scope, ok := hub.ScopeFor(command)
 			require.True(t, ok)
 			require.Equal(t, "admin", scope)
 			for _, insufficient := range []string{"read", "run", "config"} {
 				principal := Principal{Scopes: []string{insufficient}}
-				assert.ErrorIs(t, AuthorizeCommand(principal, command, CommandPolicy{AllowAdmin: true}),
-					ErrScopeForbidden, "scope=%s command=%s", insufficient, command)
+				assert.ErrorIs(t, hub.AuthorizeCommand(principal, command, CommandPolicy{AllowAdmin: true}),
+					hub.ErrScopeForbidden, "scope=%s command=%s", insufficient, command)
 			}
 			admin := Principal{Scopes: []string{"admin"}}
-			assert.ErrorIs(t, AuthorizeCommand(admin, command, CommandPolicy{AllowAdmin: false}), ErrAdminDisallowed)
-			assert.NoError(t, AuthorizeCommand(admin, command, CommandPolicy{AllowAdmin: true}))
+			assert.ErrorIs(t, hub.AuthorizeCommand(admin, command, CommandPolicy{AllowAdmin: false}), hub.ErrAdminDisallowed)
+			assert.NoError(t, hub.AuthorizeCommand(admin, command, CommandPolicy{AllowAdmin: true}))
 		})
 	}
 }

@@ -1,4 +1,4 @@
-package server
+package apibatch
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ func intakeBatch(items ...jobbatch.Spec) jobbatch.Spec {
 }
 
 func TestBatchIntake_AgentOnlyRejectsNestedRunCommandBeforeConstruction(t *testing.T) {
-	policy := batchIntakePolicy{}
+	policy := BatchIntakePolicy{}
 	nested := intakeBatch(intakeTask(t, "agent"), intakeBatch(intakeTask(t, "run_command")))
 	_, err := policy.Normalize(nested)
 	require.ErrorContains(t, err, `"run_command" is not allowed`)
@@ -37,7 +37,7 @@ func TestBatchIntake_AgentOnlyRejectsNestedRunCommandBeforeConstruction(t *testi
 }
 
 func TestBatchIntakeExactNameOptIn(t *testing.T) {
-	policy := batchIntakePolicy{Tools: []string{"bash", "mcp_files_read", "agentic_fetch"}}
+	policy := BatchIntakePolicy{Tools: []string{"bash", "mcp_files_read", "agentic_fetch"}}
 	for _, tool := range []string{"agent", "bash", "mcp_files_read", "agentic_fetch"} {
 		_, err := policy.Normalize(intakeTask(t, tool))
 		require.NoError(t, err, tool)
@@ -49,7 +49,7 @@ func TestBatchIntakeExactNameOptIn(t *testing.T) {
 }
 
 func TestBatchIntakeReadOnlyTokenGetsOnlyReadOnlyTools(t *testing.T) {
-	policy := batchIntakePolicy{ReadOnly: true, Tools: []string{"bash", "agent", "agentic_fetch", "mcp_files_read", "view"}}
+	policy := BatchIntakePolicy{ReadOnly: true, Tools: []string{"bash", "agent", "agentic_fetch", "mcp_files_read", "view"}}
 	for _, tool := range []string{"view", "grep", "glob", "ls"} {
 		_, err := policy.Normalize(intakeTask(t, tool))
 		require.NoError(t, err, tool)
@@ -61,7 +61,7 @@ func TestBatchIntakeReadOnlyTokenGetsOnlyReadOnlyTools(t *testing.T) {
 }
 
 func TestBatchIntakeForcesParallelismAndTimeouts(t *testing.T) {
-	policy := batchIntakePolicy{MaxParallel: 2, MaxItemTimeout: time.Hour}
+	policy := BatchIntakePolicy{MaxParallel: 2, MaxItemTimeout: time.Hour}
 	spec := intakeBatch(intakeTask(t, "agent"), intakeBatch(intakeTask(t, "agent")))
 	spec.Batch.MaxParallel = 50
 	spec.Batch.Items[1].Batch.MaxParallel = 0
@@ -92,15 +92,15 @@ func TestBatchIntakeForcesParallelismAndTimeouts(t *testing.T) {
 	_, err = policy.Normalize(explicit)
 	require.Error(t, err)
 
-	out, err = (batchIntakePolicy{}).Normalize(intakeTask(t, "agent"))
+	out, err = (BatchIntakePolicy{}).Normalize(intakeTask(t, "agent"))
 	require.NoError(t, err)
-	require.Equal(t, batchIntakeDefaultTimeout, out.Task.Timeout, "the default timeout is 30 minutes")
+	require.Equal(t, BatchIntakeDefaultTimeout, out.Task.Timeout, "the default timeout is 30 minutes")
 }
 
 func TestBatchIntakeNodeAndDepthLimits(t *testing.T) {
-	policy := batchIntakePolicy{}
-	items := make([]jobbatch.Spec, 0, batchIntakeMaxNodes)
-	for i := 0; i < batchIntakeMaxNodes-1; i++ {
+	policy := BatchIntakePolicy{}
+	items := make([]jobbatch.Spec, 0, BatchIntakeMaxNodes)
+	for i := 0; i < BatchIntakeMaxNodes-1; i++ {
 		items = append(items, intakeTask(t, "agent"))
 	}
 	_, err := policy.Normalize(intakeBatch(items...))
@@ -115,12 +115,12 @@ func TestBatchIntakeNodeAndDepthLimits(t *testing.T) {
 	require.ErrorContains(t, err, "levels deep")
 
 	// A caller-side policy cannot raise the ceilings.
-	_, err = (batchIntakePolicy{MaxNodes: 1000, MaxDepth: 50}).Normalize(intakeBatch(deep))
+	_, err = (BatchIntakePolicy{MaxNodes: 1000, MaxDepth: 50}).Normalize(intakeBatch(deep))
 	require.Error(t, err)
 }
 
 func TestBatchIntakeRejectsMalformedItems(t *testing.T) {
-	policy := batchIntakePolicy{}
+	policy := BatchIntakePolicy{}
 	_, err := policy.Normalize(jobbatch.Spec{})
 	require.Error(t, err, "an empty spec")
 	both := intakeTask(t, "agent")

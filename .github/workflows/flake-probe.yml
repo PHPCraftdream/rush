@@ -21,12 +21,32 @@ jobs:
         include:
           - os: ubuntu-latest
             package: ./internal/serve/server/server
-            tests: '^Test(PanicTimelineReportsOnlyOnFailure|ListenerReportOnlyOnFailure|ListenerSnapshotCountsConnectionStates)$'
+            tests: '^Test(ListenerReportOnlyOnFailure|ListenerSnapshotCountsConnectionStates)$'
             race: '-race'
+            mutants: true
+          # TestPanicTimelineReportsOnlyOnFailure lives here since the hub split;
+          # this entry is what selects the hub branch of
+          # .github/scripts/flake-diagnostic-mutants.py.
+          - os: ubuntu-latest
+            package: ./internal/serve/server/hub
+            tests: '^TestPanicTimelineReportsOnlyOnFailure$'
+            race: '-race'
+            mutants: true
+          # The two rerun panic-window probes moved here with the rerun handler.
+          # No mutant branch: their failure-only diagnostic gate is the hub
+          # timeline test above, and the tests themselves delegate release/
+          # recreate behaviour to production code, so a text mutant of them
+          # would only weaken an assertion.
+          - os: ubuntu-latest
+            package: ./internal/serve/server/ws/wsapi
+            tests: '^TestHandleRerunMessage_PanicBeforeHandoff(ReleasesReservation|RecreatesPrompt)$'
+            race: '-race'
+            mutants: false
           - os: windows-latest
             package: ./internal/session
             tests: '^TestReleaseGate_P350_QueuedNotExecuted'
             race: ''
+            mutants: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     defaults:
@@ -40,6 +60,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Verify failure-only diagnostic gates and mutants
+        if: matrix.mutants
         env:
           TEST_PACKAGE: ${{ matrix.package }}
         run: python -I .github/scripts/flake-diagnostic-mutants.py
@@ -68,7 +89,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: flake-probe-${{ matrix.os }}
+          name: flake-probe-${{ matrix.os }}-${{ strategy.job-index }}
           path: |
             flake-probe.jsonl
             diagnostic-*.log
