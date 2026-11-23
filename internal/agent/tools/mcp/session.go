@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/mcpdial"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
@@ -685,7 +686,7 @@ func (s *sessionContext) Err() error {
 func (s *sessionContext) Value(key any) any { return s.owner.Value(key) }
 
 func createSessionWithAdmission(ctx context.Context, name string, m config.MCPConfig, resolver config.VariableResolver, admission *serverAdmission) (*ClientSession, error) {
-	timeout := mcpTimeout(m)
+	timeout := mcpdial.Timeout(m)
 	var handoff *sessionContext
 	sessionCtx := ctx
 	if admission != nil && admission.owner != nil {
@@ -725,7 +726,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 		cancelSession(context.Canceled)
 	}
 
-	transport, err := createTransport(lifetimeCtx, m, resolver)
+	transport, err := mcpdial.CreateTransport(lifetimeCtx, m, resolver)
 	if err != nil {
 		if admission == nil || (!admission.suppressState && admission.valid()) {
 			if admission == nil {
@@ -770,7 +771,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 		_ = session.Close()
 	}
 	if err != nil {
-		err = maybeStdioErr(err, transport)
+		err = mcpdial.MaybeStdioErr(err, transport)
 		err = maybeTimeoutErr(err, timeout, timeoutErrCause, timeoutCause)
 		err = keepContextErr(lifetimeCtx, err, timeoutErrCause, timeoutCause)
 		if admission == nil || (!admission.suppressState && admission.valid()) {
@@ -788,7 +789,7 @@ func createSessionWithAdmission(ctx context.Context, name string, m config.MCPCo
 	// Keep the context live for the published SDK connection. The caller's
 	// operation context is intentionally not its lifetime context.
 	slog.Debug("MCP client initialized", "name", name)
-	cleanup := transportCleanup(transport)
+	cleanup := mcpdial.Cleanup(transport)
 	return &ClientSession{
 		ClientSession: session,
 		cancel: func() {

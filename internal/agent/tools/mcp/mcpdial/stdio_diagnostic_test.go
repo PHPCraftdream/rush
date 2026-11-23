@@ -1,4 +1,4 @@
-package mcp
+package mcpdial
 
 import (
 	"bufio"
@@ -264,13 +264,13 @@ func TestStdioCheckBoundsDiagnosticOutput(t *testing.T) {
 func TestMaybeStdioErrKeepsEOFAndJoinsDiagnostic(t *testing.T) {
 	t.Run("successful rerun keeps EOF unchanged", func(t *testing.T) {
 		original := io.EOF
-		got := maybeStdioErr(original, &mcp.CommandTransport{Command: diagnosticTestCommand(t, "success")})
+		got := MaybeStdioErr(original, &mcp.CommandTransport{Command: diagnosticTestCommand(t, "success")})
 		require.Same(t, original, got)
 	})
 
 	t.Run("failed rerun joins bounded details", func(t *testing.T) {
 		original := io.EOF
-		got := maybeStdioErr(original, &mcp.CommandTransport{Command: diagnosticTestCommand(t, "failure")})
+		got := MaybeStdioErr(original, &mcp.CommandTransport{Command: diagnosticTestCommand(t, "failure")})
 		require.ErrorIs(t, got, io.EOF)
 		require.Contains(t, got.Error(), "MCPDIAG failure")
 	})

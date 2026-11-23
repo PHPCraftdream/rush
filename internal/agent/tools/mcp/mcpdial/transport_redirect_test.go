@@ -1,4 +1,4 @@
-package mcp
+package mcpdial
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func TestMCPHTTPClientsRedirectPolicy(t *testing.T) {
 				}))
 				defer origin.Close()
 
-				created, err := createTransport(context.Background(), config.MCPConfig{
+				created, err := CreateTransport(context.Background(), config.MCPConfig{
 					Type:    transportType,
 					URL:     origin.URL,
 					Headers: map[string]string{"Authorization": authorization},

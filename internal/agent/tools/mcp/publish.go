@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/mcpdial"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
@@ -27,7 +28,7 @@ func prepareClient(ctx context.Context, cfg *config.ConfigStore, name string, m 
 	// Discovery runs after the connect timer is disarmed; bound the rest of
 	// the unpublished preparation with the same initialization timeout. The
 	// published session keeps its own lifetime context.
-	discoveryCtx, cancelDiscovery := context.WithTimeout(ctx, mcpTimeout(m))
+	discoveryCtx, cancelDiscovery := context.WithTimeout(ctx, mcpdial.Timeout(m))
 	defer cancelDiscovery()
 	tools, err := getTools(discoveryCtx, session)
 	if err != nil {

@@ -21,7 +21,14 @@ internal/agent 208
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
-internal/agent/tools/mcp 19
+# 19 -> 18: lane D2-tools+mcp M1 moved the stateless transport out to
+# internal/agent/tools/mcp/mcpdial (transport.go, process_unix.go,
+# process_other.go: -3 files, +1 code directory) and M2 split mutation.go
+# (+1 file); the design's figure of 17 counted only the `internal`
+# subdirectory, the real tree has two (`internal` and `mcpdial`). The 13
+# package globals do not migrate (CLAUDE.md, "The MCP Subsystem"), so this
+# row stays until that decision is revisited.
+internal/agent/tools/mcp 18
 # internal/app 61 -> 63: +1 internal/app/itest (cross-module scenario tests, sprint 0 wave 1);
 # +1 internal/app/projects moved in (stage C).
 # The count falls with the package split (stage D2).

@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -287,51 +286,6 @@ func TestEnableServerFromOldOwnerCannotPublishIntoNewOwner(t *testing.T) {
 	defer func() { require.NoError(t, newOwner.Close(context.Background())) }()
 	_, ok := sessions.Get(name)
 	require.False(t, ok, "an initializer admitted by the old owner must not cross the owner fence")
-}
-
-func TestHeaderRoundTripperCancelsBlockedRequestBeforeResponse(t *testing.T) {
-	started := make(chan struct{}, 1)
-	canceled := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		signalStarted(started)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
-		<-r.Context().Done()
-		signalStarted(canceled)
-	}))
-	defer server.Close()
-
-	ownerCtx, ownerCancel := context.WithCancel(context.Background())
-	transport, err := cloneHTTPTransport()
-	require.NoError(t, err)
-	rt := &headerRoundTripper{ctx: ownerCtx, transport: transport}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, bytes.NewReader([]byte(`{"jsonrpc":"2.0"}`)))
-	require.NoError(t, err)
-	requestDone := make(chan error, 1)
-	go func() {
-		// The point of this test is that ownerCancel unblocks RoundTrip, so
-		// the response is normally nil here. Close it on the path where the
-		// race resolves the other way, rather than leaking a connection.
-		resp, err := rt.RoundTrip(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		requestDone <- err
-	}()
-	waitForRequest(t, started)
-
-	ownerCancel()
-	select {
-	case <-canceled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("transport cancellation did not reach the blocked HTTP request")
-	}
-	select {
-	case <-requestDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("transport RoundTrip did not return after cancellation")
-	}
 }
 
 func TestListChangedRefreshIsAsyncAndStaleAdmissionIsIgnored(t *testing.T) {

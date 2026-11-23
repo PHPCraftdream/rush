@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/internal/contextlock"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/mcpdial"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -582,8 +583,7 @@ func getOrRenewClientOnceForOwner(o *Owner, ctx context.Context, cfg *config.Con
 		lease.registry.release(lease)
 	}()
 	state, _ := states.Get(name)
-	timeout := mcpTimeout(m)
-	err := pingWithTimeout(sessionCtx, sess, timeout)
+	err := pingWithTimeout(sessionCtx, sess, mcpdial.Timeout(m))
 	if err == nil {
 		if admission != nil && !admission.valid() {
 			releaseSession()

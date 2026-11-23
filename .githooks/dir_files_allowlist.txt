@@ -23,7 +23,11 @@
 internal/agent 738
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
-internal/agent/tools/mcp 63
+# 63 -> 58: same lane: 4 test files moved whole to mcpdial, one core
+# Windows TestMain was added (-3), and M2 added mutation_fallback.go (+1);
+# the core is now 16 production + 42 test files. mcpdial has 11 files,
+# under the 21 limit, so it needs no row.
+internal/agent/tools/mcp 58
 # 287 -> 288: the same app_bridge.go of the 0b-5 lane 0b-a (deliberate, temporary; only down from here).
 # 272 -> 265: lane D2-3 bottom plane moves 7 Go files out to internal/app/apprun/review
 # (app_run_result, app_run_errors, strip_json, app_run_turn, app_run_reviewer_stall/prompt/timeout).
