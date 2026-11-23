@@ -80,7 +80,7 @@ func (p finalizationQueueComponent) runFinalizationQueuedCall(ctx context.Contex
 	if err != nil || driver == nil {
 		return nil, &ErrCallAlreadyAttempted{Err: session.ErrAgentFinalizationDriverUnavailable}
 	}
-	if concrete, ok := driver.(*sessionAgent); ok && concrete.shuttingDown.Load() {
+	if driver.ShuttingDown() {
 		return nil, ErrAgentShuttingDown
 	}
 	holdCtx, epoch, holdCancel, reserved := driver.ReserveExclusive(ctx, data.SessionID)
@@ -101,7 +101,7 @@ func (p finalizationQueueComponent) runFinalizationQueuedCall(ctx context.Contex
 	if err := holdCtx.Err(); err != nil {
 		return nil, &ErrCallAlreadyAttempted{Err: err}
 	}
-	if concrete, ok := driver.(*sessionAgent); ok && concrete.shuttingDown.Load() {
+	if driver.ShuttingDown() {
 		return nil, ErrAgentShuttingDown
 	}
 	consumeCtx, consumeCancel := context.WithTimeout(holdCtx, sessionPreambleMaxDurationDefault)

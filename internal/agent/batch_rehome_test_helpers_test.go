@@ -64,3 +64,7 @@ func settledGoroutineDelta(base int) int {
 	}
 	return best
 }
+
+// ShuttingDown satisfies agentcall.SessionAgent's shutdown predicate for the
+// fake; a mock has no shutdown latch.
+func (m *mockSessionAgent) ShuttingDown() bool { return false }

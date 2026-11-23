@@ -281,6 +281,20 @@ func (c *coordinator) cliActiveWorkFacts() BatchCutoverFacts {
 	return coordinatorBatchCutoverFacts(c)
 }
 
+// batchFactsInstalled reports whether a concrete (node-backed) batch cutover
+// facts source is bound for the coordinator: true only for a bound node-backed
+// source, so an unbound coordinator keeps the conservative idle answer and
+// never hides live work behind an unbound helper. It is the same rule
+// CLIActiveWork uses (cli_active_work.go).
+func (c *coordinator) batchFactsInstalled() bool {
+	if c == nil {
+		return false
+	}
+	facts := coordinatorBatchCutoverFacts(c)
+	_, unbound := facts.(unknownBatchCutoverFacts)
+	return !unbound
+}
+
 func (c *coordinator) recoverBatchScopeDeadCandidates(ctx context.Context, owner string) {
 	recoverBatchScopeDeadCandidates(ctx, c, owner)
 }

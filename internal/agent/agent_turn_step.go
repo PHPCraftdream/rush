@@ -337,7 +337,7 @@ func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fan
 	// without an installed runtime answers idle instead of hiding live work).
 	var ownWork bool
 	if async {
-		if ts.a.coord != nil && batchOwnWorkFactsInstalled(ts.a.coord) {
+		if ts.a.coord != nil && ts.a.coord.batchFactsInstalled() {
 			ownWork = ts.a.ownWorkBatch(callContext, ts.call.SessionID)
 		}
 	}

@@ -189,6 +189,8 @@ func (m *modelCallSpyAgent) Run(ctx context.Context, call SessionAgentCall) (*fa
 	return nil, nil
 }
 
+func (m *modelCallSpyAgent) ShuttingDown() bool { return false }
+
 // ReserveExclusive/ReleaseExclusive/RunWithReservedOwnership: IsSessionBusy
 // always reports false on this mock, so reservation always succeeds.
 func (m *modelCallSpyAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {

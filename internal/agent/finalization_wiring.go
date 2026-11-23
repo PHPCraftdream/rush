@@ -306,6 +306,13 @@ func (a *sessionAgent) finalizationWiring() *finalizationWiring {
 	return a.coord.finalization
 }
 
+// passThroughExecution adapts the wiring driver start to the entry
+// signature for calls that skip the root bind.
+func passThroughExecution(ctx context.Context, w *finalizationWiring, call SessionAgentCall) (context.Context, SessionAgentCall, func(), error) {
+	execCtx, unregister, err := w.startExecution(ctx, call)
+	return execCtx, call, unregister, err
+}
+
 // finalizationWiring returns the wiring installed on the coordinator.
 func (c *coordinator) finalizationWiring() *finalizationWiring {
 	if c == nil {

@@ -29,7 +29,7 @@ func armOwnWork(t *testing.T, sa *sessionAgent, sessionID string) bool {
 // First production-facing assertion: the require.NoError inside
 // batchQuestionFixture's connection setup.
 // FIRST REGRESSION-SENSITIVE ASSERTION: armOwnWork true — the call-site
-// mutation "drop the batchOwnWorkFactsInstalled gate" makes armProgressGuard
+// mutation "drop the batchFactsInstalled gate" makes armProgressGuard
 // arm ownWork from the unknown (unbound) helper and flips it to false.
 func TestOwnWorkBatch_LiveOwnCommandFlagOn(t *testing.T) {
 	coord, _, conn, _, ctx := batchQuestionFixture(t)

@@ -150,6 +150,12 @@ func (a *sessionAgent) tryAdmitRunWg() bool {
 	return true
 }
 
+// ShuttingDown reports whether CancelAll has latched this agent's
+// shutdown latch.
+func (a *sessionAgent) ShuttingDown() bool {
+	return a.shuttingDown.Load()
+}
+
 func (a *sessionAgent) CancelAll() (stillBusy bool) {
 	// Refuse all FUTURE Run() calls before touching anything else (closing
 	// review, blocker 1). This must come first and must live on the agent
