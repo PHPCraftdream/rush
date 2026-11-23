@@ -20,13 +20,16 @@
 # 208 -> 207: lane L2 (DM0b mailbox) moved queued_call_resolution.go whole
 # into internal/agent/runtime/exec/mailbox; the other seven mailbox files stay
 # because their state machine is read white-box by root tests.
-# 207 -> 201: lane L3 (DM0b batch families) retired 157 root compatibility aliases for
+# 207 -> 206: lane L4 (DM0b turnstep) moved turn_effort.go (TurnSmartServiceTier) into
+# internal/agent/runtime/exec/turnstep.
+# 206 -> 200: lane L3 (DM0b batch families) retired 157 root compatibility aliases for
 # declarations that already lived under internal/agent/runtime/batch and deleted the six
 # declaration-free files batch_delivery_drain.go, batch_exec_binding.go,
 # batch_managed_call.go, batch_rehome_drain_pace.go, batch_rehome_tool_metadata.go and
-# batch_timeout_parse.go; the count is 195 production files + 6 code subdirectories.
+# batch_timeout_parse.go; the count is 194 production files + 6 code subdirectories
+# (after merging the L4 move).
 # See docs/plans/2026-11-22-dm0b-l3-ledger.tsv. Only down from here.
-internal/agent 201
+internal/agent 200
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
@@ -59,7 +62,14 @@ internal/app 46
 # D2-4: 5 non-test Go files leave the root (apitoken 2, apiremote 1, listeners 1, copilot 1),
 # reducing its dir-entry count by 5. Root Go total falls 244 -> 233 (-11): 12 files moved/deleted,
 # offset by the new root api_remotes_integration_test.go (+1).
-internal/config 43
+# D2-3: internal/config/catalog moved under the new code subdirectory internal/config/providers (43 -> 42 elements: one code directory removed, one added).
+# D2-3 catalogsrc: provider.go, catwalk.go, hyper.go and catalog_supplement.go leave the root for internal/config/providers/catalogsrc (42 -> 38 elements; the root keeps its 5 code subdirectories).
+# D2-3 catalogsrc-confirmed: model_catalog_cache.go and model_verify.go leave the root for
+# internal/config/providers/catalogsrc (38 -> 36 elements; test files do not count here).
+# D2-3 provresolve: load_providers.go, load_providers_merge.go, load_providers_apply.go and
+# env_overlay.go leave the root for internal/config/providers/provresolve (36 -> 32 elements;
+# the root keeps its 5 code subdirectories and test files do not count here).
+internal/config 32
 # 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
 # internal/config/discover 13 -> 5: the D2-3 tail merged probe/enricher files in-package (the planned discover+local subpackage split is blocked: the local probe files call the parent package's unexported doRequest/Config plumbing, which a sub-package may not import); row retired.
 internal/session/jobbatch/lab 24

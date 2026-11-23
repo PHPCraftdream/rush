@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -47,7 +48,7 @@ func TestSupplementalCatalogModelLoadsForConfiguredAnthropic(t *testing.T) {
 }
 
 func TestSupplementalCatalogModelIsPricedWithoutPredecessor(t *testing.T) {
-	providers := mergeSupplementalCatalogModels([]catwalk.Provider{{
+	providers := catalogsrc.MergeSupplementalCatalogModels([]catwalk.Provider{{
 		ID:     catwalk.InferenceProviderAnthropic,
 		Models: []catwalk.Model{{ID: "claude-sonnet-4-6"}},
 	}})
@@ -59,7 +60,7 @@ func TestSupplementalCatalogModelIsPricedWithoutPredecessor(t *testing.T) {
 
 func TestSupplementalCatalogDoesNotOverrideExistingID(t *testing.T) {
 	existing := catwalk.Model{ID: "claude-haiku-5-5", Name: "Catwalk's model", ContextWindow: 12345, CostPer1MIn: 2}
-	providers := mergeSupplementalCatalogModels([]catwalk.Provider{{
+	providers := catalogsrc.MergeSupplementalCatalogModels([]catwalk.Provider{{
 		ID:     catwalk.InferenceProviderAnthropic,
 		Models: []catwalk.Model{existing},
 	}})

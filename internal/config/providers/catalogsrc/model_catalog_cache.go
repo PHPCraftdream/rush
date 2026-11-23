@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"context"
@@ -13,15 +13,16 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 )
 
 const modelCatalogTTL = 7 * 24 * time.Hour
 
-type cachedModelCatalog struct {
+type CachedModelCatalog struct {
 	Fingerprint string          `json:"fingerprint"`
 	FetchedAt   time.Time       `json:"fetched_at"`
 	Models      []catwalk.Model `json:"models"`
@@ -29,11 +30,11 @@ type cachedModelCatalog struct {
 
 var cachedModelCatalogProviders = [...]string{"openai-codex", "stepfun", "zai", "anthropic", "openai"}
 
-func modelCatalogPath(provider string) string {
-	return cachePathFor("model-catalog-" + provider)
+func ModelCatalogPath(provider string) string {
+	return datadir.CachePathFor("model-catalog-" + provider)
 }
 
-func modelCatalogFingerprint(provider, endpoint, identity string) string {
+func ModelCatalogFingerprint(provider, endpoint, identity string) string {
 	value := sha256.Sum256([]byte(provider + "\x00" + endpoint + "\x00" + identity))
 	return hex.EncodeToString(value[:])
 }
@@ -51,21 +52,21 @@ func visibleCatalogModels(provider string, models []catwalk.Model) []catwalk.Mod
 	return filtered
 }
 
-func readModelCatalog(path, fingerprint string) (cachedModelCatalog, bool) {
+func readModelCatalog(path, fingerprint string) (CachedModelCatalog, bool) {
 	data, err := slots.ReadCacheDocument(path)
 	if err != nil {
-		return cachedModelCatalog{}, false
+		return CachedModelCatalog{}, false
 	}
-	var entry cachedModelCatalog
+	var entry CachedModelCatalog
 	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != fingerprint || len(entry.Models) == 0 {
-		return cachedModelCatalog{}, false
+		return CachedModelCatalog{}, false
 	}
 	return entry, true
 }
 
-func cachedProviderModels(ctx context.Context, provider, endpoint, identity string, fetch func(context.Context) ([]catwalk.Model, error)) ([]catwalk.Model, error) {
-	path := modelCatalogPath(provider)
-	fingerprint := modelCatalogFingerprint(provider, endpoint, identity)
+func CachedProviderModels(ctx context.Context, provider, endpoint, identity string, fetch func(context.Context) ([]catwalk.Model, error)) ([]catwalk.Model, error) {
+	path := ModelCatalogPath(provider)
+	fingerprint := ModelCatalogFingerprint(provider, endpoint, identity)
 	entry, exists := readModelCatalog(path, fingerprint)
 	age := time.Since(entry.FetchedAt)
 	if exists && age >= 0 && age < modelCatalogTTL {
@@ -81,7 +82,7 @@ func cachedProviderModels(ctx context.Context, provider, endpoint, identity stri
 	if err != nil {
 		return nil, err
 	}
-	data, err := json.Marshal(cachedModelCatalog{Fingerprint: fingerprint, FetchedAt: time.Now(), Models: models})
+	data, err := json.Marshal(CachedModelCatalog{Fingerprint: fingerprint, FetchedAt: time.Now(), Models: models})
 	if err == nil {
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
@@ -117,7 +118,7 @@ func ClearModelCatalogCache(provider string) error {
 }
 
 func clearAllConfirmedModels() error {
-	paths, err := filepath.Glob(cachePathFor("confirmed-models-*"))
+	paths, err := filepath.Glob(datadir.CachePathFor("confirmed-models-*"))
 	if err != nil {
 		return err
 	}
@@ -147,7 +148,7 @@ func clearConfirmedModels(provider string) error {
 func clearModelCatalog(provider string) error {
 	// Both generations must go: leaving one behind would let the next
 	// process resurrect the cleared catalog.
-	for _, path := range []string{modelCatalogPath(provider), docread.KtavSiblingOf(modelCatalogPath(provider))} {
+	for _, path := range []string{ModelCatalogPath(provider), docread.KtavSiblingOf(ModelCatalogPath(provider))} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("clear %s model catalog: %w", provider, err)
 		}

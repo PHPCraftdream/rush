@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	wirePkg "github.com/PHPCraftdream/rush/internal/serve/server/wire"
 	"github.com/stretchr/testify/require"
 )

@@ -1,4 +1,4 @@
-package config
+package provresolve
 
 import (
 	"cmp"
@@ -8,9 +8,10 @@ import (
 	"strings"
 
 	"charm.land/catwalk/pkg/catwalk"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 )
 
-func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smartModel SelectedModel, fastModel SelectedModel, err error) {
+func DefaultModelSelection(cfg *cfgmodel.Config, knownProviders []catwalk.Provider) (smartModel cfgmodel.SelectedModel, fastModel cfgmodel.SelectedModel, err error) {
 	if len(knownProviders) == 0 && cfg.Providers.Len() == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
 		return smartModel, fastModel, err
@@ -37,7 +38,7 @@ func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smar
 			}
 			defaultSmartModel = &providerConfig.Models[0]
 		}
-		smartModel = SelectedModel{
+		smartModel = cfgmodel.SelectedModel{
 			Provider:        string(p.ID),
 			Model:           defaultSmartModel.ID,
 			MaxTokens:       defaultSmartModel.DefaultMaxTokens,
@@ -55,7 +56,7 @@ func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smar
 			}
 			defaultFastModel = &providerConfig.Models[0]
 		}
-		fastModel = SelectedModel{
+		fastModel = cfgmodel.SelectedModel{
 			Provider:        string(p.ID),
 			Model:           defaultFastModel.ID,
 			MaxTokens:       defaultFastModel.DefaultMaxTokens,
@@ -65,7 +66,7 @@ func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smar
 	}
 
 	enabledProviders := cfg.EnabledProviders()
-	slices.SortFunc(enabledProviders, func(a, b ProviderConfig) int {
+	slices.SortFunc(enabledProviders, func(a, b cfgmodel.ProviderConfig) int {
 		return strings.Compare(a.ID, b.ID)
 	})
 
@@ -93,13 +94,13 @@ func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smar
 		return smartModel, fastModel, err
 	}
 	defaultSmartModel := cfg.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	smartModel = SelectedModel{
+	smartModel = cfgmodel.SelectedModel{
 		Provider:  providerConfig.ID,
 		Model:     defaultSmartModel.ID,
 		MaxTokens: defaultSmartModel.DefaultMaxTokens,
 	}
 	defaultFastModel := cfg.GetModel(providerConfig.ID, providerConfig.Models[0].ID)
-	fastModel = SelectedModel{
+	fastModel = cfgmodel.SelectedModel{
 		Provider:  providerConfig.ID,
 		Model:     defaultFastModel.ID,
 		MaxTokens: defaultFastModel.DefaultMaxTokens,
@@ -107,7 +108,7 @@ func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smar
 	return smartModel, fastModel, err
 }
 
-// unverifiedPassthroughModel returns minimal stand-in metadata for a model
+// UnverifiedPassthroughModel returns minimal stand-in metadata for a model
 // that isn't in its provider's cached catalog but whose provider IS a real,
 // enabled entry in this config — or nil when the provider is unknown,
 // disabled, or the selection is missing a field, any of which still
@@ -140,7 +141,7 @@ func defaultModelSelection(cfg *Config, knownProviders []catwalk.Provider) (smar
 // with whatever model defaultModelSelection happened to pick for a
 // DIFFERENT provider, silently keeping a nonsensical combination alive
 // instead of self-healing to a working default the way it used to.
-func unverifiedPassthroughModel(c *Config, sel SelectedModel) *catwalk.Model {
+func UnverifiedPassthroughModel(c *cfgmodel.Config, sel cfgmodel.SelectedModel) *catwalk.Model {
 	if sel.Provider == "" || sel.Model == "" {
 		return nil
 	}
@@ -156,14 +157,14 @@ func unverifiedPassthroughModel(c *Config, sel SelectedModel) *catwalk.Model {
 // ConfigureSelectedModels computes the effective smart/fast model
 // selection for cfg and writes the result back into cfg.Models. An
 // unresolvable selection falls back to the default in memory only.
-func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) error {
-	defaultSmart, defaultFast, err := defaultModelSelection(cfg, knownProviders)
+func ConfigureSelectedModels(cfg *cfgmodel.Config, knownProviders []catwalk.Provider) error {
+	defaultSmart, defaultFast, err := DefaultModelSelection(cfg, knownProviders)
 	if err != nil {
 		return fmt.Errorf("failed to select default models: %w", err)
 	}
 	smart, fast := defaultSmart, defaultFast
 
-	smartModelSelected, smartModelConfigured := cfg.Models[SelectedModelTypeSmart]
+	smartModelSelected, smartModelConfigured := cfg.Models[cfgmodel.SelectedModelTypeSmart]
 	if smartModelConfigured {
 		if smartModelSelected.Model != "" {
 			smart.Model = smartModelSelected.Model
@@ -173,11 +174,11 @@ func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) err
 		}
 		model := cfg.GetModel(smart.Provider, smart.Model)
 		if model == nil && smartModelSelected.Provider != "" && smartModelSelected.Model != "" {
-			model = unverifiedPassthroughModel(cfg, smart)
+			model = UnverifiedPassthroughModel(cfg, smart)
 		}
 		if model == nil {
 			smart = defaultSmart
-			slog.Warn("Configured model not found in catalog; using default in memory only", "slot", SelectedModelTypeSmart, "selected", smartModelSelected.Provider+"/"+smartModelSelected.Model, "default", smart.Provider+"/"+smart.Model)
+			slog.Warn("Configured model not found in catalog; using default in memory only", "slot", cfgmodel.SelectedModelTypeSmart, "selected", smartModelSelected.Provider+"/"+smartModelSelected.Model, "default", smart.Provider+"/"+smart.Model)
 		} else {
 			if smartModelSelected.MaxTokens > 0 {
 				smart.MaxTokens = smartModelSelected.MaxTokens
@@ -204,7 +205,7 @@ func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) err
 			}
 		}
 	}
-	fastModelSelected, fastModelConfigured := cfg.Models[SelectedModelTypeFast]
+	fastModelSelected, fastModelConfigured := cfg.Models[cfgmodel.SelectedModelTypeFast]
 	if fastModelConfigured {
 		if fastModelSelected.Model != "" {
 			fast.Model = fastModelSelected.Model
@@ -215,11 +216,11 @@ func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) err
 
 		model := cfg.GetModel(fast.Provider, fast.Model)
 		if model == nil && fastModelSelected.Provider != "" && fastModelSelected.Model != "" {
-			model = unverifiedPassthroughModel(cfg, fast)
+			model = UnverifiedPassthroughModel(cfg, fast)
 		}
 		if model == nil {
 			fast = defaultFast
-			slog.Warn("Configured model not found in catalog; using default in memory only", "slot", SelectedModelTypeFast, "selected", fastModelSelected.Provider+"/"+fastModelSelected.Model, "default", fast.Provider+"/"+fast.Model)
+			slog.Warn("Configured model not found in catalog; using default in memory only", "slot", cfgmodel.SelectedModelTypeFast, "selected", fastModelSelected.Provider+"/"+fastModelSelected.Model, "default", fast.Provider+"/"+fast.Model)
 		} else {
 			if fastModelSelected.MaxTokens > 0 {
 				fast.MaxTokens = fastModelSelected.MaxTokens
@@ -265,7 +266,7 @@ func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) err
 		}
 	}
 
-	cfg.Models[SelectedModelTypeSmart] = smart
-	cfg.Models[SelectedModelTypeFast] = fast
+	cfg.Models[cfgmodel.SelectedModelTypeSmart] = smart
+	cfg.Models[cfgmodel.SelectedModelTypeFast] = fast
 	return nil
 }

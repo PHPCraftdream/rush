@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"context"
@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 )
 
-var modelVerificationTimeout = 5 * time.Second
+var ModelVerificationTimeout = 5 * time.Second
 
 // modelVerifyOnlineForTests lets command tests exercise live verification while
 // the provider catalog stays cache-only (a real catalog fetch must never run).
@@ -46,7 +49,7 @@ type ConfirmedModels struct {
 	Models      []catwalk.Model `json:"models"`
 }
 
-func VerifyProviderModel(ctx context.Context, cfg *Config, providerID, modelID string, resolvers ...VariableResolver) (VerifyResult, error) {
+func VerifyProviderModel(ctx context.Context, cfg *cfgmodel.Config, providerID, modelID string, resolvers ...envresolve.VariableResolver) (VerifyResult, error) {
 	if cfg == nil || cfg.Providers == nil {
 		return Unverifiable, errors.New("provider is not configured")
 	}
@@ -54,7 +57,7 @@ func VerifyProviderModel(ctx context.Context, cfg *Config, providerID, modelID s
 	if !ok {
 		return Unverifiable, errors.New("provider is not configured")
 	}
-	resolver := IdentityResolver()
+	resolver := envresolve.IdentityResolver()
 	if len(resolvers) > 0 && resolvers[0] != nil {
 		resolver = resolvers[0]
 	}
@@ -77,7 +80,7 @@ func VerifyProviderModel(ctx context.Context, cfg *Config, providerID, modelID s
 }
 
 // RefreshProviderModels fetches the entire model roster, using a fresh cached roster when possible.
-func RefreshProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, providerID string, resolver VariableResolver, modelID string) ([]catwalk.Model, string, error) {
+func RefreshProviderModels(ctx context.Context, cfg *cfgmodel.Config, pc cfgmodel.ProviderConfig, providerID string, resolver envresolve.VariableResolver, modelID string) ([]catwalk.Model, string, error) {
 	if modelVerifyOffline() {
 		return nil, "provider cache-only mode is enabled", nil
 	}
@@ -105,7 +108,7 @@ func RefreshProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, 
 }
 
 // FetchProviderModels fetches a provider's full roster without writing cache.
-func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, providerID string, resolver VariableResolver) ([]catwalk.Model, string, error) {
+func FetchProviderModels(ctx context.Context, cfg *cfgmodel.Config, pc cfgmodel.ProviderConfig, providerID string, resolver envresolve.VariableResolver) ([]catwalk.Model, string, error) {
 	if modelVerifyOffline() {
 		return nil, "provider cache-only mode is enabled", nil
 	}
@@ -116,7 +119,7 @@ func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, pr
 		return nil, "provider has no API key", nil
 	}
 	if resolver == nil {
-		resolver = IdentityResolver()
+		resolver = envresolve.IdentityResolver()
 	}
 	key, err := resolver.ResolveValue(pc.APIKey)
 	if err != nil {
@@ -130,7 +133,7 @@ func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, pr
 		return nil, "provider has no resolvable endpoint", nil
 	}
 	var fetch func(context.Context) ([]catwalk.Model, error)
-	if !supportsModelVerification(string(pc.Type)) {
+	if !SupportsModelVerification(string(pc.Type)) {
 		return nil, fmt.Sprintf("provider type %q does not support model verification", pc.Type), nil
 	}
 	providerClient, err := cfg.ProviderHTTPClient(pc)
@@ -149,7 +152,7 @@ func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, pr
 	default:
 		return nil, fmt.Sprintf("provider type %q does not support model verification", pc.Type), nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, modelVerificationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ModelVerificationTimeout)
 	defer cancel()
 	models, err := fetch(ctx)
 	if err != nil {
@@ -160,12 +163,14 @@ func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, pr
 
 // PersistConfirmedModels persists a successfully fetched full provider roster.
 func PersistConfirmedModels(providerID, endpoint, key string, models []catwalk.Model) error {
-	fingerprint := modelCatalogFingerprint(providerID, endpoint, key)
+	fingerprint := ModelCatalogFingerprint(providerID, endpoint, key)
 	entry := ConfirmedModels{Fingerprint: fingerprint, FetchedAt: time.Now(), Models: models}
 	return writeConfirmedModels(providerID, entry)
 }
 
-func confirmedModelsPath(provider string) string { return cachePathFor("confirmed-models-" + provider) }
+func confirmedModelsPath(provider string) string {
+	return datadir.CachePathFor("confirmed-models-" + provider)
+}
 
 func writeConfirmedModels(provider string, entry ConfirmedModels) error {
 	data, err := json.Marshal(entry)
@@ -179,22 +184,22 @@ func writeConfirmedModels(provider string, entry ConfirmedModels) error {
 	return slots.WriteCacheDocument(path, data, 0o600, cfgcommit.AtomicWriteFile)
 }
 
-func readConfirmedModels(provider, endpoint, identity string) []catwalk.Model {
+func ReadConfirmedModels(provider, endpoint, identity string) []catwalk.Model {
 	data, err := slots.ReadCacheDocument(confirmedModelsPath(provider))
 	if err != nil {
 		return nil
 	}
 	var entry ConfirmedModels
-	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != modelCatalogFingerprint(provider, endpoint, identity) {
+	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != ModelCatalogFingerprint(provider, endpoint, identity) {
 		return nil
 	}
 	return entry.Models
 }
 
 // CachedConfirmedModels reports the matching roster and whether it is fresh.
-func CachedConfirmedModels(pc ProviderConfig, providerID string, resolver VariableResolver) ([]catwalk.Model, bool) {
+func CachedConfirmedModels(pc cfgmodel.ProviderConfig, providerID string, resolver envresolve.VariableResolver) ([]catwalk.Model, bool) {
 	if resolver == nil {
-		resolver = IdentityResolver()
+		resolver = envresolve.IdentityResolver()
 	}
 	key, err := resolver.ResolveValue(pc.APIKey)
 	if err != nil || key == "" {
@@ -209,20 +214,20 @@ func CachedConfirmedModels(pc ProviderConfig, providerID string, resolver Variab
 		return nil, false
 	}
 	var entry ConfirmedModels
-	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != modelCatalogFingerprint(providerID, endpoint, key) {
+	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != ModelCatalogFingerprint(providerID, endpoint, key) {
 		return nil, false
 	}
 	age := time.Since(entry.FetchedAt)
 	return entry.Models, age >= 0 && age < modelCatalogTTL
 }
 
-func readFreshConfirmedModels(provider, endpoint, identity string) []catwalk.Model {
+func ReadFreshConfirmedModels(provider, endpoint, identity string) []catwalk.Model {
 	data, err := slots.ReadCacheDocument(confirmedModelsPath(provider))
 	if err != nil {
 		return nil
 	}
 	var entry ConfirmedModels
-	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != modelCatalogFingerprint(provider, endpoint, identity) {
+	if json.Unmarshal(data, &entry) != nil || entry.Fingerprint != ModelCatalogFingerprint(provider, endpoint, identity) {
 		return nil
 	}
 	age := time.Since(entry.FetchedAt)
@@ -240,12 +245,12 @@ func confirmedModelIDs(models []catwalk.Model) map[string]struct{} {
 	return ids
 }
 
-func mergeConfirmedCatalogModels(providers []catwalk.Provider, cfg *Config, resolver VariableResolver) []catwalk.Provider {
+func MergeConfirmedCatalogModels(providers []catwalk.Provider, cfg *cfgmodel.Config, resolver envresolve.VariableResolver) []catwalk.Provider {
 	if cfg == nil || cfg.Providers == nil {
 		return providers
 	}
 	if resolver == nil {
-		resolver = IdentityResolver()
+		resolver = envresolve.IdentityResolver()
 	}
 	for i := range providers {
 		id := string(providers[i].ID)
@@ -254,7 +259,7 @@ func mergeConfirmedCatalogModels(providers []catwalk.Provider, cfg *Config, reso
 		if ok && pc.Type != "" {
 			providerType = string(pc.Type)
 		}
-		if ok && !supportsModelVerification(providerType) {
+		if ok && !SupportsModelVerification(providerType) {
 			continue
 		}
 		keyValue := providers[i].APIKey
@@ -272,13 +277,13 @@ func mergeConfirmedCatalogModels(providers []catwalk.Provider, cfg *Config, reso
 		if keyErr != nil || endpointErr != nil || key == "" || endpoint == "" {
 			continue
 		}
-		providers[i].Models = mergeConfirmedModels(providers[i].Models,
-			readFreshConfirmedModels(id, strings.TrimSpace(endpoint), key))
+		providers[i].Models = MergeConfirmedModels(providers[i].Models,
+			ReadFreshConfirmedModels(id, strings.TrimSpace(endpoint), key))
 	}
 	return providers
 }
 
-func mergeConfirmedModels(catalog, confirmed []catwalk.Model) []catwalk.Model {
+func MergeConfirmedModels(catalog, confirmed []catwalk.Model) []catwalk.Model {
 	seen := confirmedModelIDs(catalog)
 	for _, model := range confirmed {
 		if _, exists := seen[model.ID]; exists {
@@ -290,7 +295,7 @@ func mergeConfirmedModels(catalog, confirmed []catwalk.Model) []catwalk.Model {
 	return catalog
 }
 
-func supportsModelVerification(providerType string) bool {
+func SupportsModelVerification(providerType string) bool {
 	switch providerType {
 	case "anthropic", "openai", "openai-compatible", "openai_compat", "openai-compat":
 		return true

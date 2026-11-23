@@ -7,7 +7,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/invopop/jsonschema"
 	"github.com/spf13/cobra"

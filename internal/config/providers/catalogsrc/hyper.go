@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	xetag "github.com/charmbracelet/x/etag"
 )
 
@@ -33,7 +33,7 @@ type hyperSync struct {
 
 func (s *hyperSync) Init(client hyperClient, path string, autoupdate bool) {
 	s.client = client
-	s.cache = newCache[catwalk.Provider](path)
+	s.cache = NewCache[catwalk.Provider](path)
 	s.autoupdate = autoupdate
 	s.init.Store(true)
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/clipspec"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider/cliptool"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )

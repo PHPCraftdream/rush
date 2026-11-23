@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -45,9 +46,9 @@ func TestStepFunLiveRosterReplacesRetiredSeedAndCachesEfforts(t *testing.T) {
 
 func TestZAILiveRosterAddsModelsWithoutDiscardingKnownModels(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	originalDocs := discoverZAIEffortDocs
-	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, fmt.Errorf("docs unavailable") }
-	t.Cleanup(func() { discoverZAIEffortDocs = originalDocs })
+	originalDocs := provresolve.DiscoverZAIEffortDocs
+	provresolve.DiscoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, fmt.Errorf("docs unavailable") }
+	t.Cleanup(func() { provresolve.DiscoverZAIEffortDocs = originalDocs })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"glm-new"},{"id":"glm-5.3","reasoning_effort_support_list":["low","high","max"]}]}`))
 	}))
@@ -74,11 +75,11 @@ func TestZAILiveRosterAddsModelsWithoutDiscardingKnownModels(t *testing.T) {
 
 func TestZAIDocumentedEffortsApplyWhenModelsAPIHasNoCapabilities(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	originalDocs := discoverZAIEffortDocs
-	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) {
+	originalDocs := provresolve.DiscoverZAIEffortDocs
+	provresolve.DiscoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) {
 		return []catwalk.Model{{ID: "glm-5.3", ReasoningLevels: []string{"low", "high", "max"}}}, nil
 	}
-	t.Cleanup(func() { discoverZAIEffortDocs = originalDocs })
+	t.Cleanup(func() { provresolve.DiscoverZAIEffortDocs = originalDocs })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.3"},{"id":"glm-future"}]}`))
 	}))

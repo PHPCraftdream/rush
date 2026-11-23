@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -28,9 +29,9 @@ func TestConfigureProviders_UserSetsOnlyOneFieldTheOtherStaysUnknown(t *testing.
 	}))
 	defer zaiModels.Close()
 
-	origDocs := discoverZAIEffortDocs
-	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
-	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
+	origDocs := provresolve.DiscoverZAIEffortDocs
+	provresolve.DiscoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
+	t.Cleanup(func() { provresolve.DiscoverZAIEffortDocs = origDocs })
 	cfg := &Config{}
 	setDefaults(cfg, t.TempDir(), "")
 	cfg.Providers.Set("zai", ProviderConfig{

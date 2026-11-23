@@ -1,6 +1,6 @@
 // Ktav-capable cache layer tests: provider/model-catalog local cache files
 // follow the two-generation Ktav naming, gated by ktavAutoMigrate.
-package config
+package catalogsrc
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +42,7 @@ func isolateCacheTestEnv(t *testing.T) string {
 // setKtavAutoMigrateForCacheTest flips the gate and restores it on cleanup.
 func setKtavAutoMigrateForCacheTest(t *testing.T, on bool) {
 	t.Helper()
-	restore := SetKtavAutoMigrateForTest(on)
+	restore := setKtavAutoMigrateForTest(on)
 	t.Cleanup(restore)
 }
 
@@ -101,7 +102,7 @@ func TestCacheKtavReadPrecedence(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.MkdirAll(dir, 0o755))
 			tt.setup(t, dir)
-			providers, etagValue, err := newCache[[]catwalk.Provider](
+			providers, etagValue, err := NewCache[[]catwalk.Provider](
 				filepath.Join(dir, "providers.json")).Get()
 			if tt.invalid {
 				require.Error(t, err)
@@ -120,7 +121,7 @@ func TestCacheKtavReadPrecedence(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(
 			filepath.Join(dir, "providers.json.bak"), []byte(ktavCacheFixtureJSON), 0o644))
-		_, _, err := newCache[[]catwalk.Provider](
+		_, _, err := NewCache[[]catwalk.Provider](
 			filepath.Join(dir, "providers.json")).Get()
 		require.Error(t, err)
 		require.ErrorIs(t, err, fs.ErrNotExist)
@@ -137,7 +138,7 @@ func TestCacheStoreFormatFollowsGate(t *testing.T) {
 		setKtavAutoMigrateForCacheTest(t, false)
 		dir := t.TempDir()
 		path := filepath.Join(dir, "providers.json")
-		require.NoError(t, newCache[[]catwalk.Provider](path).Store(fixture))
+		require.NoError(t, NewCache[[]catwalk.Provider](path).Store(fixture))
 		_, err := os.Stat(filepath.Join(dir, "providers.ktav"))
 		require.ErrorIs(t, err, os.ErrNotExist)
 		written, err := os.ReadFile(path)
@@ -149,7 +150,7 @@ func TestCacheStoreFormatFollowsGate(t *testing.T) {
 		setKtavAutoMigrateForCacheTest(t, true)
 		dir := t.TempDir()
 		path := filepath.Join(dir, "providers.json")
-		require.NoError(t, newCache[[]catwalk.Provider](path).Store(fixture))
+		require.NoError(t, NewCache[[]catwalk.Provider](path).Store(fixture))
 		_, err := os.Stat(path)
 		require.ErrorIs(t, err, os.ErrNotExist)
 		raw, err := os.ReadFile(filepath.Join(dir, "providers.ktav"))
@@ -169,7 +170,7 @@ func TestCacheKtavTypedDecodeMatchesJSON(t *testing.T) {
 	jsonDir := t.TempDir()
 	jsonPath := filepath.Join(jsonDir, "providers.json")
 	require.NoError(t, os.WriteFile(jsonPath, []byte(ktavCacheFixtureJSON), 0o644))
-	fromJSON, _, err := newCache[[]catwalk.Provider](jsonPath).Get()
+	fromJSON, _, err := NewCache[[]catwalk.Provider](jsonPath).Get()
 	require.NoError(t, err)
 
 	ktavDir := t.TempDir()
@@ -177,7 +178,7 @@ func TestCacheKtavTypedDecodeMatchesJSON(t *testing.T) {
 	ktav, err := ktavcodec.ConvertJSONToKtav([]byte(ktavCacheFixtureJSON))
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(ktavSiblingOf(ktavPath), ktav, 0o644))
-	fromKtav, _, err := newCache[[]catwalk.Provider](ktavPath).Get()
+	fromKtav, _, err := NewCache[[]catwalk.Provider](ktavPath).Get()
 	require.NoError(t, err)
 
 	require.Equal(t, want, fromJSON)
@@ -202,8 +203,8 @@ func TestModelCatalogKtavFreshnessUsesStoredTimestamp(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dataDir, 0o700))
 
 	original := time.Date(2026, 10, 1, 12, 0, 0, 123456789, time.UTC)
-	entry := cachedModelCatalog{
-		Fingerprint: modelCatalogFingerprint("stepfun", "https://api.stepfun.ai/v1", "acct"),
+	entry := CachedModelCatalog{
+		Fingerprint: ModelCatalogFingerprint("stepfun", "https://api.stepfun.ai/v1", "acct"),
 		FetchedAt:   original,
 		Models:      []catwalk.Model{{ID: "live-model"}},
 	}
@@ -217,12 +218,12 @@ func TestModelCatalogKtavFreshnessUsesStoredTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	jsonBytes, err := ktavcodec.ToJSON(tree)
 	require.NoError(t, err)
-	var decodedEntry cachedModelCatalog
+	var decodedEntry CachedModelCatalog
 	require.NoError(t, json.Unmarshal(jsonBytes, &decodedEntry))
 	require.True(t, original.Equal(decodedEntry.FetchedAt),
 		"FetchedAt must round-trip through Ktav unchanged")
 
-	ktavPath := ktavSiblingOf(modelCatalogPath("stepfun"))
+	ktavPath := ktavSiblingOf(ModelCatalogPath("stepfun"))
 	writeKtavEntry := func(fetchedAt time.Time) {
 		t.Helper()
 		entry.FetchedAt = fetchedAt
@@ -242,7 +243,7 @@ func TestModelCatalogKtavFreshnessUsesStoredTimestamp(t *testing.T) {
 
 	// A fresh Ktav catalog is served without a fetch.
 	writeKtavEntry(time.Now())
-	models, err := cachedProviderModels(
+	models, err := CachedProviderModels(
 		t.Context(), "stepfun", "https://api.stepfun.ai/v1", "acct", fetch)
 	require.NoError(t, err)
 	require.Equal(t, 0, calls, "a fresh Ktav catalog must be served without fetching")
@@ -252,16 +253,16 @@ func TestModelCatalogKtavFreshnessUsesStoredTimestamp(t *testing.T) {
 	// refetch rewrites the fresh JSON catalog, so drop it to keep the
 	// Ktav sibling authoritative for the next step.
 	writeKtavEntry(time.Now().Add(-8 * 24 * time.Hour))
-	_, err = cachedProviderModels(
+	_, err = CachedProviderModels(
 		t.Context(), "stepfun", "https://api.stepfun.ai/v1", "acct", fetch)
 	require.NoError(t, err)
 	require.Equal(t, 1, calls, "an expired Ktav catalog must be refetched")
-	require.NoError(t, os.Remove(modelCatalogPath("stepfun")))
+	require.NoError(t, os.Remove(ModelCatalogPath("stepfun")))
 
 	// Touching the stale Ktav file's mtime does not make it fresh.
 	now := time.Now()
 	require.NoError(t, os.Chtimes(ktavPath, now, now))
-	_, err = cachedProviderModels(
+	_, err = CachedProviderModels(
 		t.Context(), "stepfun", "https://api.stepfun.ai/v1", "acct", fetch)
 	require.NoError(t, err)
 	require.Equal(t, 2, calls, "mtime must never refresh a stale stored timestamp")
@@ -270,7 +271,7 @@ func TestModelCatalogKtavFreshnessUsesStoredTimestamp(t *testing.T) {
 func TestClearModelCatalogCacheRemovesBothGenerations(t *testing.T) {
 	isolateCacheTestEnv(t)
 	for _, id := range []string{"zai", "zai-docs", "stepfun"} {
-		path := modelCatalogPath(id)
+		path := ModelCatalogPath(id)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 		require.NoError(t, os.WriteFile(path, []byte(`{"test":true}`), 0o600))
 		require.NoError(t, os.WriteFile(
@@ -280,18 +281,18 @@ func TestClearModelCatalogCacheRemovesBothGenerations(t *testing.T) {
 
 	require.NoError(t, ClearModelCatalogCache("zai"))
 	for _, id := range []string{"zai", "zai-docs"} {
-		_, err := os.Stat(modelCatalogPath(id))
+		_, err := os.Stat(ModelCatalogPath(id))
 		require.ErrorIs(t, err, os.ErrNotExist)
-		_, err = os.Stat(ktavSiblingOf(modelCatalogPath(id)))
+		_, err = os.Stat(ktavSiblingOf(ModelCatalogPath(id)))
 		require.ErrorIs(t, err, os.ErrNotExist)
 	}
-	_, err := os.Stat(modelCatalogPath("stepfun"))
+	_, err := os.Stat(ModelCatalogPath("stepfun"))
 	require.NoError(t, err)
 
 	require.NoError(t, ClearModelCatalogCache("all"))
-	_, err = os.Stat(modelCatalogPath("stepfun"))
+	_, err = os.Stat(ModelCatalogPath("stepfun"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	_, err = os.Stat(ktavSiblingOf(modelCatalogPath("stepfun")))
+	_, err = os.Stat(ktavSiblingOf(ModelCatalogPath("stepfun")))
 	require.ErrorIs(t, err, os.ErrNotExist)
 
 	require.NoError(t, clearModelCatalog("stepfun"),
@@ -306,7 +307,7 @@ func TestUpdateProvidersAcceptsKtavFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(input, ktav, 0o644))
 
 	require.NoError(t, UpdateProviders(input))
-	providers, _, err := newCache[[]catwalk.Provider](cachePathFor("providers")).Get()
+	providers, _, err := NewCache[[]catwalk.Provider](datadir.CachePathFor("providers")).Get()
 	require.NoError(t, err)
 	require.Len(t, providers, 1)
 	require.Equal(t, "ktav-p", string(providers[0].ID))
@@ -321,7 +322,7 @@ func TestUpdateHyperAcceptsKtavFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(input, ktav, 0o644))
 
 	require.NoError(t, UpdateHyper(input))
-	provider, _, err := newCache[catwalk.Provider](cachePathFor("hyper")).Get()
+	provider, _, err := NewCache[catwalk.Provider](datadir.CachePathFor("hyper")).Get()
 	require.NoError(t, err)
 	require.Equal(t, "ktav-h", string(provider.ID))
 	require.Equal(t, "hm-1", provider.Models[0].ID)
@@ -378,12 +379,12 @@ func TestAgeUsesActiveGenerationMtime(t *testing.T) {
 	now := time.Now()
 	require.NoError(t, os.Chtimes(ktavPath, now, now))
 
-	age, err := newCache[[]catwalk.Provider](jsonPath).Age()
+	age, err := NewCache[[]catwalk.Provider](jsonPath).Age()
 	require.NoError(t, err)
 	require.Less(t, age, time.Hour, "active Ktav generation mtime must govern")
 
 	require.NoError(t, os.Remove(ktavPath))
-	age, err = newCache[[]catwalk.Provider](jsonPath).Age()
+	age, err = NewCache[[]catwalk.Provider](jsonPath).Age()
 	require.NoError(t, err)
 	require.Greater(t, age, 47*time.Hour, "must fall back to the legacy JSON mtime")
 }

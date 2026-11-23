@@ -11,7 +11,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2/tree"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	modelopts "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/opts"
 	modeluse "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/use"

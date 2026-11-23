@@ -18,6 +18,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -291,7 +292,7 @@ func (s *ConfigStore) buildAndPublishReload(ctx context.Context, expectedUncerta
 	// reloadMu (serialising it against other reload attempts) but NOT
 	// publishMu — a hung shell substitution here no longer blocks
 	// SetSkipPermissionRequests/SetProviderRuntimeConfig/other readers.
-	if err := configureProvidersWithScope(ctx, cfg, baseEnv, candidateResolver, providers, s.removeConfigFieldBestEffort, s.cliModels, s.discoveryProviders); err != nil {
+	if err := provresolve.ConfigureProvidersWithScope(ctx, cfg, baseEnv, candidateResolver, providers, s.removeConfigFieldBestEffort, s.cliModels, s.discoveryProviders); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 

@@ -370,7 +370,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.SessionIDContextKey, call.SessionID)
 	ctx = context.WithValue(ctx, cliprovider.ReasoningEffortContextKey, provauth.TurnSmartReasoningEffort(smartModel))
-	ctx = context.WithValue(ctx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(smartModel))
+	ctx = context.WithValue(ctx, cliprovider.ServiceTierContextKey, turnstep.TurnSmartServiceTier(smartModel))
 	// Heartbeat attribution: root run entry or inherited sub-agent root (design pt. 1/2).
 	hb := heartbeat.FromContext(ctx)
 	ctx = callbeat.WithHeartbeat(ctx, call.SessionID, heartbeat.PurposeTurn, callbeat.HbTurnRole(call, hb), callbeat.HbTurnSource(ctx, hb))

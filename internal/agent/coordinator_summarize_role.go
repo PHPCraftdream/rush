@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -94,7 +95,7 @@ func (s *standaloneSummarizer) SummarizeWithRole(ctx context.Context, sessionID 
 	if providerCfg.ID == "openai-codex" {
 		summaryCtx = context.WithValue(summaryCtx, cliprovider.SessionIDContextKey, sessionID)
 		summaryCtx = context.WithValue(summaryCtx, cliprovider.ReasoningEffortContextKey, provauth.TurnSmartReasoningEffort(model))
-		summaryCtx = context.WithValue(summaryCtx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(model))
+		summaryCtx = context.WithValue(summaryCtx, cliprovider.ServiceTierContextKey, turnstep.TurnSmartServiceTier(model))
 	}
 	return agent.(*sessionAgent).SummarizeNow(summaryCtx, sessionID, snapshot)
 }

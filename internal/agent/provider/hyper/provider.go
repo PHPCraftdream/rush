@@ -21,7 +21,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/object"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 )
 
 // Name is the default name of this meta provider.

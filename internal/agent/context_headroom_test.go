@@ -10,7 +10,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/stretchr/testify/require"
 )
 

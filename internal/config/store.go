@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/store/mcpstore"
 	"github.com/PHPCraftdream/rush/internal/config/store/oauthcred"
 	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
