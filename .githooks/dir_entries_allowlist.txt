@@ -20,7 +20,9 @@
 # 208 -> 207: lane L2 (DM0b mailbox) moved queued_call_resolution.go whole
 # into internal/agent/runtime/exec/mailbox; the other seven mailbox files stay
 # because their state machine is read white-box by root tests.
-internal/agent 207
+# 207 -> 206: lane L4 (DM0b turnstep) moved turn_effort.go (TurnSmartServiceTier) into
+# internal/agent/runtime/exec/turnstep.
+internal/agent 206
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81
