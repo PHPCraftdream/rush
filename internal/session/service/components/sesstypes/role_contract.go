@@ -1,4 +1,4 @@
-package session
+package sesstypes
 
 import (
 	"bytes"
@@ -233,7 +233,7 @@ func validateRoleToolGroup(tools []string) error {
 	return nil
 }
 
-func decodeRoleContract(raw string) (*RoleContract, error) {
+func DecodeRoleContract(raw string) (*RoleContract, error) {
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var contract RoleContract

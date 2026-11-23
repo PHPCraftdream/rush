@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sesstypes"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -55,11 +56,11 @@ func FinalizationSessionEnded(s Session) bool {
 // ok=false means no deliverable completion yet, error is a read failure.
 type FinalizationBatchResultRead func(
 	ctx context.Context, owner, root string,
-) (BatchDeliveryEnvelope, bool, error)
+) (sesstypes.BatchDeliveryEnvelope, bool, error)
 
 // FinalizationGatedBatchResult filters ONE batch-result read through the
 // owner's terminal gate: while the owner holds an active finalization record
-// the completion is withheld as (BatchDeliveryEnvelope{}, false, nil), which
+// the completion is withheld as (sesstypes.BatchDeliveryEnvelope{}, false, nil), which
 // the batch consumers' durable poll (LoadDone/AwaitDone) already treats as
 // "keep waiting", so no consumer can observe a batch result before the
 // parent's answer is sealed. A nil gate is the inert wiring: the read result
@@ -70,20 +71,20 @@ func FinalizationGatedBatchResult(
 	gate FinalizationTerminalGate,
 	owner, root string,
 	read FinalizationBatchResultRead,
-) (BatchDeliveryEnvelope, bool, error) {
+) (sesstypes.BatchDeliveryEnvelope, bool, error) {
 	if read == nil {
-		return BatchDeliveryEnvelope{}, false, ErrFinalizationBatchResultReadMissing
+		return sesstypes.BatchDeliveryEnvelope{}, false, ErrFinalizationBatchResultReadMissing
 	}
 	// Inert passthrough: a nil gate must not touch the context or the gate.
 	if gate == nil {
 		return read(ctx, owner, root)
 	}
 	if err := ctx.Err(); err != nil {
-		return BatchDeliveryEnvelope{}, false, err
+		return sesstypes.BatchDeliveryEnvelope{}, false, err
 	}
 	// Fail-closed withholding: an unreadable gate store also refuses here.
 	if !gate.AllowTerminal(ctx, owner) {
-		return BatchDeliveryEnvelope{}, false, nil
+		return sesstypes.BatchDeliveryEnvelope{}, false, nil
 	}
 	return read(ctx, owner, root)
 }
@@ -98,18 +99,18 @@ func FinalizationAwaitGatedBatchResult(
 	gate FinalizationTerminalGate,
 	owner, root string,
 	read FinalizationBatchResultRead,
-) (BatchDeliveryEnvelope, bool, error) {
+) (sesstypes.BatchDeliveryEnvelope, bool, error) {
 	if read == nil {
-		return BatchDeliveryEnvelope{}, false, ErrFinalizationBatchResultReadMissing
+		return sesstypes.BatchDeliveryEnvelope{}, false, ErrFinalizationBatchResultReadMissing
 	}
 	if gate == nil {
 		gate = DefaultFinalizationTerminalGate()
 	}
 	if err := gate.AwaitSealed(ctx, owner); err != nil {
-		return BatchDeliveryEnvelope{}, false, err
+		return sesstypes.BatchDeliveryEnvelope{}, false, err
 	}
 	if err := ctx.Err(); err != nil {
-		return BatchDeliveryEnvelope{}, false, err
+		return sesstypes.BatchDeliveryEnvelope{}, false, err
 	}
 	return read(ctx, owner, root)
 }
