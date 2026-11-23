@@ -25,7 +25,7 @@ func (a *sessionAgent) ownWorkBatch(ctx context.Context, sessionID string) bool 
 		return false
 	}
 	coord := a.coord
-	if !batchOwnWorkFactsInstalled(coord) {
+	if !coord.batchFactsInstalled() {
 		// No batch runtime installed for this coordinator (cli_active_work.go's
 		// unbound rule): the guard never answers from batch rows and the
 		// caller treats the session as idle -- an unbound coordinator has no
@@ -56,18 +56,4 @@ func (a *sessionAgent) ownWorkBatch(ctx context.Context, sessionID string) bool 
 		return true
 	}
 	return false
-}
-
-// batchOwnWorkFactsInstalled is the guard's "batch facts installed" predicate:
-// true only when a concrete (node-backed) batch cutover facts source is bound
-// for coord. It is the same rule CLIActiveWork uses (cli_active_work.go) — an
-// unbound coordinator keeps the conservative idle answer and never hides live
-// work behind an unbound helper.
-func batchOwnWorkFactsInstalled(coord *coordinator) bool {
-	if coord == nil {
-		return false
-	}
-	facts := coordinatorBatchCutoverFacts(coord)
-	_, unbound := facts.(unknownBatchCutoverFacts)
-	return !unbound
 }

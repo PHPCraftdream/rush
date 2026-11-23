@@ -114,10 +114,3 @@ func rootBindEligible(a *sessionAgent, call SessionAgentCall) bool {
 	}
 	return true
 }
-
-// passThroughExecution adapts the wiring driver start to the entry
-// signature for calls that skip the root bind.
-func passThroughExecution(ctx context.Context, w *finalizationWiring, call SessionAgentCall) (context.Context, SessionAgentCall, func(), error) {
-	execCtx, unregister, err := w.startExecution(ctx, call)
-	return execCtx, call, unregister, err
-}

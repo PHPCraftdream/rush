@@ -36,11 +36,11 @@ type batchScopeRecoverySource struct {
 	probe session.BatchHostProbe
 }
 
-// batchScopeRecoverySourceOf extracts the recovery source from c's bound
+// scopeRecoverySource extracts the recovery source from c's bound
 // facts. Only the node-backed source (nodeBatchCutoverFacts) carries a
 // store; the live reader's own probe and data dir are reused so the
 // recovery probe is exactly the predicate the scope read used.
-func batchScopeRecoverySourceOf(c *coordinator) batchScopeRecoverySource {
+func (c *coordinator) scopeRecoverySource() batchScopeRecoverySource {
 	facts := coordinatorBatchCutoverFacts(c)
 	nf, ok := facts.(nodeBatchCutoverFacts)
 	if !ok || nf.store == nil || nf.live == nil || nf.live.DataDir == "" || nf.live.ProbeHost == nil {
@@ -98,5 +98,5 @@ func (s batchScopeRecoverySource) recoverDeadCandidates(ctx context.Context, own
 // runningWorkOpen, CLIActiveWork's batch branch, and nothing else.
 // Ordinary output/status/live-work rendering must not trigger recovery.
 func recoverBatchScopeDeadCandidates(ctx context.Context, c *coordinator, owner string) {
-	batchScopeRecoverySourceOf(c).recoverDeadCandidates(ctx, owner)
+	c.scopeRecoverySource().recoverDeadCandidates(ctx, owner)
 }

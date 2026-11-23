@@ -343,6 +343,10 @@ type SessionAgent interface {
 	SystemPrompt() string
 	Cancel(sessionID string)
 	CancelAll() (stillBusy bool)
+	// ShuttingDown reports whether CancelAll has already latched this
+	// agent's one-way shutdown latch. It is a plain read of the agent's own
+	// latch; an implementation that has no latch reports false.
+	ShuttingDown() bool
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
 	QueuedPrompts(sessionID string) int
