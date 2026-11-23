@@ -44,7 +44,7 @@ func TestRunLoop_CancelBeforeTheReminderTurnExitsCanceled(t *testing.T) {
 
 	var inc *runIncompleteError
 	require.ErrorAs(t, err, &inc)
-	require.Equal(t, "canceled", inc.reason)
+	require.Equal(t, "canceled", inc.Reason)
 	require.NotNil(t, res)
 	require.Equal(t, "canceled", res.ExitReason)
 	require.EqualValues(t, 1, h.requests.Load(), "the first turn only: the reminder never reaches the provider")

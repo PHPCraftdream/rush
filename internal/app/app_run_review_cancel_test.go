@@ -45,7 +45,7 @@ func TestRunLoop_ReviewerTurnCancellationDuringTurnExitsCanceled(t *testing.T) {
 	// success that keeps the primary answer.
 	var inc *runIncompleteError
 	require.ErrorAs(t, err, &inc)
-	require.Equal(t, "canceled", inc.reason)
+	require.Equal(t, "canceled", inc.Reason)
 	require.NotNil(t, res)
 	require.Equal(t, "canceled", res.ExitReason)
 	canceled, cancelErr := h.app.Sessions.IsCancelRequested(context.Background(), h.sessionID)

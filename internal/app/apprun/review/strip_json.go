@@ -1,4 +1,4 @@
-package app
+package review
 
 import (
 	"encoding/json"
@@ -54,7 +54,7 @@ func findAllBalancedJSONValues(text string) []string {
 //     `[json1, json2, ...]` (preserving each value as-is). notes
 //     includes a one-line marker "extracted N JSON values, M chars of
 //     prose discarded" for operator forensics.
-func stripAndExtractJSON(text string) (cleaned, notes string, err error) {
+func StripAndExtractJSON(text string) (cleaned, notes string, err error) {
 	// Fork patch: run fence-strip first (same as before).
 	inner := text
 	fenceOpenEnd, fenceCloseStart := -1, -1
@@ -166,8 +166,8 @@ func buildStripNotes(original string, fenceOpenEnd, fenceCloseStart int, cleaned
 // stripAndValidateJSON is kept for backward compatibility but is no
 // longer the primary runtime entry point — stripAndExtractJSON is.
 // Fork patch: retained because it is referenced in comments and tests.
-func stripAndValidateJSON(text string) (cleaned, notes string, err error) {
-	stripped, notes := stripJSONEnvelope(text)
+func StripAndValidateJSON(text string) (cleaned, notes string, err error) {
+	stripped, notes := StripJSONEnvelope(text)
 	if json.Valid([]byte(stripped)) {
 		return stripped, notes, nil
 	}
@@ -211,7 +211,7 @@ func jsonSyntaxErrorOf(s string) string {
 // reply via final_text. We never panic and we never lose data: the
 // pre-strip text is always reconstructable as notes-prefix + cleaned +
 // notes-suffix when notes != "".
-func stripJSONEnvelope(text string) (cleaned, notes string) {
+func StripJSONEnvelope(text string) (cleaned, notes string) {
 	original := text
 	// Track fence boundaries separately so when the model wrapped the
 	// JSON in ```json … ``` with nothing else, the fence markers

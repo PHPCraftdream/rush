@@ -27,7 +27,11 @@ internal/agent/tools/mcp 19
 # The count falls with the package split (stage D2).
 # 63 -> 64: +1 internal/app/app_bridge.go, the temporary bridge of the 0b-5 lane 0b-a (RunEnv, LoopHost, batch
 # params); lane D2-4 deletes it (deliberate, temporary; only down from here).
-internal/app 52
+# 52 -> 46: lane D2-3 bottom plane moves 7 non-test Go files out to
+# internal/app/apprun/review (app_run_result, app_run_errors, strip_json,
+# app_run_turn, app_run_reviewer_stall/prompt/timeout) and adds the code
+# subdirectory internal/app/apprun: -7 files +1 dir.
+internal/app 46
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).

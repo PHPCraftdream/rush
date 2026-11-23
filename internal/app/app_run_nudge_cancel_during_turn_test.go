@@ -53,7 +53,7 @@ func TestRunLoop_TodoNudgeCancellationDuringTurnExitsCanceled(t *testing.T) {
 	// 4. stopError() detects cancel_requested and returns runIncompleteError("canceled")
 	var inc *runIncompleteError
 	require.ErrorAs(t, err, &inc)
-	require.Equal(t, "canceled", inc.reason)
+	require.Equal(t, "canceled", inc.Reason)
 	require.NotNil(t, res)
 	require.Equal(t, "canceled", res.ExitReason)
 	canceled, cancelErr := h.app.Sessions.IsCancelRequested(context.Background(), h.sessionID)

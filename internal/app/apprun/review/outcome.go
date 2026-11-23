@@ -1,10 +1,12 @@
-package app
+package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -15,10 +17,10 @@ import (
 // agentTurnResponse carries the outcome of one asynchronous
 // AgentCoordinator.Run call back to RunNonInteractive's event loop, via the
 // done channel below runAgentTurnRecovered writes into.
-type agentTurnResponse struct {
-	result *fantasy.AgentResult
-	err    error
-	queued bool
+type AgentTurnResponse struct {
+	Result *fantasy.AgentResult
+	Err    error
+	Queued bool
 }
 
 // runAgentTurnRecovered runs runFn (normally app.AgentCoordinator.Run) on the
@@ -40,11 +42,11 @@ type agentTurnResponse struct {
 // handlers in internal/server/hub.go (runRecovered / Client.dispatch): log
 // via slog.Error with a full stack trace, then report a normal error result
 // instead of letting the panic propagate.
-func runAgentTurnRecovered(
+func RunAgentTurnRecovered(
 	ctx context.Context,
 	sessionID, prompt string,
 	runFn func(ctx context.Context, sessionID, prompt string) (*fantasy.AgentResult, error),
-	done chan<- agentTurnResponse,
+	done chan<- AgentTurnResponse,
 ) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -52,16 +54,16 @@ func runAgentTurnRecovered(
 				"session_id", sessionID,
 				"panic", r,
 				"stack", string(debug.Stack()))
-			done <- agentTurnResponse{
-				err: fmt.Errorf("agent turn panicked (recovered, see rush.log for stack trace): %v", r),
+			done <- AgentTurnResponse{
+				Err: fmt.Errorf("agent turn panicked (recovered, see rush.log for stack trace): %v", r),
 			}
 		}
 	}()
 
 	result, err := runFn(ctx, sessionID, prompt)
 	if err != nil {
-		done <- agentTurnResponse{
-			err: fmt.Errorf("failed to start agent processing stream: %w", agent.LocalizeResetError(err)),
+		done <- AgentTurnResponse{
+			Err: fmt.Errorf("failed to start agent processing stream: %w", agent.LocalizeResetError(err)),
 		}
 		return
 	}
@@ -89,11 +91,11 @@ func runAgentTurnRecovered(
 		// review, R3 follow-up: CI's macOS runner hit the queueing
 		// window; a fast idle dev machine almost never does, which is
 		// why this went unnoticed until load-sensitive CI exposed it).
-		done <- agentTurnResponse{queued: true}
+		done <- AgentTurnResponse{Queued: true}
 		return
 	}
-	done <- agentTurnResponse{
-		result: result,
+	done <- AgentTurnResponse{
+		Result: result,
 	}
 }
 
@@ -122,7 +124,7 @@ func runAgentTurnRecovered(
 // (app_run.go's isCanceled gate below requires runErr != nil before
 // DrainSessionNow is ever invoked), so this is traced, not live-tested, the
 // same way task #607/commit 732155ad already recorded for this exact path.
-func drainOutcomeError(sessID string, result runq.DrainResult, drainErr, originalErr error) error {
+func DrainOutcomeError(sessID string, result runq.DrainResult, drainErr, originalErr error) error {
 	switch result {
 	case runq.DrainComplete:
 		// DrainComplete is the ONLY DrainResult DrainSessionNow ever pairs
@@ -197,6 +199,154 @@ func drainOutcomeError(sessID string, result runq.DrainResult, drainErr, origina
 // consuming-package interface on purpose, and type-asserted rather than
 // added to agent.Coordinator, so that interface's many existing test
 // fakes stay untouched.
-type credentialsRunner interface {
+type CredentialsRunner interface {
 	RunWithCredentials(ctx context.Context, sessionID, prompt string, creds *agent.CredentialSet, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 }
+
+// REVIEWER PASS stall handling: the turn-stall policy (internal/agent)
+// aborts a stalled review turn with agent.ErrTurnStalled, but the reviewer
+// pass itself owns the retry decision. This file restarts a stalled review
+// turn up to twice (3 attempts total); if the reviewer is still stalling,
+// the outcome is ErrReviewerUnresponsive and the EXISTING review-failed
+// path keeps the executor's result so the process exits instead of hanging.
+
+// ErrReviewerUnresponsive is joined into the review error when every
+// reviewer attempt stalled. The review gate maps it onto the existing
+// review-failed path: the executor's result is kept.
+var ErrReviewerUnresponsive = errors.New("review failed: reviewer unresponsive")
+
+// reviewerStallMaxAttempts is the total number of review turn attempts:
+// the first run plus two restarts of the reviewer pass.
+const ReviewerStallMaxAttempts = 3
+
+// retryStalledReviewerPass runs the review turn, restarting it whenever an
+// attempt was aborted by the turn-stall policy (agent.ErrTurnStalled), at
+// most reviewerStallMaxAttempts-1 restarts, each announced with a WARN.
+// Any other failure returns immediately. When the final attempt also
+// stalled, ErrReviewerUnresponsive is joined into the returned error; the
+// returned result is never the executor's and is discarded by the gate.
+func RetryStalledReviewerPass(attempt func() (*RunResult, error)) (*RunResult, error) {
+	result, err := attempt()
+	for restart := 1; err != nil && errors.Is(err, agent.ErrTurnStalled) && restart < ReviewerStallMaxAttempts; restart++ {
+		slog.Warn("reviewer pass stalled; restarting the review turn",
+			"attempt", restart+1, "max_attempts", ReviewerStallMaxAttempts)
+		result, err = attempt()
+	}
+	if err != nil && errors.Is(err, agent.ErrTurnStalled) {
+		slog.Warn("reviewer pass unresponsive after stall restarts", "max_attempts", ReviewerStallMaxAttempts)
+		err = errors.Join(err, ErrReviewerUnresponsive)
+	}
+	return result, err
+}
+
+// reviewerPassMarker is the literal prefix of the automatic reviewer pass's
+// user prompt. Tests, the audit trail and the reviewer tool-call counter all
+// find the review turn by this substring, so the first line of
+// reviewerPassPrompt must stay byte-identical to it.
+const ReviewerPassMarker = "You are now acting as the independent reviewer"
+
+// reviewerPassPrompt is the fixed user prompt of the automatic reviewer
+// pass. It tells the model that the orchestrator's run is over, that it is a
+// different agent now, what it may check with which read-only tools, what it
+// must check, and how the verdict line and the report are spelled out.
+//
+// It must always steer the reviewer toward ending with a conclusion and
+// never toward asking a question or proposing more work: an ask_question
+// tool call here would force-finish the turn with awaiting_answer, which
+// nothing is watching to answer.
+const ReviewerPassPrompt = `You are now acting as the independent reviewer for this session.
+
+ROLE SWITCH. The orchestrator agent has FINISHED its work: its final report
+is the last assistant message above, and its run is over. You are NOT that
+agent. From this message on you are a different agent with a different job:
+the independent reviewer who audits what the orchestrator did and claimed.
+You received its conversation only as evidence to examine; do not continue
+its task, do not fix anything, do not speak as "I" about its actions.
+
+WHO WROTE WHAT. Every assistant message above was written by the orchestrator
+and by the workers it delegated to - not by you. When those
+messages say "I read", "I ran", "verified", "green", "closed", they are CLAIMS
+to check, not facts you observed. Until you call a tool in this turn, you have
+verified nothing. Never write "I ran" or "I verified" about anything you did
+not do in this turn.
+
+YOUR TOOLS are read-only: view, grep, glob, ls, git_read (status, diff, log,
+show, blame) and read_delegation_transcript. You cannot edit files, run shell
+commands or tests, or ask questions - do not try. There is no limit on tool
+calls: check as much as you need to be confident in the verdict. Issue
+independent reads in parallel in one step, and use offset/limit and path
+filters instead of reading whole large files (the context is already large).
+
+EVIDENCE. The <review_evidence> block at the end of this message was computed
+by rush itself from the git working tree and the session database, not by the
+orchestrator. Where it disagrees with the transcript, trust the evidence and
+say so.
+
+MANDATORY CHECKS - do all of them, in this order:
+1. Request. State in 1-3 lines what was asked (original_request in the
+   evidence; if it points to a spec or task file, view that file). Judge
+   everything below against the request, not against the orchestrator's own
+   summary of it.
+2. Changes. Use the evidence's changed-file list and git_read diff on the
+   files that matter. Flag every change the request did not ask for: unrelated
+   files, deleted or weakened tests, config or version edits, generated files.
+3. Claims. Take at least 3 concrete claims from the orchestrator's final
+   report (all of them if there are fewer) - "function X does Y", "test Z
+   fails without the fix", "file is N lines", "item M is closed" - and check
+   each against the files with view/grep. Mark each one: confirmed (file:line),
+   refuted (file:line), or unverifiable with these tools.
+4. Tests. Read each new or changed test and judge whether it is vacuous: would
+   it still pass if the change were reverted? Does it assert the behaviour, or
+   only that code runs? Does it mock the very thing under test, skip, or assert
+   constants? Take what actually ran, and its exit code, from the evidence's
+   command results: code that changed with no passing test/build run after it
+   is a finding.
+5. Stubs. grep the changed files for TODO, FIXME, XXX, "not implemented",
+   placeholder panics, empty bodies and commented-out code added by this run.
+6. Final answer. Judge the orchestrator's final answer itself (final_text in
+   the evidence): is it coherent, in the request's language, and an actual
+   report of the work - or is it empty, truncated, repetitive, garbled or
+   mixed-language, or a short reply to a background notice that buried the
+   real report? Address every flag in final_text_checks explicitly. A
+   degenerate, empty or incoherent final answer is a finding on its own, even
+   when the work itself is good.
+7. Process. Note waiting loops (sleep/echo/polling), repeated failing
+   attempts, open todos from the evidence, and work the orchestrator said it
+   would do but did not do.
+
+VERDICT RULES.
+- FAIL if any of: the request is not fulfilled; a claim is refuted; a P0/P1
+  defect; the last relevant test/build run failed, or code changed with no
+  run after it; out-of-scope changes that matter; stubs left in; the final
+  answer is degenerate or is not a report; or you could not verify anything
+  yourself.
+- PASS_WITH_NOTES if the work meets the request but you found P2/P3 issues or
+  some claims stayed unverifiable.
+- PASS only if you confirmed at least 3 claims yourself with tools in this
+  turn and found nothing listed above.
+A PASS or PASS_WITH_NOTES without your own tool checks in this turn is
+forbidden.
+
+OUTPUT. Write in the language of the original request. The first line must be
+exactly one of:
+VERDICT: PASS
+VERDICT: PASS_WITH_NOTES
+VERDICT: FAIL
+For a Russian request append the label after the token: "Зачёт",
+"Зачёт с замечаниями" or "Отказ". Then these sections:
+## Request vs result - what was asked, what was done, what is missing.
+## Checked myself - each check: tool, file:line, result.
+## Only from the orchestrator's words - claims you did not or could not check.
+## Findings - each: severity P0-P3, file:line, what is wrong, why it matters.
+## Final answer and process - checks 6 and 7.
+This is the session's final message: do not ask questions, do not offer
+further work, do not address the orchestrator. Conclude.`
+
+// reviewerPassTimeout bounds one automatic reviewer pass on its own wall
+// clock. It is a hang-guard, NOT a cap on how much the reviewer may check:
+// the review turn reads as much as it needs to be confident in its verdict,
+// and it already runs under the run's own context (--timeout, the 6h
+// default cap). This ceiling only stops a reviewer that never finishes from
+// holding the process open forever; a reviewer that legitimately needs the
+// full hour is not interrupted.
+const ReviewerPassTimeout = 60 * time.Minute

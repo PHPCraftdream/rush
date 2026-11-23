@@ -104,7 +104,7 @@ func (l *cliLoop) exitPrecheck(err error) (*RunResult, error) {
 	var inc *runIncompleteError
 	reason := "error"
 	if errors.As(err, &inc) {
-		reason = inc.reason
+		reason = inc.Reason
 	}
 	return l.exit(err, reason)
 }
@@ -115,8 +115,8 @@ func (l *cliLoop) exitPrecheck(err error) (*RunResult, error) {
 // "peak_hours"); everything else stays "error".
 func incompleteExitReason(err error) string {
 	var inc *runIncompleteError
-	if errors.As(err, &inc) && inc.reason != "" {
-		return inc.reason
+	if errors.As(err, &inc) && inc.Reason != "" {
+		return inc.Reason
 	}
 	return "error"
 }
