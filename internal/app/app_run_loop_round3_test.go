@@ -383,7 +383,7 @@ func TestCLILoop_QueuedIterationUsageIsFoldedIntoTheRun(t *testing.T) {
 	}
 	before := l.sessionUsage()
 
-	done, err := l.afterDrain(&RunResult{ExitReason: "queued"}, &runQueuedError{sessionID: h.sessionID}, &bytes.Buffer{}, before)
+	done, err := l.afterDrain(&RunResult{ExitReason: "queued"}, &runQueuedError{SessionID: h.sessionID}, &bytes.Buffer{}, before)
 	require.False(t, done)
 	require.NoError(t, err)
 	require.NoError(t, h.app.Sessions.SetUsage(ctx, h.sessionID, 100, 50)) // the owner's turn spends
@@ -429,24 +429,24 @@ func TestLoopTotals_DedupesSubAgentsAndDropsSupersededFinalTextWarnings(t *testi
 // final_text, whatever produced them.
 func TestBuildRunResult_FlagsFinalTextWarnings(t *testing.T) {
 	fanout := buildRunResult("s", "", "", "end_turn", nil, false, map[string]int{"agent": 2}, 0, 0, 0, "", "", 0, "", "", nil, "")
-	require.Len(t, fanout.finalTextWarnings, 1)
-	require.Equal(t, fanout.Warnings, fanout.finalTextWarnings)
+	require.Len(t, fanout.FinalTextWarnings, 1)
+	require.Equal(t, fanout.Warnings, fanout.FinalTextWarnings)
 
 	empty := buildRunResult("s", "", "", "end_turn", nil, false, nil, 0, 0, 0, "", "", 0, "", "", nil, "")
-	require.Len(t, empty.finalTextWarnings, 1)
+	require.Len(t, empty.FinalTextWarnings, 1)
 
 	tools := buildRunResult("s", "", "", "end_turn", nil, false, map[string]int{"bash": 1}, 0, 0, 0, "", "", 0, "", "", nil, "")
-	require.Len(t, tools.finalTextWarnings, 1)
+	require.Len(t, tools.FinalTextWarnings, 1)
 
 	truncated := buildRunResult("s", "half a sentence:", "", "error", errors.New("boom"), false, nil, 0, 0, 0, "t", "d", 0, "", "", nil, "")
-	require.Len(t, truncated.finalTextWarnings, 1)
-	require.Contains(t, truncated.finalTextWarnings[0], "appears truncated")
+	require.Len(t, truncated.FinalTextWarnings, 1)
+	require.Contains(t, truncated.FinalTextWarnings[0], "appears truncated")
 
 	reduced := buildRunResult("s", "short", "", "end_turn", nil, false, nil, 0, 0, 0, "", "", 0, "", "", nil, "reduction-loss: final_text is 5 chars")
-	require.Equal(t, []string{"reduction-loss: final_text is 5 chars"}, reduced.finalTextWarnings)
+	require.Equal(t, []string{"reduction-loss: final_text is 5 chars"}, reduced.FinalTextWarnings)
 
-	queued := buildRunResult("s", "", "", "", &runQueuedError{sessionID: "s"}, false, nil, 0, 0, 0, "", "", 0, "", "", nil, "")
-	require.Empty(t, queued.finalTextWarnings, "the queued notice is not about final_text")
+	queued := buildRunResult("s", "", "", "", &runQueuedError{SessionID: "s"}, false, nil, 0, 0, 0, "", "", 0, "", "", nil, "")
+	require.Empty(t, queued.FinalTextWarnings, "the queued notice is not about final_text")
 }
 
 // R3C-8 (dedupe): nextStep re-reads the scope every time the wait wakes (a

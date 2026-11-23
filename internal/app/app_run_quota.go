@@ -23,21 +23,6 @@ type cliQuotaStop struct {
 	snapshotIncomplete bool
 }
 
-// FinishedWork preserves durable results without consuming their pending notices.
-type FinishedWork struct {
-	SessionID string `json:"session_id"`
-	JobID     string `json:"job_id"`
-	State     string `json:"state"`
-	Result    string `json:"result"`
-}
-
-// PendingChildQuestion keeps the child's finish metadata intact for a later answer.
-type PendingChildQuestion struct {
-	SessionID string `json:"session_id"`
-	Title     string `json:"title"`
-	Details   string `json:"details"`
-}
-
 func (l *cliLoop) latchQuota(err error) {
 	if l.quota != nil || !agent.IsHardQuotaLimit(err) {
 		return
@@ -183,7 +168,7 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 		fmt.Fprintf(l.errOut(), "Pending child question %s: %s\n%s\n", q.SessionID, q.Title, q.Details)
 	}
 	l.tot.extraWarnings = append(l.tot.extraWarnings, "Own once schedules ignored for this run; persisted schedules may fire on a later host.")
-	final, err := l.exit(&runIncompleteError{reason: "provider_limit", detail: text, cause: l.quota.cause}, "provider_limit")
+	final, err := l.exit(&runIncompleteError{Reason: "provider_limit", Detail: text, Cause: l.quota.cause}, "provider_limit")
 	return cliStepResult{ev: evScopeStop, final: final, err: err}
 }
 

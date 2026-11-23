@@ -228,8 +228,8 @@ func TestRunLoop_MaxCostWhileWaitingEndsTheRun(t *testing.T) {
 
 			var inc *runIncompleteError
 			require.ErrorAs(t, err, &inc)
-			require.Equal(t, "error", inc.reason)
-			require.Contains(t, inc.detail, "exceeds max")
+			require.Equal(t, "error", inc.Reason)
+			require.Contains(t, inc.Detail, "exceeds max")
 			require.NotNil(t, res)
 			require.Equal(t, "error", res.ExitReason)
 			require.Contains(t, out.String(), `"exit_reason":"error"`)
@@ -263,7 +263,7 @@ func TestRunLoop_HonouredCancelIsCleared(t *testing.T) {
 
 		var inc *runIncompleteError
 		require.ErrorAs(t, err, &inc)
-		require.Equal(t, "canceled", inc.reason)
+		require.Equal(t, "canceled", inc.Reason)
 		require.NotNil(t, res)
 		requireCleared(t, h)
 	})
@@ -283,7 +283,7 @@ func TestRunLoop_HonouredCancelIsCleared(t *testing.T) {
 
 		var inc *runIncompleteError
 		require.ErrorAs(t, err, &inc)
-		require.Equal(t, "canceled", inc.reason)
+		require.Equal(t, "canceled", inc.Reason)
 		require.NotNil(t, res)
 		requireCleared(t, h)
 	})

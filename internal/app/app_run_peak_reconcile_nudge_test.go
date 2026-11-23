@@ -194,8 +194,8 @@ func TestCLILoopTodoNudgeDue_SkipsDuringPeakHours(t *testing.T) {
 }
 
 func TestIncompleteExitReason(t *testing.T) {
-	require.Equal(t, "peak_hours", incompleteExitReason(&runIncompleteError{reason: "peak_hours", detail: "paused"}))
-	require.Equal(t, "error", incompleteExitReason(&runIncompleteError{reason: "error", detail: "x"}))
+	require.Equal(t, "peak_hours", incompleteExitReason(&runIncompleteError{Reason: "peak_hours", Detail: "paused"}))
+	require.Equal(t, "error", incompleteExitReason(&runIncompleteError{Reason: "error", Detail: "x"}))
 	require.Equal(t, "error", incompleteExitReason(fmt.Errorf("boom")))
 	require.Equal(t, "error", incompleteExitReason(nil))
 }

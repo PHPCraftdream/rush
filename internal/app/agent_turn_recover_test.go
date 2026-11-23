@@ -36,10 +36,10 @@ func TestRunAgentTurnRecovered_Panic(t *testing.T) {
 
 	select {
 	case resp := <-done:
-		require.Error(t, resp.err, "a recovered panic must still produce a non-nil error result")
-		assert.Nil(t, resp.result)
-		assert.Contains(t, resp.err.Error(), "panicked")
-		assert.Contains(t, resp.err.Error(), "boom: simulated tool-call panic")
+		require.Error(t, resp.Err, "a recovered panic must still produce a non-nil error result")
+		assert.Nil(t, resp.Result)
+		assert.Contains(t, resp.Err.Error(), "panicked")
+		assert.Contains(t, resp.Err.Error(), "boom: simulated tool-call panic")
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for done — panic was not recovered/reported, goroutine likely died silently")
 	}
@@ -60,9 +60,9 @@ func TestRunAgentTurnRecovered_NormalError(t *testing.T) {
 	runAgentTurnRecovered(t.Context(), "sess-2", "prompt", erroring, done)
 
 	resp := <-done
-	require.Error(t, resp.err)
-	assert.ErrorIs(t, resp.err, sentinel)
-	assert.False(t, strings.Contains(resp.err.Error(), "panicked"),
+	require.Error(t, resp.Err)
+	assert.ErrorIs(t, resp.Err, sentinel)
+	assert.False(t, strings.Contains(resp.Err.Error(), "panicked"),
 		"a normal error must not be mislabeled as a panic")
 }
 
@@ -88,9 +88,9 @@ func TestRunAgentTurnRecovered_NilResultNoError(t *testing.T) {
 	runAgentTurnRecovered(t.Context(), "sess-3", "prompt", nilResult, done)
 
 	resp := <-done
-	require.NoError(t, resp.err, "a legacy-queued call must not be reported as a failure")
-	assert.Nil(t, resp.result)
-	assert.True(t, resp.queued, "nil result must be represented as queued, not as a successful empty turn")
+	require.NoError(t, resp.Err, "a legacy-queued call must not be reported as a failure")
+	assert.Nil(t, resp.Result)
+	assert.True(t, resp.Queued, "nil result must be represented as queued, not as a successful empty turn")
 }
 
 // TestRunAgentTurnRecovered_Success verifies the plain happy path still
@@ -106,8 +106,8 @@ func TestRunAgentTurnRecovered_Success(t *testing.T) {
 	runAgentTurnRecovered(t.Context(), "sess-4", "prompt", success, done)
 
 	resp := <-done
-	require.NoError(t, resp.err)
-	assert.Same(t, want, resp.result)
+	require.NoError(t, resp.Err)
+	assert.Same(t, want, resp.Result)
 }
 
 // TestRunAgentTurnRecovered_LocalizesResetHint: the stream-start error that
@@ -125,17 +125,17 @@ func TestRunAgentTurnRecovered_LocalizesResetHint(t *testing.T) {
 	done := make(chan agentTurnResponse, 1)
 	runAgentTurnRecovered(t.Context(), "sess-4", "prompt", failing, done)
 	resp := <-done
-	require.Error(t, resp.err)
+	require.Error(t, resp.Err)
 
-	assert.NotContains(t, resp.err.Error(), "20:34:01")
-	assert.Contains(t, resp.err.Error(), "2026-10-01 14:34:01 +02:00")
+	assert.NotContains(t, resp.Err.Error(), "20:34:01")
+	assert.Contains(t, resp.Err.Error(), "2026-10-01 14:34:01 +02:00")
 	var back *fantasy.ProviderError
-	assert.True(t, errors.As(resp.err, &back))
+	assert.True(t, errors.As(resp.Err, &back))
 
 	// The envelope path: buildRunResult renders the run error as .error.
-	res := buildRunResult("s1", "", "", "", resp.err, false, nil, 0, 0, time.Second, "", "", 0, "", "", nil, "")
+	res := buildRunResult("s1", "", "", "", resp.Err, false, nil, 0, 0, time.Second, "", "", 0, "", "", nil, "")
 	assert.Contains(t, res.Error, "2026-10-01 14:34:01 +02:00")
 	assert.NotContains(t, res.Error, "20:34:01")
-	inc := &runIncompleteError{reason: "error", detail: res.Error, cause: resp.err}
+	inc := &runIncompleteError{Reason: "error", Detail: res.Error, Cause: resp.Err}
 	assert.NotContains(t, inc.Error(), "20:34:01", "stderr text")
 }

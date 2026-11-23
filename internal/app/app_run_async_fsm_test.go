@@ -161,7 +161,7 @@ func TestCLILoopExitFunnels_OneEnvelopeAndEndedReasonEach(t *testing.T) {
 		{
 			name: "stuck exit (incomplete error carries the reason)",
 			call: func(l *cliLoop) (*RunResult, error) {
-				return l.exitPrecheck(&runIncompleteError{reason: "error", detail: "stuck"})
+				return l.exitPrecheck(&runIncompleteError{Reason: "error", Detail: "stuck"})
 			},
 			wantEnded: "error",
 			wantFlag:  false,
@@ -169,7 +169,7 @@ func TestCLILoopExitFunnels_OneEnvelopeAndEndedReasonEach(t *testing.T) {
 		{
 			name: "cap exit",
 			call: func(l *cliLoop) (*RunResult, error) {
-				return l.exitPrecheck(&runIncompleteError{reason: "error", detail: "cap"})
+				return l.exitPrecheck(&runIncompleteError{Reason: "error", Detail: "cap"})
 			},
 			wantEnded: "error",
 			wantFlag:  false,
@@ -248,7 +248,7 @@ func TestCLILoopExitPrecheck_UsesIncompleteReason(t *testing.T) {
 		final: &RunResult{SessionID: h.sessionID},
 	}
 
-	final, exitErr := l.exitPrecheck(&runIncompleteError{reason: "max_tokens", detail: "cap"})
+	final, exitErr := l.exitPrecheck(&runIncompleteError{Reason: "max_tokens", Detail: "cap"})
 
 	var inc *runIncompleteError
 	require.ErrorAs(t, exitErr, &inc)

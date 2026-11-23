@@ -29,7 +29,7 @@ func TestPersistEndedReason_NoEnvelopeDerivesTheReasonFromTheError(t *testing.T)
 		{name: "launched turn interrupted by Ctrl-C", submitted: true, err: context.Canceled, ctxDone: true, want: "canceled"},
 		{name: "launched turn, deadline", submitted: true, err: context.DeadlineExceeded, want: "canceled"},
 		{name: "launched turn, plain failure", submitted: true, err: errors.New("boom"), want: "error"},
-		{name: "launched turn, incomplete run", submitted: true, err: &runIncompleteError{reason: "max_tokens"}, want: "max_tokens"},
+		{name: "launched turn, incomplete run", submitted: true, err: &runIncompleteError{Reason: "max_tokens"}, want: "max_tokens"},
 		{name: "refused first turn wrote nothing", submitted: false, err: errors.New("busy"), want: ""},
 	}
 	for _, tc := range cases {
@@ -100,7 +100,7 @@ func TestStopError_OneReadPerWake(t *testing.T) {
 
 		var inc *runIncompleteError
 		require.ErrorAs(t, l.stopError(), &inc)
-		require.Equal(t, "canceled", inc.reason)
+		require.Equal(t, "canceled", inc.Reason)
 		require.EqualValues(t, 1, svc.gets.Load())
 		require.EqualValues(t, 0, svc.budgetReads.Load(), "a token cap never reads the budget")
 		require.EqualValues(t, 0, svc.cancelReads.Load())
