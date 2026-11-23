@@ -1,0 +1,211 @@
+# Lane L2 ledger (docs/plans/2026-11-22-dm0b-scc-cut.md section 5, row L2 "mailbox").
+# One row per declaration of every file this lane touched at HEAD. Columns:
+#   record row_id source_file kind symbol source_line target_file target_symbol
+#   disposition hit line_end proof
+# hit = sha256_16 of the whitespace-normalised HEAD body after the rename map below;
+# line_end = last line of the declaration in target_file today.
+# Dispositions used: moved 11, moved_adapter 2, present 113.
+#   moved         the body left the root unchanged modulo the rename map
+#   moved_adapter the body left the root AND a thin root adapter keeps the old
+#                 name for one caller that cannot take the new import
+#   present       untouched in place (the 4 root test files' 22 test functions are
+#                 all present: no test file moved in this lane)
+# Verifier: .rush/tmp/sprint0/l2/oracle.py (scratch, not checked in). With this
+# ledger it reports rows=126, failures=0, pass=true. It fails on a flipped hit, on a
+# wrong source_line, on a dropped rename-map entry and on a moved row relabelled
+# present (all four exercised by mutation on scratch copies); adapter rows are
+# validated by shape, not by name (one statement, call of a package-qualified or
+# package-local function whose arguments are parameters, <= 40 tokens; or a single
+# `var X = pkg.Y` alias).
+# Normalisation also strips the "mailbox." and "mailboxpkg." qualifiers: the root
+# package keeps its own mailbox type, so every root file imports the new package as
+# "mailboxpkg" (an unaliased import named mailbox collides with that type).
+#
+# Scope: 14 files -- the 4 root files that lost a declaration (queued_call_resolution.go
+# is deleted whole; mailbox_queue.go, mailbox_ownership.go and queued_call_scope.go
+# keep theirs), the 3 new internal/agent/runtime/exec/mailbox files, the 2 root files
+# whose bodies gained the mailboxpkg qualifier (mailbox_interrupt.go,
+# agent_ownership.go) and the 4 root test files that call the moved names.
+#
+# The two root adapters, with their anchored reason: internal/agent/agent_run.go is
+# ratcheted at 919 lines in .githooks/file_size_900_allowlist.txt and a listed file
+# may not grow, so it cannot take the import the two names it calls would need.
+# deferReleaseRetainedRunScope (one-line delegate) and turnEndRelease (a var, so a
+# test can wrap the release site and count that it fired) therefore stay in
+# queued_call_scope.go, which this lane shortened by 74 lines.
+#
+# Remainder, NOT moved by this lane and why:
+#   - the mailbox state machine (mailbox.go, mailbox_generation.go, mailbox_inject.go,
+#     mailbox_interrupt.go, mailbox_ownership.go, mailbox_queue.go: 44 top-level
+#     declarations + 23 struct fields, incl. every "func (mb *mailbox)" method) stays
+#     in the root: 24+ root test files
+#     read its unexported fields (state, epoch, submitted, replacement, injects,
+#     current, currentCall, stopped, the four test seams) and lock mb.mu directly, and
+#     &mailbox{state: mbOwned, current: generation{...}} literals cannot be written
+#     across a package boundary without exporting the fields and the mutex;
+#   - queued_call_scope.go's sessionAgent-bound half (pinnedBatchRegistryIDs,
+#     sessionAgent.armQueuedBuildRetention, queuedBuildRetentionHost,
+#     queuedCallScopeComponent, newQueuedCallScopeComponent,
+#     queuedCallScopeComponent.armQueuedBuildRetention: 6 declarations) stays because
+#     it names *sessionAgent, DiskProviderRegistry, diskOwnerKey, batchIngressTool and
+#     the root's newBuildResourceScope delegate.
+# A later pass needs DM7's C1 port (so leaf code stops naming *coordinator and
+# *sessionAgent) plus the Q3 test routing before the state machine can leave.
+#
+#   errQueuedTurnNotRun -> ErrQueuedTurnNotRun
+#   resolveCallWithError -> ResolveCallWithError
+#   resolveCallsWithError -> ResolveCallsWithError
+#   splitCallsWithoutWaiters -> SplitCallsWithoutWaiters
+#   mergeQueuedCall -> MergeQueuedCall
+#   mergeQueuedCallAtHead -> MergeQueuedCallAtHead
+#   callReleaseRecoveringPanic -> CallReleaseRecoveringPanic
+#   releaseQueuedBuildOwnership -> ReleaseQueuedBuildOwnership
+#   releaseQueuedCallsBuildOwnership -> ReleaseQueuedCallsBuildOwnership
+#   releaseTurnEndBuildScope -> ReleaseTurnEndBuildScope
+#   deferReleaseRetainedRunScope -> DeferReleaseRetainedRunScope
+#   turnEndRelease -> TurnEndRelease
+#   SessionAgentCall -> agentcall.SessionAgentCall
+#   CallOptions -> agentcall.CallOptions
+#   mailboxpkg. -> 
+#
+record	row_id	source_file	kind	symbol	source_line	target_file	target_symbol	disposition	hit	line_end	proof
+scope		internal/agent/queued_call_resolution.go									
+scope		internal/agent/runtime/exec/mailbox/queued_call_resolution.go									
+scope		internal/agent/mailbox_queue.go									
+scope		internal/agent/runtime/exec/mailbox/mailbox_queue_merge.go									
+scope		internal/agent/mailbox_ownership.go									
+scope		internal/agent/runtime/exec/mailbox/mailbox_release.go									
+scope		internal/agent/queued_call_scope.go									
+scope		internal/agent/mailbox_interrupt.go									
+scope		internal/agent/agent_ownership.go									
+scope		internal/agent/agent_run.go									
+scope		internal/agent/drain_notice_pull_test.go									
+scope		internal/agent/queued_call_resolution_test.go									
+scope		internal/agent/queued_call_scope_exit_test.go									
+scope		internal/agent/queued_call_scope_test.go									
+declaration	L2-001	internal/agent/queued_call_resolution.go	var	errQueuedTurnNotRun	23	internal/agent/runtime/exec/mailbox/queued_call_resolution.go	ErrQueuedTurnNotRun	moved	fcd2a7533872e029	25	
+declaration	L2-002	internal/agent/queued_call_resolution.go	func	resolveCallWithError	31	internal/agent/runtime/exec/mailbox/queued_call_resolution.go	ResolveCallWithError	moved	f8199b5b28fc4ad5	37	
+declaration	L2-003	internal/agent/queued_call_resolution.go	func	resolveCallsWithError	38	internal/agent/runtime/exec/mailbox/queued_call_resolution.go	ResolveCallsWithError	moved	0dc303eac24464fa	44	
+declaration	L2-004	internal/agent/queued_call_resolution.go	func	splitCallsWithoutWaiters	51	internal/agent/runtime/exec/mailbox/queued_call_resolution.go	SplitCallsWithoutWaiters	moved	acb22a6129986a81	66	
+declaration	L2-005	internal/agent/mailbox_queue.go	func	mergeQueuedCall	65	internal/agent/runtime/exec/mailbox/mailbox_queue_merge.go	MergeQueuedCall	moved	21ba1c783971279f	37	
+declaration	L2-006	internal/agent/mailbox_queue.go	func	mergeQueuedCallAtHead	94	internal/agent/runtime/exec/mailbox/mailbox_queue_merge.go	MergeQueuedCallAtHead	moved	afa2e1515093def1	68	
+declaration	L2-007	internal/agent/mailbox_queue.go	func	hasQueuedDrain	116	internal/agent/runtime/exec/mailbox/mailbox_queue_merge.go	hasQueuedDrain	moved	15bd87f35f064d5d	78	
+declaration	L2-008	internal/agent/mailbox_ownership.go	func	callReleaseRecoveringPanic	415	internal/agent/runtime/exec/mailbox/mailbox_release.go	CallReleaseRecoveringPanic	moved	249eb1934da5105f	29	
+declaration	L2-009	internal/agent/queued_call_scope.go	func	releaseQueuedBuildOwnership	148	internal/agent/runtime/exec/mailbox/mailbox_release.go	ReleaseQueuedBuildOwnership	moved	9abffa1f3e861927	40	
+declaration	L2-010	internal/agent/queued_call_scope.go	func	releaseQueuedCallsBuildOwnership	157	internal/agent/runtime/exec/mailbox/mailbox_release.go	ReleaseQueuedCallsBuildOwnership	moved	025a90e2ba8e0cc2	48	
+declaration	L2-011	internal/agent/queued_call_scope.go	func	releaseTurnEndBuildScope	179	internal/agent/runtime/exec/mailbox/mailbox_release.go	ReleaseTurnEndBuildScope	moved	6e4c2a191e26ac61	76	
+declaration	L2-012	internal/agent/queued_call_scope.go	func	deferReleaseRetainedRunScope	209	internal/agent/runtime/exec/mailbox/mailbox_release.go	DeferReleaseRetainedRunScope	moved_adapter	ce9f642862e61136	102	
+declaration	L2-013	internal/agent/queued_call_scope.go	var	turnEndRelease	221	internal/agent/runtime/exec/mailbox/mailbox_release.go	TurnEndRelease	moved_adapter	b5e17d71d18c7403	108	
+declaration	L2-014	internal/agent/mailbox_interrupt.go	method	mailbox.interruptAndReplaceLocked	101	internal/agent/mailbox_interrupt.go	mailbox.interruptAndReplaceLocked	present	720552742fbbf13e	226	
+declaration	L2-015	internal/agent/mailbox_interrupt.go	method	mailbox.reclaimReplacementOrKeep	294	internal/agent/mailbox_interrupt.go	mailbox.reclaimReplacementOrKeep	present	0efdeb943eb3e298	312	
+declaration	L2-016	internal/agent/agent_ownership.go	method	sessionOwnership.restartOrphanedWithRetry	481	internal/agent/agent_ownership.go	sessionOwnership.restartOrphanedWithRetry	present	d3e8fa702c878b85	750	
+declaration	L2-017	internal/agent/agent_run.go	method	sessionAgent.Run	31	internal/agent/agent_run.go	sessionAgent.Run	present	4cd50fe497efb390	142	
+declaration	L2-018	internal/agent/agent_run.go	method	sessionAgent.runOwned	436	internal/agent/agent_run.go	sessionAgent.runOwned	present	1a4f5fe420cfb008	847	
+declaration	L2-019	internal/agent/drain_notice_pull_test.go	func	TestMergeQueuedCall_AtMostOneDrainInQueue	34	internal/agent/drain_notice_pull_test.go	TestMergeQueuedCall_AtMostOneDrainInQueue	present	51485482bd45fa49	43	
+declaration	L2-020	internal/agent/queued_call_resolution_test.go	func	TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks	160	internal/agent/queued_call_resolution_test.go	TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks	present	6ea9909280ea60cc	186	
+declaration	L2-021	internal/agent/queued_call_scope_exit_test.go	func	TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases	36	internal/agent/queued_call_scope_exit_test.go	TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases	present	3ab840bea773d17a	125	
+declaration	L2-022	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_TurnEndReleaseRule	427	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_TurnEndReleaseRule	present	56602b805301fbc5	517	
+declaration	L2-023	internal/agent/mailbox_queue.go	method	mailbox.clearAll	20	internal/agent/mailbox_queue.go	mailbox.clearAll	present	59edbeda3a253d68	40	unchanged in place
+declaration	L2-024	internal/agent/mailbox_queue.go	method	mailbox.queue	46	internal/agent/mailbox_queue.go	mailbox.queue	present	bff65a4579acf369	52	unchanged in place
+declaration	L2-025	internal/agent/mailbox_queue.go	method	mailbox.popFirstSubmitted	132	internal/agent/mailbox_queue.go	mailbox.popFirstSubmitted	present	d2e149cb9fcc3795	70	unchanged in place
+declaration	L2-026	internal/agent/mailbox_queue.go	method	mailbox.abandonOwnershipAndPopSubmitted	174	internal/agent/mailbox_queue.go	mailbox.abandonOwnershipAndPopSubmitted	present	9db1fae490baa72c	130	unchanged in place
+declaration	L2-027	internal/agent/mailbox_queue.go	method	mailbox.abandonOwnershipAndPopFirstSubmitted	220	internal/agent/mailbox_queue.go	mailbox.abandonOwnershipAndPopFirstSubmitted	present	e1014929d8e4c5db	170	unchanged in place
+declaration	L2-028	internal/agent/mailbox_queue.go	method	mailbox.popAllSubmitted	291	internal/agent/mailbox_queue.go	mailbox.popAllSubmitted	present	1c41dba36a59e4fc	230	unchanged in place
+declaration	L2-029	internal/agent/mailbox_ownership.go	method	mailbox.submit	22	internal/agent/mailbox_ownership.go	mailbox.submit	present	c34ef3bc72920617	86	unchanged in place
+declaration	L2-030	internal/agent/mailbox_ownership.go	method	mailbox.drainOrRelease	101	internal/agent/mailbox_ownership.go	mailbox.drainOrRelease	present	c0af36a81287e52f	132	unchanged in place
+declaration	L2-031	internal/agent/mailbox_ownership.go	method	mailbox.drainOrReleaseFinal	229	internal/agent/mailbox_ownership.go	mailbox.drainOrReleaseFinal	present	3afb41bc7a8df8fb	403	unchanged in place
+declaration	L2-032	internal/agent/mailbox_ownership.go	method	mailbox.abandonOwnership	450	internal/agent/mailbox_ownership.go	mailbox.abandonOwnership	present	5fa82e9f5cc7d081	452	unchanged in place
+declaration	L2-033	internal/agent/mailbox_ownership.go	method	mailbox.beginRelease	496	internal/agent/mailbox_ownership.go	mailbox.beginRelease	present	b6a6e03b2595e373	497	unchanged in place
+declaration	L2-034	internal/agent/mailbox_ownership.go	method	mailbox.finishRelease	522	internal/agent/mailbox_ownership.go	mailbox.finishRelease	present	8818779e5c875d4b	516	unchanged in place
+declaration	L2-035	internal/agent/queued_call_scope.go	func	pinnedBatchRegistryIDs	52	internal/agent/queued_call_scope.go	pinnedBatchRegistryIDs	present	4cb9a57cc03d6f7b	69	unchanged in place
+declaration	L2-036	internal/agent/queued_call_scope.go	method	sessionAgent.armQueuedBuildRetention	98	internal/agent/queued_call_scope.go	sessionAgent.armQueuedBuildRetention	present	5ef1e4263afce113	102	unchanged in place
+declaration	L2-037	internal/agent/queued_call_scope.go	type	queuedBuildRetentionHost	102	internal/agent/queued_call_scope.go	queuedBuildRetentionHost	present	38b774494650b5df	106	unchanged in place
+declaration	L2-038	internal/agent/queued_call_scope.go	type	queuedCallScopeComponent	106	internal/agent/queued_call_scope.go	queuedCallScopeComponent	present	55b35e711b3c8a37	110	unchanged in place
+declaration	L2-039	internal/agent/queued_call_scope.go	func	newQueuedCallScopeComponent	110	internal/agent/queued_call_scope.go	newQueuedCallScopeComponent	present	8202572ef5066d25	114	unchanged in place
+declaration	L2-040	internal/agent/queued_call_scope.go	method	queuedCallScopeComponent.armQueuedBuildRetention	114	internal/agent/queued_call_scope.go	queuedCallScopeComponent.armQueuedBuildRetention	present	b27031db994e64e2	144	unchanged in place
+declaration	L2-041	internal/agent/mailbox_interrupt.go	method	mailbox.hardStop	58	internal/agent/mailbox_interrupt.go	mailbox.hardStop	present	8f905c14acd5fe21	65	unchanged in place
+declaration	L2-042	internal/agent/mailbox_interrupt.go	method	mailbox.isStopped	66	internal/agent/mailbox_interrupt.go	mailbox.isStopped	present	8748981bcb2cd234	72	unchanged in place
+declaration	L2-043	internal/agent/mailbox_interrupt.go	method	mailbox.interruptAndReplace	80	internal/agent/mailbox_interrupt.go	mailbox.interruptAndReplace	present	b68165f6bc75e410	86	unchanged in place
+declaration	L2-044	internal/agent/mailbox_interrupt.go	method	mailbox.interruptAndReplaceIfCurrent	90	internal/agent/mailbox_interrupt.go	mailbox.interruptAndReplaceIfCurrent	present	d333ab811c04699f	101	unchanged in place
+declaration	L2-045	internal/agent/mailbox_interrupt.go	method	mailbox.drainAfterCancel	318	internal/agent/mailbox_interrupt.go	mailbox.drainAfterCancel	present	d1471154fd172e61	383	unchanged in place
+declaration	L2-046	internal/agent/agent_ownership.go	type	ownershipHost	26	internal/agent/agent_ownership.go	ownershipHost	present	46a471268d87acb5	32	unchanged in place
+declaration	L2-047	internal/agent/agent_ownership.go	type	sessionOwnership	33	internal/agent/agent_ownership.go	sessionOwnership	present	3e53761a6c7ebd04	40	unchanged in place
+declaration	L2-048	internal/agent/agent_ownership.go	method	sessionAgent.getMailbox	45	internal/agent/agent_ownership.go	sessionAgent.getMailbox	present	27d31ca64f4d4729	48	unchanged in place
+declaration	L2-049	internal/agent/agent_ownership.go	method	sessionOwnership.getMailbox	49	internal/agent/agent_ownership.go	sessionOwnership.getMailbox	present	6204abe0e98a556c	54	unchanged in place
+declaration	L2-050	internal/agent/agent_ownership.go	method	sessionAgent.tryReserveSession	79	internal/agent/agent_ownership.go	sessionAgent.tryReserveSession	present	620a313fdbd1acdf	82	unchanged in place
+declaration	L2-051	internal/agent/agent_ownership.go	method	sessionOwnership.tryReserveSession	83	internal/agent/agent_ownership.go	sessionOwnership.tryReserveSession	present	808bf79e2a12b047	86	unchanged in place
+declaration	L2-052	internal/agent/agent_ownership.go	method	sessionAgent.ReserveExclusive	140	internal/agent/agent_ownership.go	sessionAgent.ReserveExclusive	present	518927e691949865	143	unchanged in place
+declaration	L2-053	internal/agent/agent_ownership.go	method	sessionOwnership.reserveExclusive	144	internal/agent/agent_ownership.go	sessionOwnership.reserveExclusive	present	95d0d1b922aeae7f	154	unchanged in place
+declaration	L2-054	internal/agent/agent_ownership.go	method	sessionAgent.ReleaseExclusive	163	internal/agent/agent_ownership.go	sessionAgent.ReleaseExclusive	present	f299dc175ab43674	166	unchanged in place
+declaration	L2-055	internal/agent/agent_ownership.go	method	sessionOwnership.releaseExclusive	167	internal/agent/agent_ownership.go	sessionOwnership.releaseExclusive	present	80ac753abb21fad6	173	unchanged in place
+declaration	L2-056	internal/agent/agent_ownership.go	method	sessionAgent.releaseSessionReservation	197	internal/agent/agent_ownership.go	sessionAgent.releaseSessionReservation	present	25080c9b3f8a0470	200	unchanged in place
+declaration	L2-057	internal/agent/agent_ownership.go	method	sessionOwnership.releaseSessionReservation	201	internal/agent/agent_ownership.go	sessionOwnership.releaseSessionReservation	present	2c5caa7b1ef1489e	204	unchanged in place
+declaration	L2-058	internal/agent/agent_ownership.go	method	sessionAgent.drainOrReleaseMerged	283	internal/agent/agent_ownership.go	sessionAgent.drainOrReleaseMerged	present	9c52ec89943b77ad	286	unchanged in place
+declaration	L2-059	internal/agent/agent_ownership.go	method	sessionOwnership.drainOrReleaseMerged	287	internal/agent/agent_ownership.go	sessionOwnership.drainOrReleaseMerged	present	5a1341824af9b43b	314	unchanged in place
+declaration	L2-060	internal/agent/agent_ownership.go	method	sessionAgent.abandonOwnershipWithHandoff	338	internal/agent/agent_ownership.go	sessionAgent.abandonOwnershipWithHandoff	present	b5381b33052f74d5	341	unchanged in place
+declaration	L2-061	internal/agent/agent_ownership.go	method	sessionOwnership.abandonOwnershipWithHandoff	342	internal/agent/agent_ownership.go	sessionOwnership.abandonOwnershipWithHandoff	present	c5d6f7f7aaecc93d	413	unchanged in place
+declaration	L2-062	internal/agent/agent_ownership.go	method	sessionAgent.restartOrphaned	429	internal/agent/agent_ownership.go	sessionAgent.restartOrphaned	present	51356f86c6ae5bc5	432	unchanged in place
+declaration	L2-063	internal/agent/agent_ownership.go	method	sessionOwnership.restartOrphaned	433	internal/agent/agent_ownership.go	sessionOwnership.restartOrphaned	present	2af97c864ea33aa4	436	unchanged in place
+declaration	L2-064	internal/agent/agent_ownership.go	method	sessionAgent.restartOrphanedWithRetry	477	internal/agent/agent_ownership.go	sessionAgent.restartOrphanedWithRetry	present	937a024939b5fc9b	480	unchanged in place
+declaration	L2-065	internal/agent/agent_ownership.go	func	promptHash	754	internal/agent/agent_ownership.go	promptHash	present	b9196b93064bc02f	761	unchanged in place
+declaration	L2-066	internal/agent/agent_ownership.go	func	withActivityNotify	771	internal/agent/agent_ownership.go	withActivityNotify	present	8df7769a6d7d6958	774	unchanged in place
+declaration	L2-067	internal/agent/agent_ownership.go	func	notifyActivity	776	internal/agent/agent_ownership.go	notifyActivity	present	333e2d9e9d51fa72	777	unchanged in place
+declaration	L2-068	internal/agent/agent_ownership.go	func	withWatchdogBump	779	internal/agent/agent_ownership.go	withWatchdogBump	present	121deb9c6afd68e0	782	unchanged in place
+declaration	L2-069	internal/agent/agent_ownership.go	func	notifyWatchdog	784	internal/agent/agent_ownership.go	notifyWatchdog	present	c69a98388dc1a965	785	unchanged in place
+declaration	L2-070	internal/agent/agent_ownership.go	type	reservedOwnershipContextKey	789	internal/agent/agent_ownership.go	reservedOwnershipContextKey	present	0b179ecbc86759a7	790	unchanged in place
+declaration	L2-071	internal/agent/agent_ownership.go	type	reservedOwnership	805	internal/agent/agent_ownership.go	reservedOwnership	present	80d49dd994678263	822	unchanged in place
+declaration	L2-072	internal/agent/agent_ownership.go	method	reservedOwnership.claim	825	internal/agent/agent_ownership.go	reservedOwnership.claim	present	5954af03a6da0900	828	unchanged in place
+declaration	L2-073	internal/agent/agent_ownership.go	func	WithReservedOwnership	831	internal/agent/agent_ownership.go	WithReservedOwnership	present	46538050b6027b7b	839	unchanged in place
+declaration	L2-074	internal/agent/agent_ownership.go	func	reservedOwnershipFrom	841	internal/agent/agent_ownership.go	reservedOwnershipFrom	present	7df201323465ba38	845	unchanged in place
+declaration	L2-075	internal/agent/agent_ownership.go	func	ClearReservedOwnership	852	internal/agent/agent_ownership.go	ClearReservedOwnership	present	ddf26367c790c924	855	unchanged in place
+declaration	L2-076	internal/agent/agent_run.go	method	sessionAgent.RunWithReservedOwnership	263	internal/agent/agent_run.go	sessionAgent.RunWithReservedOwnership	present	5adb1ab2fe6d7a68	351	unchanged in place
+declaration	L2-077	internal/agent/agent_run.go	method	sessionAgent.processWorkspace	364	internal/agent/agent_run.go	sessionAgent.processWorkspace	present	91cf006842d47ea5	380	unchanged in place
+declaration	L2-078	internal/agent/agent_run.go	method	sessionAgent.refuseForeignSession	398	internal/agent/agent_run.go	sessionAgent.refuseForeignSession	present	1ea2d714b72e5cec	427	unchanged in place
+declaration	L2-079	internal/agent/agent_run.go	func	mergeTurnOutcome	852	internal/agent/agent_run.go	mergeTurnOutcome	present	a5082aebecee235d	857	unchanged in place
+declaration	L2-080	internal/agent/agent_run.go	func	finalTurnOutcome	870	internal/agent/agent_run.go	finalTurnOutcome	present	15effe12e3ab6a3f	875	unchanged in place
+declaration	L2-081	internal/agent/agent_run.go	func	inheritReplacementIdentityCallback	877	internal/agent/agent_run.go	inheritReplacementIdentityCallback	present	3d33ee684fade0f8	885	unchanged in place
+declaration	L2-082	internal/agent/agent_run.go	method	sessionAgent.runPreReservedOwnership	904	internal/agent/agent_run.go	sessionAgent.runPreReservedOwnership	present	1afaa6dda7dabc2a	919	unchanged in place
+declaration	L2-083	internal/agent/drain_notice_pull_test.go	func	TestMergeQueuedCall_UserCallDropsQueuedDrain	47	internal/agent/drain_notice_pull_test.go	TestMergeQueuedCall_UserCallDropsQueuedDrain	present	59708a86027c1226	58	unchanged in place
+declaration	L2-084	internal/agent/drain_notice_pull_test.go	func	TestMergeQueuedCall_DrainDroppedWhenQueueNonEmpty	62	internal/agent/drain_notice_pull_test.go	TestMergeQueuedCall_DrainDroppedWhenQueueNonEmpty	present	dbac875d1984e308	71	unchanged in place
+declaration	L2-085	internal/agent/drain_notice_pull_test.go	func	TestQueuedPromptsList_ExcludesDrain	78	internal/agent/drain_notice_pull_test.go	TestQueuedPromptsList_ExcludesDrain	present	f468b5c67d4d76e7	92	unchanged in place
+declaration	L2-086	internal/agent/drain_notice_pull_test.go	func	TestDrainCall_NeverDurablyEnqueued	102	internal/agent/drain_notice_pull_test.go	TestDrainCall_NeverDurablyEnqueued	present	060927d8a77162d8	121	unchanged in place
+declaration	L2-087	internal/agent/drain_notice_pull_test.go	func	sseChunk	125	internal/agent/drain_notice_pull_test.go	sseChunk	present	6c0a62e8ac39d5c4	131	unchanged in place
+declaration	L2-088	internal/agent/drain_notice_pull_test.go	func	textFinishResponse	133	internal/agent/drain_notice_pull_test.go	textFinishResponse	present	b8e14300ea44a032	143	unchanged in place
+declaration	L2-089	internal/agent/drain_notice_pull_test.go	func	newProbeModel	144	internal/agent/drain_notice_pull_test.go	newProbeModel	present	866cdd489bda18e0	148	unchanged in place
+declaration	L2-090	internal/agent/drain_notice_pull_test.go	type	httpDoer	150	internal/agent/drain_notice_pull_test.go	httpDoer	present	367b7c3191e7478f	153	unchanged in place
+declaration	L2-091	internal/agent/drain_notice_pull_test.go	func	newProbeModelClient	156	internal/agent/drain_notice_pull_test.go	newProbeModelClient	present	99a93360bd075f88	168	unchanged in place
+declaration	L2-092	internal/agent/drain_notice_pull_test.go	func	TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt	179	internal/agent/drain_notice_pull_test.go	TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt	present	2d89bbd7a6e3470e	242	unchanged in place
+declaration	L2-093	internal/agent/drain_notice_pull_test.go	func	TestDrain_NothingPendingSkipsProviderAndFinishesTurn	251	internal/agent/drain_notice_pull_test.go	TestDrain_NothingPendingSkipsProviderAndFinishesTurn	present	57b4f7a5e837d247	292	unchanged in place
+declaration	L2-094	internal/agent/drain_notice_pull_test.go	func	TestDrain_NoticeBetweenTwoToolCalls_OnlyAtStepBoundaryAndCarriesForward	313	internal/agent/drain_notice_pull_test.go	TestDrain_NoticeBetweenTwoToolCalls_OnlyAtStepBoundaryAndCarriesForward	present	785880f333f95f18	421	unchanged in place
+declaration	L2-095	internal/agent/drain_notice_pull_test.go	type	completionTriggerTool	426	internal/agent/drain_notice_pull_test.go	completionTriggerTool	present	10c1449ea03bfcf0	432	unchanged in place
+declaration	L2-096	internal/agent/drain_notice_pull_test.go	method	completionTriggerTool.Info	433	internal/agent/drain_notice_pull_test.go	completionTriggerTool.Info	present	76de5cd3260274f7	434	unchanged in place
+declaration	L2-097	internal/agent/drain_notice_pull_test.go	method	completionTriggerTool.Run	435	internal/agent/drain_notice_pull_test.go	completionTriggerTool.Run	present	47511d62acb37b0e	443	unchanged in place
+declaration	L2-098	internal/agent/drain_notice_pull_test.go	method	completionTriggerTool.ProviderOptions	444	internal/agent/drain_notice_pull_test.go	completionTriggerTool.ProviderOptions	present	f515d23600990b05	445	unchanged in place
+declaration	L2-099	internal/agent/drain_notice_pull_test.go	method	completionTriggerTool.SetProviderOptions	445	internal/agent/drain_notice_pull_test.go	completionTriggerTool.SetProviderOptions	present	6cb1ba6af9bc245f	446	unchanged in place
+declaration	L2-100	internal/agent/queued_call_resolution_test.go	type	blockingErrorModel	31	internal/agent/queued_call_resolution_test.go	blockingErrorModel	present	7b2df21eb2464a84	38	unchanged in place
+declaration	L2-101	internal/agent/queued_call_resolution_test.go	func	newBlockingErrorModel	38	internal/agent/queued_call_resolution_test.go	newBlockingErrorModel	present	26345ab0ff02cd24	42	unchanged in place
+declaration	L2-102	internal/agent/queued_call_resolution_test.go	method	blockingErrorModel.Generate	42	internal/agent/queued_call_resolution_test.go	blockingErrorModel.Generate	present	88ead855a103f5ec	46	unchanged in place
+declaration	L2-103	internal/agent/queued_call_resolution_test.go	method	blockingErrorModel.Stream	46	internal/agent/queued_call_resolution_test.go	blockingErrorModel.Stream	present	4dc9a9f9b56a5839	52	unchanged in place
+declaration	L2-104	internal/agent/queued_call_resolution_test.go	method	blockingErrorModel.GenerateObject	52	internal/agent/queued_call_resolution_test.go	blockingErrorModel.GenerateObject	present	c0c40199f44dcad1	56	unchanged in place
+declaration	L2-105	internal/agent/queued_call_resolution_test.go	method	blockingErrorModel.StreamObject	56	internal/agent/queued_call_resolution_test.go	blockingErrorModel.StreamObject	present	6fcd6cc638a09d60	60	unchanged in place
+declaration	L2-106	internal/agent/queued_call_resolution_test.go	method	blockingErrorModel.Provider	60	internal/agent/queued_call_resolution_test.go	blockingErrorModel.Provider	present	b47a3350d66fff96	62	unchanged in place
+declaration	L2-107	internal/agent/queued_call_resolution_test.go	method	blockingErrorModel.Model	61	internal/agent/queued_call_resolution_test.go	blockingErrorModel.Model	present	003060884c1bb4e8	63	unchanged in place
+declaration	L2-108	internal/agent/queued_call_resolution_test.go	func	TestRunAwaitingAdmission_OrphanedQueuedCallResolvesInsteadOfHanging	80	internal/agent/queued_call_resolution_test.go	TestRunAwaitingAdmission_OrphanedQueuedCallResolvesInsteadOfHanging	present	850e5f7e48370469	151	unchanged in place
+declaration	L2-109	internal/agent/queued_call_resolution_test.go	func	TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook	196	internal/agent/queued_call_resolution_test.go	TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook	present	b8ac5b2a2a911c3b	232	unchanged in place
+declaration	L2-110	internal/agent/queued_call_scope_exit_test.go	func	TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce	132	internal/agent/queued_call_scope_exit_test.go	TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce	present	b938bdaa6562bc89	312	unchanged in place
+declaration	L2-111	internal/agent/queued_call_scope_exit_test.go	type	scopePolicyProbe	317	internal/agent/queued_call_scope_exit_test.go	scopePolicyProbe	present	242b3c2c8fc87b18	321	unchanged in place
+declaration	L2-112	internal/agent/queued_call_scope_exit_test.go	method	scopePolicyProbe.Info	322	internal/agent/queued_call_scope_exit_test.go	scopePolicyProbe.Info	present	5053a0d154bd059b	325	unchanged in place
+declaration	L2-113	internal/agent/queued_call_scope_exit_test.go	method	scopePolicyProbe.Run	326	internal/agent/queued_call_scope_exit_test.go	scopePolicyProbe.Run	present	9c66d6b8e0087df0	330	unchanged in place
+declaration	L2-114	internal/agent/queued_call_scope_exit_test.go	method	scopePolicyProbe.ProviderOptions	331	internal/agent/queued_call_scope_exit_test.go	scopePolicyProbe.ProviderOptions	present	aea4ef7926c22e88	332	unchanged in place
+declaration	L2-115	internal/agent/queued_call_scope_exit_test.go	method	scopePolicyProbe.SetProviderOptions	332	internal/agent/queued_call_scope_exit_test.go	scopePolicyProbe.SetProviderOptions	present	8f9c7fecbfdfa02f	333	unchanged in place
+declaration	L2-116	internal/agent/queued_call_scope_exit_test.go	func	TestQueuedCallScope_FourPolicyDecisionsReduced	350	internal/agent/queued_call_scope_exit_test.go	TestQueuedCallScope_FourPolicyDecisionsReduced	present	5b2466429f0d0206	443	unchanged in place
+declaration	L2-117	internal/agent/queued_call_scope_test.go	func	newQueuedCallScopeFixture	26	internal/agent/queued_call_scope_test.go	newQueuedCallScopeFixture	present	0163b95f7bef197a	34	unchanged in place
+declaration	L2-118	internal/agent/queued_call_scope_test.go	func	pinnedIngressTool	37	internal/agent/queued_call_scope_test.go	pinnedIngressTool	present	7120d753a655741f	49	unchanged in place
+declaration	L2-119	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_PromotionKeepsConstructionUsable	60	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_PromotionKeepsConstructionUsable	present	9d8e83348ae41283	147	unchanged in place
+declaration	L2-120	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_AdmissionRefusalLeavesNoOwner	154	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_AdmissionRefusalLeavesNoOwner	present	ac977edde3805e55	195	unchanged in place
+declaration	L2-121	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_RetentionSurvivesSenderScopeClose	201	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_RetentionSurvivesSenderScopeClose	present	3b1825dc30ebe476	262	unchanged in place
+declaration	L2-122	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_NoRetentionGuards	267	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_NoRetentionGuards	present	546f986ded8adb31	420	unchanged in place
+declaration	L2-123	internal/agent/queued_call_scope_test.go	func	agCapsForTest	520	internal/agent/queued_call_scope_test.go	agCapsForTest	present	048d6145907056de	526	unchanged in place
+declaration	L2-124	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_FreshRunRefusalReleasesRetained	534	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_FreshRunRefusalReleasesRetained	present	c42aa99e1b80a2e0	588	unchanged in place
+declaration	L2-125	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_SenderFirstRunUnaffected	596	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_SenderFirstRunUnaffected	present	55fdf8c1465c092b	621	unchanged in place
+declaration	L2-126	internal/agent/queued_call_scope_test.go	func	TestQueuedCallScope_DispatcherSiteFiresOnRealTurn	637	internal/agent/queued_call_scope_test.go	TestQueuedCallScope_DispatcherSiteFiresOnRealTurn	present	1315ee6b65bf1708	694	unchanged in place

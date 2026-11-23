@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,7 +143,7 @@ func TestRunAwaitingAdmission_OrphanedQueuedCallResolvesInsteadOfHanging(t *test
 		require.Less(t, time.Since(start), 5*time.Second,
 			"runAwaitingAdmission must resolve promptly once call1 fails, not block until ctx2's own deadline")
 		require.Error(t, o.err)
-		require.ErrorIs(t, o.err, errQueuedTurnNotRun)
+		require.ErrorIs(t, o.err, mailboxpkg.ErrQueuedTurnNotRun)
 		require.True(t, o.queued)
 	case <-time.After(9 * time.Second):
 		t.Fatal("runAwaitingAdmission for call2 never returned -- the orphaned call's hook was dropped")
@@ -176,7 +178,7 @@ func TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks(t *testing.T) {
 	select {
 	case err := <-resolved:
 		require.Error(t, err)
-		require.ErrorIs(t, err, errQueuedTurnNotRun)
+		require.ErrorIs(t, err, mailboxpkg.ErrQueuedTurnNotRun)
 	default:
 		t.Fatal("clearAll must resolve a dropped call's onQueueResolved hook")
 	}
@@ -217,7 +219,7 @@ func TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook(t *testi
 	select {
 	case err := <-resolvedA:
 		require.Error(t, err)
-		require.ErrorIs(t, err, errQueuedTurnNotRun)
+		require.ErrorIs(t, err, mailboxpkg.ErrQueuedTurnNotRun)
 	default:
 		t.Fatal("interruptAndReplace must resolve the OLD replacement's hook when overwriting it")
 	}
