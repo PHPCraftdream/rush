@@ -104,7 +104,7 @@ linters:
       # explicit fence for a request blocked before it has produced a
       # response body -- context cancellation alone is not sufficient on
       # every Windows net/http path. See the comment at the call site.
-      - path: internal/agent/tools/mcp/transport\.go
+      - path: internal/agent/tools/mcp/mcpdial/transport\.go
         linters:
           - staticcheck
         text: "SA1019"
