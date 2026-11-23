@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -204,7 +205,7 @@ func (c *recoveryComponent) runSummarizeSilentForRecovery(ctx context.Context, s
 		streamCtx = context.WithValue(streamCtx, cliprovider.SessionIDContextKey, sessionID)
 		if smartModel.Model.Provider() == codexprovider.Name {
 			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, provauth.TurnSmartReasoningEffort(smartModel))
-			streamCtx = context.WithValue(streamCtx, cliprovider.ServiceTierContextKey, turnSmartServiceTier(smartModel))
+			streamCtx = context.WithValue(streamCtx, cliprovider.ServiceTierContextKey, turnstep.TurnSmartServiceTier(smartModel))
 		} else {
 			streamCtx = context.WithValue(streamCtx, cliprovider.ReasoningEffortContextKey, "")
 		}

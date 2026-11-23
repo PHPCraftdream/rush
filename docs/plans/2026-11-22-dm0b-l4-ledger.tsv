@@ -1,0 +1,175 @@
+# Lane L4 ledger (docs/plans/2026-11-22-dm0b-scc-cut.md section 5, row L4 "turnstep + delegation").
+#
+# VERDICT: this lane moves one production declaration (turnSmartServiceTier -> turnstep.TurnSmartServiceTier,
+# row L4-052, found by review: the first pass called it blocked on a false premise). The planned 10 files and
+# 104 declarations are otherwise not movable in this tree: their implementations already left the internal/agent
+# root, and what remains is the root retention layer plus *coordinator / *sessionAgent
+# methods this lane must not move. Every declaration of every in-scope file at HEAD has
+# one row below; the proof column carries the anchor.
+#
+# ERRATA (orchestrator, after review; P2/P3 kept as backlog, not fixed here):
+#   - the ledger omits 20 field declarations: step_progress.go:31,124-127,150-152 (5) and
+#     turn_progress_guard.go:74-82,113-118,215-218 (15); the manifest inventories fields
+#     (execution.tsv:3569-3571,3579-3581), and mixed-file rows such as turnConfig are not inventoried;
+#   - totals in the rows below are authoritative: 7 *coordinator methods, 17 delegation adapters,
+#     3 other delegation retentions (not the 5 / 14 of the lane report);
+#   - the refuseWaitText caller anchor is progressGuardTool.Run (turn_progress_guard.go:257),
+#     not agent_turn_step.go;
+#   - the historical turnSmartReasoningEffort lives in runtime/policy/provauth/context_policy.go:45-47.
+#
+# Columns: record row_id source_file kind symbol source_line target_file target_symbol
+#          disposition hit line_end proof
+# hit = sha256_16 of the whitespace-normalised HEAD body after the proof-rename
+# RequestedModelRole -> agentcall.RequestedModelRole.
+# Verifier: .rush/tmp/sprint0/l4/oracle.py (scratch, not checked in): with this ledger it
+# reports verify rows=84 pass=true failures=0. Its declaration census was cross-checked
+# against an independent go/ast census (6496 rows, 0 divergence), and its adapter
+# validator was negative-controlled on a mutated copy of bindRootRoleContract.
+#
+# DISPOSITIONS
+#   adapter  the root declaration is a proven one-statement delegate, or a value/type
+#            alias, of a declaration that already lives in the destination package.
+#   blocked  the manifest assigns the declaration to the destination package, but a
+#            root-only reader, a leaf name collision, or a missing destination package
+#            prevents the move in this lane. The proof names the blocker.
+#   moved    none in this lane.
+#
+# CLUSTER VERDICTS
+# turnstep (layout rows turn_admission.go, turn_effort.go, turn_progress_guard.go,
+# step_progress.go, step_progress_edit.go, agent_turn_peakhours.go, agent_turn_ui_notify.go):
+#   DM2 (2578c29c4, 8c4d3ee29) already relocated turn_admission.go, step_progress_edit.go
+#   and agent_turn_ui_notify.go (as runtime/exec/turnstep/turn_ui.go), and lowered the
+#   guard/classifier policy into turnstep/step_progress.go, turnstep/turn_budget.go and
+#   turnstep/turn_ui.go. The three files L4 planned to move are the retention layer those
+#   moves left behind: they declare the root guard STATE (turnProgress, stepGuard,
+#   progressGuardTool, readCoverage, readSpan, namedSpan, stepClassifyCtx), read by
+#   agent_turn_step.go (stays) and agent_turn_stream.go (stays), and colliding by name with
+#   the leaf's own exported value types turnstep.StepGuard, TurnProgress, ReadSpan,
+#   NamedSpan, StepClassifyCtx. Moving them is a value-type merge, not a pure move.
+# delegation (layout rows delegation_role.go, delegation_role_calls.go,
+# delegation_role_models.go, delegation_role_state.go, delegation_depth.go,
+# delegation_question.go, root_role_contract.go):
+#   DM6 (dceee3de8) already relocated the family into runtime/batch/batchadapter/delegation;
+#   all 24 manifest rows that target that package resolve there. The 7 root files keep thin
+#   delegates that are the public API of package agent for internal/app and internal/serve
+#   (agent.DefaultAgentDepth, agent.WithAgentDepth, agent.PersistSessionAgentDepth,
+#   agent.WithParentRoleConfigSnapshot, ...); only L7 requalifies those importers.
+#
+# MANIFEST RECONCILIATION (checked in 2026-11-16-sprint0-agent-execution.tsv is not edited
+# in place; corrections are recorded here per dm0b-scc-cut.md Q4)
+#   123 manifest rows cover these 11 files: 24 target runtime/batch/batchadapter/delegation
+#   (19 DM6-gated + 5 EX-0L-gated), 81 target runtime/exec/turnstep (DM2-gated), 14 target
+#   runtime/coord (DM7-gated), 2 target runtime/batch/batchcontract (EX-0L-gated), 1 is a
+#   root retention, 1 targets runtime/policy/provauth (DM3).
+#   - all 24 delegation-destination rows resolve in the live destination (the 4
+#     delegationRoleModel.* field rows through the destination type DelegationRoleModel).
+#   - the 14 DM7 rows are *coordinator methods; runtime/coord does not exist yet.
+#   - the 2 EX-0L rows (delegation_role.go::validateAgentRoleInput,
+#     delegation_role_models.go::requestedRoleSlot) target runtime/batch/batchcontract,
+#     which does not exist; creating it would give runtime/batch 8 children (limit 7).
+#   - of the 81 DM2 rows only the ones whose target file exists resolve (stepCallClass.String,
+#     fsReadItemSpan, progressGuardMetadata, guardRefused, unknownToolResultPrefix,
+#     unknownToolResult); the rest point at runtime/exec/turnstep/turn_progress_guard.go and
+#     runtime/exec/turnstep/progress_guard_seam.go, which DM2 never created, and at unexported
+#     leaf spellings (readSpan, namedSpan, stepClassifyCtx) that landed exported as ReadSpan,
+#     NamedSpan, StepClassifyCtx in turnstep/step_progress.go.
+#   - turn_effort.go::turnSmartReasoningEffort (DM3 -> runtime/policy/provauth/
+#     reasoning_effort.go) no longer exists; the live file declares turnSmartServiceTier,
+#     which has no manifest row. Same defect class as dm0b-scc-cut.md section 9 item 2.
+#
+record	row_id	source_file	kind	symbol	source_line	target_file	target_symbol	disposition	hit	line_end	proof
+scope		internal/agent/agent_turn_peakhours.go									
+scope		internal/agent/delegation_depth.go									
+declaration	L4-001	internal/agent/delegation_depth.go	const	DefaultAgentDepth	13	internal/agent/delegation_depth.go	DefaultAgentDepth	adapter	7deaceea0bac7d70	13	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-002	internal/agent/delegation_depth.go	const	MaxAgentDepthForResume	14	internal/agent/delegation_depth.go	MaxAgentDepthForResume	adapter	5c9a6f70d4e58732	14	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-003	internal/agent/delegation_depth.go	var	ErrAgentDepthExceeded	17	internal/agent/delegation_depth.go	ErrAgentDepthExceeded	adapter	30ef0da6529a8036	17	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-004	internal/agent/delegation_depth.go	func	MaxAgentDepthFrom	19	internal/agent/delegation_depth.go	MaxAgentDepthFrom	adapter	d4fdd4bbbc90f1d2	19	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-005	internal/agent/delegation_depth.go	func	WithAgentDepth	21	internal/agent/delegation_depth.go	WithAgentDepth	adapter	7370bfc0e0229ce0	23	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-006	internal/agent/delegation_depth.go	func	effectiveParentAgentDepth	25	internal/agent/delegation_depth.go	effectiveParentAgentDepth	adapter	2b69153955943a8f	27	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-007	internal/agent/delegation_depth.go	func	WithPersistedSessionAgentDepth	29	internal/agent/delegation_depth.go	WithPersistedSessionAgentDepth	adapter	33988ef9f3ffc955	31	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-008	internal/agent/delegation_depth.go	func	withPersistedCallAgentDepth	33	internal/agent/delegation_depth.go	withPersistedCallAgentDepth	adapter	363426b4407da1f2	35	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-009	internal/agent/delegation_depth.go	func	PersistSessionAgentDepth	37	internal/agent/delegation_depth.go	PersistSessionAgentDepth	adapter	aec7b4d3a7de244d	39	thin one-statement delegate into the destination package (root-side port)
+scope		internal/agent/delegation_question.go									
+declaration	L4-010	internal/agent/delegation_question.go	method	coordinator.childAwaitingQuestionSummary	26	internal/agent/delegation_question.go	coordinator.childAwaitingQuestionSummary	blocked	b727507a4dd2b8fa	69	method of *coordinator; the manifest sends its file to runtime/coord (DM7-gated), which does not exist
+declaration	L4-011	internal/agent/delegation_question.go	method	coordinator.childParentSession	73	internal/agent/delegation_question.go	coordinator.childParentSession	blocked	9b60f488bfcb2604	84	method of *coordinator (DM7-gated)
+scope		internal/agent/delegation_role.go									
+declaration	L4-012	internal/agent/delegation_role.go	func	validateAgentRoleInput	9	internal/agent/delegation_role.go	validateAgentRoleInput	blocked	05a24b4bf2129372	17	manifest destination is runtime/batch/batchcontract (EX-0L-gated), which does not exist; creating it would give runtime/batch 8 children (limit 7)
+scope		internal/agent/delegation_role_calls.go									
+declaration	L4-013	internal/agent/delegation_role_calls.go	method	coordinator.refreshRequestedDelegationCall	12	internal/agent/delegation_role_calls.go	coordinator.refreshRequestedDelegationCall	blocked	89f8d94c4c0b347c	46	method of *coordinator (DM7-gated)
+declaration	L4-014	internal/agent/delegation_role_calls.go	method	coordinator.restoreRequestedDelegationCall	49	internal/agent/delegation_role_calls.go	coordinator.restoreRequestedDelegationCall	blocked	ce0aada715de23b7	125	method of *coordinator (DM7-gated)
+declaration	L4-015	internal/agent/delegation_role_calls.go	method	coordinator.refuseLostRequestedRoleDriver	127	internal/agent/delegation_role_calls.go	coordinator.refuseLostRequestedRoleDriver	blocked	8598d7bc6e287629	140	method of *coordinator (DM7-gated)
+scope		internal/agent/delegation_role_models.go									
+declaration	L4-016	internal/agent/delegation_role_models.go	type	delegationRoleModel	14	internal/agent/delegation_role_models.go	delegationRoleModel	adapter	39c0f0c8a020a2a5	14	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-017	internal/agent/delegation_role_models.go	func	requestedRoleSlot	17	internal/agent/delegation_role_models.go	requestedRoleSlot	blocked	bd33b6ef21f77056	45	manifest destination is runtime/batch/batchcontract (EX-0L-gated), which does not exist; moving it to the delegation adapter instead would add an undeclared delegation -> runtime/policy/callbeat edge
+declaration	L4-018	internal/agent/delegation_role_models.go	method	coordinator.resolveRequestedDelegationModel	47	internal/agent/delegation_role_models.go	coordinator.resolveRequestedDelegationModel	blocked	dd2532e221dc8dfc	102	method of *coordinator (DM7-gated)
+declaration	L4-019	internal/agent/delegation_role_models.go	method	coordinator.resolveRoleContractModel	104	internal/agent/delegation_role_models.go	coordinator.resolveRoleContractModel	blocked	2f274a40c0825773	140	method of *coordinator (DM7-gated)
+declaration	L4-020	internal/agent/delegation_role_models.go	func	parentRoleConfigFrom	142	internal/agent/delegation_role_models.go	parentRoleConfigFrom	adapter	7af7fda6fabc2f71	144	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-021	internal/agent/delegation_role_models.go	func	WithParentRoleConfigSnapshot	146	internal/agent/delegation_role_models.go	WithParentRoleConfigSnapshot	adapter	568ec7f1e383c363	148	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-022	internal/agent/delegation_role_models.go	func	parentRoleContractFrom	152	internal/agent/delegation_role_models.go	parentRoleContractFrom	blocked	64ac158150a0900b	154	manifest keeps it in the root (target_package_path '.') - documented graph exception: its authority comes from the root toolwrap accessor role_policy.go:70
+scope		internal/agent/delegation_role_state.go									
+declaration	L4-023	internal/agent/delegation_role_state.go	func	resolveDelegationRequestedRole	10	internal/agent/delegation_role_state.go	resolveDelegationRequestedRole	adapter	a5526aff57fd50cc	12	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-024	internal/agent/delegation_role_state.go	func	bindDelegationRoleContract	14	internal/agent/delegation_role_state.go	bindDelegationRoleContract	adapter	20a542d80ca61f79	16	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-025	internal/agent/delegation_role_state.go	func	bindDelegationRequestedRole	18	internal/agent/delegation_role_state.go	bindDelegationRequestedRole	adapter	3c6ebe49147e418c	20	thin one-statement delegate into the destination package (root-side port)
+scope		internal/agent/root_role_contract.go									
+declaration	L4-026	internal/agent/root_role_contract.go	func	bindRootRoleContract	10	internal/agent/root_role_contract.go	bindRootRoleContract	adapter	a333cccd1ec43f36	12	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-027	internal/agent/root_role_contract.go	func	restoreRootRoleContract	14	internal/agent/root_role_contract.go	restoreRootRoleContract	adapter	3471caa6ba223a25	16	thin one-statement delegate into the destination package (root-side port)
+scope		internal/agent/step_progress.go									
+declaration	L4-028	internal/agent/step_progress.go	type	stepCallClass	16	internal/agent/step_progress.go	stepCallClass	adapter	71c47617bee63409	16	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-029	internal/agent/step_progress.go	const	stepCallAct	19	internal/agent/step_progress.go	stepCallAct	adapter	ab7cef2216a83810	19	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-030	internal/agent/step_progress.go	const	stepCallRead	20	internal/agent/step_progress.go	stepCallRead	adapter	dc21dc05cbcda44c	20	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-031	internal/agent/step_progress.go	const	stepCallReread	21	internal/agent/step_progress.go	stepCallReread	adapter	1396c6b98902eec4	21	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-032	internal/agent/step_progress.go	const	stepCallWait	22	internal/agent/step_progress.go	stepCallWait	adapter	6208910ba9f93905	22	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-033	internal/agent/step_progress.go	const	stepCallRefused	23	internal/agent/step_progress.go	stepCallRefused	adapter	08ae05ae6a9057d5	23	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-034	internal/agent/step_progress.go	const	stepCallNeutral	24	internal/agent/step_progress.go	stepCallNeutral	adapter	ff49945393913a2c	24	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-035	internal/agent/step_progress.go	const	stepCallNoWrite	25	internal/agent/step_progress.go	stepCallNoWrite	adapter	e9a055161e33b3c6	25	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-036	internal/agent/step_progress.go	type	readSpan	31	internal/agent/step_progress.go	readSpan	blocked	d844ff526e1684f8	31	duplicate of the leaf's exported turnstep.ReadSpan, but the root fields are lower-case and 4 root test files read them - unifying the two is a refactor (L5/L6)
+declaration	L4-037	internal/agent/step_progress.go	func	toLeafSpan	33	internal/agent/step_progress.go	toLeafSpan	blocked	a64f1851098b1f53	35	conversion between the root type readSpan and turnstep.ReadSpan
+declaration	L4-038	internal/agent/step_progress.go	func	fromLeafSpan	37	internal/agent/step_progress.go	fromLeafSpan	blocked	48d7423dd67d0ac2	37	conversion between turnstep.ReadSpan and the root type readSpan
+declaration	L4-039	internal/agent/step_progress.go	type	readCoverage	42	internal/agent/step_progress.go	readCoverage	blocked	a18250b83079f1f0	42	root read-coverage state; the leaf has no counterpart and the four methods are read by turn_progress_guard.go and by root tests
+declaration	L4-040	internal/agent/step_progress.go	method	readCoverage.covered	46	internal/agent/step_progress.go	readCoverage.covered	blocked	ac1abaec9a3341bb	64	root receiver readCoverage (never moves in this lane)
+declaration	L4-041	internal/agent/step_progress.go	method	readCoverage.add	67	internal/agent/step_progress.go	readCoverage.add	blocked	b80c34c052474328	73	root receiver readCoverage (never moves in this lane)
+declaration	L4-042	internal/agent/step_progress.go	method	readCoverage.clear	77	internal/agent/step_progress.go	readCoverage.clear	blocked	91de86e54af66345	81	root receiver readCoverage (never moves in this lane)
+declaration	L4-043	internal/agent/step_progress.go	method	readCoverage.snapshot	84	internal/agent/step_progress.go	readCoverage.snapshot	blocked	d464d70808ab3efa	90	root receiver readCoverage (never moves in this lane)
+declaration	L4-044	internal/agent/step_progress.go	func	mergeSpans	94	internal/agent/step_progress.go	mergeSpans	blocked	a316ede5d9250169	117	operates on the root type readSpan
+declaration	L4-045	internal/agent/step_progress.go	func	isWaitOnlyCall	119	internal/agent/step_progress.go	isWaitOnlyCall	adapter	8150d688110ce05d	121	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-046	internal/agent/step_progress.go	type	namedSpan	124	internal/agent/step_progress.go	namedSpan	blocked	0d471af16b623974	127	root counterpart of the leaf's exported turnstep.NamedSpan, read by agent_turn_step.go
+declaration	L4-047	internal/agent/step_progress.go	func	readSpans	134	internal/agent/step_progress.go	readSpans	blocked	f8bcb3efa0105ef0	141	converts the leaf's []turnstep.NamedSpan into the root's []namedSpan; read by agent_turn_step.go
+declaration	L4-048	internal/agent/step_progress.go	func	asyncCapRefused	143	internal/agent/step_progress.go	asyncCapRefused	adapter	5feb4165575584a8	145	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-049	internal/agent/step_progress.go	type	stepClassifyCtx	150	internal/agent/step_progress.go	stepClassifyCtx	blocked	db51403863528bfb	152	root classification context holding the root readCoverage; the leaf already declares the exported StepClassifyCtx seam struct - merging them is a refactor (L5/L6)
+declaration	L4-050	internal/agent/step_progress.go	method	stepClassifyCtx.seam	158	internal/agent/step_progress.go	stepClassifyCtx.seam	blocked	fa9f5eecabe8a73b	174	method of the root type stepClassifyCtx
+declaration	L4-051	internal/agent/step_progress.go	func	classifyStepCall	178	internal/agent/step_progress.go	classifyStepCall	blocked	e8692eff23072603	180	read by agent_turn_step.go; forwards cx.seam(), which needs the root type stepClassifyCtx
+scope		internal/agent/turn_effort.go									
+declaration	L4-052	internal/agent/turn_effort.go	func	turnSmartServiceTier	4	internal/agent/runtime/exec/turnstep/turn_effort.go	TurnSmartServiceTier	moved	33bc1541931a2236	6	moved by the orchestrator after review: Model is an alias of agentcall.Model (internal/agent/contract_bridge.go:27), the body reads only ModelCfg.ServiceTier and turnstep already imports agentcall (turnstep/turn_budget.go:21); the three root callers (agent_turn.go, agent_compaction_silent.go, coordinator_summarize_role.go) are requalified
+scope		internal/agent/turn_progress_guard.go									
+declaration	L4-053	internal/agent/turn_progress_guard.go	const	inTurnRefuseAfter	20	internal/agent/turn_progress_guard.go	inTurnRefuseAfter	adapter	f0b04eaf7e42e596	20	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-054	internal/agent/turn_progress_guard.go	const	inTurnStopAfter	23	internal/agent/turn_progress_guard.go	inTurnStopAfter	adapter	176a6cd4052dccd5	23	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-055	internal/agent/turn_progress_guard.go	const	InTurnGuardStopTitle	29	internal/agent/turn_progress_guard.go	InTurnGuardStopTitle	adapter	383d5586f5bb2c6d	29	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-056	internal/agent/turn_progress_guard.go	func	IsInTurnGuardStop	33	internal/agent/turn_progress_guard.go	IsInTurnGuardStop	adapter	7c5bc5df82abbed4	35	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-057	internal/agent/turn_progress_guard.go	func	refuseWait	39	internal/agent/turn_progress_guard.go	refuseWait	adapter	f7a26a42b0f969e7	41	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-058	internal/agent/turn_progress_guard.go	func	refuseReread	45	internal/agent/turn_progress_guard.go	refuseReread	adapter	74f605977062855f	47	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-059	internal/agent/turn_progress_guard.go	func	nextStreak	50	internal/agent/turn_progress_guard.go	nextStreak	adapter	2b234d2524be05ec	52	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-060	internal/agent/turn_progress_guard.go	func	stopAfter	56	internal/agent/turn_progress_guard.go	stopAfter	adapter	2004e5c30ae79f44	58	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-061	internal/agent/turn_progress_guard.go	func	classOfStep	62	internal/agent/turn_progress_guard.go	classOfStep	adapter	9e860ba0f4b159f3	64	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-062	internal/agent/turn_progress_guard.go	func	hasClass	66	internal/agent/turn_progress_guard.go	hasClass	adapter	91ee09e9edf97d25	68	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-063	internal/agent/turn_progress_guard.go	type	turnProgress	74	internal/agent/turn_progress_guard.go	turnProgress	blocked	c9b5733a9eeacd8e	82	root turn state; read by agent_turn_stream.go, and the leaf already declares the exported value type TurnProgress - moving it is a type merge, not a pure move (L5/L6)
+declaration	L4-064	internal/agent/turn_progress_guard.go	func	leafGuard	86	internal/agent/turn_progress_guard.go	leafGuard	blocked	f94e12495eb988d6	94	argument conversion into turnstep.StepGuard; co-moves with the root state type stepGuard
+declaration	L4-065	internal/agent/turn_progress_guard.go	func	leafTurnProgress	98	internal/agent/turn_progress_guard.go	leafTurnProgress	blocked	7a93347d3edb5949	107	argument conversion into turnstep.TurnProgress; co-moves with the root state type turnProgress
+declaration	L4-066	internal/agent/turn_progress_guard.go	type	stepGuard	113	internal/agent/turn_progress_guard.go	stepGuard	blocked	c3231796611f3418	118	root step snapshot state; the leaf already declares the exported value type StepGuard - moving it is a type merge, not a pure move (L5/L6)
+declaration	L4-067	internal/agent/turn_progress_guard.go	func	stepGuardFor	125	internal/agent/turn_progress_guard.go	stepGuardFor	blocked	42501e3b8a4f3f31	132	read by agent_turn_step.go; returns the root type stepGuard
+declaration	L4-068	internal/agent/turn_progress_guard.go	method	stepGuard.refuseWaitCall	136	internal/agent/turn_progress_guard.go	stepGuard.refuseWaitCall	blocked	dcd6742a679bc41b	138	root receiver stepGuard (never moves in this lane)
+declaration	L4-069	internal/agent/turn_progress_guard.go	method	stepGuard.refuseRereadCall	143	internal/agent/turn_progress_guard.go	stepGuard.refuseRereadCall	blocked	19d11df41e125bdf	145	method of the root state type stepGuard; calls the root helper coveredAll over root type namedSpan
+declaration	L4-070	internal/agent/turn_progress_guard.go	func	coveredAll	150	internal/agent/turn_progress_guard.go	coveredAll	blocked	39623997834c17df	160	operates on the root state types readCoverage and namedSpan
+declaration	L4-071	internal/agent/turn_progress_guard.go	method	turnProgress.applyStep	167	internal/agent/turn_progress_guard.go	turnProgress.applyStep	blocked	9fa08194ae38e665	196	method of the root state type turnProgress (read by agent_turn_step.go)
+declaration	L4-072	internal/agent/turn_progress_guard.go	func	progressGuardMetadataJSON	202	internal/agent/turn_progress_guard.go	progressGuardMetadataJSON	adapter	744a3cedc0a0b106	204	thin one-statement delegate into the destination package (root-side port)
+declaration	L4-073	internal/agent/turn_progress_guard.go	type	progressGuardTool	215	internal/agent/turn_progress_guard.go	progressGuardTool	blocked	4d1fbd74a678c2cf	218	root fantasy.AgentTool wrapper; policy_leaf.go unwraps it through PolicyLeafTool, and the manifest's planned file runtime/exec/turnstep/progress_guard_seam.go was never created
+declaration	L4-074	internal/agent/turn_progress_guard.go	func	wrapProgressGuard	222	internal/agent/turn_progress_guard.go	wrapProgressGuard	blocked	a88ca9b1aa1a55e7	228	read by agent_turn_step.go; returns the root type progressGuardTool
+declaration	L4-075	internal/agent/turn_progress_guard.go	method	progressGuardTool.PolicyLeafTool	230	internal/agent/turn_progress_guard.go	progressGuardTool.PolicyLeafTool	blocked	e529d37ca8d9487f	230	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-076	internal/agent/turn_progress_guard.go	method	progressGuardTool.Info	232	internal/agent/turn_progress_guard.go	progressGuardTool.Info	blocked	5037a6321b3502b4	234	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-077	internal/agent/turn_progress_guard.go	method	progressGuardTool.ProviderOptions	236	internal/agent/turn_progress_guard.go	progressGuardTool.ProviderOptions	blocked	3df76faefe50f954	238	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-078	internal/agent/turn_progress_guard.go	method	progressGuardTool.SetProviderOptions	240	internal/agent/turn_progress_guard.go	progressGuardTool.SetProviderOptions	blocked	9d8443bf27985d2b	242	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-079	internal/agent/turn_progress_guard.go	method	progressGuardTool.RestrictedRunAction	246	internal/agent/turn_progress_guard.go	progressGuardTool.RestrictedRunAction	blocked	79bef45e3da93c76	252	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-080	internal/agent/turn_progress_guard.go	method	progressGuardTool.Run	254	internal/agent/turn_progress_guard.go	progressGuardTool.Run	blocked	1550f911976e3fc0	263	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-081	internal/agent/turn_progress_guard.go	method	progressGuardTool.refuse	269	internal/agent/turn_progress_guard.go	progressGuardTool.refuse	blocked	e9617dea688870de	273	root receiver progressGuardTool (never moves in this lane)
+declaration	L4-082	internal/agent/turn_progress_guard.go	func	refuseWaitText	277	internal/agent/turn_progress_guard.go	refuseWaitText	blocked	96cfbb5701bd8b28	279	read by agent_turn_step.go; forwards through leafGuard, which needs the root state type stepGuard
+declaration	L4-083	internal/agent/turn_progress_guard.go	func	refuseRereadText	283	internal/agent/turn_progress_guard.go	refuseRereadText	blocked	c15bcfda8d6f338a	285	forwards through leafGuard and turnstep.NamedSpan; needs the root state type stepGuard and root type namedSpan
+declaration	L4-084	internal/agent/turn_progress_guard.go	func	guardStopDetails	289	internal/agent/turn_progress_guard.go	guardStopDetails	blocked	a33bdfcd25084215	291	read by agent_turn_step.go; forwards through leafTurnProgress, which needs the root state type turnProgress
