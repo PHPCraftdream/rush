@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -63,8 +65,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// unchanged: internal/app detects the queued case by (nil, nil) at two
 	// boundaries (app_run_turn.go, app.go's pump adapter), so the
 	// admission status travels beside the contract, not inside the error.
-	adm := turnAdmissionFrom(ctx)
-	ctx = withoutTurnAdmission(ctx)
+	adm := agentcall.TurnAdmissionFrom(ctx)
+	ctx = agentcall.WithoutTurnAdmission(ctx)
 	// A Drain call's whole point is an empty prompt (doc sec.3.4): it reacts
 	// (if at all) purely to history the turn-start pull just inserted, never
 	// to typed text. ErrEmptyPrompt is lifted ONLY for IsDrain.
@@ -134,7 +136,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		// copy is later drained and executed -- and how that dispatch
 		// ends -- belongs to whoever executed it, not to this invocation.
 		if adm != nil {
-			adm.markQueued()
+			adm.MarkQueued()
 		}
 		return nil, nil
 	}

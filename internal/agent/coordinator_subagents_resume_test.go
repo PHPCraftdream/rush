@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -38,8 +40,8 @@ func (a *busyThenResolvingAgent) Run(ctx context.Context, call SessionAgentCall)
 	if !busy {
 		return agentResultWithText("direct result"), nil
 	}
-	if adm := turnAdmissionFrom(ctx); adm != nil {
-		adm.markQueued()
+	if adm := agentcall.TurnAdmissionFrom(ctx); adm != nil {
+		adm.MarkQueued()
 	}
 	return nil, nil
 }

@@ -262,7 +262,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// queued call owns no retry classification at all, whatever its
 	// queued copy's callback recorded before this sender's resolve()
 	// sealed the capture.
-	attemptAdmission := newTurnAdmission()
+	attemptAdmission := agentcall.NewTurnAdmission()
 	autoResumed, backgroundJobNotice := noticeFlagsFrom(ctx)
 	agentCall := SessionAgentCall{
 		SessionID:            sessionID,
@@ -315,7 +315,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// a 401 credential refresh (task #341, P1-2).
 	trackCall := &agentCall
 	run := func() (*fantasy.AgentResult, error) {
-		result, err := c.currentAgent.Run(withTurnAdmission(ctx, attemptAdmission), *trackCall)
+		result, err := c.currentAgent.Run(agentcall.WithTurnAdmission(ctx, attemptAdmission), *trackCall)
 		if sealCurrentAttemptIdentity != nil {
 			sealCurrentAttemptIdentity()
 		}
@@ -334,7 +334,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	armAttempt := func() {
 		attempt := newAttemptEvidence()
 		curAttempt = attempt
-		attemptAdmission = newTurnAdmission()
+		attemptAdmission = agentcall.NewTurnAdmission()
 		admission := attemptAdmission
 		var identityMu sync.Mutex
 		identityOpen := true
@@ -346,7 +346,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		trackCall.OnAssistantMessageCreated = func(id string) {
 			attempt.record(id)
 			callResultRecord(id)
-			if admission.wasQueued() {
+			if admission.WasQueued() {
 				return
 			}
 			identityMu.Lock()
@@ -513,7 +513,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	if callResult != nil {
 		defer func() { callResultRecord(attemptAssistantMsgID) }()
 	}
-	if !attemptAdmission.wasQueued() {
+	if !attemptAdmission.WasQueued() {
 		defer func() { executionIdentityRecord(attemptAssistantMsgID) }()
 	}
 	skills.LogTurnUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
@@ -592,7 +592,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		// call after a genuine 400. Queued means nothing to retry from
 		// this invocation; the queued turn's outcome belongs to whoever
 		// executed it.
-		if attemptAdmission.wasQueued() {
+		if attemptAdmission.WasQueued() {
 			break
 		}
 		partial, isContinuation := c.shouldContinueTurn(ctx, sessionID, originalErr, attemptAssistantMsgID)
