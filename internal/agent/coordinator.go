@@ -318,7 +318,7 @@ func NewCoordinator(
 	}
 
 	// Discover skills once at session start.
-	allSkills, activeSkills := discoverSkills(cfg)
+	allSkills, activeSkills := skills.DiscoverForConfig(cfg)
 	skillTracker := skills.NewTracker(activeSkills)
 
 	background := shellbg.NewBackgroundShellManager()
