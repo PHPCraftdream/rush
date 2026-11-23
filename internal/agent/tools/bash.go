@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 )
 
@@ -110,12 +111,12 @@ func blockFuncs() []shell.BlockFunc {
 	return append(shell.CanonicalBlockFuncs(), agentguard.CommandBlockFunc())
 }
 
-func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string, onBackgroundComplete func(sessionID string, sh *shell.BackgroundShell), managers ...*shell.BackgroundShellManager) fantasy.AgentTool {
-	var bgManager *shell.BackgroundShellManager
+func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string, onBackgroundComplete func(sessionID string, sh *shellbg.BackgroundShell), managers ...*shellbg.BackgroundShellManager) fantasy.AgentTool {
+	var bgManager *shellbg.BackgroundShellManager
 	if len(managers) > 0 && managers[0] != nil {
 		bgManager = managers[0]
 	} else {
-		bgManager = shell.NewBackgroundShellManager()
+		bgManager = shellbg.NewBackgroundShellManager()
 	}
 	return fantasy.NewAgentTool(
 		BashToolName,
@@ -387,14 +388,14 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 }
 
 // startBashShell is the legacy detached launch, after guards and permission.
-func startBashShell(manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shell.BackgroundShell, error) {
+func startBashShell(manager *shellbg.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shellbg.BackgroundShell, error) {
 	return manager.StartOwned(context.Background(), sessionID, workingDir, blockFuncs(), params.Command, params.Description)
 }
 
 // startRetainedBashShell is an inert lifetime seam for a future policy-approved
 // caller. It does not perform policy checks or activate batch ingress. The
 // caller must use the same guards and permission boundary as NewBashTool.
-func startRetainedBashShell(ctx context.Context, manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shell.BackgroundExecution, error) {
+func startRetainedBashShell(ctx context.Context, manager *shellbg.BackgroundShellManager, sessionID, workingDir string, params BashParams) (*shellbg.BackgroundExecution, error) {
 	return manager.StartRetainedOwned(ctx, sessionID, workingDir, blockFuncs(), params.Command, params.Description)
 }
 

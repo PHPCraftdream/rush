@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,8 +30,8 @@ type childBGFixture struct {
 	*attemptFixture
 	parentID, childID string
 	runs              *countingAgent
-	held              *shell.BackgroundShell
-	mgr               *shell.BackgroundShellManager
+	held              *shellbg.BackgroundShell
+	mgr               *shellbg.BackgroundShellManager
 }
 
 type childBGMode struct {
@@ -62,7 +62,7 @@ func newChildBGFixture(t *testing.T, m childBGMode) *childBGFixture {
 		agent: runs, call: SessionAgentCall{SessionID: childID}, parentSessionID: parentID,
 	})
 
-	mgr := shell.NewBackgroundShellManager()
+	mgr := shellbg.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.Close(context.Background()) })
 	f.coord.background = mgr
 	held, err := mgr.StartOwned(t.Context(), childID, f.env.workingDir, nil, bgHoldCommand(bgGateName), "held")

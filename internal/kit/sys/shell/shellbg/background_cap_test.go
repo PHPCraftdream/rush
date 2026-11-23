@@ -3,7 +3,7 @@
 // the next step -- free slots with batch_stop, or end the turn now -- and must
 // never tell the model to wait, poll or ask the user, since every running
 // job already reports its result as a session message.
-package shell
+package shellbg
 
 import (
 	"testing"

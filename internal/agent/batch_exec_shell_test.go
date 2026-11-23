@@ -11,14 +11,14 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
 
 func batchShellEnv(t *testing.T) batchLeafEnv {
 	env := testEnv(t)
-	tool := tools.NewBashTool(env.permissions, env.workingDir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
+	tool := tools.NewBashTool(env.permissions, env.workingDir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shellbg.NewBackgroundShellManager())
 	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
 	return batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}
 }
@@ -122,7 +122,7 @@ func TestBatchShellStartContextIndependentAndStopDetails(t *testing.T) {
 
 func TestBatchShellEarlyStopPolicyGateStartsNoProcess(t *testing.T) {
 	env := testEnv(t)
-	manager := shell.NewBackgroundShellManager()
+	manager := shellbg.NewBackgroundShellManager()
 	t.Cleanup(func() { manager.Close(context.Background()) })
 	underlying := tools.NewBashTool(env.permissions, env.workingDir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, manager)
 	entered, release := make(chan struct{}), make(chan struct{})

@@ -43,7 +43,7 @@ func IsolateProcess(cmd *exec.Cmd) { platform.HideConsoleWindow(cmd) }
 // doc comment for why HideWindow alone was never sufficient, despite
 // this comment previously claiming it "sets the Windows CREATE_NO_WINDOW
 // creation flag" — it does not.
-func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int), retainedLaunch func(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) (bool, error)) interp.ExecHandlerFunc {
+func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int)) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
@@ -68,9 +68,9 @@ func ProcessGroupExecHandler(killTimeout time.Duration, registerProcess func(int
 		// has returned. The Windows implementation uses it to create and
 		// assign the per-command Job Object (see job_windows.go) and to
 		// close its handle after the wait.
-		if retainedLaunch != nil {
+		if launcher := RetainedLauncherFrom(ctx); launcher != nil {
 			var job commandJob
-			if handled, err := retainedLaunch(ctx, &cmd,
+			if handled, err := launcher.Launch(ctx, &cmd,
 				// Terminate the job first: TerminateJobObject reaches
 				// orphaned descendants whose parents already exited, which
 				// taskkill /T cannot (its tree walk needs live parents).

@@ -9,6 +9,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
@@ -17,7 +18,7 @@ type ShellHandle interface {
 	Stop(context.Context) error
 	Done() <-chan struct{}
 	GetOutput() (string, string, bool, error)
-	ReadOutput(context.Context, uint64) (shell.ExecutionOutput, error)
+	ReadOutput(context.Context, uint64) (shellbg.ExecutionOutput, error)
 	Dispose(context.Context) error
 }
 
@@ -47,7 +48,7 @@ func NewShell(cancel context.CancelFunc, output Output, capture func(jobbatch.Ou
 
 // WithShellHandle marks the pinned tool call for retained shell ownership.
 func (e *ShellExecution) WithShellHandle(ctx context.Context) context.Context {
-	return tools.WithShellLeaf(ctx, tools.ShellLeaf{OnStart: func(h *shell.BackgroundExecution) { e.Publish(h) }})
+	return tools.WithShellLeaf(ctx, tools.ShellLeaf{OnStart: func(h *shellbg.BackgroundExecution) { e.Publish(h) }})
 }
 
 // Publish transfers a retained shell to the execution. Call at most once.
@@ -157,7 +158,7 @@ func (e *ShellExecution) Dispose(ctx context.Context) error {
 	select {
 	case <-e.finished:
 	default:
-		return shell.ErrExecutionNotDone
+		return shellbg.ErrExecutionNotDone
 	}
 	e.calls.Lock()
 	defer e.calls.Unlock()

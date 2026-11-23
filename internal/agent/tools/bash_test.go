@@ -12,7 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ type mockBashPermissionService struct {
 	*pubsub.Broker[permission.PermissionRequest]
 }
 
-var testBackgroundManager = shell.NewBackgroundShellManager()
+var testBackgroundManager = shellbg.NewBackgroundShellManager()
 
 func (m *mockBashPermissionService) Request(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
 	return true, nil
@@ -86,7 +86,7 @@ func TestBashToolCanonicalDenyPreventsForegroundAndBackgroundExecution(t *testin
 		Broker: pubsub.NewBroker[permission.PermissionRequest](),
 		allow:  true,
 	}
-	manager := shell.NewBackgroundShellManager()
+	manager := shellbg.NewBackgroundShellManager()
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
 	tool := NewBashTool(perms, workingDir, attribution, "test-model", nil, manager)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "policy-session")
@@ -115,7 +115,7 @@ func TestBashToolAgentGuardRuntimeBoundary(t *testing.T) {
 		Broker: pubsub.NewBroker[permission.PermissionRequest](),
 		allow:  true,
 	}
-	manager := shell.NewBackgroundShellManager()
+	manager := shellbg.NewBackgroundShellManager()
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
 	tool := NewBashTool(perms, workingDir, attribution, "test-model", nil, manager)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "agent-guard-session")
@@ -220,7 +220,7 @@ func TestBashTool_CtxCancelWaitsForConfirmedProcessKill(t *testing.T) {
 	// has registered it) and grab a stable reference to it -- Kill() removes
 	// the manager's own map entry (m.shells.Take), so we must hold this
 	// pointer ourselves to still be able to check IsDone() afterward.
-	var bgShell *shell.BackgroundShell
+	var bgShell *shellbg.BackgroundShell
 	require.Eventually(t, func() bool {
 		for _, id := range bgManager.List() {
 			if before[id] {
@@ -437,12 +437,12 @@ func TestBashTool_OnBackgroundCompleteFires(t *testing.T) {
 
 	type completion struct {
 		sessionID string
-		sh        *shell.BackgroundShell
+		sh        *shellbg.BackgroundShell
 	}
 	done := make(chan completion, 1)
 	permissions := &mockBashPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	onComplete := func(sessionID string, sh *shell.BackgroundShell) {
+	onComplete := func(sessionID string, sh *shellbg.BackgroundShell) {
 		select {
 		case done <- completion{sessionID: sessionID, sh: sh}:
 		default:

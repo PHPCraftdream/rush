@@ -1,7 +1,7 @@
 // Output capture via boundedBuffer: snapshot size caps, head+tail
 // truncation with marker, growth detection after overflow, and
 // concurrent read/write safety.
-package shell
+package shellbg
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package shell
+package shellbg
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 )
 
 const (
@@ -287,7 +289,7 @@ type BackgroundShell struct {
 	// owned by one App/client; the session check prevents one session within
 	// that client from inspecting or terminating another session's job.
 	SessionID   string
-	Shell       *Shell
+	Shell       *shell.Shell
 	WorkingDir  string
 	StartTime   time.Time
 	ctx         context.Context
@@ -415,23 +417,23 @@ func GetBackgroundShellManager() *BackgroundShellManager {
 }
 
 // Start creates and starts a new background shell with the given command.
-func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, blockFuncs []shell.BlockFunc, command string, description string) (*BackgroundShell, error) {
 	return m.start(ctx, "", workingDir, blockFuncs, command, description)
 }
 
 // StartOwned creates a background shell owned by sessionID.
-func (m *BackgroundShellManager) StartOwned(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+func (m *BackgroundShellManager) StartOwned(ctx context.Context, sessionID, workingDir string, blockFuncs []shell.BlockFunc, command string, description string) (*BackgroundShell, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID is required for background shell ownership")
 	}
 	return m.start(ctx, sessionID, workingDir, blockFuncs, command, description)
 }
 
-func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string) (*BackgroundShell, error) {
+func (m *BackgroundShellManager) start(ctx context.Context, sessionID, workingDir string, blockFuncs []shell.BlockFunc, command string, description string) (*BackgroundShell, error) {
 	return m.startWithRetention(ctx, sessionID, workingDir, blockFuncs, command, description, false)
 }
 
-func (m *BackgroundShellManager) startWithRetention(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command string, description string, retained bool) (*BackgroundShell, error) {
+func (m *BackgroundShellManager) startWithRetention(ctx context.Context, sessionID, workingDir string, blockFuncs []shell.BlockFunc, command string, description string, retained bool) (*BackgroundShell, error) {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
 	if m.closed {
@@ -465,14 +467,14 @@ func (m *BackgroundShellManager) startWithRetention(ctx context.Context, session
 
 	id := fmt.Sprintf("%03X", m.idCounter.Add(1))
 
-	shell := NewShell(&Options{
+	shell := shell.NewShell(&shell.Options{
 		WorkingDir: workingDir,
 		BlockFuncs: blockFuncs,
 	})
 
 	shellCtx, cancel := context.WithCancel(ctx)
 	if retained {
-		if stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops); ok {
+		if stops, ok := shexec.RetainedLauncherFrom(ctx).(*retainedStops); ok {
 			stops.cancel = cancel
 		}
 	}
@@ -513,7 +515,7 @@ func (m *BackgroundShellManager) startWithRetention(ctx context.Context, session
 
 		var stdout, stderr io.Writer = bgShell.stdout, bgShell.stderr
 		if retained {
-			if stops, ok := shellCtx.Value(retainedStopKey{}).(*retainedStops); ok {
+			if stops, ok := shexec.RetainedLauncherFrom(shellCtx).(*retainedStops); ok {
 				stdout = retainedWriter{bgShell.stdout, stops.output}
 				stderr = retainedWriter{bgShell.stderr, stops.output}
 			}

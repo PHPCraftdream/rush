@@ -1,7 +1,7 @@
 // The completion hold (background_completion.go): a job whose OnDone callback
 // is registered and has neither recorded its outcome nor returned still counts
 // as pending, after its process exited and independently of the job table.
-package shell
+package shellbg
 
 import (
 	"context"

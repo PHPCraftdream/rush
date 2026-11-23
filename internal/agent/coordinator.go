@@ -40,7 +40,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
@@ -75,7 +75,7 @@ type coordinator struct {
 	filetracker filetracker.Service
 	prompt      *prompt.Prompt
 	notify      pubsub.Publisher[notify.Notification]
-	background  *shell.BackgroundShellManager
+	background  *shellbg.BackgroundShellManager
 	responsesWS *nettransport.ResponsesWSManager
 	// inlineWindowDisabled is the SetInlineWindowForTest seam: when set, the
 	// bash delivery window is off (the pre-A14 "started" flow).
@@ -309,7 +309,7 @@ func NewCoordinator(
 	mcpOwner *mcp.Owner,
 	batchCaps BatchRuntimeCapabilities,
 	execCaps SessionExecutionCapabilities,
-	backgroundManagers ...*shell.BackgroundShellManager,
+	backgroundManagers ...*shellbg.BackgroundShellManager,
 ) (Coordinator, error) {
 	p, err := coderPrompt(prompt.WithWorkingDir(cfg.WorkingDir()))
 	if err != nil {
@@ -320,7 +320,7 @@ func NewCoordinator(
 	allSkills, activeSkills := discoverSkills(cfg)
 	skillTracker := skills.NewTracker(activeSkills)
 
-	background := shell.NewBackgroundShellManager()
+	background := shellbg.NewBackgroundShellManager()
 	if len(backgroundManagers) > 0 && backgroundManagers[0] != nil {
 		background = backgroundManagers[0]
 	}

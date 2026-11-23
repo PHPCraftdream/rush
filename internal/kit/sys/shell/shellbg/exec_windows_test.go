@@ -1,6 +1,6 @@
 //go:build windows
 
-package shell
+package shellbg
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -504,7 +505,7 @@ func TestRunBoundsSelfRecursivePathShim(t *testing.T) {
 	began := time.Now()
 	runDone := make(chan error, 1)
 	go func() {
-		runDone <- Run(ctx, RunOptions{Command: cmd, Cwd: dir, Env: env, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+		runDone <- shell.Run(ctx, shell.RunOptions{Command: cmd, Cwd: dir, Env: env, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	}()
 	var err error
 	select {
@@ -556,7 +557,7 @@ func TestRunCancelKillsOrphanedDescendants(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, RunOptions{
+		done <- shell.Run(ctx, shell.RunOptions{
 			Command: "bash \"" + marker + "/orphan.sh\"",
 			Cwd:     dir,
 			Env:     os.Environ(),
@@ -590,7 +591,7 @@ func TestRunLeavesDeliberateDaemonAfterNormalExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	start := time.Now()
-	err := Run(ctx, RunOptions{
+	err := shell.Run(ctx, shell.RunOptions{
 		Command: "bash \"" + marker + "/start.sh\"",
 		Cwd:     dir,
 		Env:     os.Environ(),
