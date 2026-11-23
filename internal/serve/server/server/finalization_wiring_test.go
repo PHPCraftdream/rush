@@ -118,13 +118,14 @@ func (s *finalizationWiringGateStub) awaitedOwners() []string {
 	return append([]string(nil), s.owners...)
 }
 
-// AwaitSealed signals entry and records the owner, then delegates to the
-// signal-based stub.
+// AwaitSealed records the owner and then signals entry (the other order lets
+// a reader of awaitEntered see awaitedOwners() still empty), then delegates to
+// the signal-based stub.
 func (s *finalizationWiringGateStub) AwaitSealed(ctx context.Context, owner string) error {
-	s.enterOnce.Do(func() { close(s.entered) })
 	s.mu.Lock()
 	s.owners = append(s.owners, owner)
 	s.mu.Unlock()
+	s.enterOnce.Do(func() { close(s.entered) })
 	return s.finalizationNotifyGateStub.AwaitSealed(ctx, owner)
 }
 
