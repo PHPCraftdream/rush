@@ -17,7 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
 	hub "github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	wirePkg "github.com/PHPCraftdream/rush/internal/serve/server/wire"

@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import "charm.land/catwalk/pkg/catwalk"
 
@@ -23,7 +23,7 @@ var supplementalCatalogModels = map[catwalk.InferenceProvider][]catwalk.Model{
 	},
 }
 
-func mergeSupplementalCatalogModels(providers []catwalk.Provider) []catwalk.Provider {
+func MergeSupplementalCatalogModels(providers []catwalk.Provider) []catwalk.Provider {
 	for i := range providers {
 		supplements := supplementalCatalogModels[providers[i].ID]
 		if len(supplements) == 0 {

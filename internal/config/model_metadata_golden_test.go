@@ -21,8 +21,10 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -56,15 +58,15 @@ func TestModelMetadataGolden(t *testing.T) {
 	}))
 	defer zaiModels.Close()
 
-	origDocs := discoverZAIEffortDocs
-	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) {
+	origDocs := provresolve.DiscoverZAIEffortDocs
+	provresolve.DiscoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) {
 		return []catwalk.Model{
 			{ID: "glm-5.3", CanReason: true, ReasoningLevels: []string{"low", "high", "max"}},
 			{ID: "glm-5.3-flash", CanReason: true, ReasoningLevels: []string{"low", "high", "max"}},
 			{ID: "glm-4.7", CanReason: true, ReasoningLevels: []string{"off", "on"}},
 		}, nil
 	}
-	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
+	t.Cleanup(func() { provresolve.DiscoverZAIEffortDocs = origDocs })
 
 	seedModelCatalog(t, "openai-codex", discover.CodexBaseURL, discover.CodexCatalogIdentity("chatgpt-account", "rush-access-token"), []catwalk.Model{
 		{
@@ -147,18 +149,18 @@ func filterGoldenProviders(providers []catwalk.Provider) []catwalk.Provider {
 	return filtered
 }
 
-// seedModelCatalog writes a fresh catalog cache entry so cachedProviderModels
+// seedModelCatalog writes a fresh catalog cache entry so CachedProviderModels
 // serves the given models without touching the network.
 func seedModelCatalog(t *testing.T, provider, endpoint, identity string, models []catwalk.Model) {
 	t.Helper()
-	entry := cachedModelCatalog{
-		Fingerprint: modelCatalogFingerprint(provider, endpoint, identity),
+	entry := catalogsrc.CachedModelCatalog{
+		Fingerprint: catalogsrc.ModelCatalogFingerprint(provider, endpoint, identity),
 		FetchedAt:   time.Now(),
 		Models:      models,
 	}
 	data, err := json.Marshal(entry)
 	require.NoError(t, err)
-	path := modelCatalogPath(provider)
+	path := catalogsrc.ModelCatalogPath(provider)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	require.NoError(t, atomicWriteFile(path, data, 0o600))
 }

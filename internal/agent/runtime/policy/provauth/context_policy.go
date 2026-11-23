@@ -7,7 +7,7 @@ import (
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 )
 
 // SessionHeaders returns the HTTP headers we use for cache affinity on

@@ -33,7 +33,9 @@
 | internal/message | internal/store/message | 2026-11-15 |
 | internal/heartbeat | internal/session/heartbeat | 2026-11-15 |
 | internal/jobbatch | internal/session/jobbatch | 2026-11-15 |
-| internal/discover | internal/config/discover | 2026-11-15 |
+| internal/config/catalog | internal/config/providers/catalog | 2026-11-23 |
+| internal/config/discover | internal/config/providers/discover | 2026-11-23 |
+| internal/discover | internal/config/discover (now internal/config/providers/discover) | 2026-11-15 |
 | internal/oauth | internal/config/oauth | 2026-11-15 |
 | internal/agent/agentguard | internal/agent/safety/agentguard | 2026-11-15 |
 | internal/agent/cliprovider | internal/agent/provider/cliprovider | 2026-11-15 |

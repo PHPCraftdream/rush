@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"cmp"
@@ -16,10 +16,12 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/catwalk/pkg/embedded"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/charmbracelet/x/etag"
 )
@@ -98,11 +100,11 @@ func UpdateProviders(pathOrURL string) error {
 		}
 	}
 
-	if err := newCache[[]catwalk.Provider](cachePathFor("providers")).Store(providers); err != nil {
+	if err := NewCache[[]catwalk.Provider](datadir.CachePathFor("providers")).Store(providers); err != nil {
 		return fmt.Errorf("failed to save providers to cache: %w", err)
 	}
 
-	slog.Info("Providers updated successfully", "count", len(providers), "from", pathOrURL, "to", cachePathFor)
+	slog.Info("Providers updated successfully", "count", len(providers), "from", pathOrURL, "to", datadir.CachePathFor)
 	return nil
 }
 
@@ -135,11 +137,11 @@ func UpdateHyper(pathOrURL string) error {
 		}
 	}
 
-	if err := newCache[catwalk.Provider](cachePathFor("hyper")).Store(provider); err != nil {
+	if err := NewCache[catwalk.Provider](datadir.CachePathFor("hyper")).Store(provider); err != nil {
 		return fmt.Errorf("failed to save Hyper provider to cache: %w", err)
 	}
 
-	slog.Info("Hyper provider updated successfully", "from", pathOrURL, "to", cachePathFor("hyper"))
+	slog.Info("Hyper provider updated successfully", "from", pathOrURL, "to", datadir.CachePathFor("hyper"))
 	return nil
 }
 
@@ -157,7 +159,7 @@ var (
 // 2. load the cached providers
 // 3. try to get the fresh list of providers, and return either this new list,
 // the cached list, or the embedded list if all others fail.
-func Providers(cfg *Config) ([]catwalk.Provider, error) {
+func Providers(cfg *cfgmodel.Config) ([]catwalk.Provider, error) {
 	providerOnce.Do(func() {
 		var wg sync.WaitGroup
 		providers := csync.NewSlice[catwalk.Provider]()
@@ -187,7 +189,7 @@ func Providers(cfg *Config) ([]catwalk.Provider, error) {
 			}
 			catwalkURL := cmp.Or(os.Getenv("CATWALK_URL"), defaultCatwalkURL)
 			client := catwalk.NewWithURL(catwalkURL)
-			path := cachePathFor("providers")
+			path := datadir.CachePathFor("providers")
 			catwalkSyncer.Init(client, path, autoupdate)
 
 			items, err := catwalkSyncer.Get(ctx)
@@ -203,7 +205,7 @@ func Providers(cfg *Config) ([]catwalk.Provider, error) {
 			if customProvidersOnly {
 				return
 			}
-			path := cachePathFor("hyper")
+			path := datadir.CachePathFor("hyper")
 			hyperSyncer.Init(realHyperClient{baseURL: catalog.HyperBaseURL()}, path, autoupdate)
 
 			item, err := hyperSyncer.Get(ctx)
@@ -232,7 +234,7 @@ func Providers(cfg *Config) ([]catwalk.Provider, error) {
 	return providerList, providerErr
 }
 
-func codexProvider() catwalk.Provider {
+func CodexProvider() catwalk.Provider {
 	return catwalk.Provider{
 		Name:        "OpenAI Codex",
 		ID:          catwalk.InferenceProvider("openai-codex"),
@@ -242,7 +244,7 @@ func codexProvider() catwalk.Provider {
 }
 
 func withCodexProvider(providers []catwalk.Provider) []catwalk.Provider {
-	codex := codexProvider()
+	codex := CodexProvider()
 	for i := range providers {
 		if providers[i].ID == codex.ID {
 			providers[i] = codex
@@ -256,7 +258,7 @@ type cache[T any] struct {
 	path string
 }
 
-func newCache[T any](path string) cache[T] {
+func NewCache[T any](path string) cache[T] {
 	return cache[T]{path: path}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestVerifyProviderModelCachesWholeRoster(t *testing.T) {
 	require.True(t, fresh)
 	require.Len(t, models, 3)
 	require.EqualValues(t, 100, models[0].ContextWindow)
-	loaded := mergeConfirmedCatalogModels([]catwalk.Provider{{ID: "custom", Models: []catwalk.Model{{ID: "existing"}}}}, cfg, IdentityResolver())
+	loaded := catalogsrc.MergeConfirmedCatalogModels([]catwalk.Provider{{ID: "custom", Models: []catwalk.Model{{ID: "existing"}}}}, cfg, IdentityResolver())
 	require.Len(t, loaded[0].Models, 4)
 	require.Equal(t, "model-a", loaded[0].Models[1].ID)
 	pc.APIKey = "other"
@@ -169,9 +170,9 @@ func TestVerifyProviderModelCacheOnlyDoesNotRequest(t *testing.T) {
 func TestVerifyProviderModelTimeoutIsBounded(t *testing.T) {
 	isolateModelVerifyEnv(t)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "0")
-	previous := modelVerificationTimeout
-	modelVerificationTimeout = 25 * time.Millisecond
-	t.Cleanup(func() { modelVerificationTimeout = previous })
+	previous := catalogsrc.ModelVerificationTimeout
+	catalogsrc.ModelVerificationTimeout = 25 * time.Millisecond
+	t.Cleanup(func() { catalogsrc.ModelVerificationTimeout = previous })
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
@@ -248,10 +249,10 @@ func TestClearModelCatalogCacheDropsConfirmedRosterOfThatProvider(t *testing.T) 
 	models := []catwalk.Model{{ID: "model-a"}}
 	require.NoError(t, PersistConfirmedModels("anthropic", "http://e.invalid", "k", models))
 	require.NoError(t, PersistConfirmedModels("openai", "http://e.invalid", "k", models))
-	require.NotEmpty(t, readConfirmedModels("anthropic", "http://e.invalid", "k"))
+	require.NotEmpty(t, catalogsrc.ReadConfirmedModels("anthropic", "http://e.invalid", "k"))
 	require.NoError(t, ClearModelCatalogCache("anthropic"))
-	require.Empty(t, readConfirmedModels("anthropic", "http://e.invalid", "k"))
-	require.NotEmpty(t, readConfirmedModels("openai", "http://e.invalid", "k"), "other providers keep their roster")
+	require.Empty(t, catalogsrc.ReadConfirmedModels("anthropic", "http://e.invalid", "k"))
+	require.NotEmpty(t, catalogsrc.ReadConfirmedModels("openai", "http://e.invalid", "k"), "other providers keep their roster")
 }
 
 func TestConfiguredCustomProviderDoesNotInheritRosterOfAnotherKeyOrEndpoint(t *testing.T) {
@@ -275,4 +276,16 @@ func TestConfiguredCustomProviderDoesNotInheritRosterOfAnotherKeyOrEndpoint(t *t
 			require.False(t, known, "a roster verified with another credential or endpoint must not be trusted")
 		})
 	}
+}
+
+// modelIDs extracts model ids in order for the assertion above. The helper
+// used to live in model_catalog_cache_test.go; that file and its catalog-cache
+// siblings moved to providers/catalogsrc, so the copy this staying test needs
+// stays here.
+func modelIDs(models []catwalk.Model) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
 }

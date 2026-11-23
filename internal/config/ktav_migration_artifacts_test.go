@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
@@ -255,7 +256,7 @@ func TestKtavArtifactCacheMTimePreserved(t *testing.T) {
 	writeTestFile(t, providers, `{"providers":[{"name":"p"}]}`)
 	old := time.Now().Add(-72 * time.Hour)
 	require.NoError(t, os.Chtimes(providers, old, old))
-	sourceAge, ageErr := newCache[map[string]any](providers).Age()
+	sourceAge, ageErr := catalogsrc.NewCache[map[string]any](providers).Age()
 	require.NoError(t, ageErr)
 
 	require.NoError(t, migrateKtavArtifact(context.Background(), providers, dir))
@@ -272,7 +273,7 @@ func TestKtavArtifactCacheMTimePreserved(t *testing.T) {
 	require.NoError(t, err)
 	require.WithinDuration(t, old, info.ModTime(), 2*time.Second, "the Ktav cache must inherit the source mtime")
 
-	convertedAge, ageErr := newCache[map[string]any](providers).Age()
+	convertedAge, ageErr := catalogsrc.NewCache[map[string]any](providers).Age()
 	require.NoError(t, ageErr)
 	require.WithinDuration(t, old, time.Now().Add(-convertedAge), 2*time.Second, "Age() must be unchanged by conversion")
 	require.WithinDuration(t, old, time.Now().Add(-sourceAge), 2*time.Second)

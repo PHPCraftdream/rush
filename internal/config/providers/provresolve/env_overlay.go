@@ -1,7 +1,7 @@
 // Environment overlay and credential probes for provider setup: the
 // RUSH_-prefixed shadow map fed to variable resolution, and the AWS
 // credential detection behind the Bedrock provider check.
-package config
+package provresolve
 
 import (
 	"os"
@@ -13,7 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
-// rushEnvOverlay scans e for "RUSH_X" entries and returns a map of the
+// RushEnvOverlay scans e for "RUSH_X" entries and returns a map of the
 // bare "X" -> value they should shadow, so a config value written as
 // "$FOO" resolves against RUSH_FOO when the caller has set it (the
 // documented escape hatch for overriding a variable rush itself doesn't
@@ -34,7 +34,7 @@ import (
 // "restoring" it. See internal/env.NewOverlay for the replacement
 // mechanism: the overlay computed here is passed explicitly to the
 // resolver and to configureProviders' own env.Get calls instead.
-func rushEnvOverlay(e env.Env) map[string]string {
+func RushEnvOverlay(e env.Env) map[string]string {
 	const prefix = "RUSH_"
 	overlay := make(map[string]string)
 	for _, ev := range e.Env() {

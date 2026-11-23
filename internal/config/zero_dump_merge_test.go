@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -29,9 +30,9 @@ func TestConfigureProviders_ZeroDumpDoesNotShadowCatalog(t *testing.T) {
 	}))
 	defer zaiModels.Close()
 
-	origDocs := discoverZAIEffortDocs
-	discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
-	t.Cleanup(func() { discoverZAIEffortDocs = origDocs })
+	origDocs := provresolve.DiscoverZAIEffortDocs
+	provresolve.DiscoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) { return nil, nil }
+	t.Cleanup(func() { provresolve.DiscoverZAIEffortDocs = origDocs })
 	catalog := zaiKnownProvider()
 	catalog.Models = []catwalk.Model{
 		{ID: "glm-4.7", ContextWindow: 204_800, DefaultMaxTokens: 98_000},

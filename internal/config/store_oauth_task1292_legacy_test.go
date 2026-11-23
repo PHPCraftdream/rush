@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/stretchr/testify/require"
 )

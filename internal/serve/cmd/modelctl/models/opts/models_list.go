@@ -19,7 +19,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	modelatoms "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/atoms"
 	"github.com/spf13/cobra"

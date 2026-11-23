@@ -16,8 +16,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
