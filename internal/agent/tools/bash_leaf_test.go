@@ -8,7 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,8 +48,8 @@ func TestBashLeafGuardsAndPermissionOnce(t *testing.T) {
 			}
 			tool, perms := newBashToolWithRecordingPerms(dir, tc.allow)
 			ctx := context.WithValue(t.Context(), SessionIDContextKey, "leaf-policy")
-			var handle *shell.BackgroundExecution
-			response := runBashTool(t, tool, WithShellLeaf(ctx, ShellLeaf{OnStart: func(e *shell.BackgroundExecution) { handle = e }}), BashParams{Command: tc.command})
+			var handle *shellbg.BackgroundExecution
+			response := runBashTool(t, tool, WithShellLeaf(ctx, ShellLeaf{OnStart: func(e *shellbg.BackgroundExecution) { handle = e }}), BashParams{Command: tc.command})
 			require.Equal(t, tc.calls, perms.requestCount)
 			if tc.name == "allowed" {
 				require.NotNil(t, handle)
@@ -64,14 +64,14 @@ func TestBashLeafGuardsAndPermissionOnce(t *testing.T) {
 
 func TestBashLeafCancellationWaitsDoneNoBackgroundEscape(t *testing.T) {
 	dir := t.TempDir()
-	manager := shell.NewBackgroundShellManager()
+	manager := shellbg.NewBackgroundShellManager()
 	t.Cleanup(func() { manager.Close(context.Background()) })
 	tool := NewBashTool(&mockBashPermissionService{}, dir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, manager)
 	base := context.WithValue(t.Context(), SessionIDContextKey, "leaf-cancel")
 	ctx, cancel := context.WithCancel(base)
 	defer cancel()
-	started := make(chan *shell.BackgroundExecution, 1)
-	ctx = WithShellLeaf(ctx, ShellLeaf{OnStart: func(e *shell.BackgroundExecution) { started <- e }})
+	started := make(chan *shellbg.BackgroundExecution, 1)
+	ctx = WithShellLeaf(ctx, ShellLeaf{OnStart: func(e *shellbg.BackgroundExecution) { started <- e }})
 	input, err := json.Marshal(BashParams{Command: "printf ready; sleep 30", RunInBackground: true, AutoBackgroundAfter: -1})
 	require.NoError(t, err)
 	returned := make(chan error, 1)
@@ -81,7 +81,7 @@ func TestBashLeafCancellationWaitsDoneNoBackgroundEscape(t *testing.T) {
 		response <- resp
 		returned <- err
 	}()
-	var e *shell.BackgroundExecution
+	var e *shellbg.BackgroundExecution
 	select {
 	case e = <-started:
 	case <-returned:

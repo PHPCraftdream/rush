@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -200,7 +201,7 @@ func (c *backgroundComponent) notifyAsyncCompletion(completion AsyncCompletion) 
 // a Drain call is submitted right away; off, the notice simply waits for the
 // next natural turn/Drain to pull it (its wake=1 still counts then). A child
 // whose delegation row runs is woken regardless (delegatedChildDriven).
-func (c *backgroundComponent) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
+func (c *backgroundComponent) notifyBackgroundJobDone(sessionID string, sh *shellbg.BackgroundShell) {
 	// A shell batch_stop already cancelled (its row is terminal, the tool result
 	// is its answer) produces no wake notice and takes no auto-resume slot: its
 	// exit would otherwise read as "finished: exit 1" and wake the session a

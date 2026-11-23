@@ -11,7 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -53,8 +53,8 @@ type terminalHandoffShell struct {
 func (*terminalHandoffShell) Stop(context.Context) error               { return nil }
 func (h *terminalHandoffShell) Done() <-chan struct{}                  { return h.done }
 func (*terminalHandoffShell) GetOutput() (string, string, bool, error) { return "", "", false, nil }
-func (h *terminalHandoffShell) ReadOutput(context.Context, uint64) (shell.ExecutionOutput, error) {
-	return shell.ExecutionOutput{Data: append([]byte(nil), h.output...), Next: uint64(len(h.output)), EOF: true}, nil
+func (h *terminalHandoffShell) ReadOutput(context.Context, uint64) (shellbg.ExecutionOutput, error) {
+	return shellbg.ExecutionOutput{Data: append([]byte(nil), h.output...), Next: uint64(len(h.output)), EOF: true}, nil
 }
 
 func (h *terminalHandoffShell) Dispose(context.Context) error {
@@ -183,13 +183,13 @@ type captureShellHandle struct {
 func (h *captureShellHandle) Stop(context.Context) error             { return nil }
 func (h *captureShellHandle) Done() <-chan struct{}                  { return h.done }
 func (*captureShellHandle) GetOutput() (string, string, bool, error) { return "", "", false, nil }
-func (h *captureShellHandle) ReadOutput(_ context.Context, cursor uint64) (shell.ExecutionOutput, error) {
+func (h *captureShellHandle) ReadOutput(_ context.Context, cursor uint64) (shellbg.ExecutionOutput, error) {
 	next := uint64(len(h.content))
 	start := cursor
 	if start > next {
 		start = next
 	}
-	return shell.ExecutionOutput{Data: append([]byte(nil), h.content[start:]...), Next: next, EOF: true}, nil
+	return shellbg.ExecutionOutput{Data: append([]byte(nil), h.content[start:]...), Next: next, EOF: true}, nil
 }
 
 func (h *captureShellHandle) Dispose(context.Context) error {

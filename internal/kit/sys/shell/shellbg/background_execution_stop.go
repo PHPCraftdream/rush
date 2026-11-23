@@ -1,4 +1,4 @@
-package shell
+package shellbg
 
 import (
 	"context"
@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"sync"
 )
-
-type retainedStopKey struct{}
 
 // retainedStops serializes startup registration, cancellation intent and physical
 // controls. Successful per-process acknowledgments are cached; failures retry.
@@ -118,15 +116,9 @@ func waitRetainedRegistered(ctx context.Context, cmd *exec.Cmd, s *retainedStops
 	return err
 }
 
-// retainedLaunchRoute adapts the retained launch path to shexec's
-// ProcessGroupExecHandler hook: the retained stop types stay in this
-// package, so the moved exec handlers call back through this route
-// instead of referencing them directly. afterStart is threaded through
-// unchanged; callers that have no post-start work pass nil.
-func retainedLaunchRoute(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) (bool, error) {
-	stops, ok := ctx.Value(retainedStopKey{}).(*retainedStops)
-	if !ok {
-		return false, nil
-	}
-	return true, runRetainedProcess(ctx, cmd, stops, kill, register, afterStart)
+// Launch implements shexec.RetainedLauncher: it runs cmd on the retained
+// route, fencing Start with registration and joining the context callback
+// before returning.
+func (s *retainedStops) Launch(ctx context.Context, cmd *exec.Cmd, kill func() error, register func(int), afterStart func(*exec.Cmd) func()) (bool, error) {
+	return true, runRetainedProcess(ctx, cmd, s, kill, register, afterStart)
 }

@@ -200,7 +200,8 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	cmdArgs = append(cmdArgs, args[1:]...)
 
 	commandCtx := ctx
-	stops, retained := ctx.Value(retainedStopKey{}).(*retainedStops)
+	launcher := shexec.RetainedLauncherFrom(ctx)
+	retained := launcher != nil
 	if retained {
 		commandCtx = context.WithoutCancel(ctx)
 	}
@@ -214,7 +215,7 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	shexec.IsolateProcess(cmd)
 
 	if retained {
-		err := runRetainedProcess(ctx, cmd, stops, func() error { return shexec.KillRetainedProcess(cmd.Process.Pid) }, nil, nil)
+		_, err := launcher.Launch(ctx, cmd, func() error { return shexec.KillRetainedProcess(cmd.Process.Pid) }, nil, nil)
 		return shexec.RetainedCommandResult(ctx, hc.Stderr, err)
 	}
 	if err := cmd.Run(); err != nil {

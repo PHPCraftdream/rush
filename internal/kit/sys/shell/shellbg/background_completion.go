@@ -1,4 +1,4 @@
-package shell
+package shellbg
 
 // The completion hold: a job whose completion callback (OnDone) is registered
 // but has neither recorded its outcome nor returned. A finished job leaves

@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -32,13 +32,13 @@ import (
 // newBGShellCompletionFixture builds a coordinator whose bg-shell completion
 // plumbing is fully wired: background manager, notice store, and node facts
 // on a fresh one-migration store.
-func newBGShellCompletionFixture(t *testing.T) (*coordinator, *session.SessionNoticeStore, *shell.BackgroundShellManager, string) {
+func newBGShellCompletionFixture(t *testing.T) (*coordinator, *session.SessionNoticeStore, *shellbg.BackgroundShellManager, string) {
 	t.Helper()
 	conn, dataDir := batchFixtureConn(t)
 	// The shells are owned by the literal id "session"; its bg_shell_done
 	// notices FK-anchor on sessions (id).
 	ensureFixtureSession(t, conn, "session")
-	mgr := shell.NewBackgroundShellManager()
+	mgr := shellbg.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.KillAll(t.Context()) })
 	coord := newBatchRuntimeCoordinator()
 	coord.noticeStore = session.NewSessionNoticeStore(conn)

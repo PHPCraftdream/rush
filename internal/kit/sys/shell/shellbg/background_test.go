@@ -1,4 +1,4 @@
-package shell
+package shellbg
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shpolicy"
 	"github.com/stretchr/testify/require"
 )
@@ -197,7 +198,7 @@ func TestBackgroundShell_WithBlockFuncs(t *testing.T) {
 	workingDir := t.TempDir()
 	manager := newBackgroundShellManager()
 
-	blockFuncs := []BlockFunc{
+	blockFuncs := []shell.BlockFunc{
 		shpolicy.CommandsBlocker([]string{"curl", "wget"}),
 	}
 

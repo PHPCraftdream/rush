@@ -1,7 +1,7 @@
 // Buffer release lifecycle after job completion: placeholder output,
 // backing-memory reclamation, the retention timer, idempotent release,
 // and TotalWrittenBytes surviving overflow and release.
-package shell
+package shellbg
 
 import (
 	"context"

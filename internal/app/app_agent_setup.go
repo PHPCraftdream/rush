@@ -12,7 +12,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -110,7 +110,7 @@ func (app *App) GetDefaultFastModel(providerID string) config.SelectedModel {
 // without going through tea.Msg. See CHANGELOG.fork.md Section 2.
 func (app *App) InitCoderAgent(ctx context.Context) error {
 	if app.BackgroundShellManager == nil {
-		app.BackgroundShellManager = shell.NewBackgroundShellManager()
+		app.BackgroundShellManager = shellbg.NewBackgroundShellManager()
 	}
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {

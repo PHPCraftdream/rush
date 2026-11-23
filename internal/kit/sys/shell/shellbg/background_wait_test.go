@@ -1,6 +1,6 @@
 // Waiting semantics for background shells: WaitContext, WaitForChange
 // (output growth, completion, ctx-done), OnDone callbacks, and Elapsed.
-package shell
+package shellbg
 
 import (
 	"context"

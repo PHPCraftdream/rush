@@ -7,14 +7,14 @@ package agent
 import (
 	"context"
 
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
 
 func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
 	newBackgroundComponent(c).notifyAsyncCompletion(completion)
 }
 
-func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
+func (c *coordinator) notifyBackgroundJobDone(sessionID string, sh *shellbg.BackgroundShell) {
 	newBackgroundComponent(c).notifyBackgroundJobDone(sessionID, sh)
 }
 
