@@ -49,3 +49,7 @@ func isolateAllGlobalConfigPaths(t *testing.T) (configDir, dataDir string) {
 
 	return configDir, dataDir
 }
+
+// resetProviderState: the moved provider_test.go used to define this in the
+// root package; the 12 staying root tests that call it keep the one-liner.
+func resetProviderState() { ResetProviderCacheForTests() }

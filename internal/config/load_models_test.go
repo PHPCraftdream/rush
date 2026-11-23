@@ -1,4 +1,4 @@
-// Selected-model tests: defaultModelSelection fallbacks and provider
+// Selected-model tests: provresolve.DefaultModelSelection fallbacks and provider
 // precedence, and configureSelectedModels override and persistence
 // behaviour.
 
@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -44,7 +45,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		smart, fast, err := defaultModelSelection(cfg, knownProviders)
+		smart, fast, err := provresolve.DefaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 		require.Equal(t, "smart-model", smart.Model)
 		require.Equal(t, "openai", smart.Provider)
@@ -80,7 +81,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
 
-		_, _, err = defaultModelSelection(cfg, knownProviders)
+		_, _, err = provresolve.DefaultModelSelection(cfg, knownProviders)
 		require.Error(t, err)
 	})
 	t.Run("should not error if default model is missing but provider has any models", func(t *testing.T) {
@@ -112,7 +113,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		_, _, err = defaultModelSelection(cfg, knownProviders)
+		_, _, err = provresolve.DefaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 	})
 
@@ -155,7 +156,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		smart, fast, err := defaultModelSelection(cfg, knownProviders)
+		smart, fast, err := provresolve.DefaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 		require.Equal(t, "model", smart.Model)
 		require.Equal(t, "custom", smart.Provider)
@@ -199,7 +200,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		_, _, err = defaultModelSelection(cfg, knownProviders)
+		_, _, err = provresolve.DefaultModelSelection(cfg, knownProviders)
 		require.Error(t, err)
 	})
 	t.Run("should use the default provider first", func(t *testing.T) {
@@ -241,7 +242,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		resolver := NewShellVariableResolver(env)
 		err := configureProviders(context.Background(), cfg, env, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil)
 		require.NoError(t, err)
-		smart, fast, err := defaultModelSelection(cfg, knownProviders)
+		smart, fast, err := provresolve.DefaultModelSelection(cfg, knownProviders)
 		require.NoError(t, err)
 		require.Equal(t, "smart-model", smart.Model)
 		require.Equal(t, "openai", smart.Provider)

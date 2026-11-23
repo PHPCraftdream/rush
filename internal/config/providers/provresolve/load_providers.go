@@ -2,7 +2,7 @@
 // user config (plus local CLI providers and custom-provider model
 // discovery), and computing the effective smart/fast model selection
 // written back into cfg.Models.
-package config
+package provresolve
 
 import (
 	"cmp"
@@ -16,15 +16,17 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
-var discoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
+var DiscoverZAIEffortDocs = discover.DiscoverZAIEffortDocs
 
-func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel, discoveryScope map[string]bool) error {
+func ConfigureProvidersWithScope(ctx context.Context, cfg *cfgmodel.Config, baseEnv env.Env, resolver envresolve.VariableResolver, knownProviders []catwalk.Provider, dropField func(cfgmodel.Scope, string), cliModels func() []catalog.LocalCLIModel, discoveryScope map[string]bool) error {
 	// Reset the endpoint-drop record from any previous run (see
 	// endpointDroppedProviders): this call's drops must not be confused with
 	// an earlier run's.
@@ -33,10 +35,10 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 
 	// Overlay RUSH_X -> X explicitly for both env.Get lookups below and
 	// the resolver, rather than mutating the process environment (see
-	// rushEnvOverlay's doc comment for why). The overlay is scoped to
+	// RushEnvOverlay's doc comment for why). The overlay is scoped to
 	// this call: no global state changes, so concurrent reloads/resolves
 	// never see or clobber each other's overlay.
-	overlay := rushEnvOverlay(baseEnv)
+	overlay := RushEnvOverlay(baseEnv)
 	env := env.NewOverlay(baseEnv, overlay)
 	if len(overlay) > 0 {
 		if rebased := envresolve.RebaseShellResolverEnv(resolver, env); rebased != nil {
@@ -45,7 +47,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 			// here, not the resolver's other behaviour.
 			resolver = rebased
 		} else {
-			resolver = NewShellVariableResolver(env, WithContext(ctx))
+			resolver = envresolve.NewShellVariableResolver(env, envresolve.WithContext(ctx))
 		}
 	}
 
@@ -55,11 +57,11 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 	if cfg.Options.DisableDefaultProviders {
 		knownProviders = nil
 		if provider, ok := cfg.Providers.Get("openai-codex"); ok && provider.OAuthToken != nil {
-			knownProviders = append(knownProviders, codexProvider())
+			knownProviders = append(knownProviders, catalogsrc.CodexProvider())
 		}
 	}
-	knownProviders = mergeSupplementalCatalogModels(knownProviders)
-	knownProviders = mergeConfirmedCatalogModels(knownProviders, cfg, resolver)
+	knownProviders = catalogsrc.MergeSupplementalCatalogModels(knownProviders)
+	knownProviders = catalogsrc.MergeConfirmedCatalogModels(knownProviders, cfg, resolver)
 
 	// Model metadata the user configured explicitly (ContextWindow > 0 /
 	// DefaultMaxTokens > 0 in rush.json). The facts overlay never touches
@@ -67,7 +69,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 	// in the config (e.g. a `rush providers update` dump) is unknown, not a
 	// user value, and so is a positive value that exactly equals the
 	// catalog's raw number for the same model -- that is the dump itself
-	// (forgetDumpedUserSet below and in the Codex branch).
+	// (ForgetDumpedUserSet below and in the Codex branch).
 	userSet := make(map[string]map[string]discover.UserModelFacts)
 	for id, pc := range cfg.Providers.Seq2() {
 		for _, model := range pc.Models {
@@ -88,7 +90,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 	// The catalog every known provider ships with is available right here.
 	for _, p := range knownProviders {
 		if pc, ok := cfg.Providers.Get(string(p.ID)); ok {
-			forgetDumpedUserSet(userSet, string(p.ID), pc.Models, p.Models)
+			ForgetDumpedUserSet(userSet, string(p.ID), pc.Models, p.Models)
 		}
 	}
 
@@ -149,7 +151,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 		key, keyErr := resolver.ResolveValue(p.APIKey)
 		endpoint, endpointErr := resolver.ResolveValue(p.APIEndpoint)
 		if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
-			p.Models = mergeConfirmedModels(p.Models, readFreshConfirmedModels(string(p.ID), strings.TrimSpace(endpoint), key))
+			p.Models = catalogsrc.MergeConfirmedModels(p.Models, catalogsrc.ReadFreshConfirmedModels(string(p.ID), strings.TrimSpace(endpoint), key))
 		}
 
 		headers := map[string]string{}
@@ -175,7 +177,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 			}
 			headers[k] = resolved
 		}
-		prepared := ProviderConfig{
+		prepared := cfgmodel.ProviderConfig{
 			ID:                 string(p.ID),
 			Name:               p.Name,
 			BaseURL:            p.APIEndpoint,
@@ -208,7 +210,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 			// in-memory state stays consistent via Providers.Del below, and any
 			// racing reload — or a future successful call to this same cleanup —
 			// re-reads/retries the removal from disk.
-			dropField(ScopeGlobal, "providers.anthropic")
+			dropField(cfgmodel.ScopeGlobal, "providers.anthropic")
 			cfg.Providers.Del(string(p.ID))
 			continue
 		case p.ID == catwalk.InferenceProviderCopilot && config.OAuthToken != nil:
@@ -233,7 +235,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 				providerClient, err := cfg.ProviderHTTPClient(prepared)
 				var models []catwalk.Model
 				if err == nil {
-					models, err = cachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
+					models, err = catalogsrc.CachedProviderModels(discoverCtx, prepared.ID, prepared.BaseURL,
 						discover.CodexCatalogIdentity(config.OAuthToken.AccountID, config.OAuthToken.AccessToken),
 						func(ctx context.Context) ([]catwalk.Model, error) {
 							return discover.DiscoverCodexModels(ctx, providerClient, config.OAuthToken.AccessToken, config.OAuthToken.AccountID)
@@ -245,8 +247,8 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 				} else {
 					// The account catalog is only known now: a dump of its
 					// raw numbers in rush.json must not stay user-set.
-					forgetDumpedUserSet(userSet, string(p.ID), config.Models, models)
-					prepared.Models = mergeCodexModels(prepared.Models, models)
+					ForgetDumpedUserSet(userSet, string(p.ID), config.Models, models)
+					prepared.Models = MergeCodexModels(prepared.Models, models)
 					prepared.LiveEfforts = liveEffortsFromModels(models)
 				}
 			}
@@ -361,7 +363,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 				providerClient, discoverErr := cfg.ProviderHTTPClient(prepared)
 				var live []catwalk.Model
 				if discoverErr == nil {
-					live, discoverErr = cachedProviderModels(discoverCtx, prepared.ID, endpoint, key,
+					live, discoverErr = catalogsrc.CachedProviderModels(discoverCtx, prepared.ID, endpoint, key,
 						func(ctx context.Context) ([]catwalk.Model, error) {
 							return discover.DiscoverProviderCatalog(ctx, discover.Config{
 								ID: prepared.ID, BaseURL: endpoint, APIKey: key, ExtraHeaders: prepared.ExtraHeaders,
@@ -378,15 +380,15 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 					if p.ID == catwalk.InferenceProvider("stepfun") && len(config.Models) == 0 {
 						prepared.Models = live
 					} else {
-						prepared.Models = mergeProviderModels(prepared.Models, live)
+						prepared.Models = MergeProviderModels(prepared.Models, live)
 					}
 				}
 			}
 		}
 		if p.ID == catwalk.InferenceProviderZAI && !prepared.Disable && prepared.BaseURL != "" && discoveryEnabled(discoveryScope, string(p.ID)) {
 			documentCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			documented, docsErr := cachedProviderModels(documentCtx, "zai-docs",
-				discover.ZAIEffortDocsURL, "public", discoverZAIEffortDocs)
+			documented, docsErr := catalogsrc.CachedProviderModels(documentCtx, "zai-docs",
+				discover.ZAIEffortDocsURL, "public", DiscoverZAIEffortDocs)
 			cancel()
 			if docsErr != nil {
 				slog.Warn("Z.AI effort documentation unavailable; omitting unverified effort controls",
@@ -403,9 +405,9 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 					}
 					if model := byID[id]; model != nil {
 						if prepared.LiveEfforts == nil {
-							prepared.LiveEfforts = make(map[string]ModelEffortInfo)
+							prepared.LiveEfforts = make(map[string]cfgmodel.ModelEffortInfo)
 						}
-						prepared.LiveEfforts[id] = ModelEffortInfo{Levels: model.ReasoningLevels}
+						prepared.LiveEfforts[id] = cfgmodel.ModelEffortInfo{Levels: model.ReasoningLevels}
 						prepared.Models[i].ReasoningLevels = model.ReasoningLevels
 						prepared.Models[i].DefaultReasoningEffort = ""
 						prepared.Models[i].CanReason = true
@@ -440,7 +442,7 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 			// this provider on every single load.
 			provider, existed := cfg.Providers.Get(catalog.LocalCLIProviderID)
 			if !existed {
-				provider = ProviderConfig{Name: "Local CLI"}
+				provider = cfgmodel.ProviderConfig{Name: "Local CLI"}
 			}
 			provider.ID = catalog.LocalCLIProviderID
 			provider.Type = catalog.LocalCLIProviderType
@@ -518,11 +520,11 @@ func configureProvidersWithScope(ctx context.Context, cfg *Config, baseEnv env.E
 		providerConfig.Name = cmp.Or(providerConfig.Name, id) // Use ID as name if not set
 		// default to OpenAI if not set
 		providerConfig.Type = cmp.Or(providerConfig.Type, catwalk.TypeOpenAICompat)
-		if supportsModelVerification(string(providerConfig.Type)) {
+		if catalogsrc.SupportsModelVerification(string(providerConfig.Type)) {
 			key, keyErr := resolver.ResolveValue(providerConfig.APIKey)
 			endpoint, endpointErr := resolver.ResolveValue(providerConfig.BaseURL)
 			if keyErr == nil && endpointErr == nil && key != "" && endpoint != "" {
-				confirmed := readFreshConfirmedModels(id, strings.TrimSpace(endpoint), key)
+				confirmed := catalogsrc.ReadFreshConfirmedModels(id, strings.TrimSpace(endpoint), key)
 				seen := make(map[string]struct{}, len(providerConfig.Models)+len(confirmed))
 				for _, model := range providerConfig.Models {
 					seen[model.ID] = struct{}{}

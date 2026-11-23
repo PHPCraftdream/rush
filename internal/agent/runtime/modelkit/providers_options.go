@@ -21,7 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/qjebbs/go-jsons"
 )

@@ -33,7 +33,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/event"
 )
 

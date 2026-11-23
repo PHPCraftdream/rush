@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"encoding/json"
@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,8 +40,8 @@ func TestProviders_Integration_AutoUpdateDisabled(t *testing.T) {
 	resetProviderState()
 	defer resetProviderState()
 
-	cfg := &Config{
-		Options: &Options{
+	cfg := &cfgmodel.Config{
+		Options: &cfgmodel.Options{
 			DisableProviderAutoUpdate: true,
 		},
 	}
@@ -318,7 +320,7 @@ func TestCache_StoreAndGet(t *testing.T) {
 	tmpDir := t.TempDir()
 	cachePath := tmpDir + "/test.json"
 
-	cache := newCache[[]catwalk.Provider](cachePath)
+	cache := NewCache[[]catwalk.Provider](cachePath)
 
 	providers := []catwalk.Provider{
 		{Name: "Provider1", ID: "p1"},
@@ -343,7 +345,7 @@ func TestCache_GetNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	cachePath := tmpDir + "/nonexistent.json"
 
-	cache := newCache[[]catwalk.Provider](cachePath)
+	cache := NewCache[[]catwalk.Provider](cachePath)
 
 	_, _, err := cache.Get()
 	require.Error(t, err)
@@ -358,7 +360,7 @@ func TestCache_GetInvalidJSON(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(cachePath, []byte("invalid json"), 0o644))
 
-	cache := newCache[[]catwalk.Provider](cachePath)
+	cache := NewCache[[]catwalk.Provider](cachePath)
 
 	_, _, err := cache.Get()
 	require.Error(t, err)
@@ -391,7 +393,7 @@ func TestCachePathFor(t *testing.T) {
 				t.Setenv("XDG_DATA_HOME", "")
 			}
 
-			result := cachePathFor("providers")
+			result := datadir.CachePathFor("providers")
 			if tt.expected != "" {
 				require.Equal(t, tt.expected, filepath.ToSlash(result))
 			} else {

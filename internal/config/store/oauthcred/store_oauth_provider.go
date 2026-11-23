@@ -6,10 +6,10 @@ import (
 	"net/http"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/store/oauthjournal"
 )
 

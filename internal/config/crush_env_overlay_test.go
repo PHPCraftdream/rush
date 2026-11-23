@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,7 @@ import (
 // variable that was absent before the call permanently set to "" after
 // "restoring" it.
 //
-// The replacement (rushEnvOverlay + env.NewOverlay) computes the same
+// The replacement (provresolve.RushEnvOverlay + env.NewOverlay) computes the same
 // RUSH_X -> X mapping as a pure function and threads it explicitly
 // through an env.Env value passed to the resolver and to configureProviders'
 // own env.Get calls, with no os.Setenv/os.Unsetenv anywhere in the path.
@@ -36,7 +37,7 @@ func TestRushEnvOverlay_MapsPrefixToBareName(t *testing.T) {
 		"UNRELATED":           "unrelated-value",
 	})
 
-	overlay := rushEnvOverlay(base)
+	overlay := provresolve.RushEnvOverlay(base)
 	require.Equal(t, map[string]string{"OPENAI_API_KEY": "overridden-key"}, overlay)
 }
 

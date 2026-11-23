@@ -11,14 +11,13 @@ import (
 	"sync"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
-
-const defaultCatwalkURL = "https://catwalk.charm.land"
 
 var loadAfterProviderConfigTestHook struct {
 	sync.RWMutex
@@ -311,7 +310,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			}
 		}
 
-		if err := configureProvidersWithScope(context.Background(), cfg, env, valueResolver, knownProviders, store.removeConfigFieldBestEffort, cliModels, discoveryProviders); err != nil {
+		if err := provresolve.ConfigureProvidersWithScope(context.Background(), cfg, env, valueResolver, knownProviders, store.removeConfigFieldBestEffort, cliModels, discoveryProviders); err != nil {
 			return fmt.Errorf("failed to configure providers: %w", err)
 		}
 
@@ -429,12 +428,5 @@ func logStartupNotice(debug bool, msg string, args ...any) {
 }
 
 func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel) error {
-	return configureProvidersWithScope(ctx, cfg, baseEnv, resolver, knownProviders, dropField, cliModels, nil)
-}
-
-// discoveryEnabled reports whether provider id is inside the discovery
-// scope. A nil scope means every provider — the behavior is unchanged
-// when no scope was configured at Load time.
-func discoveryEnabled(scope map[string]bool, id string) bool {
-	return scope == nil || scope[id]
+	return provresolve.ConfigureProvidersWithScope(ctx, cfg, baseEnv, resolver, knownProviders, dropField, cliModels, nil)
 }

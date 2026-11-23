@@ -3,7 +3,7 @@ package cliprovider
 import (
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/config/catalog"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	"github.com/stretchr/testify/require"
 )
 

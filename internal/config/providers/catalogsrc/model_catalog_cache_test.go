@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +24,7 @@ func TestModelCatalogCacheRefreshesAfterSevenDaysAndSeparatesCredentials(t *test
 		return []catwalk.Model{{ID: "live-model", ReasoningLevels: []string{"low", "high"}}}, nil
 	}
 	get := func(identity string) []catwalk.Model {
-		models, err := cachedProviderModels(t.Context(), "stepfun", "https://api.stepfun.ai/v1", identity, fetch)
+		models, err := CachedProviderModels(t.Context(), "stepfun", "https://api.stepfun.ai/v1", identity, fetch)
 		require.NoError(t, err)
 		return models
 	}
@@ -34,10 +34,10 @@ func TestModelCatalogCacheRefreshesAfterSevenDaysAndSeparatesCredentials(t *test
 	get("account-a")
 	require.Equal(t, 1, calls, "fresh cache must avoid another request")
 
-	path := modelCatalogPath("stepfun")
+	path := ModelCatalogPath("stepfun")
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	var entry cachedModelCatalog
+	var entry CachedModelCatalog
 	require.NoError(t, json.Unmarshal(data, &entry))
 	entry.FetchedAt = time.Now().Add(-8 * 24 * time.Hour)
 	data, err = json.Marshal(entry)
@@ -65,16 +65,16 @@ func TestCachedProviderModelsHidesSupersededFamilies(t *testing.T) {
 		return []catwalk.Model{{ID: "glm-4.6"}, {ID: "glm-5.3"}, {ID: "unrelated"}}, nil
 	}
 
-	models, err := cachedProviderModels(t.Context(), "zai", "https://api.z.ai/api", "account-a", fetch)
+	models, err := CachedProviderModels(t.Context(), "zai", "https://api.z.ai/api", "account-a", fetch)
 	require.NoError(t, err)
 	require.Equal(t, []string{"glm-5.3", "unrelated"}, modelIDs(models),
 		"freshly fetched catalogs must drop the hidden glm families")
 
 	// A cache entry written by an older Rush, still inside its TTL, with
 	// hidden and visible models: serving it must filter, not replay.
-	path := modelCatalogPath("zai")
-	entry := cachedModelCatalog{
-		Fingerprint: modelCatalogFingerprint("zai", "https://api.z.ai/api", "account-a"),
+	path := ModelCatalogPath("zai")
+	entry := CachedModelCatalog{
+		Fingerprint: ModelCatalogFingerprint("zai", "https://api.z.ai/api", "account-a"),
 		FetchedAt:   time.Now(),
 		Models:      []catwalk.Model{{ID: "glm-4.6"}, {ID: "glm-5.3"}},
 	}
@@ -88,7 +88,7 @@ func TestCachedProviderModelsHidesSupersededFamilies(t *testing.T) {
 		fetchCalls++
 		return nil, nil
 	}
-	models, err = cachedProviderModels(t.Context(), "zai", "https://api.z.ai/api", "account-a", countingFetch)
+	models, err = CachedProviderModels(t.Context(), "zai", "https://api.z.ai/api", "account-a", countingFetch)
 	require.NoError(t, err)
 	require.Zero(t, fetchCalls, "a fresh cache must be served without refetching")
 	require.Equal(t, []string{"glm-5.3"}, modelIDs(models),
@@ -105,8 +105,8 @@ func TestCachedProviderModelsHidesSupersededFamilies(t *testing.T) {
 // ApplyModelFacts pass in loadProviders) and the raised rows go red.
 func TestCachedProviderModelsServesRawEntriesAndOverlayRaises(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	entry := cachedModelCatalog{
-		Fingerprint: modelCatalogFingerprint("openai-codex", "https://chatgpt.com/backend-api/codex", "account-a"),
+	entry := CachedModelCatalog{
+		Fingerprint: ModelCatalogFingerprint("openai-codex", "https://chatgpt.com/backend-api/codex", "account-a"),
 		FetchedAt:   time.Now(),
 		Models: []catwalk.Model{
 			{ID: "gpt-6-luna", ContextWindow: 272000, DefaultMaxTokens: 128000},
@@ -115,12 +115,12 @@ func TestCachedProviderModelsServesRawEntriesAndOverlayRaises(t *testing.T) {
 	}
 	data, err := json.Marshal(entry)
 	require.NoError(t, err)
-	path := modelCatalogPath("openai-codex")
+	path := ModelCatalogPath("openai-codex")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	require.NoError(t, atomicWriteFile(path, data, 0o600))
 
 	fetchCalls := 0
-	models, err := cachedProviderModels(t.Context(), "openai-codex", "https://chatgpt.com/backend-api/codex", "account-a",
+	models, err := CachedProviderModels(t.Context(), "openai-codex", "https://chatgpt.com/backend-api/codex", "account-a",
 		func(context.Context) ([]catwalk.Model, error) { fetchCalls++; return nil, nil })
 	require.NoError(t, err)
 	require.Zero(t, fetchCalls, "a fresh cache must be served without refetching")
@@ -141,14 +141,14 @@ func TestCodexCatalogCachedUnderOldVersionIsRefetched(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Cleanup(func() { discover.SetCodexClientVersion("") })
 	endpoint := "https://chatgpt.com/backend-api/codex"
-	stale := cachedModelCatalog{
-		Fingerprint: modelCatalogFingerprint("openai-codex", endpoint, "account-a"),
+	stale := CachedModelCatalog{
+		Fingerprint: ModelCatalogFingerprint("openai-codex", endpoint, "account-a"),
 		FetchedAt:   time.Now(),
 		Models:      []catwalk.Model{{ID: "gpt-6.1-sol", ContextWindow: 272000, DefaultMaxTokens: 128000}},
 	}
 	data, err := json.Marshal(stale)
 	require.NoError(t, err)
-	path := modelCatalogPath("openai-codex")
+	path := ModelCatalogPath("openai-codex")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 	require.NoError(t, atomicWriteFile(path, data, 0o600))
 
@@ -158,17 +158,17 @@ func TestCodexCatalogCachedUnderOldVersionIsRefetched(t *testing.T) {
 		return []catwalk.Model{{ID: "gpt-6.1-sol"}, {ID: "gpt-6.2-sol"}}, nil
 	}
 	identity := discover.CodexCatalogIdentity("account-a", "token")
-	models, err := cachedProviderModels(t.Context(), "openai-codex", endpoint, identity, fetch)
+	models, err := CachedProviderModels(t.Context(), "openai-codex", endpoint, identity, fetch)
 	require.NoError(t, err)
 	require.Equal(t, 1, fetchCalls, "the old-version cache entry must not be served")
 	require.Contains(t, modelIDs(models), "gpt-6.2-sol")
 
-	_, err = cachedProviderModels(t.Context(), "openai-codex", endpoint, identity, fetch)
+	_, err = CachedProviderModels(t.Context(), "openai-codex", endpoint, identity, fetch)
 	require.NoError(t, err)
 	require.Equal(t, 1, fetchCalls, "the refetched catalog is cached under the new key")
 
 	discover.SetCodexClientVersion("9.9.9")
-	_, err = cachedProviderModels(t.Context(), "openai-codex", endpoint, discover.CodexCatalogIdentity("account-a", "token"), fetch)
+	_, err = CachedProviderModels(t.Context(), "openai-codex", endpoint, discover.CodexCatalogIdentity("account-a", "token"), fetch)
 	require.NoError(t, err)
 	require.Equal(t, 2, fetchCalls, "a different client version gets its own catalog")
 }
@@ -185,19 +185,19 @@ func modelIDs(models []catwalk.Model) []string {
 func TestClearModelCatalogCacheOnlyRemovesRequestedProvider(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	for _, id := range []string{"zai", "zai-docs", "stepfun"} {
-		path := modelCatalogPath(id)
+		path := ModelCatalogPath(id)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 		require.NoError(t, os.WriteFile(path, []byte(`{"test":true}`), 0o600))
 	}
 	require.Error(t, ClearModelCatalogCache("unsupported"))
 	require.NoError(t, ClearModelCatalogCache("zai"))
-	_, err := os.Stat(modelCatalogPath("zai"))
+	_, err := os.Stat(ModelCatalogPath("zai"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	_, err = os.Stat(modelCatalogPath("zai-docs"))
+	_, err = os.Stat(ModelCatalogPath("zai-docs"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	_, err = os.Stat(modelCatalogPath("stepfun"))
+	_, err = os.Stat(ModelCatalogPath("stepfun"))
 	require.NoError(t, err)
 	require.NoError(t, ClearModelCatalogCache("all"))
-	_, err = os.Stat(modelCatalogPath("stepfun"))
+	_, err = os.Stat(ModelCatalogPath("stepfun"))
 	require.ErrorIs(t, err, os.ErrNotExist)
 }

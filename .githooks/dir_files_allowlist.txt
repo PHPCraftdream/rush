@@ -34,7 +34,13 @@ internal/agent/tools/mcp 58
 internal/app 265
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
-internal/config 213
+# D2-3 catalogsrc: 4 production + 4 test files leave the root for internal/config/providers/catalogsrc (213 -> 205 files).
+# D2-3 catalogsrc-confirmed: 2 production + 2 test files leave the root for
+# internal/config/providers/catalogsrc (205 -> 203 files).
+# D2-3 provresolve: 4 production files leave the root for internal/config/providers/provresolve
+# (no test files move), so internal/config goes 203 -> 197; 203 was 2 too high -- the true
+# pre-move value was 201 (31 production + 170 test files), and 197 is that exactly.
+internal/config 197
 # internal/config/discover 27 -> 19: same D2-3 tail merge (5 production + 14 test files); row retired.
 internal/kit/sys/shell 46
 # internal/serve/server/server is born over the 21-file limit: the composer moves down with the 133

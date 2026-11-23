@@ -10,6 +10,8 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
@@ -219,12 +221,12 @@ func TestConfigureProvidersWithScope_DiscoveryScoping(t *testing.T) {
 			recordFactoryArgs(t, &routingTransport{target: target})
 
 			var docsCalls atomic.Int32
-			originalDocs := discoverZAIEffortDocs
-			discoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) {
+			originalDocs := provresolve.DiscoverZAIEffortDocs
+			provresolve.DiscoverZAIEffortDocs = func(context.Context) ([]catwalk.Model, error) {
 				docsCalls.Add(1)
 				return []catwalk.Model{{ID: "glm-5", ReasoningLevels: []string{"low", "high"}}}, nil
 			}
-			t.Cleanup(func() { discoverZAIEffortDocs = originalDocs })
+			t.Cleanup(func() { provresolve.DiscoverZAIEffortDocs = originalDocs })
 
 			cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
 			setDefaults(cfg, t.TempDir(), "")
@@ -237,11 +239,11 @@ func TestConfigureProvidersWithScope_DiscoveryScoping(t *testing.T) {
 				ID:         "openai-codex",
 				OAuthToken: &oauth.Token{AccessToken: "tok-" + uniqueSuffix, AccountID: "acc-" + uniqueSuffix},
 			})
-			known := []catwalk.Provider{zaiKnownProvider(), codexProvider()}
+			known := []catwalk.Provider{zaiKnownProvider(), catalogsrc.CodexProvider()}
 			environ := env.NewFromMap(nil)
 			resolver := NewShellVariableResolver(environ)
 
-			require.NoError(t, configureProvidersWithScope(context.Background(), cfg, environ, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil, tc.scope))
+			require.NoError(t, provresolve.ConfigureProvidersWithScope(context.Background(), cfg, environ, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil, tc.scope))
 
 			require.GreaterOrEqual(t, codexHits.Load(), tc.wantCodexHits)
 			require.GreaterOrEqual(t, zaiHits.Load(), tc.wantZAIHits)

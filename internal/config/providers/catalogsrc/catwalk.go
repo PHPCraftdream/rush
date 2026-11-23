@@ -1,4 +1,4 @@
-package config
+package catalogsrc
 
 import (
 	"context"
@@ -71,7 +71,7 @@ type catwalkSync struct {
 
 func (s *catwalkSync) Init(client catwalkClient, path string, autoupdate bool) {
 	s.client = client
-	s.cache = newCache[[]catwalk.Provider](path)
+	s.cache = NewCache[[]catwalk.Provider](path)
 	s.autoupdate = autoupdate
 	s.init.Store(true)
 }

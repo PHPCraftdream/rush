@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 	"github.com/stretchr/testify/require"
 )
@@ -58,12 +60,12 @@ func runCodexDumpScenario(t *testing.T, cfg *Config, known []catwalk.Provider) m
 // TestConfigureProviders_CatalogDumpDoesNotCountAsUserSet reproduces the
 // production wiring: the known-provider entry for openai-codex carries no
 // models (codexProvider), the account catalog arrives from
-// cachedProviderModels inside configureProviders, and rush.json holds a
+// CachedProviderModels inside configureProviders, and rush.json holds a
 // `rush providers update` dump whose numbers equal the live row's raw
 // values. That dump is not a user decision: it must not stay user-set, and
 // the facts overlay must still lift the values.
 //
-// Revert-check: drop the forgetDumpedUserSet call in the openai-codex
+// Revert-check: drop the provresolve.ForgetDumpedUserSet call in the openai-codex
 // branch and the dumped window stays at the account catalog's raw number
 // instead of the facts value.
 func TestConfigureProviders_CatalogDumpDoesNotCountAsUserSet(t *testing.T) {
@@ -84,7 +86,7 @@ func TestConfigureProviders_CatalogDumpDoesNotCountAsUserSet(t *testing.T) {
 		}},
 	})
 
-	byID := runCodexDumpScenario(t, cfg, []catwalk.Provider{codexProvider()})
+	byID := runCodexDumpScenario(t, cfg, []catwalk.Provider{catalogsrc.CodexProvider()})
 
 	factsWindow, factsMaxTokens := discover.LookupModelFacts("openai-codex", live.ID)
 	require.NotZero(t, factsWindow, "the facts table must have a row for the dumped model")
@@ -121,7 +123,7 @@ func TestConfigureProviders_UserValueDifferentFromCatalogWins(t *testing.T) {
 
 	// A known-provider entry that also carries the model, as the catwalk
 	// list does for catalog providers: the same dump check runs there.
-	catalog := codexProvider()
+	catalog := catalogsrc.CodexProvider()
 	catalog.Models = []catwalk.Model{live}
 
 	byID := runCodexDumpScenario(t, cfg, []catwalk.Provider{catalog})
@@ -177,7 +179,7 @@ func TestConfigureProviders_CustomProviderValueStaysUserSet(t *testing.T) {
 		"a custom provider's output budget has no catalog entry and stays user-set")
 }
 
-// forgetDumpedUserSet is the single place a dump is told from a decision: the
+// provresolve.ForgetDumpedUserSet is the single place a dump is told from a decision: the
 // flags clear per field on equality with the catalog's raw number, an entry
 // with nothing left is dropped, and rows the catalog does not know keep theirs.
 // (The facts overlay only fills a ZERO output budget, so the output-budget flag
@@ -204,7 +206,7 @@ func TestForgetDumpedUserSet(t *testing.T) {
 			userSet := map[string]map[string]discover.UserModelFacts{
 				"p": {tc.config.ID: {ContextWindow: tc.config.ContextWindow > 0, DefaultMaxTokens: tc.config.DefaultMaxTokens > 0}},
 			}
-			forgetDumpedUserSet(userSet, "p", []catwalk.Model{tc.config}, catalog)
+			provresolve.ForgetDumpedUserSet(userSet, "p", []catwalk.Model{tc.config}, catalog)
 			require.Equal(t, tc.want, userSet["p"])
 		})
 	}
@@ -214,7 +216,7 @@ func TestForgetDumpedUserSet(t *testing.T) {
 // path) is handled at the same place as a custom one is not: a config row that
 // equals the shipped catalog's raw window is a dump and the facts floor lifts it.
 //
-// Revert check: dropping the post-loop forgetDumpedUserSet call over
+// Revert check: dropping the post-loop provresolve.ForgetDumpedUserSet call over
 // knownProviders leaves the dumped window user-set at the catalog's raw value.
 func TestConfigureProviders_KnownProviderCatalogDumpDoesNotCountAsUserSet(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -263,7 +265,7 @@ func TestConfigureProviders_ServiceTierReachesEffectiveSlots(t *testing.T) {
 		SelectedModelTypeSmart: {Provider: "openai-codex", Model: live.ID, ReasoningEffort: "high", ServiceTier: "fast"},
 		SelectedModelTypeFast:  {Provider: "openai-codex", Model: live.ID, ReasoningEffort: "low", ServiceTier: "fast"},
 	}
-	runCodexDumpScenario(t, cfg, []catwalk.Provider{codexProvider()})
+	runCodexDumpScenario(t, cfg, []catwalk.Provider{catalogsrc.CodexProvider()})
 	require.Equal(t, "fast", cfg.Models[SelectedModelTypeSmart].ServiceTier)
 	require.Equal(t, "fast", cfg.Models[SelectedModelTypeFast].ServiceTier)
 	require.Equal(t, "high", cfg.Models[SelectedModelTypeSmart].ReasoningEffort)

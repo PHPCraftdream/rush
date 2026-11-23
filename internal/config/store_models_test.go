@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,7 +100,7 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 	//
 	// It deliberately uses an unknown PROVIDER rather than an unknown model
 	// under a known provider: since 2026-08-26 the latter is a supported
-	// "unverified passthrough" (see unverifiedPassthroughModel in
+	// "unverified passthrough" (see provresolve.UnverifiedPassthroughModel in
 	// load_providers.go — a model can be live before it reaches any cached
 	// catalog) and no longer triggers the fallback+persist path this test
 	// needs. An unconfigured provider is the remaining case that does.
@@ -162,7 +163,7 @@ func TestLoad_PersistingCorrectedModelDoesNotDeadlock(t *testing.T) {
 // configured — must survive config load untouched, and must NOT be
 // overwritten on disk.
 //
-// Before unverifiedPassthroughModel existed, configureSelectedModels replaced
+// Before provresolve.UnverifiedPassthroughModel existed, configureSelectedModels replaced
 // such a selection with the provider's default AND persisted that replacement
 // to the global scope, so merely running a read-only command like
 // `rush models state` silently rewrote the user's chosen model. That made the
@@ -230,12 +231,12 @@ func TestLoad_UnverifiedModelOnKnownProviderSurvives(t *testing.T) {
 
 // TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough is the
 // regression test for an edge case a code review caught in
-// unverifiedPassthroughModel: a PARTIAL selection (only provider or only
+// provresolve.UnverifiedPassthroughModel: a PARTIAL selection (only provider or only
 // model set, e.g. a hand-edited `"smart": {"provider": "zai"}` with no
 // model) must still self-heal to a working default, not silently pair the
 // explicitly-set provider with whatever model defaultModelSelection picked
 // for some OTHER provider — a combination that would fail at actual request
-// time with no diagnostic, and previously (before unverifiedPassthroughModel
+// time with no diagnostic, and previously (before provresolve.UnverifiedPassthroughModel
 // existed) always got the safe self-heal treatment.
 func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough(t *testing.T) {
 	dir := t.TempDir()
@@ -248,7 +249,7 @@ func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough(t *testing
 	// "smart" names a real, configured provider (zai) but no model at all.
 	// zai's own catalog only has "glm-5.3", so if the partial selection were
 	// (wrongly) paired with openai's default model id, GetModel(zai, <that
-	// id>) would miss and unverifiedPassthroughModel would (if not gated)
+	// id>) would miss and provresolve.UnverifiedPassthroughModel would (if not gated)
 	// synthesize a passthrough for a model zai never advertised.
 	initialConfig := `{
 		"options": {"disable_default_providers": true},
@@ -354,7 +355,7 @@ func TestLoad_PartialSelectionSelfHealsInsteadOfMismatchedPassthrough_ModelOnly(
 
 // TestLoad_UnverifiedModelOnKnownProviderSurvives_FastSlot mirrors
 // TestLoad_UnverifiedModelOnKnownProviderSurvives for the FAST slot — a code
-// review flagged that the fast-side call site of unverifiedPassthroughModel
+// review flagged that the fast-side call site of provresolve.UnverifiedPassthroughModel
 // (load_providers.go, the `fastModelConfigured` branch) had no dedicated
 // test: the smart and fast branches are near-duplicated by hand, not shared
 // code, so a bug in only one of them (e.g. deleting just the fast-side call)
@@ -405,7 +406,7 @@ func TestLoad_UnverifiedModelOnKnownProviderSurvives_FastSlot(t *testing.T) {
 }
 
 // TestUnverifiedPassthroughModel_DirectUnitTests exercises
-// unverifiedPassthroughModel's own branches directly — the disabled-provider
+// provresolve.UnverifiedPassthroughModel's own branches directly — the disabled-provider
 // and missing-field guards are otherwise only reachable indirectly through
 // configureSelectedModels' fallback path, which a code review flagged as
 // leaving the inversion-prone guards themselves untested.
@@ -415,7 +416,7 @@ func TestUnverifiedPassthroughModel_DirectUnitTests(t *testing.T) {
 	cfg.Providers.Set("disabled-provider", ProviderConfig{ID: "disabled-provider", APIKey: "test-key", Disable: true})
 
 	t.Run("known enabled provider, unlisted model -> synthesized stand-in", func(t *testing.T) {
-		m := unverifiedPassthroughModel(cfg, SelectedModel{Provider: "zai", Model: "glm-5.3-flash"})
+		m := provresolve.UnverifiedPassthroughModel(cfg, SelectedModel{Provider: "zai", Model: "glm-5.3-flash"})
 		require.NotNil(t, m)
 		assert.Equal(t, "glm-5.3-flash", m.ID)
 		assert.Equal(t, "glm-5.3-flash", m.Name)
@@ -423,22 +424,22 @@ func TestUnverifiedPassthroughModel_DirectUnitTests(t *testing.T) {
 	})
 
 	t.Run("disabled provider -> nil, must not fabricate a stand-in", func(t *testing.T) {
-		m := unverifiedPassthroughModel(cfg, SelectedModel{Provider: "disabled-provider", Model: "whatever"})
+		m := provresolve.UnverifiedPassthroughModel(cfg, SelectedModel{Provider: "disabled-provider", Model: "whatever"})
 		assert.Nil(t, m)
 	})
 
 	t.Run("provider absent from config entirely -> nil", func(t *testing.T) {
-		m := unverifiedPassthroughModel(cfg, SelectedModel{Provider: "ghost-provider", Model: "whatever"})
+		m := provresolve.UnverifiedPassthroughModel(cfg, SelectedModel{Provider: "ghost-provider", Model: "whatever"})
 		assert.Nil(t, m)
 	})
 
 	t.Run("empty model -> nil", func(t *testing.T) {
-		m := unverifiedPassthroughModel(cfg, SelectedModel{Provider: "zai", Model: ""})
+		m := provresolve.UnverifiedPassthroughModel(cfg, SelectedModel{Provider: "zai", Model: ""})
 		assert.Nil(t, m)
 	})
 
 	t.Run("empty provider -> nil", func(t *testing.T) {
-		m := unverifiedPassthroughModel(cfg, SelectedModel{Provider: "", Model: "whatever"})
+		m := provresolve.UnverifiedPassthroughModel(cfg, SelectedModel{Provider: "", Model: "whatever"})
 		assert.Nil(t, m)
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,7 @@ func TestModelMergesDoNotReserveDuplicateDiscoveryRows(t *testing.T) {
 
 	t.Run("codex keeps configured facts without speculative capacity", func(t *testing.T) {
 		t.Parallel()
-		got := mergeCodexModels(configured, discovered)
+		got := provresolve.MergeCodexModels(configured, discovered)
 		require.Equal(t, configured, got)
 		require.Equal(t, len(configured), cap(got), "duplicate live rows must not inflate the initial allocation")
 		got[0].Name = "result-only mutation"
@@ -26,7 +27,7 @@ func TestModelMergesDoNotReserveDuplicateDiscoveryRows(t *testing.T) {
 	})
 	t.Run("provider overlays facts without speculative capacity", func(t *testing.T) {
 		t.Parallel()
-		got := mergeProviderModels(configured, discovered)
+		got := provresolve.MergeProviderModels(configured, discovered)
 		require.Equal(t, []catwalk.Model{{ID: "kept", Name: "Live", ContextWindow: 263}}, got)
 		require.Equal(t, len(configured), cap(got), "duplicate live rows must not inflate the initial allocation")
 		require.Equal(t, original, configured[0], "live overlays must not mutate the configured snapshot")
@@ -39,10 +40,10 @@ func TestModelMergesPreserveOrderAndGrowForNewIDs(t *testing.T) {
 	live := []catwalk.Model{{ID: "second", Name: "Second"}, {ID: "first", Name: "Live"}, {ID: "third", Name: "Third"}}
 	require.Equal(t, []catwalk.Model{
 		{ID: "first", Name: "Configured"}, {ID: "second", Name: "Second"}, {ID: "third", Name: "Third"},
-	}, mergeCodexModels(configured, live))
+	}, provresolve.MergeCodexModels(configured, live))
 	require.Equal(t, []catwalk.Model{
 		{ID: "first", Name: "Live"}, {ID: "second", Name: "Second"}, {ID: "third", Name: "Third"},
-	}, mergeProviderModels(configured, live))
-	require.NotNil(t, mergeCodexModels(nil, nil))
-	require.NotNil(t, mergeProviderModels(nil, nil))
+	}, provresolve.MergeProviderModels(configured, live))
+	require.NotNil(t, provresolve.MergeCodexModels(nil, nil))
+	require.NotNil(t, provresolve.MergeProviderModels(nil, nil))
 }

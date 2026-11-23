@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"time"
 
+	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/config/domains/apiremote"
 	"github.com/PHPCraftdream/rush/internal/config/domains/apitoken"
 	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
@@ -31,6 +32,8 @@ import (
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
 	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
+	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
@@ -585,4 +588,80 @@ func SetSettingsPasswordIterationsForTest(n int) (restore func()) {
 // (dead after this chunk, deleted next chunk) still calls it unqualified.
 func freshSettingsHash(path string) (string, error) {
 	return settings.FreshSettingsHash(path)
+}
+
+// ---------------------------------------------------------------------------
+// D2-3: catalogsrc group (providers/catalogsrc)
+//
+// provider.go, catwalk.go, hyper.go and catalog_supplement.go moved to
+// internal/config/providers/catalogsrc. The four functions below forward
+// their exported API so staying-root callers keep compiling unchanged.
+// ---------------------------------------------------------------------------
+
+// Providers returns the list of providers, taking into account cached results
+// and whether or not auto update is enabled.
+func Providers(cfg *Config) ([]catwalk.Provider, error) { return catalogsrc.Providers(cfg) }
+
+// UpdateProviders updates the Catwalk providers list from a specified source.
+func UpdateProviders(pathOrURL string) error { return catalogsrc.UpdateProviders(pathOrURL) }
+
+// UpdateHyper updates the Hyper provider information from a specified URL.
+func UpdateHyper(pathOrURL string) error { return catalogsrc.UpdateHyper(pathOrURL) }
+
+// ResetProviderCacheForTests clears the process-wide provider/hyper sync
+// singletons so tests in other packages can isolate themselves.
+func ResetProviderCacheForTests() { catalogsrc.ResetProviderCacheForTests() }
+
+// catalogsrc: confirmed-model verification and catalog cache.
+
+// VerifyResult classifies how a provider answered a model-verification probe.
+type VerifyResult = catalogsrc.VerifyResult
+
+// ConfirmedModels is a provider roster accepted by a live verification.
+type ConfirmedModels = catalogsrc.ConfirmedModels
+
+const (
+	Listed       = catalogsrc.Listed
+	NotListed    = catalogsrc.NotListed
+	Unverifiable = catalogsrc.Unverifiable
+)
+
+// ClearModelCatalogCache removes cached provider catalogs. An empty provider
+// clears every supported catalog; the next Rush process fetches them again.
+func ClearModelCatalogCache(provider string) error {
+	return catalogsrc.ClearModelCatalogCache(provider)
+}
+
+// SetModelVerifyOnlineForTests allows verification requests in cache-only mode;
+// it returns the restore function.
+func SetModelVerifyOnlineForTests(on bool) func() { return catalogsrc.SetModelVerifyOnlineForTests(on) }
+
+// VerifyProviderModel verifies that a provider's live roster lists modelID.
+func VerifyProviderModel(ctx context.Context, cfg *Config, providerID, modelID string, resolvers ...VariableResolver) (VerifyResult, error) {
+	return catalogsrc.VerifyProviderModel(ctx, cfg, providerID, modelID, resolvers...)
+}
+
+// RefreshProviderModels fetches the entire model roster, using a fresh cached roster when possible.
+func RefreshProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, providerID string, resolver VariableResolver, modelID string) ([]catwalk.Model, string, error) {
+	return catalogsrc.RefreshProviderModels(ctx, cfg, pc, providerID, resolver, modelID)
+}
+
+// FetchProviderModels fetches a provider's full roster without writing cache.
+func FetchProviderModels(ctx context.Context, cfg *Config, pc ProviderConfig, providerID string, resolver VariableResolver) ([]catwalk.Model, string, error) {
+	return catalogsrc.FetchProviderModels(ctx, cfg, pc, providerID, resolver)
+}
+
+// PersistConfirmedModels persists a successfully fetched full provider roster.
+func PersistConfirmedModels(providerID, endpoint, key string, models []catwalk.Model) error {
+	return catalogsrc.PersistConfirmedModels(providerID, endpoint, key, models)
+}
+
+// CachedConfirmedModels reports the matching roster and whether it is fresh.
+func CachedConfirmedModels(pc ProviderConfig, providerID string, resolver VariableResolver) ([]catwalk.Model, bool) {
+	return catalogsrc.CachedConfirmedModels(pc, providerID, resolver)
+}
+
+// provresolve: effective model selection.
+func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) error {
+	return provresolve.ConfigureSelectedModels(cfg, knownProviders)
 }

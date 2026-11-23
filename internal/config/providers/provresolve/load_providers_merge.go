@@ -1,18 +1,19 @@
 // Model-list merge helpers for provider configuration: reconciling
 // configured, catalog and live-discovered model rows.
-package config
+package provresolve
 
 import (
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/PHPCraftdream/rush/internal/config/discover"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
 )
 
-// forgetDumpedUserSet clears the user-set flags of config rows whose values
+// ForgetDumpedUserSet clears the user-set flags of config rows whose values
 // equal the catalog's raw numbers -- a `rush providers update` dump of a
 // catalog that is only fetched later (the Codex account catalog, inside the
 // provider loop) must not block the facts overlay. Rows absent from the
 // catalog keep their flags, and the entry vanishes once nothing is set.
-func forgetDumpedUserSet(userSet map[string]map[string]discover.UserModelFacts, providerID string, configModels, catalog []catwalk.Model) {
+func ForgetDumpedUserSet(userSet map[string]map[string]discover.UserModelFacts, providerID string, configModels, catalog []catwalk.Model) {
 	if len(catalog) == 0 {
 		return
 	}
@@ -44,7 +45,7 @@ func forgetDumpedUserSet(userSet map[string]map[string]discover.UserModelFacts, 
 	}
 }
 
-func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
+func MergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
 	models := make([]catwalk.Model, 0, len(configured))
 	seen := make(map[string]struct{}, len(configured))
 	for _, model := range configured {
@@ -64,23 +65,23 @@ func mergeCodexModels(configured, discovered []catwalk.Model) []catwalk.Model {
 	return models
 }
 
-func liveEffortsFromModels(models []catwalk.Model) map[string]ModelEffortInfo {
-	var efforts map[string]ModelEffortInfo
+func liveEffortsFromModels(models []catwalk.Model) map[string]cfgmodel.ModelEffortInfo {
+	var efforts map[string]cfgmodel.ModelEffortInfo
 	for i := range models {
 		if len(models[i].ReasoningLevels) == 0 {
 			continue
 		}
 		if efforts == nil {
-			efforts = make(map[string]ModelEffortInfo)
+			efforts = make(map[string]cfgmodel.ModelEffortInfo)
 		}
-		efforts[models[i].ID] = ModelEffortInfo{
+		efforts[models[i].ID] = cfgmodel.ModelEffortInfo{
 			Levels: models[i].ReasoningLevels, Default: models[i].DefaultReasoningEffort,
 		}
 	}
 	return efforts
 }
 
-func mergeProviderModels(configured, live []catwalk.Model) []catwalk.Model {
+func MergeProviderModels(configured, live []catwalk.Model) []catwalk.Model {
 	result := make([]catwalk.Model, len(configured))
 	copy(result, configured)
 	indices := make(map[string]int, len(configured))
