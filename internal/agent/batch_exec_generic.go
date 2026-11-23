@@ -7,6 +7,10 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -21,24 +25,24 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 		return nil, err
 	}
 	if batchControlTarget(p.Tool) {
-		return nil, newBatchStartError(batchCodeNoLeaf, errors.New("control-plane target"))
+		return nil, batchdispatch.NewStartError(batchdispatch.CodeNoLeaf, errors.New("control-plane target"))
 	}
 	if p.Policy != nil && p.Policy.RoleContract != nil {
 		if err := p.Policy.RoleContract.Validate(); err != nil {
-			return nil, newBatchStartError(batchCodeBadPayload, err)
+			return nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, err)
 		}
 		if !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
-			return nil, newBatchStartError(batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
+			return nil, batchdispatch.NewStartError(batchdispatch.CodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
 		}
 	}
 	if p.SelectedRoleContract != nil {
-		if err := validateSelectedBatchRole(p.SelectedRoleContract, p.SelectedRoleContract.Name, func() *session.RoleContract {
+		if err := batchinst.ValidateSelectedRole(p.SelectedRoleContract, p.SelectedRoleContract.Name, func() *session.RoleContract {
 			if p.Policy == nil {
 				return nil
 			}
 			return p.Policy.RoleContract
 		}()); err != nil {
-			return nil, newBatchStartError(batchCodeBadPayload, err)
+			return nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, err)
 		}
 	}
 	leaf, err := env.resolveLeaf(p)
@@ -60,7 +64,7 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	if p.SelectedRoleContract != nil {
 		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
 	}
-	runCtx = withBatchManagedCall(batchLeafRunContext(runCtx, p))
+	runCtx = batchlife.WithBatchManagedCall(batchLeafRunContext(runCtx, p))
 	// Restore trusted inherited and selected caps after any call-options
 	// rebuild performed while decorating the leaf execution context.
 	if p.Policy != nil && p.Policy.RoleContract != nil {
@@ -77,7 +81,7 @@ func (batchGenericFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	if p.diskProvider != nil && p.Policy != nil {
 		runCtx = WithCallOptions(runCtx, boundCallOptions(p.diskProvider, p.Policy.DiskBindingID, env.DiskBindings))
 	}
-	e := batchexec.NewGeneric(cancel, batchExecutionOutput(env.OutputCache, l.ID, batchOutputRoot(l.ID), batchOutputCursorClamp))
+	e := batchexec.NewGeneric(cancel, batchExecutionOutput(env.OutputCache, l.ID, batchmeta.OutputRoot(l.ID), batchmeta.OutputCursorClamp))
 	call := fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}
 	go e.Run(runCtx, leaf, call, report)
 	return e, nil
@@ -93,8 +97,8 @@ func batchControlTarget(name string) bool {
 	return false
 }
 
-func batchExecutionOutput(cache *batchOutputCache, id, root jobbatch.ID, contract batchOutputCursorContract) batchexec.Output {
-	output := batchexec.Output{Result: batchResultFromResponse}
+func batchExecutionOutput(cache *batchOutputCache, id, root jobbatch.ID, contract batchmeta.OutputCursorContract) batchexec.Output {
+	output := batchexec.Output{Result: batchdispatch.ResultFromResponse}
 	if cache != nil {
 		output.Store = func(chunk jobbatch.OutputChunk) { cache.putForContract(id, root, chunk, contract) }
 	}

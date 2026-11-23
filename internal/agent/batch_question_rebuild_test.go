@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -24,7 +25,7 @@ type rebuiltQuestionCaptureAgent struct {
 func (a *rebuiltQuestionCaptureAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 	a.calls++
 	a.call = call
-	a.route, a.routeKnown = batchQuestionRouteFrom(ctx)
+	a.route, a.routeKnown = batchmeta.BatchQuestionRouteFrom(ctx)
 	return nil, nil
 }
 
@@ -96,7 +97,7 @@ type questionRouteRecordingModel struct {
 }
 
 func (m *questionRouteRecordingModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
-	route, known := batchQuestionRouteFrom(ctx)
+	route, known := batchmeta.BatchQuestionRouteFrom(ctx)
 	m.known.Store(known)
 	m.route.Store(route)
 	return m.LanguageModel.Stream(ctx, call)

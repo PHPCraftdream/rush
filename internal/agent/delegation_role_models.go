@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -80,7 +81,7 @@ func (c *coordinator) resolveRequestedDelegationModel(ctx context.Context, cfg *
 		}
 	}
 	if creds == nil && c.drainCredentialBoundary(ctx, parentID) {
-		return delegationRoleModel{}, ErrCredentialBindingUnavailable
+		return delegationRoleModel{}, diskport.ErrCredentialBindingUnavailable
 	}
 	parent, err := c.sessions.Get(ctx, parentID)
 	if err != nil {
@@ -126,7 +127,7 @@ func (c *coordinator) resolveRoleContractModel(ctx context.Context, cfg *config.
 		return delegationRoleModel{}, err
 	}
 	if creds == nil && parentID != "" && c.drainCredentialBoundary(ctx, parentID) {
-		return delegationRoleModel{}, ErrCredentialBindingUnavailable
+		return delegationRoleModel{}, diskport.ErrCredentialBindingUnavailable
 	}
 	provider, ok := cfg.Providers.Get(selected.Provider)
 	if !ok {

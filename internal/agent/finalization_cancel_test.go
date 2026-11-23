@@ -4,12 +4,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/stretchr/testify/require"
 )
 
-func finalizationCancelTestExecution(sessionID string, epoch uint64) *finalizationExecution {
-	return &finalizationExecution{
+func finalizationCancelTestExecution(sessionID string, epoch uint64) *finalize.FinalizationExecution {
+	return &finalize.FinalizationExecution{
 		SessionID: sessionID,
 		LogicalID: "logical",
 		Gate:      gate.New(epoch),
@@ -19,21 +20,21 @@ func finalizationCancelTestExecution(sessionID string, epoch uint64) *finalizati
 
 func TestFinalizationOnCancelHookRefusesSealBeforePublication(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
-	registry := newFinalizationCancelRegistry()
+	registry := finalize.NewFinalizationCancelRegistry()
 	registry.Register(env.execution)
-	hook := NewFinalizationOnCancelHook(registry)
+	hook := finalize.NewFinalizationOnCancelHook(registry)
 	stamp, err := env.execution.Gate.BeginCandidate(env.ctx, env.execution.Read)
 	require.NoError(t, err)
 	hook(env.call.SessionID)
 	var published int
-	publish := func(context.Context, finalizationCandidate) error {
+	publish := func(context.Context, gate.Candidate) error {
 		published++
 		return nil
 	}
-	candidate := finalizationCandidate{MessageID: "m", Hash: "h"}
+	candidate := gate.Candidate{MessageID: "m", Hash: "h"}
 	verdict, err := env.execution.Gate.TrySeal(env.ctx, stamp, candidate, env.execution.Read, publish)
 	require.ErrorIs(t, err, context.Canceled)
-	require.Equal(t, finalizationWaitWork, verdict)
+	require.Equal(t, gate.WaitWork, verdict)
 	require.Zero(t, published, "a cancelled owner must not deliver anything")
 	_, err = env.execution.Gate.BeginCandidate(env.ctx, env.execution.Read)
 	require.ErrorIs(t, err, context.Canceled)

@@ -6,7 +6,9 @@ import (
 	"sync"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -27,7 +29,7 @@ type installedBatchModelControl struct {
 	sessions           coresession.Service
 	host, runnerID     string
 	profile            *BatchProfile
-	resolver           batchMCPCapabilityResolver
+	resolver           batchinst.MCPCapabilityResolver
 	rootLeases         *batchRootLeaseStore
 	runMu              *sync.Mutex
 	maxDepth, maxNodes int
@@ -35,8 +37,8 @@ type installedBatchModelControl struct {
 
 var _ BatchModelControl = (*installedBatchModelControl)(nil)
 
-func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions coresession.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
-	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, runMu: &sync.Mutex{}, maxDepth: batchDefaultMaxDepth, maxNodes: batchDefaultMaxNodes}
+func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions coresession.Service, host, runnerID string, profile *BatchProfile, resolver batchinst.MCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
+	control := &installedBatchModelControl{runner: runner, delivery: delivery, store: store, live: live, sessions: sessions, host: host, runnerID: runnerID, profile: profile, resolver: resolver, runMu: &sync.Mutex{}, maxDepth: batchcore.DefaultMaxDepth, maxNodes: batchcore.DefaultMaxNodes}
 	if adapter, ok := runner.(interface{ OutputCache() *batchOutputCache }); ok {
 		control.outputCache = adapter.OutputCache()
 	}
@@ -46,18 +48,18 @@ func NewInstalledBatchModelControl(runner batchModelRunner, delivery batchModelD
 	return control
 }
 
-func (c *installedBatchModelControl) InstallBatchModelControls(reg *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
+func (c *installedBatchModelControl) InstallBatchModelControls(reg *toolwrap.PolicyLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
 	if reg == nil {
 		return nil, errors.New("batch controls require calling pinned registry")
 	}
 	return newBatchModelTools(c, inv, reg), nil
 }
 
-func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, raw batchModelSpec) (jobbatch.ID, error) {
+func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, raw modelcontrol.Spec) (jobbatch.ID, error) {
 	return c.modelMutations().Run(ctx, inv, reg, raw)
 }
 
-func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, parent string, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, items []batchModelItem) ([]jobbatch.ID, error) {
+func (c *installedBatchModelControl) Add(ctx context.Context, caller, root, parent string, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, items []modelcontrol.Item) ([]jobbatch.ID, error) {
 	return c.modelMutations().Add(ctx, caller, root, parent, inv, reg, items)
 }
 
@@ -76,16 +78,16 @@ func (c *installedBatchModelControl) modelMutations() modelcontrol.Mutations[Bat
 			inv.AgentDepth, inv.AgentDepthSet, inv.roleConfig = depth, true, cfg
 		},
 		Validate: (*BatchInvocation).Validate, ParentRoleConfig: parentRoleConfigFrom, DefaultDepth: DefaultAgentDepth,
-		Build: func(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, depth int) (jobbatch.Spec, error) {
+		Build: func(raw modelcontrol.Spec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, depth int) (jobbatch.Spec, error) {
 			inv.AgentDepth = depth
 			return modelBatchSpecForAdmission(raw, inv, reg, c.resolver)
 		},
 		AdmitRoles: admitBatchRoleContracts, RewriteLeaf: rewriteModelBatchLeaf, Measure: measureModelBatchSpecs,
 		ValidateSubmit: func(rank int, spec jobbatch.Spec) error {
-			return ValidateSubmit(c.profile, batchRankContext{Rank: rank}, nil, spec, c.maxDepth, c.maxNodes, c.resolver)
+			return ValidateSubmit(c.profile, batchinst.RankContext{Rank: rank}, nil, spec, c.maxDepth, c.maxNodes, c.resolver)
 		},
 		ValidateAdd: func(rank int, root jobbatch.ID, spec jobbatch.Spec, depth, used int) error {
-			return ValidateAdd(c.profile, batchRankContext{Rank: rank, Root: root}, nil, spec, depth, used, c.maxDepth, c.maxNodes, c.resolver)
+			return ValidateAdd(c.profile, batchinst.RankContext{Rank: rank, Root: root}, nil, spec, depth, used, c.maxDepth, c.maxNodes, c.resolver)
 		},
 		StampCredentials: stampBatchCallCredentials, Hash: batchInvocationHash,
 		RoleUnconfigured: ErrAgentRoleUnconfigured, DiskUnavailable: ErrDiskProviderUnavailable, MissingCallID: errBatchMissingCallID,

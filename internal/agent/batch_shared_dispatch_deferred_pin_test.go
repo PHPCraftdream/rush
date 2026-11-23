@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -62,7 +63,7 @@ func TestSharedToolsetBuildPublishesNothingAndDispatchPinsLazily(t *testing.T) {
 		}
 	}
 	require.NotNil(t, armed, "the shared build must arm its work tool")
-	ingressTool, ok := armed.(*batchIngressTool)
+	ingressTool, ok := armed.(*toolwrap.BatchIngressTool)
 	require.True(t, ok, "the armed tool must be a batchIngressTool")
 	require.NotNil(t, ingressTool.Bind, "the shared build's tool must carry the deferred-pin binding")
 

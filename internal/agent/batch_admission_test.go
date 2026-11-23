@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -31,7 +32,7 @@ var batchControlPlaneNames = []string{
 }
 
 var batchKinds = []string{
-	batchKindGeneric, batchKindMCP, batchKindShell, batchKindArgv, batchKindAgent,
+	batchdispatch.KindGeneric, batchdispatch.KindMCP, batchdispatch.KindShell, batchdispatch.KindArgv, batchdispatch.KindAgent,
 }
 
 func TestBatchExecutorRejectsRoleForbiddenGenericToolBeforeLeaf(t *testing.T) {
@@ -45,10 +46,10 @@ func TestBatchExecutorRejectsRoleForbiddenGenericToolBeforeLeaf(t *testing.T) {
 	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
 		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"bash": {Tool: leaf}}), nil
 	}}
-	family := newBatchExecutor(env, map[string]batchLeafFamily{batchKindGeneric: newBatchGenericFamily()})
+	family := newBatchExecutor(env, map[string]batchLeafFamily{batchdispatch.KindGeneric: newBatchGenericFamily()})
 	payload, err := json.Marshal(batchLeafPayload{Tool: "bash", SessionID: "s", Policy: &batchLeafPolicyContext{RoleContract: contract}})
 	require.NoError(t, err)
-	_, err = family.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}, func(jobbatch.Result) {})
+	_, err = family.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}}, func(jobbatch.Result) {})
 	require.Error(t, err)
 	require.False(t, started, "forbidden leaf must not dispatch")
 }
@@ -60,8 +61,8 @@ func TestBatchClassifyControlPlane(t *testing.T) {
 			kind, name := kind, name
 			t.Run(kind+"/"+name, func(t *testing.T) {
 				t.Parallel()
-				_, _, err := classifyBatchLeaf(kind, name, batchMCPCapability{Reentrant: true, Annotated: true})
-				require.ErrorIs(t, err, errBatchControlPlaneLeaf)
+				_, _, err := batchinst.ClassifyLeaf(kind, name, batchinst.MCPCapability{Reentrant: true, Annotated: true}, batchAdmissionPolicy())
+				require.ErrorIs(t, err, batchinst.ErrBatchControlPlaneLeaf)
 			})
 		}
 	}
@@ -87,7 +88,7 @@ func TestBatchClassifyIOTable(t *testing.T) {
 		tool := tool
 		t.Run(tool, func(t *testing.T) {
 			t.Parallel()
-			group, rank, err := classifyBatchLeaf(batchKindGeneric, tool, batchMCPCapability{})
+			group, rank, err := batchinst.ClassifyLeaf(batchdispatch.KindGeneric, tool, batchinst.MCPCapability{}, batchAdmissionPolicy())
 			require.NoError(t, err)
 			require.Equal(t, batchGroupIO, group)
 			require.Equal(t, 0, rank)
@@ -100,7 +101,7 @@ func TestBatchClassifyKinds(t *testing.T) {
 
 	t.Run("shell bash", func(t *testing.T) {
 		t.Parallel()
-		group, rank, err := classifyBatchLeaf(batchKindShell, "bash", batchMCPCapability{})
+		group, rank, err := batchinst.ClassifyLeaf(batchdispatch.KindShell, "bash", batchinst.MCPCapability{}, batchAdmissionPolicy())
 		require.NoError(t, err)
 		require.Equal(t, batchGroupIO, group)
 		require.Equal(t, 0, rank)
@@ -108,7 +109,7 @@ func TestBatchClassifyKinds(t *testing.T) {
 
 	t.Run("argv run_command", func(t *testing.T) {
 		t.Parallel()
-		group, rank, err := classifyBatchLeaf(batchKindArgv, "run_command", batchMCPCapability{})
+		group, rank, err := batchinst.ClassifyLeaf(batchdispatch.KindArgv, "run_command", batchinst.MCPCapability{}, batchAdmissionPolicy())
 		require.NoError(t, err)
 		require.Equal(t, batchGroupIO, group)
 		require.Equal(t, 0, rank)
@@ -117,7 +118,7 @@ func TestBatchClassifyKinds(t *testing.T) {
 	t.Run("agent tools", func(t *testing.T) {
 		t.Parallel()
 		for _, tool := range []string{"agent", "agentic_fetch"} {
-			group, rank, err := classifyBatchLeaf(batchKindAgent, tool, batchMCPCapability{})
+			group, rank, err := batchinst.ClassifyLeaf(batchdispatch.KindAgent, tool, batchinst.MCPCapability{}, batchAdmissionPolicy())
 			require.NoError(t, err)
 			require.Equal(t, batchGroupAgentDriver, group)
 			require.Equal(t, 2, rank)
@@ -126,7 +127,7 @@ func TestBatchClassifyKinds(t *testing.T) {
 
 	t.Run("mcp non-reentrant", func(t *testing.T) {
 		t.Parallel()
-		group, rank, err := classifyBatchLeaf(batchKindMCP, "some_server_tool", batchMCPCapability{})
+		group, rank, err := batchinst.ClassifyLeaf(batchdispatch.KindMCP, "some_server_tool", batchinst.MCPCapability{}, batchAdmissionPolicy())
 		require.NoError(t, err)
 		require.Equal(t, batchGroupIO, group)
 		require.Equal(t, 0, rank)
@@ -134,7 +135,7 @@ func TestBatchClassifyKinds(t *testing.T) {
 
 	t.Run("mcp reentrant annotated", func(t *testing.T) {
 		t.Parallel()
-		group, rank, err := classifyBatchLeaf(batchKindMCP, "some_server_tool", batchMCPCapability{Reentrant: true, Annotated: true})
+		group, rank, err := batchinst.ClassifyLeaf(batchdispatch.KindMCP, "some_server_tool", batchinst.MCPCapability{Reentrant: true, Annotated: true}, batchAdmissionPolicy())
 		require.NoError(t, err)
 		require.Equal(t, batchGroupAgentDriver, group)
 		require.Equal(t, 2, rank)
@@ -142,26 +143,26 @@ func TestBatchClassifyKinds(t *testing.T) {
 
 	t.Run("mcp reentrant unannotated", func(t *testing.T) {
 		t.Parallel()
-		_, _, err := classifyBatchLeaf(batchKindMCP, "some_server_tool", batchMCPCapability{Reentrant: true})
+		_, _, err := batchinst.ClassifyLeaf(batchdispatch.KindMCP, "some_server_tool", batchinst.MCPCapability{Reentrant: true}, batchAdmissionPolicy())
 		require.ErrorIs(t, err, batchinst.ErrBatchReentrantMCPUnannotated)
 	})
 
 	t.Run("unknown generic tool", func(t *testing.T) {
 		t.Parallel()
-		_, _, err := classifyBatchLeaf(batchKindGeneric, "mystery_tool", batchMCPCapability{})
-		require.ErrorIs(t, err, errBatchUnknownTool)
+		_, _, err := batchinst.ClassifyLeaf(batchdispatch.KindGeneric, "mystery_tool", batchinst.MCPCapability{}, batchAdmissionPolicy())
+		require.ErrorIs(t, err, batchinst.ErrBatchUnknownTool)
 	})
 
 	t.Run("unknown kind", func(t *testing.T) {
 		t.Parallel()
-		_, _, err := classifyBatchLeaf("widget", "view", batchMCPCapability{})
-		require.ErrorIs(t, err, errBatchUnknownTool)
+		_, _, err := batchinst.ClassifyLeaf("widget", "view", batchinst.MCPCapability{}, batchAdmissionPolicy())
+		require.ErrorIs(t, err, batchinst.ErrBatchUnknownTool)
 	})
 }
 
 // batchValidCtx is a clean waiter context used as a test baseline.
-func batchValidCtx(rank int) batchRankContext {
-	return batchRankContext{Rank: rank, Root: jobbatch.ID(fmt.Sprintf("waiter-%d", rank))}
+func batchValidCtx(rank int) batchinst.RankContext {
+	return batchinst.RankContext{Rank: rank, Root: jobbatch.ID(fmt.Sprintf("waiter-%d", rank))}
 }
 
 func TestBatchAdmissionValidateSubmit(t *testing.T) {
@@ -172,27 +173,27 @@ func TestBatchAdmissionValidateSubmit(t *testing.T) {
 	t.Run("legal descending chain accepted", func(t *testing.T) {
 		t.Parallel()
 		waiter := batchValidCtx(2)
-		edges := []batchDependencyEdge{
+		edges := []batchinst.DependencyEdge{
 			{Group: batchGroupCLIDriver, Root: "dep-a"},
 			{Group: batchGroupIO, Root: "dep-b"},
 		}
-		spec := batchTestLeaf(batchKindAgent, "agent", batchGroupAgentDriver)
+		spec := batchTestLeaf(batchdispatch.KindAgent, "agent", batchGroupAgentDriver)
 		require.NoError(t, ValidateSubmit(profile, waiter, edges, spec, 8, 500, nil))
 	})
 
 	t.Run("equal rank edge rejected", func(t *testing.T) {
 		t.Parallel()
 		waiter := batchValidCtx(1)
-		edges := []batchDependencyEdge{{Group: batchGroupCLIDriver, Root: "dep-a"}}
-		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchKindShell, "bash", ""), 8, 500, nil)
+		edges := []batchinst.DependencyEdge{{Group: batchGroupCLIDriver, Root: "dep-a"}}
+		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchdispatch.KindShell, "bash", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchRankOrder)
 	})
 
 	t.Run("ascending rank edge rejected", func(t *testing.T) {
 		t.Parallel()
 		waiter := batchValidCtx(0)
-		edges := []batchDependencyEdge{{Group: batchGroupAgentDriver, Root: "dep-a"}}
-		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchKindGeneric, "view", ""), 8, 500, nil)
+		edges := []batchinst.DependencyEdge{{Group: batchGroupAgentDriver, Root: "dep-a"}}
+		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchdispatch.KindGeneric, "view", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchRankOrder)
 	})
 
@@ -200,50 +201,50 @@ func TestBatchAdmissionValidateSubmit(t *testing.T) {
 		t.Parallel()
 		waiter := batchValidCtx(2)
 		waiter.Root = "same"
-		edges := []batchDependencyEdge{{Group: batchGroupIO, Root: "same"}}
-		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		edges := []batchinst.DependencyEdge{{Group: batchGroupIO, Root: "same"}}
+		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchSameRoot)
 	})
 
 	t.Run("sequential gate on either side rejected", func(t *testing.T) {
 		t.Parallel()
-		edge := batchDependencyEdge{Group: batchGroupIO, Root: "dep-a"}
-		err := ValidateSubmit(profile, batchRankContext{Rank: 2, UnderSequential: true, Root: "w1"}, []batchDependencyEdge{edge},
-			batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		edge := batchinst.DependencyEdge{Group: batchGroupIO, Root: "dep-a"}
+		err := ValidateSubmit(profile, batchinst.RankContext{Rank: 2, UnderSequential: true, Root: "w1"}, []batchinst.DependencyEdge{edge},
+			batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchSharedGate)
 
 		edge.UnderSequential = true
-		err = ValidateSubmit(profile, batchValidCtx(2), []batchDependencyEdge{edge},
-			batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		err = ValidateSubmit(profile, batchValidCtx(2), []batchinst.DependencyEdge{edge},
+			batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchSharedGate)
 	})
 
 	t.Run("cap flag on either side rejected", func(t *testing.T) {
 		t.Parallel()
-		edge := batchDependencyEdge{Group: batchGroupIO, Root: "dep-a"}
-		err := ValidateSubmit(profile, batchRankContext{Rank: 2, UnderCap: true, Root: "w1"}, []batchDependencyEdge{edge},
-			batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		edge := batchinst.DependencyEdge{Group: batchGroupIO, Root: "dep-a"}
+		err := ValidateSubmit(profile, batchinst.RankContext{Rank: 2, UnderCap: true, Root: "w1"}, []batchinst.DependencyEdge{edge},
+			batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchSharedGate)
 
 		edge.UnderCap = true
-		err = ValidateSubmit(profile, batchValidCtx(2), []batchDependencyEdge{edge},
-			batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		err = ValidateSubmit(profile, batchValidCtx(2), []batchinst.DependencyEdge{edge},
+			batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchSharedGate)
 	})
 
 	t.Run("nested agent-in-agent same rank rejected", func(t *testing.T) {
 		t.Parallel()
 		waiter := batchValidCtx(2)
-		edges := []batchDependencyEdge{{Group: batchGroupAgentDriver, Root: "dep-a"}}
-		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		edges := []batchinst.DependencyEdge{{Group: batchGroupAgentDriver, Root: "dep-a"}}
+		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchRankOrder)
 	})
 
 	t.Run("unknown edge group rejected", func(t *testing.T) {
 		t.Parallel()
 		waiter := batchValidCtx(2)
-		edges := []batchDependencyEdge{{Group: "agents", Root: "dep-a"}}
-		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchKindAgent, "agent", ""), 8, 500, nil)
+		edges := []batchinst.DependencyEdge{{Group: "agents", Root: "dep-a"}}
+		err := ValidateSubmit(profile, waiter, edges, batchTestLeaf(batchdispatch.KindAgent, "agent", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchGroupUncapped)
 	})
 
@@ -260,18 +261,18 @@ func TestBatchAdmissionValidateSubmit(t *testing.T) {
 		noDefault := &BatchProfile{caps: map[string]int{
 			batchGroupIO: 5, batchGroupCLIDriver: 1, batchGroupAgentDriver: 1,
 		}, global: 7}
-		err = ValidateSubmit(noDefault, batchValidCtx(2), []batchDependencyEdge{{Group: batchGroupDefault, Root: "dep-a"}},
-			batchTestLeaf(batchKindGeneric, "view", ""), 8, 500, nil)
+		err = ValidateSubmit(noDefault, batchValidCtx(2), []batchinst.DependencyEdge{{Group: batchGroupDefault, Root: "dep-a"}},
+			batchTestLeaf(batchdispatch.KindGeneric, "view", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchGroupUncapped)
 
-		err = ValidateSubmit(nil, batchValidCtx(2), nil, batchTestLeaf(batchKindGeneric, "view", ""), 8, 500, nil)
+		err = ValidateSubmit(nil, batchValidCtx(2), nil, batchTestLeaf(batchdispatch.KindGeneric, "view", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchNilProfile)
 	})
 
 	t.Run("group mismatch rejected", func(t *testing.T) {
 		t.Parallel()
 		err := ValidateSubmit(profile, batchValidCtx(2), nil,
-			batchTestLeaf(batchKindAgent, "agent", batchGroupIO), 8, 500, nil)
+			batchTestLeaf(batchdispatch.KindAgent, "agent", batchGroupIO), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchGroupMismatch)
 	})
 
@@ -280,7 +281,7 @@ func TestBatchAdmissionValidateSubmit(t *testing.T) {
 		noIO := &BatchProfile{caps: map[string]int{
 			batchGroupCLIDriver: 1, batchGroupAgentDriver: 1, batchGroupDefault: 1,
 		}, global: 3}
-		err := ValidateSubmit(noIO, batchValidCtx(2), nil, batchTestLeaf(batchKindShell, "bash", ""), 8, 500, nil)
+		err := ValidateSubmit(noIO, batchValidCtx(2), nil, batchTestLeaf(batchdispatch.KindShell, "bash", ""), 8, 500, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchGroupUncapped)
 	})
 
@@ -288,7 +289,7 @@ func TestBatchAdmissionValidateSubmit(t *testing.T) {
 		t.Parallel()
 		spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{
 			{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{
-				batchTestLeaf(batchKindGeneric, "view", ""),
+				batchTestLeaf(batchdispatch.KindGeneric, "view", ""),
 			}}},
 		}}}
 		err := ValidateSubmit(profile, batchValidCtx(2), nil, spec, 2, 500, nil)
@@ -299,9 +300,9 @@ func TestBatchAdmissionValidateSubmit(t *testing.T) {
 	t.Run("node excess rejected", func(t *testing.T) {
 		t.Parallel()
 		spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{
-			batchTestLeaf(batchKindGeneric, "view", ""),
-			batchTestLeaf(batchKindGeneric, "grep", ""),
-			batchTestLeaf(batchKindGeneric, "ls", ""),
+			batchTestLeaf(batchdispatch.KindGeneric, "view", ""),
+			batchTestLeaf(batchdispatch.KindGeneric, "grep", ""),
+			batchTestLeaf(batchdispatch.KindGeneric, "ls", ""),
 		}}}
 		// The batch root is a node too: 3 leaves + 1 batch = 4 nodes,
 		// mirroring the engine's count of every Spec node.
@@ -320,15 +321,15 @@ func TestBatchValidateAdd(t *testing.T) {
 	t.Run("happy path accepted", func(t *testing.T) {
 		t.Parallel()
 		root := batchValidCtx(2)
-		items := batchTestLeaf(batchKindAgent, "agent", batchGroupAgentDriver)
-		edges := []batchDependencyEdge{{Group: batchGroupIO, Root: "dep-a"}}
+		items := batchTestLeaf(batchdispatch.KindAgent, "agent", batchGroupAgentDriver)
+		edges := []batchinst.DependencyEdge{{Group: batchGroupIO, Root: "dep-a"}}
 		require.NoError(t, ValidateAdd(profile, root, edges, items, 2, 3, maxDepth, maxNodes, nil))
 	})
 
 	t.Run("existing depth consumes budget", func(t *testing.T) {
 		t.Parallel()
 		root := batchValidCtx(2)
-		items := batchTestLeaf(batchKindGeneric, "view", "")
+		items := batchTestLeaf(batchdispatch.KindGeneric, "view", "")
 		err := ValidateAdd(profile, root, nil, items, maxDepth, 1, maxDepth, maxNodes, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchDepthExceeded)
 	})
@@ -337,8 +338,8 @@ func TestBatchValidateAdd(t *testing.T) {
 		t.Parallel()
 		root := batchValidCtx(2)
 		items := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{
-			batchTestLeaf(batchKindGeneric, "view", ""),
-			batchTestLeaf(batchKindGeneric, "grep", ""),
+			batchTestLeaf(batchdispatch.KindGeneric, "view", ""),
+			batchTestLeaf(batchdispatch.KindGeneric, "grep", ""),
 		}}}
 		err := ValidateAdd(profile, root, nil, items, 1, maxNodes-1, maxDepth, maxNodes, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchNodeLimitExceeded)
@@ -348,14 +349,14 @@ func TestBatchValidateAdd(t *testing.T) {
 		t.Parallel()
 		root := batchValidCtx(2)
 		root.UnderSequential = true
-		edges := []batchDependencyEdge{{Group: batchGroupIO, Root: "dep-a"}}
-		err := ValidateAdd(profile, root, edges, batchTestLeaf(batchKindGeneric, "view", ""), 1, 1, maxDepth, maxNodes, nil)
+		edges := []batchinst.DependencyEdge{{Group: batchGroupIO, Root: "dep-a"}}
+		err := ValidateAdd(profile, root, edges, batchTestLeaf(batchdispatch.KindGeneric, "view", ""), 1, 1, maxDepth, maxNodes, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchSharedGate)
 	})
 
 	t.Run("nil profile rejected", func(t *testing.T) {
 		t.Parallel()
-		err := ValidateAdd(nil, batchValidCtx(2), nil, batchTestLeaf(batchKindGeneric, "view", ""), 1, 1, maxDepth, maxNodes, nil)
+		err := ValidateAdd(nil, batchValidCtx(2), nil, batchTestLeaf(batchdispatch.KindGeneric, "view", ""), 1, 1, maxDepth, maxNodes, nil)
 		require.ErrorIs(t, err, batchinst.ErrBatchNilProfile)
 	})
 }
@@ -363,12 +364,12 @@ func TestBatchValidateAdd(t *testing.T) {
 func TestBatchAdmissionProperty(t *testing.T) {
 	t.Parallel()
 	sentinels := []error{
-		errBatchControlPlaneLeaf, batchinst.ErrBatchReentrantMCPUnannotated, errBatchUnknownTool,
+		batchinst.ErrBatchControlPlaneLeaf, batchinst.ErrBatchReentrantMCPUnannotated, batchinst.ErrBatchUnknownTool,
 		batchinst.ErrBatchNilProfile, batchinst.ErrBatchGroupUncapped, batchinst.ErrBatchGroupMismatch,
 		batchinst.ErrBatchDepthExceeded, batchinst.ErrBatchNodeLimitExceeded, batchinst.ErrBatchRankOrder,
 		batchinst.ErrBatchSameRoot, batchinst.ErrBatchSharedGate, errBatchCapInvalid,
 		errBatchGlobalTooSmall, errBatchMissingGroup, errBatchUnknownGroupName,
-		errBatchRankConflict, errBatchMCPCapabilityUnknown,
+		errBatchRankConflict, batchinst.ErrBatchMCPCapabilityUnknown,
 	}
 	genericTools := []string{"view", "grep", "bash", "run_command", "mystery_tool", "await_tasks"}
 	agentTools := []string{"agent", "agentic_fetch"}
@@ -387,15 +388,15 @@ func TestBatchAdmissionProperty(t *testing.T) {
 			})
 			require.NoError(t, perr)
 
-			waiter := batchRankContext{
+			waiter := batchinst.RankContext{
 				Rank:            rng.Intn(4),
 				UnderSequential: rng.Intn(4) == 0,
 				UnderCap:        rng.Intn(4) == 0,
 				Root:            "w",
 			}
-			edges := make([]batchDependencyEdge, rng.Intn(3))
+			edges := make([]batchinst.DependencyEdge, rng.Intn(3))
 			for j := range edges {
-				edges[j] = batchDependencyEdge{
+				edges[j] = batchinst.DependencyEdge{
 					Group:           groups[rng.Intn(len(groups))],
 					Root:            jobbatch.ID(fmt.Sprintf("d%d", rng.Intn(2))),
 					UnderSequential: rng.Intn(4) == 0,
@@ -409,11 +410,11 @@ func TestBatchAdmissionProperty(t *testing.T) {
 				if left <= 0 || rng.Intn(2) == 0 {
 					switch rng.Intn(3) {
 					case 0:
-						return batchTestLeaf(batchKindGeneric, genericTools[rng.Intn(len(genericTools))], "")
+						return batchTestLeaf(batchdispatch.KindGeneric, genericTools[rng.Intn(len(genericTools))], "")
 					case 1:
-						return batchTestLeaf(batchKindAgent, agentTools[rng.Intn(len(agentTools))], "")
+						return batchTestLeaf(batchdispatch.KindAgent, agentTools[rng.Intn(len(agentTools))], "")
 					default:
-						return batchTestLeaf(batchKindMCP, "srv_tool", "")
+						return batchTestLeaf(batchdispatch.KindMCP, "srv_tool", "")
 					}
 				}
 				items := make([]jobbatch.Spec, 1+rng.Intn(3))
@@ -465,14 +466,14 @@ func TestBatchAdmissionProperty(t *testing.T) {
 
 // batchTestResolver returns a resolver answering every lookup with the given
 // capability and ok flag.
-func batchTestResolver(cap batchMCPCapability, ok bool) batchMCPCapabilityResolver {
-	return func(kind, tool string) (batchMCPCapability, bool) {
+func batchTestResolver(cap batchinst.MCPCapability, ok bool) batchinst.MCPCapabilityResolver {
+	return func(kind, tool string) (batchinst.MCPCapability, bool) {
 		return cap, ok
 	}
 }
 
 func batchTestMCPSpec(group string) jobbatch.Spec {
-	return batchTestLeaf(batchKindMCP, "srv_tool", group)
+	return batchTestLeaf(batchdispatch.KindMCP, "srv_tool", group)
 }
 
 // TestBatchValidatMCPResolver covers the fail-closed MCP resolution through
@@ -484,16 +485,16 @@ func TestBatchValidatMCPResolver(t *testing.T) {
 
 	scenarios := []struct {
 		name     string
-		resolver batchMCPCapabilityResolver
+		resolver batchinst.MCPCapabilityResolver
 		group    string
 		want     error
 	}{
-		{name: "nil resolver rejected", resolver: nil, group: "", want: errBatchMCPCapabilityUnknown},
-		{name: "unknown tool rejected", resolver: batchTestResolver(batchMCPCapability{}, false), group: "", want: errBatchMCPCapabilityUnknown},
-		{name: "reentrant unannotated rejected", resolver: batchTestResolver(batchMCPCapability{Reentrant: true}, true), group: "", want: batchinst.ErrBatchReentrantMCPUnannotated},
-		{name: "reentrant annotated accepted", resolver: batchTestResolver(batchMCPCapability{Reentrant: true, Annotated: true}, true), group: ""},
-		{name: "plain non-reentrant accepted as io", resolver: batchTestResolver(batchMCPCapability{}, true), group: ""},
-		{name: "annotated declared-io mismatch rejected", resolver: batchTestResolver(batchMCPCapability{Reentrant: true, Annotated: true}, true), group: batchGroupIO, want: batchinst.ErrBatchGroupMismatch},
+		{name: "nil resolver rejected", resolver: nil, group: "", want: batchinst.ErrBatchMCPCapabilityUnknown},
+		{name: "unknown tool rejected", resolver: batchTestResolver(batchinst.MCPCapability{}, false), group: "", want: batchinst.ErrBatchMCPCapabilityUnknown},
+		{name: "reentrant unannotated rejected", resolver: batchTestResolver(batchinst.MCPCapability{Reentrant: true}, true), group: "", want: batchinst.ErrBatchReentrantMCPUnannotated},
+		{name: "reentrant annotated accepted", resolver: batchTestResolver(batchinst.MCPCapability{Reentrant: true, Annotated: true}, true), group: ""},
+		{name: "plain non-reentrant accepted as io", resolver: batchTestResolver(batchinst.MCPCapability{}, true), group: ""},
+		{name: "annotated declared-io mismatch rejected", resolver: batchTestResolver(batchinst.MCPCapability{Reentrant: true, Annotated: true}, true), group: batchGroupIO, want: batchinst.ErrBatchGroupMismatch},
 	}
 
 	for _, scenario := range scenarios {
@@ -523,19 +524,19 @@ func TestBatchValidatMCPResolver(t *testing.T) {
 		// The leaf's classified rank never constrains the waiter; only the
 		// edge rank does, and there is no edge here.
 		require.NoError(t, ValidateSubmit(profile, batchValidCtx(2), nil,
-			batchTestMCPSpec(""), 8, 500, batchTestResolver(batchMCPCapability{Reentrant: true, Annotated: true}, true)))
+			batchTestMCPSpec(""), 8, 500, batchTestResolver(batchinst.MCPCapability{Reentrant: true, Annotated: true}, true)))
 		require.NoError(t, ValidateAdd(profile, batchValidCtx(2), nil,
-			batchTestMCPSpec(""), 1, 1, 8, 500, batchTestResolver(batchMCPCapability{Reentrant: true, Annotated: true}, true)))
+			batchTestMCPSpec(""), 1, 1, 8, 500, batchTestResolver(batchinst.MCPCapability{Reentrant: true, Annotated: true}, true)))
 	})
 
 	t.Run("non-MCP leaves never consult the resolver", func(t *testing.T) {
 		t.Parallel()
-		resolver := func(kind, tool string) (batchMCPCapability, bool) {
+		resolver := func(kind, tool string) (batchinst.MCPCapability, bool) {
 			t.Errorf("resolver consulted for kind %q tool %q", kind, tool)
-			return batchMCPCapability{}, false
+			return batchinst.MCPCapability{}, false
 		}
 		require.NoError(t, ValidateSubmit(profile, batchValidCtx(2), nil,
-			batchTestLeaf(batchKindGeneric, "view", ""), 8, 500, resolver))
+			batchTestLeaf(batchdispatch.KindGeneric, "view", ""), 8, 500, resolver))
 	})
 }
 
@@ -555,7 +556,7 @@ func TestBatchDiffEngineLimits(t *testing.T) {
 	var gen func(left int) jobbatch.Spec
 	gen = func(left int) jobbatch.Spec {
 		if left <= 0 || rng.Intn(3) == 0 {
-			return batchTestLeaf(batchKindGeneric, tools[rng.Intn(len(tools))], "")
+			return batchTestLeaf(batchdispatch.KindGeneric, tools[rng.Intn(len(tools))], "")
 		}
 		items := make([]jobbatch.Spec, 1+rng.Intn(3))
 		for i := range items {

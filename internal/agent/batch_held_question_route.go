@@ -7,30 +7,13 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 )
 
-type (
-	BatchHeldQuestionRoute  = batchlife.BatchHeldQuestionRoute
-	BatchHeldQuestionSource = batchlife.BatchHeldQuestionSource
-)
-
-var ErrBatchAwaitHeldQuestion = batchlife.ErrBatchAwaitHeldQuestion
-
-func batchQuestionMarkerSequence(text string) int64 { return batchlife.QuestionMarkerSequence(text) }
-
-func batchActionableHeldQuestionRoutes(ctx context.Context, writer *sql.DB, owner string) ([]BatchHeldQuestionRoute, error) {
+func batchActionableHeldQuestionRoutes(ctx context.Context, writer *sql.DB, owner string) ([]batchlife.BatchHeldQuestionRoute, error) {
 	return batchlife.ActionableHeldQuestionRoutes(ctx, writer, owner, batchlife.HeldQuestionRouteDeps{
 		ParseMarker:      parseBatchQuestionMarker,
 		MarkerChild:      batchQuestionMarkerChild,
 		NodeStateLive:    batchNodeStateLive,
 		FactsUnavailable: errBatchFactsUnavailable,
 	})
-}
-
-func batchHeldQuestionAwaitError(routes []BatchHeldQuestionRoute) error {
-	return batchlife.HeldQuestionAwaitError(routes)
-}
-
-func batchHeldQuestionHintText(routes []BatchHeldQuestionRoute) string {
-	return batchlife.HeldQuestionHintText(routes)
 }
 
 // heldQuestionAwaitRefusal is the root AwaitTasks gate: a non-empty route

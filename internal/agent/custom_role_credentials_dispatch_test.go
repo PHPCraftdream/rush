@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -229,7 +230,7 @@ func TestCustomRoleCredentialBoundaryFailsClosedOnContinuationWithoutBundle(t *t
 		Agent: child, SessionID: parent, AgentMessageID: "boundary-message", ToolCallID: "boundary-call",
 		Prompt: "must stay on the tenant boundary", SessionTitle: "credential-bound custom role", RequestedModelRole: customRoleDispatchName,
 	})
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.Zero(t, childCalls)
 	after, err := coord.sessions.ListAll(t.Context())
 	require.NoError(t, err)

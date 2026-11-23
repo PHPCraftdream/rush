@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -69,7 +70,7 @@ func seedQuestionStop(t *testing.T, coord *coordinator, childID string) {
 func commitMarkerNotice(t *testing.T, conn *sql.DB, owner, nodeID, childID string, token int64) {
 	t.Helper()
 	publisher := batchCoordinatorQuestionPublisher{store: session.NewBatchStore(conn)}
-	require.NoError(t, publisher.PublishChildQuestion(context.Background(), batchChildQuestionNotice{
+	require.NoError(t, publisher.PublishChildQuestion(context.Background(), childagent.QuestionNotice{
 		Owner: owner, ChildSessionID: childID, NodeID: nodeID, Token: uint64(token), Depth: 1, Sequence: 1, Question: "which one?",
 	}))
 }

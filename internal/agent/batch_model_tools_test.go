@@ -6,24 +6,25 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
 
 type modelControlFake struct {
-	ran         batchModelSpec
+	ran         modelcontrol.Spec
 	inv         BatchInvocation
 	addedNotify string
 }
 
-func (f *modelControlFake) Run(_ context.Context, i BatchInvocation, _ *policyLeafRegistry, s batchModelSpec) (jobbatch.ID, error) {
+func (f *modelControlFake) Run(_ context.Context, i BatchInvocation, _ *policyLeafRegistry, s modelcontrol.Spec) (jobbatch.ID, error) {
 	f.ran = s
 	f.inv = i
 	return "root", nil
 }
 
-func (f *modelControlFake) Add(_ context.Context, _, _, _ string, _ BatchInvocation, _ *policyLeafRegistry, _ []batchModelItem) ([]jobbatch.ID, error) {
+func (f *modelControlFake) Add(_ context.Context, _, _, _ string, _ BatchInvocation, _ *policyLeafRegistry, _ []modelcontrol.Item) ([]jobbatch.ID, error) {
 	f.addedNotify = "each"
 	return []jobbatch.ID{"node"}, nil
 }
@@ -50,7 +51,7 @@ func modelRegistry(names ...string) *policyLeafRegistry {
 
 func TestModelBatchToolsRecursiveDefaultAndPinnedPolicy(t *testing.T) {
 	inv := BatchInvocation{SessionID: "owner", RegistryID: "reg", Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: "only-view"}}
-	spec, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)}, {Batch: &batchModelSpec{Mode: "sequential", Notify: "each", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{"path":"y"}`)}}}}}}, inv, modelRegistry("view"))
+	spec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)}, {Batch: &modelcontrol.Spec{Mode: "sequential", Notify: "each", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{"path":"y"}`)}}}}}}, inv, modelRegistry("view"))
 	require.NoError(t, err, "recursive explicit batch schema must map to engine specs")
 	require.Equal(t, jobbatch.NotifyAll, spec.Batch.Notify, "explicit omitted notify defaults to all")
 	var p batchLeafPayload
@@ -61,9 +62,9 @@ func TestModelBatchToolsRecursiveDefaultAndPinnedPolicy(t *testing.T) {
 
 func TestModelBatchToolsRejectNestedControlAndUnavailableLeaf(t *testing.T) {
 	inv := BatchInvocation{SessionID: "owner", RegistryID: "reg", Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: "r"}}
-	_, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Batch: &batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "batch_stop", Input: json.RawMessage(`{}`)}}}}}}, inv, modelRegistry("view"))
+	_, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Batch: &modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "batch_stop", Input: json.RawMessage(`{}`)}}}}}}, inv, modelRegistry("view"))
 	require.ErrorContains(t, err, "cannot be a batch leaf", "nested controls must fail closed")
-	_, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "edit", Input: json.RawMessage(`{}`)}}}, inv, modelRegistry("view"))
+	_, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "edit", Input: json.RawMessage(`{}`)}}}, inv, modelRegistry("view"))
 	require.ErrorContains(t, err, "unavailable", "toolset cannot be widened")
 }
 
@@ -72,12 +73,12 @@ func TestBatchModelToolCallsPreserveInvocationAndAddEach(t *testing.T) {
 	inv := BatchInvocation{SessionID: "s", RegistryID: "r"}
 	ts := newBatchModelTools(f, inv, modelRegistry("view"))
 	ctx := context.WithValue(context.Background(), tools.SessionIDContextKey, "s")
-	raw, _ := json.Marshal(batchModelParams{Spec: batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}}})
+	raw, _ := json.Marshal(modelcontrol.Params{Spec: modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}}}})
 	resp, err := ts[0].Run(ctx, fantasy.ToolCall{Name: "batch_run", Input: string(raw)})
 	require.NoError(t, err, "valid batch_run must reach control interface")
 	require.Contains(t, resp.Content, "root")
 	require.Equal(t, "r", f.inv.RegistryID, "batch_run retains caller registry")
-	add, _ := json.Marshal(batchModelParams{Root: "root", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}})
+	add, _ := json.Marshal(modelcontrol.Params{Root: "root", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}}})
 	_, err = ts[1].Run(ctx, fantasy.ToolCall{Name: "batch_add", Input: string(add)})
 	require.NoError(t, err)
 	require.Equal(t, "each", f.addedNotify, "later additions use NotifyEach")
@@ -93,9 +94,9 @@ func TestModelBatchLeavesCarryParentBudgetWithoutDecrement(t *testing.T) {
 		want  int
 	}{{0, 0}, {1, 1}, {2, 2}} {
 		requested := tc.depth
-		spec, err := modelBatchSpec(batchModelSpec{
+		spec, err := modelBatchSpec(modelcontrol.Spec{
 			Mode: "parallel", MaxAgentDepth: &requested,
-			Items: []batchModelItem{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
+			Items: []modelcontrol.Item{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
 		}, inv, modelRegistry(AgentToolName))
 		require.NoError(t, err)
 		var payload batchLeafPayload
@@ -104,9 +105,9 @@ func TestModelBatchLeavesCarryParentBudgetWithoutDecrement(t *testing.T) {
 		require.Equal(t, tc.depth, *payload.AgentDepth)
 	}
 	escalate := 3
-	_, err := modelBatchSpec(batchModelSpec{
+	_, err := modelBatchSpec(modelcontrol.Spec{
 		Mode: "parallel", MaxAgentDepth: &escalate,
-		Items: []batchModelItem{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
+		Items: []modelcontrol.Item{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
 	}, inv, modelRegistry(AgentToolName))
 	require.ErrorContains(t, err, "narrow")
 }

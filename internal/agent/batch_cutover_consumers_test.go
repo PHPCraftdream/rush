@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -298,7 +299,7 @@ func TestBatchCutoverSupervisionON(t *testing.T) {
 		`UPDATE batch_nodes SET token = ?1 WHERE node_id = ?2`, liveToken, childNode)
 	require.NoError(t, err)
 	require.NoError(t, (batchCoordinatorQuestionPublisher{store: env.store}).PublishChildQuestion(env.ctx,
-		batchChildQuestionNotice{
+		childagent.QuestionNotice{
 			Owner: env.sessionID, ChildSessionID: child, NodeID: childNode,
 			Token: uint64(liveToken), Depth: 1, Sequence: 1, Question: "continue?",
 		}))

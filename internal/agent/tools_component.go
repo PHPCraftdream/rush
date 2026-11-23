@@ -15,6 +15,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
@@ -365,7 +369,7 @@ func (p *toolsComponent) applyCallFolderScope(ctx context.Context, agent config.
 	}
 	scope := *opts.FolderScope
 
-	commandTools := folderScopeCommandToolSet()
+	commandTools := batchinst.FolderScopeCommandToolSet()
 	stripped := make([]string, 0, len(agent.AllowedTools))
 	for _, name := range agent.AllowedTools {
 		if _, ok := folderScopeLegacyFileTools[name]; ok {
@@ -479,7 +483,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 	// -- so the disabled-tools list is a floor no layering can punch
 	// through (see applyNoRealWorkspaceToolFloor's doc).
 	agent = p.applyNoRealWorkspaceToolFloor(cfg, agent, disk)
-	agent = applyBatchQuestionRouteFloor(ctx, agent)
+	agent = batchmeta.ApplyBatchQuestionRouteFloor(ctx, agent)
 
 	// SSRF guard escape hatch (Options.AllowPrivateNetworkFetch, off by
 	// default): when enabled, every model-facing HTTP tool below gets an
@@ -665,7 +669,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 					}
 					continue
 				}
-				filteredTools = append(filteredTools, newBatchControlPlaceholder(name))
+				filteredTools = append(filteredTools, modelcontrol.NewPlaceholder(name))
 			}
 		}
 	}
@@ -721,7 +725,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 		if roleToolsConstrained(ctx) {
 			allowedControls = toolwrap.FilterRoleToolNames(ctx, allowed)
 		}
-		filteredTools = withoutBatchControlPlaceholders(filteredTools)
+		filteredTools = modelcontrol.WithoutPlaceholders(filteredTools)
 		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
 		filteredTools = toolwrap.FilterRoleContractTools(ctx, filteredTools)
 		buildCtx := ctx
@@ -756,7 +760,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 		var built toolwrap.PolicyToolBuild
 		if shared {
 			built = toolwrap.NewPolicyToolBuildForContext(buildCtx, filteredTools)
-			fingerprint := batchToolsetFingerprint(built.Tools)
+			fingerprint := installwire.ToolsetFingerprint(built.Tools)
 			for i := 0; i < len(built.Tools); i++ {
 				tool := built.Tools[i]
 				name := tool.Info().Name
@@ -778,7 +782,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 						inv.Delivery = batchDeliveryChoice{Mode: batchDeliveryDetached}
 					} else {
 						inv.BackgroundEscape = batchEscapeAuto
-						inv.Delivery.Window = inlineWindow.String()
+						inv.Delivery.Window = installwire.InlineWindow.String()
 					}
 				}
 				built.Tools[i] = newBatchIngressShell(tool, built.Leaves, bind, inv, true)
@@ -815,7 +819,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 					BackgroundEscape: batchEscapeNever,
 					WorkerStopScope:  isSubAgent,
 					roleConfig:       cfg,
-					Policy:           batchLeafPolicyContext{RegistryID: built.RegistryID, RestrictedToolset: batchToolsetFingerprint(built.Tools), RoleContract: agentcall.CloneRoleContractForCall(roleContract)},
+					Policy:           batchLeafPolicyContext{RegistryID: built.RegistryID, RestrictedToolset: installwire.ToolsetFingerprint(built.Tools), RoleContract: agentcall.CloneRoleContractForCall(roleContract)},
 				}
 				inv.SessionID, inv.MessageID = tools.GetSessionFromContext(ctx), tools.GetMessageFromContext(ctx)
 				inv.AgentDepth, inv.AgentDepthSet = DefaultAgentDepth, true

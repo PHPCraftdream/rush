@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +18,7 @@ type task74ControlInstaller struct {
 	omit     string
 }
 
-func (i *task74ControlInstaller) InstallBatchModelControls(registry *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
+func (i *task74ControlInstaller) InstallBatchModelControls(registry *toolwrap.PolicyLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
 	i.installs++
 	controls, err := i.installedBatchModelControl.InstallBatchModelControls(registry, inv)
 	if err != nil || i.omit == "" {
@@ -68,7 +70,7 @@ func task74AssemblyInstaller(omit string) *task74ControlInstaller {
 func task74AssemblyInput() []fantasy.AgentTool {
 	tools := batchTestTools("view")
 	for _, name := range []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"} {
-		tools = append(tools, newBatchControlPlaceholder(name))
+		tools = append(tools, modelcontrol.NewPlaceholder(name))
 	}
 	return tools
 }

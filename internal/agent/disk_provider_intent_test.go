@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -21,7 +22,7 @@ func TestGuardTurnDiskFence_NormalizedOSRequiresExplicitIntent(t *testing.T) {
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable,
 		"an omitted provider normalized to OSDisk must not supersede or bypass a persistent fence")
 
-	explicit := WithExecutionProviderIntent(ctx, "s-os-intent", ExecutionProviderOS)
+	explicit := WithExecutionProviderIntent(ctx, "s-os-intent", batchlife.ExecutionProviderOS)
 	err = coord.guardTurnDiskFence(explicit, "s-os-intent", normalized)
 	require.NoError(t, err,
 		"explicit OSDiskProvider intent is authorized to establish a new epoch")

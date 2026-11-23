@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -16,10 +20,7 @@ import (
 )
 
 type (
-	batchModelSpec    = modelcontrol.Spec
-	batchModelItem    = modelcontrol.Item
 	batchModelControl = modelcontrol.Control[BatchInvocation]
-	batchModelParams  = modelcontrol.Params
 )
 
 func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantasy.ToolCall) (BatchInvocation, error) {
@@ -60,20 +61,12 @@ func modelInvocationAtCall(ctx context.Context, inv BatchInvocation, call fantas
 	// inheriting its durable payload value. A no-route caller therefore
 	// mints only no-route agent leaves.
 	inv.QuestionRoute = true
-	if route, ok := batchQuestionRouteFrom(ctx); ok {
+	if route, ok := batchmeta.BatchQuestionRouteFrom(ctx); ok {
 		inv.QuestionRoute = route
 	}
 	// A template-pinned DiskBindingID propagates verbatim: nested batches
 	// and Add inherit the binding, never re-resolving to another provider.
 	return inv, nil
-}
-
-func withoutBatchControlPlaceholders(list []fantasy.AgentTool) []fantasy.AgentTool {
-	return modelcontrol.WithoutPlaceholders(list)
-}
-
-func newBatchControlPlaceholder(name string) fantasy.AgentTool {
-	return modelcontrol.NewPlaceholder(name)
 }
 
 func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) []fantasy.AgentTool {
@@ -83,35 +76,35 @@ func newBatchModelTools(c batchModelControl, inv BatchInvocation, reg *toolwrap.
 	}, inv.WorkerStopScope)
 }
 
-func modelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) (jobbatch.Spec, error) {
+func modelBatchSpec(raw modelcontrol.Spec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry) (jobbatch.Spec, error) {
 	return buildModelBatchSpec(raw, inv, reg, nil, false)
 }
 
-func modelBatchSpecForAdmission(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver) (jobbatch.Spec, error) {
+func modelBatchSpecForAdmission(raw modelcontrol.Spec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchinst.MCPCapabilityResolver) (jobbatch.Spec, error) {
 	return buildModelBatchSpec(raw, inv, reg, resolver, true)
 }
 
-func buildModelBatchSpec(raw batchModelSpec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
+func buildModelBatchSpec(raw modelcontrol.Spec, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchinst.MCPCapabilityResolver, admission bool) (jobbatch.Spec, error) {
 	depth := inv.AgentDepth
 	if !inv.AgentDepthSet {
 		depth = DefaultAgentDepth
 	}
 	return modelcontrol.BuildSpec(raw, depth, modelcontrol.SpecDeps{
-		HasRegistry: reg != nil, MaxDepth: batchDefaultMaxDepth, MaxNodes: batchDefaultMaxNodes,
+		HasRegistry: reg != nil, MaxDepth: batchcore.DefaultMaxDepth, MaxNodes: batchcore.DefaultMaxNodes,
 		Measure: measureModelBatchSpecs,
-		BuildLeaf: func(it batchModelItem, path string, leafCap int) (*jobbatch.TaskSpec, error) {
+		BuildLeaf: func(it modelcontrol.Item, path string, leafCap int) (*jobbatch.TaskSpec, error) {
 			return buildModelBatchLeaf(it, path, leafCap, inv, reg, resolver, admission)
 		},
 	})
 }
 
 func measureModelBatchSpecs(specs []jobbatch.Spec) (int, int, error) {
-	depth, nodes, _, err := batchSpecNodes(specs)
+	depth, nodes, _, err := batchinst.SpecNodes(specs, batchAdmissionTool)
 	return depth, nodes, err
 }
 
-func batchModelSpecNodes(items []batchModelItem, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver) ([]jobbatch.Spec, error) {
-	return modelcontrol.BuildAddNodes(items, inv.AgentDepth, inv.CallID, func(raw batchModelSpec, depth int) (jobbatch.Spec, error) {
+func batchModelSpecNodes(items []modelcontrol.Item, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchinst.MCPCapabilityResolver) ([]jobbatch.Spec, error) {
+	return modelcontrol.BuildAddNodes(items, inv.AgentDepth, inv.CallID, func(raw modelcontrol.Spec, depth int) (jobbatch.Spec, error) {
 		wrapped := inv
 		wrapped.AgentDepth = depth
 		return modelBatchSpecForAdmission(raw, wrapped, reg, resolver)
@@ -136,7 +129,7 @@ func rewriteModelBatchLeaf(task *jobbatch.TaskSpec, callID string, maxDepth *int
 	return err
 }
 
-func buildModelBatchLeaf(it batchModelItem, callPath string, leafCap int, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchMCPCapabilityResolver, admission bool) (*jobbatch.TaskSpec, error) {
+func buildModelBatchLeaf(it modelcontrol.Item, callPath string, leafCap int, inv BatchInvocation, reg *toolwrap.PolicyLeafRegistry, resolver batchinst.MCPCapabilityResolver, admission bool) (*jobbatch.TaskSpec, error) {
 	if batchControlTarget(it.Tool) {
 		return nil, fmt.Errorf("control-plane tool %q cannot be a batch leaf", it.Tool)
 	}
@@ -174,7 +167,7 @@ func buildModelBatchLeaf(it batchModelItem, callPath string, leafCap int, inv Ba
 	// ingress, exactly like the direct path: a terminate intent feeds
 	// the SAME timeout variable the explicit string form fills, a
 	// wake_only intent rides durably in the payload.
-	intent, e := batchParseTimeoutParam(it.Tool, string(input))
+	intent, e := batchinst.ParseTimeoutParam(it.Tool, string(input))
 	if e != nil {
 		return nil, e
 	}
@@ -195,11 +188,11 @@ func buildModelBatchLeaf(it batchModelItem, callPath string, leafCap int, inv Ba
 			return nil, errors.New("timeout must be a positive duration")
 		}
 	} else if intent != nil {
-		if intent.Kind == batchTimeoutTerminateAndWake {
+		if intent.Kind == batchinst.TimeoutTerminateAndWake {
 			timeout = intent.Duration
 		} else {
 			leafPayload.Timeout = &batchLeafTimeoutSpec{
-				Kind:    batchTimeoutWakeOnly,
+				Kind:    batchinst.TimeoutWakeOnly,
 				Seconds: intent.Seconds,
 			}
 		}
@@ -210,21 +203,21 @@ func buildModelBatchLeaf(it batchModelItem, callPath string, leafCap int, inv Ba
 	}
 	kind := batchLeafKind(it.Tool)
 	group := ""
-	if kind == batchKindMCP {
+	if kind == batchdispatch.KindMCP {
 		if resolver != nil {
 			mcp, ok := resolver(kind, it.Tool)
 			if !ok {
-				return nil, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
+				return nil, fmt.Errorf("%w: %q", batchinst.ErrBatchMCPCapabilityUnknown, it.Tool)
 			}
-			group, _, e = classifyBatchLeaf(kind, it.Tool, mcp)
+			group, _, e = batchinst.ClassifyLeaf(kind, it.Tool, mcp, batchAdmissionPolicy())
 			if e != nil {
 				return nil, e
 			}
 		} else if admission {
-			return nil, fmt.Errorf("%w: %q", errBatchMCPCapabilityUnknown, it.Tool)
+			return nil, fmt.Errorf("%w: %q", batchinst.ErrBatchMCPCapabilityUnknown, it.Tool)
 		}
 	} else {
-		group, _, e = classifyBatchLeaf(kind, it.Tool, batchMCPCapability{})
+		group, _, e = batchinst.ClassifyLeaf(kind, it.Tool, batchinst.MCPCapability{}, batchAdmissionPolicy())
 		if e != nil {
 			return nil, e
 		}

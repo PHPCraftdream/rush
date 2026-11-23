@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -207,7 +210,7 @@ func attachKey(owner, callID string) string { return owner + "\x00" + callID }
 // the fake store; the ingress surfaces it unwrapped in the attach error.
 var errFakeFence = errors.New("fake attach: fenced live root")
 
-func (a *fakeAttach) ProbeLive(_ context.Context, p batchAttachProbe) (jobbatch.ID, bool, error) {
+func (a *fakeAttach) ProbeLive(_ context.Context, p batchcore.AttachProbe) (jobbatch.ID, bool, error) {
 	a.mu.Lock()
 	a.probes++
 	live, ok := a.live[attachKey(p.Owner, p.ToolCallID)]
@@ -243,7 +246,7 @@ type gateAttach struct {
 	release chan struct{}
 }
 
-func (a *gateAttach) ProbeLive(ctx context.Context, _ batchAttachProbe) (jobbatch.ID, bool, error) {
+func (a *gateAttach) ProbeLive(ctx context.Context, _ batchcore.AttachProbe) (jobbatch.ID, bool, error) {
 	a.enter <- struct{}{}
 	select {
 	case <-a.release:
@@ -303,7 +306,7 @@ func TestInvokeConcurrentMatchingRetriesExecuteOnce(t *testing.T) {
 	specs := runner.submitSpecs()
 	require.Len(t, specs, 1)
 	require.NotNil(t, specs[0].Task)
-	require.Equal(t, batchKindGeneric, specs[0].Task.Kind)
+	require.Equal(t, batchdispatch.KindGeneric, specs[0].Task.Kind)
 
 	// Leak-prevention (observable): settling the fake batches unblocks the
 	// root-lease adoption watcher, which releases the Root owner and forgets
@@ -422,7 +425,7 @@ func TestInvokeRefusesControlToolLeaves(t *testing.T) {
 		call.Name = name
 		leaf := newTestLeaf(name)
 		resp, err := rt.Invoke(context.Background(), testInvocation(), leaf, call)
-		require.ErrorIs(t, err, errBatchControlPlaneLeaf, "tool %q", name)
+		require.ErrorIs(t, err, batchinst.ErrBatchControlPlaneLeaf, "tool %q", name)
 		// The refusal must come from the ingress D1 gate, not later from
 		// admission: the tool never reaches spec validation.
 		require.False(t, errors.Is(err, errBatchSubmitBeforeInvalid), "tool %q", name)

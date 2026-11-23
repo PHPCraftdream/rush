@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -12,7 +14,7 @@ import (
 // handoffs without deriving authority from a session ID or driver generation.
 func (a *sessionAgent) restoreFinalizationCallContext(ctx context.Context, call *SessionAgentCall) (context.Context, error) {
 	if call == nil {
-		return nil, ErrFinalizationFactsUnavailable
+		return nil, gate.ErrFinalizationFactsUnavailable
 	}
 	guardCtx, cancel := context.WithTimeout(ctx, a.effectiveSessionPreambleMaxDuration())
 	defer cancel()
@@ -32,7 +34,7 @@ func (a *sessionAgent) restoreFinalizationCallContext(ctx context.Context, call 
 // finalization_methods.go).
 
 func (ts *turnStream) beginFinalizationStep(ctx context.Context) error {
-	ts.finalizationStamp = finalizationStamp{}
+	ts.finalizationStamp = gate.Stamp{}
 	if ts.finalization == nil {
 		return nil
 	}
@@ -48,7 +50,7 @@ func (ts *turnStream) beginFinalizationStep(ctx context.Context) error {
 func (ts *turnStream) markFinalizationStep() error {
 	stamp := ts.finalizationStamp
 	if !stamp.BelongsTo(ts.finalization.Gate) || stamp.Serial() == 0 || ts.fenceCheckpoint == nil {
-		return ErrFinalizationFactsUnavailable
+		return gate.ErrFinalizationFactsUnavailable
 	}
 	if err := ts.currentAssistant.MarkFinalizationCandidate(message.FinalizationIdentity{
 		Key: ts.finalization.LogicalID, Generation: stamp.Epoch(),
@@ -65,21 +67,21 @@ func (ts *turnStream) markFinalizationStep() error {
 // It presents the persisted candidate to session-level TrySeal and must only
 // run from the admission gate's publish step while the owner gate is held.
 // Without an installed scope or facts reader it refuses without touching the database.
-func sealFinalizationCandidate(ctx context.Context, execution *finalizationExecution, messages message.Service, identity message.FinalizationIdentity, candidate finalizationCandidate) (message.Message, error) {
+func sealFinalizationCandidate(ctx context.Context, execution *finalize.FinalizationExecution, messages message.Service, identity message.FinalizationIdentity, candidate gate.Candidate) (message.Message, error) {
 	if execution == nil || execution.Scope.Store == nil || execution.LogicalID == "" {
-		return message.Message{}, ErrFinalizationFactsUnavailable
+		return message.Message{}, gate.ErrFinalizationFactsUnavailable
 	}
 	if execution.Scope.Store == nil || identity.Key != execution.Scope.Identity.LogicalCallID || execution.Scope.Identity.Generation <= 0 ||
 		identity.Generation != uint64(execution.Scope.Identity.Generation) || identity.Revision > uint64(1<<63-1) {
-		return message.Message{}, ErrFinalizationScopeChanged
+		return message.Message{}, gate.ErrFinalizationScopeChanged
 	}
 	writer, ok := messages.(session.FinalizationSealWriter)
 	if !ok {
-		return message.Message{}, ErrFinalizationFactsUnavailable
+		return message.Message{}, gate.ErrFinalizationFactsUnavailable
 	}
 	sealed, ok := session.CandidateOf(candidate.MessageID, candidate.Hash, identity)
 	if !ok {
-		return message.Message{}, ErrFinalizationScopeChanged
+		return message.Message{}, gate.ErrFinalizationScopeChanged
 	}
 	outcome, err := execution.Scope.Store.TrySeal(ctx, execution.Scope.Identity, sealed, writer, execution.ScopeFacts)
 	if err != nil {
@@ -93,20 +95,20 @@ func sealFinalizationCandidate(ctx context.Context, execution *finalizationExecu
 	}
 	// The owner composes or waits; never latch a failure for a deterministic
 	// "not yet".
-	return message.Message{}, ErrFinalizationScopeChanged
+	return message.Message{}, gate.ErrFinalizationScopeChanged
 }
 
 // persistFinalizationCandidate replaces the plain step write for a candidate
 // footer. A stale candidate is dropped (no candidate is recorded) and is not a
 // turn error: the owner composes again.
 func (ts *turnStream) persistFinalizationCandidate(snap message.Message) error {
-	ts.finalizationCandidate = persistedFinalizationCandidate{}
+	ts.finalizationCandidate = finalize.PersistedFinalizationCandidate{}
 	finish := snap.FinishPart()
 	if finish == nil || ts.finalization.Scope.Store == nil {
-		return ErrFinalizationFactsUnavailable
+		return gate.ErrFinalizationFactsUnavailable
 	}
-	persisted, err := persistFinalizationCandidate(ts.genCtx, ts.a.sessions, ts.a.messages, ts.finalization.Scope, finish.FinalizationIdentity(), snap)
-	if errors.Is(err, ErrFinalizationScopeChanged) {
+	persisted, err := finalize.PersistFinalizationCandidate(ts.genCtx, ts.a.sessions, ts.a.messages, ts.finalization.Scope, finish.FinalizationIdentity(), snap)
+	if errors.Is(err, gate.ErrFinalizationScopeChanged) {
 		return nil
 	}
 	if err != nil {

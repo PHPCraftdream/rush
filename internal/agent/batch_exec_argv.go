@@ -7,6 +7,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
@@ -22,17 +24,17 @@ func (batchArgvFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.L
 		return nil, err
 	}
 	if p.Tool != tools.RunCommandToolName {
-		return nil, newBatchStartError(batchCodeBadPayload, errors.New("argv requires run_command"))
+		return nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, errors.New("argv requires run_command"))
 	}
 	if p.Policy != nil && p.Policy.RoleContract != nil && !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
-		return nil, newBatchStartError(batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
+		return nil, batchdispatch.NewStartError(batchdispatch.CodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
 	}
 	leaf, err := env.resolveLeaf(p)
 	if err != nil {
 		return nil, err
 	}
 	if leaf == nil || leaf.Info().Name != tools.RunCommandToolName {
-		return nil, newBatchStartError(batchCodeNoLeaf, errors.New("pinned argv leaf is not run_command"))
+		return nil, batchdispatch.NewStartError(batchdispatch.CodeNoLeaf, errors.New("pinned argv leaf is not run_command"))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -49,21 +51,18 @@ func (batchArgvFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.L
 	if p.SelectedRoleContract != nil {
 		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
 	}
-	e := newRetainedArgv(cancel, env.OutputCache, l.ID, batchOutputRoot(l.ID))
+	e := newRetainedArgv(cancel, env.OutputCache, l.ID, batchmeta.OutputRoot(l.ID))
 	runCtx = e.WithArgvHandle(runCtx)
 	go e.Run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)
 	return e, nil
 }
 
-// The root cache reader still uses this interface until the output chunk moves.
-type batchArgvHandle = batchexec.ArgvHandle
-
 func newRetainedArgv(cancel context.CancelFunc, cache *batchOutputCache, id, root jobbatch.ID) *batchexec.ArgvExecution {
-	output := batchExecutionOutput(cache, id, root, batchOutputCursorArgvRestart)
+	output := batchExecutionOutput(cache, id, root, batchmeta.OutputCursorArgvRestart)
 	var capture func(batchexec.ArgvHandle)
 	if cache != nil {
 		capture = func(p batchexec.ArgvHandle) {
-			_ = batchOutputCapture(cache, id, root, batchArgvOutputReader{p}, batchOutputCursorArgvRestart)
+			_ = batchOutputCapture(cache, id, root, batchArgvOutputReader{p}, batchmeta.OutputCursorArgvRestart)
 		}
 	}
 	return batchexec.NewArgv(cancel, output, capture)

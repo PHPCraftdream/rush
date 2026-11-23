@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
-var errBatchCallCredentialsRequired = batchadapter.ErrCallCredentialsRequired
-
 func stampBatchCallCredentials(ctx context.Context, spec jobbatch.Spec) (jobbatch.Spec, error) {
-	return batchadapter.StampCallCredentials(spec, batchKindAgent, callCredentialsFrom(ctx) != nil, decodeBatchCredentialMarker)
+	return batchadapter.StampCallCredentials(spec, batchdispatch.KindAgent, callCredentialsFrom(ctx) != nil, decodeBatchCredentialMarker)
 }
 
 func decodeBatchCredentialMarker(raw json.RawMessage) (string, bool, func() (json.RawMessage, error), error) {

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -118,8 +120,8 @@ func (c *coordinator) InspectAgent(ctx context.Context, callerSessionID, childSe
 	// child stays "running"; an unreadable read falls through to the old
 	// behaviour (never a fabricated awaiting_answer); answered/stale/
 	// terminal/foreign-scope notices never change the status.
-	var heldRoute *BatchHeldQuestionRoute
-	if src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource); ok {
+	var heldRoute *batchlife.BatchHeldQuestionRoute
+	if src, ok := coordinatorBatchCutoverFacts(c).(batchlife.BatchHeldQuestionSource); ok {
 		if routes, rerr := src.ActionableHeldQuestions(ctx, callerSessionID); rerr == nil {
 			for i := range routes {
 				if routes[i].ChildSessionID == childSessionID {
@@ -318,16 +320,16 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 	credentialed := c.credentialedSessionOrAncestor(ctx, childSessionID) || hasDriver && driver.call.Credentials != nil
 	if credentialed {
 		if !hasDriver || driver.call.Credentials == nil {
-			return "", fmt.Errorf("%w: child session %s has no driver credential binding", ErrCredentialBindingUnavailable, childSessionID)
+			return "", fmt.Errorf("%w: child session %s has no driver credential binding", diskport.ErrCredentialBindingUnavailable, childSessionID)
 		}
 		// Credentialed child work may only be replaced from its registered
 		// driver's frozen call template. Resolving against coordinator config
 		// here could silently switch the tenant to the operator's provider.
 		if driver.call.SmartModel == nil || driver.call.SmartModel.Model == nil {
-			return "", fmt.Errorf("%w: child session %s has no usable driver template", ErrCredentialBindingUnavailable, childSessionID)
+			return "", fmt.Errorf("%w: child session %s has no usable driver template", diskport.ErrCredentialBindingUnavailable, childSessionID)
 		}
 		if err := driver.call.Credentials.Validate(); err != nil {
-			return "", fmt.Errorf("%w: child session %s has unusable driver credentials: %v", ErrCredentialBindingUnavailable, childSessionID, err)
+			return "", fmt.Errorf("%w: child session %s has unusable driver credentials: %v", diskport.ErrCredentialBindingUnavailable, childSessionID, err)
 		}
 		call := driver.callFor(msg)
 		call.SessionID = childSessionID

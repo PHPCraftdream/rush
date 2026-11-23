@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -30,9 +31,9 @@ func batchTestLaunch(kind string, payload string) jobbatch.Launch {
 func TestBatchExecutorRoutesByKindAndRejectsBadStarts(t *testing.T) {
 	// Mutation: routing a launch to the wrong family, or starting on a payload without tool/session.
 	fam := &batchTestFamily{}
-	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchKindGeneric: fam})
+	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchdispatch.KindGeneric: fam})
 
-	_, err := e.Start(context.Background(), batchTestLaunch(batchKindGeneric, `{"tool":"view","tool_call_id":"c1","session_id":"s1","input":{"a":1}}`), func(jobbatch.Result) {})
+	_, err := e.Start(context.Background(), batchTestLaunch(batchdispatch.KindGeneric, `{"tool":"view","tool_call_id":"c1","session_id":"s1","input":{"a":1}}`), func(jobbatch.Result) {})
 	require.NoError(t, err)
 	require.Equal(t, "view", fam.got.Tool)
 	require.Equal(t, "s1", fam.got.SessionID)
@@ -40,9 +41,9 @@ func TestBatchExecutorRoutesByKindAndRejectsBadStarts(t *testing.T) {
 
 	for name, l := range map[string]jobbatch.Launch{
 		"unknown kind": batchTestLaunch("nope", `{"tool":"view","session_id":"s1"}`),
-		"bad json":     batchTestLaunch(batchKindGeneric, `{`),
-		"no tool":      batchTestLaunch(batchKindGeneric, `{"session_id":"s1"}`),
-		"no session":   batchTestLaunch(batchKindGeneric, `{"tool":"view"}`),
+		"bad json":     batchTestLaunch(batchdispatch.KindGeneric, `{`),
+		"no tool":      batchTestLaunch(batchdispatch.KindGeneric, `{"session_id":"s1"}`),
+		"no session":   batchTestLaunch(batchdispatch.KindGeneric, `{"tool":"view"}`),
 	} {
 		_, err := e.Start(context.Background(), l, func(jobbatch.Result) {})
 		var coded interface{ Code() string }
@@ -59,12 +60,12 @@ func TestBatchLeafResolutionFailsClosed(t *testing.T) {
 	_, err := env.resolveLeaf(batchLeafPayload{Tool: "bash", SessionID: "s1"})
 	var coded interface{ Code() string }
 	require.ErrorAs(t, err, &coded)
-	require.Equal(t, batchCodeNoLeaf, coded.Code())
+	require.Equal(t, batchdispatch.CodeNoLeaf, coded.Code())
 
 	failing := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return nil, errors.New("no session") }}
 	_, err = failing.resolveLeaf(batchLeafPayload{Tool: "bash", SessionID: "s1"})
 	require.ErrorAs(t, err, &coded)
-	require.Equal(t, batchCodeNoLeaf, coded.Code())
+	require.Equal(t, batchdispatch.CodeNoLeaf, coded.Code())
 
 	_, err = batchLeafEnv{}.resolveLeaf(batchLeafPayload{Tool: "bash", SessionID: "s1"})
 	require.ErrorAs(t, err, &coded)
@@ -72,7 +73,7 @@ func TestBatchLeafResolutionFailsClosed(t *testing.T) {
 
 func TestBatchResultFromRunErrorKeepsResponseMetadata(t *testing.T) {
 	resp := fantasy.ToolResponse{Metadata: `{"details":"kept"}`}
-	result := batchResultFromResponse(resp, errors.New("run failed"), false)
+	result := batchdispatch.ResultFromResponse(resp, errors.New("run failed"), false)
 
 	require.Equal(t, jobbatch.StateFailed, result.State)
 	require.Equal(t, "tool_run_error", result.Code)
@@ -89,7 +90,7 @@ func TestBatchResultFromRunErrorKeepsPartialResponse(t *testing.T) {
 		"media": fantasy.NewMediaResponse([]byte{1, 2}, "audio/wav"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			result := batchResultFromResponse(resp, errors.New("run failed"), false)
+			result := batchdispatch.ResultFromResponse(resp, errors.New("run failed"), false)
 
 			require.Equal(t, jobbatch.StateFailed, result.State)
 			require.Equal(t, "tool_run_error", result.Code)
@@ -102,22 +103,22 @@ func TestBatchResultFromRunErrorKeepsPartialResponse(t *testing.T) {
 
 func TestBatchResultNeverTurnsFailureIntoSuccess(t *testing.T) {
 	// Mutation: mapping an error response or a Run error to Completed, or dropping the envelope.
-	ok := batchResultFromResponse(fantasy.NewTextResponse("done"), nil, false)
+	ok := batchdispatch.ResultFromResponse(fantasy.NewTextResponse("done"), nil, false)
 	require.Equal(t, jobbatch.StateCompleted, ok.State)
 	require.Empty(t, ok.Code)
 
-	denied := batchResultFromResponse(fantasy.NewTextErrorResponse("denied"), nil, false)
+	denied := batchdispatch.ResultFromResponse(fantasy.NewTextErrorResponse("denied"), nil, false)
 	require.Equal(t, jobbatch.StateFailed, denied.State)
 	require.Equal(t, "tool_error", denied.Code)
 
-	broken := batchResultFromResponse(fantasy.ToolResponse{}, errors.New("boom"), false)
+	broken := batchdispatch.ResultFromResponse(fantasy.ToolResponse{}, errors.New("boom"), false)
 	require.Equal(t, jobbatch.StateFailed, broken.State)
 	require.Equal(t, "tool_run_error", broken.Code)
 
-	stopped := batchResultFromResponse(fantasy.NewTextResponse("partial"), nil, true)
+	stopped := batchdispatch.ResultFromResponse(fantasy.NewTextResponse("partial"), nil, true)
 	require.Equal(t, jobbatch.StateCancelled, stopped.State)
 
-	img := batchResultFromResponse(fantasy.NewImageResponse([]byte{1, 2, 3}, "image/png"), nil, false)
+	img := batchdispatch.ResultFromResponse(fantasy.NewImageResponse([]byte{1, 2, 3}, "image/png"), nil, false)
 	var back fantasy.ToolResponse
 	require.NoError(t, json.Unmarshal(img.Details, &back))
 	require.Equal(t, []byte{1, 2, 3}, back.Data)

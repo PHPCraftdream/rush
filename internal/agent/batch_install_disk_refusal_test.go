@@ -17,6 +17,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -28,17 +32,17 @@ type diskRefusalProvider struct {
 }
 
 type diskRefusalAttach struct {
-	batchAttachStore
+	batchcore.AttachStore
 	probes int
 }
 
-func (a *diskRefusalAttach) ProbeLive(ctx context.Context, p batchAttachProbe) (jobbatch.ID, bool, error) {
+func (a *diskRefusalAttach) ProbeLive(ctx context.Context, p batchcore.AttachProbe) (jobbatch.ID, bool, error) {
 	a.probes++
-	return a.batchAttachStore.ProbeLive(ctx, p)
+	return a.AttachStore.ProbeLive(ctx, p)
 }
 
 type diskRefusalRunner struct {
-	batchRunnerHandle
+	batchcore.RunnerHandle
 	submits      int
 	submitsBound int
 	mu           sync.Mutex
@@ -68,7 +72,7 @@ func (r *diskRefusalRunner) Submit(ctx context.Context, req jobbatch.SubmitReque
 	r.mu.Lock()
 	r.submits++
 	r.mu.Unlock()
-	id, err := r.batchRunnerHandle.Submit(ctx, req)
+	id, err := r.RunnerHandle.Submit(ctx, req)
 	if err == nil {
 		r.record(id)
 	}
@@ -87,7 +91,7 @@ func (r *diskRefusalRunner) SubmitBound(ctx context.Context, req jobbatch.Submit
 	r.submits++
 	r.submitsBound++
 	r.mu.Unlock()
-	bound, ok := r.batchRunnerHandle.(batchBoundRunnerHandle)
+	bound, ok := r.RunnerHandle.(batchBoundRunnerHandle)
 	if !ok {
 		return "", nil, errors.New("diskRefusalRunner: installed handle does not implement SubmitBound")
 	}
@@ -103,7 +107,7 @@ func (r *diskRefusalRunner) SubmitBound(ctx context.Context, req jobbatch.Submit
 // as the AUTOMATIC post-Done disposal trigger, so the decorator must not
 // swallow it (R12-H2 §1.2).
 func (r *diskRefusalRunner) Release(ctx context.Context, id jobbatch.ID) error {
-	handle, ok := r.batchRunnerHandle.(batchReleaseHandle)
+	handle, ok := r.RunnerHandle.(batchReleaseHandle)
 	if !ok {
 		return errors.New("diskRefusalRunner: installed handle does not implement Release")
 	}
@@ -119,7 +123,7 @@ func diskRefusalInvocation(env *batchInventoryEnv, bindingID string, custom bool
 			// registry (the executor validates it when a binding id is
 			// carried).
 			RegistryID:        env.registryID,
-			RestrictedToolset: batchToolsetFingerprint([]fantasy.AgentTool{env.leaf}),
+			RestrictedToolset: installwire.ToolsetFingerprint([]fantasy.AgentTool{env.leaf}),
 			CustomDisk:        map[bool]string{true: "supported-provider", false: ""}[custom],
 			// A supported custom provider carries its immutable binding
 			// handle, minted by BindCallDiskProvider with the trusted call
@@ -157,8 +161,8 @@ func TestDiskProviderCustomAndOSDiskAreSupported(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newBatchInventoryEnv(t, "view")
-			attach := &diskRefusalAttach{batchAttachStore: env.install.Runtime.cfg.Attach}
-			runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+			attach := &diskRefusalAttach{AttachStore: env.install.Runtime.cfg.Attach}
+			runner := &diskRefusalRunner{RunnerHandle: env.install.Runtime.cfg.Runner}
 			env.install.Runtime.cfg.Attach = attach
 			env.install.Runtime.cfg.Runner = runner
 			ctx := env.ctx
@@ -199,7 +203,7 @@ func TestDiskProviderBindingDiesWhenEveryOwnerEnds(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view")
 	// Record the runner-minted root so this test can drive the real
 	// execution-owner release trigger below.
-	runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+	runner := &diskRefusalRunner{RunnerHandle: env.install.Runtime.cfg.Runner}
 	env.install.Runtime.cfg.Runner = runner
 	opts, release := bindTestCallDiskProvider(t, env, diskRefusalProvider{values: []string{"ownerless"}})
 	ctx := WithCallOptions(env.ctx, opts)
@@ -233,8 +237,8 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 		t.Run(route, func(t *testing.T) {
 			env := newBatchInventoryEnv(t, "view")
 			inventoryBindProcess(t, env)
-			attach := &diskRefusalAttach{batchAttachStore: env.install.Runtime.cfg.Attach}
-			runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+			attach := &diskRefusalAttach{AttachStore: env.install.Runtime.cfg.Attach}
+			runner := &diskRefusalRunner{RunnerHandle: env.install.Runtime.cfg.Runner}
 			env.install.Runtime.cfg.Attach = attach
 			env.install.Runtime.cfg.Runner = runner
 			var ctx context.Context
@@ -255,16 +259,16 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 			var err error
 			switch route {
 			case "coordinator":
-				built, buildErr := newBatchWorkToolBuild(processCoordinatorBatchBinding(), []fantasy.AgentTool{env.leaf}, newBuildResourceScope(), false)
+				built, buildErr := newBatchWorkToolBuild(installwire.ProcessBinding(processBatchBinding), []fantasy.AgentTool{env.leaf}, newBuildResourceScope(), false)
 				require.NoError(t, buildErr)
 				resp, err = built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			case "cli_bridge":
-				stamped := withBatchBridgeInvocation(ctx, batchBridgeInvocation{RegistryID: env.registryID, MessageID: "msg-disk"})
+				stamped := state.WithBridgeInvocation(ctx, state.BridgeInvocation{RegistryID: env.registryID, MessageID: "msg-disk"})
 				bridge := coordinatorBridgeFallback(stamped)
 				require.NotNil(t, bridge)
 				resp, err = bridge.Call(stamped, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{"path":"x"}`})
 			case "agentic_fetch":
-				built := armPrivateFetchIngress(ctx, newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), processCoordinatorBatchBinding().ingress, newBuildResourceScope())
+				built := armPrivateFetchIngress(ctx, newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), installwire.ProcessBinding(processBatchBinding).ingress, newBuildResourceScope())
 				resp, err = built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			}
 			require.NoError(t, err)
@@ -281,7 +285,7 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 func TestDiskProviderNilRemainsAdmitted(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view")
 	resp, err := env.invoke("nil-disk", "view")
-	env.assertDelivered("nil-disk", "view", batchKindGeneric, resp, err)
+	env.assertDelivered("nil-disk", "view", batchdispatch.KindGeneric, resp, err)
 }
 
 func TestBatchExecutorRejectsDiskMarkedPayload(t *testing.T) {
@@ -296,8 +300,8 @@ func TestBatchExecutorRejectsDiskMarkedPayload(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			payload, err := json.Marshal(batchLeafPayload{Tool: "view", SessionID: "session", Policy: &tc.policy})
 			require.NoError(t, err)
-			executor := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchKindGeneric: newBatchGenericFamily()})
-			_, err = executor.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}, func(jobbatch.Result) {})
+			executor := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchdispatch.KindGeneric: newBatchGenericFamily()})
+			_, err = executor.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}}, func(jobbatch.Result) {})
 			require.ErrorIs(t, err, ErrDiskProviderUnavailable,
 				"executor admission must fail closed on a provider-marked payload without a binding handle")
 		})

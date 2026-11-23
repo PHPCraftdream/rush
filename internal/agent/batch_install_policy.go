@@ -23,7 +23,7 @@ func CoordinatorBatchAgentDepsWithLive(live *session.BatchLiveReader) BatchAgent
 // raised from the 10ms default: each poll now runs the child's full
 // CLIScope read (live scope, debt, arbiter verdict), which must not run
 // at 100Hz.
-func CoordinatorBatchAgentDepsWithChildScope(live *session.BatchLiveReader, child BatchChildReactionFacts) BatchAgentDeps {
+func CoordinatorBatchAgentDepsWithChildScope(live *session.BatchLiveReader, child state.BatchChildReactionFacts) BatchAgentDeps {
 	return batchAgentDeps{
 		Runs:        batchCoordinatorAgentRuns{},
 		Descendants: batchCoordinatorDescendants{live: live, child: child},
@@ -32,25 +32,6 @@ func CoordinatorBatchAgentDepsWithChildScope(live *session.BatchLiveReader, chil
 	}
 }
 
-type (
-	batchAgentLifecycle           = state.Lifecycle
-	batchAgentLifecycleContextKey = state.LifecycleContextKey
-	batchAgentQuestionContext     = state.QuestionContext
-	batchAgentQuestionContextKey  = state.QuestionContextKey
-	batchAgentQuestionBindingKey  = state.QuestionBindingKey
-	batchBridgeInvocation         = state.BridgeInvocation
-	batchBridgeInvocationKey      = state.BridgeInvocationKey
-	BatchChildReactionFacts       = state.BatchChildReactionFacts
-)
-
-func withBatchAgentLifecycle(ctx context.Context, lifecycle batchAgentLifecycle) context.Context {
-	return state.WithLifecycle(ctx, lifecycle)
-}
-
-func withBatchAgentQuestionContext(ctx context.Context, depth int) context.Context {
-	return state.WithQuestionContext(ctx, depth)
-}
-func batchAgentQuestionDepth(ctx context.Context) int { return state.QuestionDepth(ctx) }
 func withBatchAgentQuestionBinding(ctx context.Context, b batchAgentQuestionBinding) context.Context {
 	return state.WithQuestionBinding(ctx, b)
 }
@@ -59,29 +40,13 @@ func batchAgentQuestionBindingFrom(ctx context.Context) (batchAgentQuestionBindi
 	return state.QuestionBindingFrom(ctx)
 }
 
-func withBatchBridgeInvocation(ctx context.Context, inv batchBridgeInvocation) context.Context {
-	return state.WithBridgeInvocation(ctx, inv)
-}
-
-func batchBridgeInvocationFrom(ctx context.Context) (batchBridgeInvocation, bool) {
-	return state.BridgeInvocationFrom(ctx)
-}
-
-const batchArmingPolicyNote = state.ArmingPolicyNote
-
-var errPscChildScopeUnavailable = state.ErrChildScopeUnavailable
-
 type batchCoordinatorDescendants struct {
 	live  *session.BatchLiveReader
-	child BatchChildReactionFacts
+	child state.BatchChildReactionFacts
 }
 
 func (d batchCoordinatorDescendants) DescendantsLive(ctx context.Context, req batchAgentRunRequest) (bool, bool) {
 	return (state.Descendants{Live: d.live, Child: d.child}).DescendantsLive(ctx, req.ChildSessionID)
-}
-
-func pscCombineDescendantFacts(ctx context.Context, child BatchChildReactionFacts, childSessionID string, live, complete bool) (bool, bool) {
-	return state.CombineDescendantFacts(ctx, child, childSessionID, live, complete)
 }
 
 type pscChildReactionFacts struct {

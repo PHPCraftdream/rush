@@ -10,6 +10,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -438,7 +439,7 @@ func TestInjectAgent_MarkedCredentialedChildWithNilCredentialsFailsClosed(t *tes
 	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{SessionID: child}})
 
 	_, err := coord.InjectAgent(t.Context(), parent, child, "must stay tenant-bound", true)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.Empty(t, driver.interruptAndReplacedSnapshot())
 	messages, listErr := env.messages.List(t.Context(), child)
 	require.NoError(t, listErr)
@@ -474,7 +475,7 @@ func TestInjectAgent_CredentialedInterruptRejectsUnusableDriverBinding(t *testin
 			}})
 
 			_, err := coord.InjectAgent(t.Context(), parent, child, "must fail closed", true)
-			require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+			require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 			require.Empty(t, driver.interruptAndReplacedSnapshot())
 			messages, listErr := env.messages.List(t.Context(), child)
 			require.NoError(t, listErr)
@@ -492,7 +493,7 @@ func TestInjectAgent_CredentialedInterruptWithoutDriverBindingFailsClosed(t *tes
 	coord.currentAgent = driver
 
 	_, err := coord.InjectAgent(t.Context(), parent, child, "must not use shared model", true)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.Empty(t, driver.interruptAndReplacedSnapshot())
 	messages, listErr := env.messages.List(t.Context(), child)
 	require.NoError(t, listErr)

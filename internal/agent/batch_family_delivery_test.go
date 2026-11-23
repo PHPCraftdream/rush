@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -196,9 +199,9 @@ func TestBatchWorkFamilyDeliveryArming(t *testing.T) {
 			}
 			built, err := newBatchWorkToolBuild(bind, batchTestTools(names...), newBuildResourceScope(), deferred)
 			require.NoError(t, err)
-			armed := map[string]*batchIngressTool{}
+			armed := map[string]*toolwrap.BatchIngressTool{}
 			for _, tool := range built.Tools {
-				if ing, ok := tool.(*batchIngressTool); ok {
+				if ing, ok := tool.(*toolwrap.BatchIngressTool); ok {
 					armed[tool.Info().Name] = ing
 				}
 			}
@@ -207,7 +210,7 @@ func TestBatchWorkFamilyDeliveryArming(t *testing.T) {
 			bashInv := bash.Inv.(batchInvocationSpec).inv
 			require.Equal(t, batchDeliverySync, bashInv.Delivery.Mode)
 			require.Equal(t, batchEscapeAuto, bashInv.BackgroundEscape)
-			require.Equal(t, inlineWindow.String(), bashInv.Delivery.Window)
+			require.Equal(t, installwire.InlineWindow.String(), bashInv.Delivery.Window)
 
 			// FIRST assertion: the delegation families are DETACHED.
 			for _, name := range []string{AgentToolName, tools.AgenticFetchToolName} {
@@ -241,7 +244,7 @@ func TestDetachedDeliveryNeverAwaitsChild(t *testing.T) {
 	resp, err := impl.DeliverBatch(context.Background(), "root-1", detachedInvocation())
 	require.NoError(t, err)
 	require.Equal(t,
-		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchStartedResponseSuffix),
+		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchcore.StartedResponseSuffix),
 		resp.Content,
 		"detached must return the started text without awaiting (deliverSync would block on the gated child)")
 	require.Zero(t, done.awaitCount(), "detached must never AwaitDone")
@@ -270,7 +273,7 @@ func TestHeldQuestionDoesNotWedgeParentDelivery(t *testing.T) {
 	resp, err := impl.DeliverBatch(context.Background(), "root-1", detachedInvocation())
 	require.NoError(t, err)
 	require.Equal(t,
-		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchStartedResponseSuffix),
+		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchcore.StartedResponseSuffix),
 		resp.Content,
 		"detached must return started while the child question is held")
 	require.Zero(t, elector.inlineCount())
@@ -291,7 +294,7 @@ func TestHeldQuestionDoesNotWedgeParentDelivery(t *testing.T) {
 	resp, err = impl.DeliverBatch(context.Background(), "root-1", detachedInvocation())
 	require.NoError(t, err)
 	require.Equal(t,
-		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchStartedResponseSuffix),
+		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchcore.StartedResponseSuffix),
 		resp.Content)
 	require.Zero(t, runner.submitCount())
 	require.Zero(t, runner.stopCount())
@@ -310,7 +313,7 @@ func TestFastCompletionBeforeStartedAck(t *testing.T) {
 	resp, err := impl.DeliverBatch(context.Background(), "root-1", detachedInvocation())
 	require.NoError(t, err)
 	require.Equal(t,
-		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchStartedResponseSuffix),
+		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchcore.StartedResponseSuffix),
 		resp.Content,
 		"detached always elects started before any completion delivery")
 	require.Equal(t, 1, elector.startedCount())
@@ -376,7 +379,7 @@ func TestBashEscapeWindowTwins(t *testing.T) {
 	late := <-respCh
 	require.NoError(t, late.err)
 	require.Equal(t,
-		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchStartedResponseSuffix),
+		fmt.Sprintf("batch root %s %s", jobbatch.ID("root-1"), batchcore.StartedResponseSuffix),
 		late.resp.Content,
 		"window elapse elects started and returns the started text")
 	require.Equal(t, 1, elector.startedCount())

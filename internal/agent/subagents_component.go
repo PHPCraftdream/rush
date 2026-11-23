@@ -17,6 +17,9 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
@@ -113,7 +116,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 			toolwrap.ReleaseScopeRefs(pctReleases)
 		}
 	}()
-	lifecycle, lifecycleBound := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
+	lifecycle, lifecycleBound := ctx.Value(state.LifecycleContextKey{}).(state.Lifecycle)
 	defer func() {
 		if !childSelected && lifecycleBound && lifecycle.NoChildSelected != nil {
 			lifecycle.NoChildSelected()
@@ -534,9 +537,9 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 		// route marker nor the held-answer binding. A lifecycle-bound child
 		// needs both; missing context cannot grant an answer route.
 		binding, bindingOK := batchAgentQuestionBindingFrom(ctx)
-		route, routeOK := batchQuestionRouteFrom(ctx)
+		route, routeOK := batchmeta.BatchQuestionRouteFrom(ctx)
 		batchQuestionState = &batchChildQuestionState{
-			Depth:     batchAgentQuestionDepth(ctx),
+			Depth:     state.QuestionDepth(ctx),
 			Route:     routeOK && route && bindingOK && binding.Ask != nil,
 			Binding:   binding,
 			BindingOK: bindingOK,
@@ -564,7 +567,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 		callTemplate.BatchQuestion = batchQuestionState
 	}
 	delegatedFinalization := core.CaptureAgentFinalizationContext(ctx)
-	callTemplate.LogicalCallID, err = finalizationLogicalIdentity(delegatedFinalization, session.ID, callTemplate.LogicalCallID)
+	callTemplate.LogicalCallID, err = finalize.FinalizationLogicalIdentity(delegatedFinalization, session.ID, callTemplate.LogicalCallID)
 	if err != nil {
 		return fantasy.ToolResponse{}, err
 	}
@@ -706,7 +709,7 @@ func (c *subagentsComponent) inheritBatchQuestionState(ctx context.Context, chil
 		}
 		call.BatchQuestion = state
 		if state != nil && call.Tools != nil {
-			call.Tools = stripAskQuestionTools(call.Tools)
+			call.Tools = batchmeta.StripAskQuestionTools(call.Tools)
 		}
 		return nil
 	}

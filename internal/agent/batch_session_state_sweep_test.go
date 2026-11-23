@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,8 +23,8 @@ import (
 // live state; an open zero gate holds nothing and is swept.
 func TestSweepArbiterEntries_DropsOnlyEntriesThatHoldNothing(t *testing.T) {
 	c := &coordinator{}
-	c.arb.pace("paced", 0, time.Hour, false, paceUncounted)
-	c.arb.pace("streaky", 0, 0, false, pacePaidUnreacted)
+	c.arb.pace("paced", 0, time.Hour, false, batchlife.PaceUncounted)
+	c.arb.pace("streaky", 0, 0, false, drainctl.PacePaidUnreacted)
 	c.arb.resetGate("streaky") // back to an open gate: idle, swept
 
 	c.sweepArbiterEntries()
@@ -50,10 +52,10 @@ func TestSweepArbiterEntries_ExpiredPauseWithZeroStreaksIsIdle(t *testing.T) {
 	// The ordinary turn's pause: no debt, no streak. Paced directly on the
 	// arbiter: the legacy route (noteTurnFailed via the ledger's arbPace)
 	// is gone with the ledger.
-	c.arb.pace("failed-turn", 0, drainRetryAfterFailure(), false, paceUncounted)
-	c.arb.pace("refused", 0, 30*time.Minute, true, paceUncounted)
-	c.arb.pace("paid", 0, 0, false, pacePaidUnreacted) // one paid streak
-	c.arb.pace("free", 0, 0, false, paceFreeNoTurn)    // one free streak
+	c.arb.pace("failed-turn", 0, drainRetryAfterFailure(), false, batchlife.PaceUncounted)
+	c.arb.pace("refused", 0, 30*time.Minute, true, batchlife.PaceUncounted)
+	c.arb.pace("paid", 0, 0, false, drainctl.PacePaidUnreacted) // one paid streak
+	c.arb.pace("free", 0, 0, false, drainctl.PaceFreeNoTurn)    // one free streak
 
 	require.Len(t, c.arb.sessionsWithState(), 4, "pauses still running (and streaks) keep their entries")
 

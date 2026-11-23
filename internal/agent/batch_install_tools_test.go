@@ -12,6 +12,11 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +31,7 @@ type fakeBatchIngress struct {
 	inv      BatchInvocation
 	reg      *policyLeafRegistry
 	leafRuns map[string]int
-	regs     map[string]*BatchLeafRegistry
+	regs     map[string]*toolwrap.PolicyLeafRegistry
 }
 
 func (f *fakeBatchIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -48,7 +53,7 @@ func (f *fakeBatchIngress) leafRunCount(name string) int {
 	return f.leafRuns[name]
 }
 
-func (f *fakeBatchIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string, error) {
+func (f *fakeBatchIngress) PinLeafRegistry(registry *toolwrap.PolicyLeafRegistry) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pins++
@@ -57,7 +62,7 @@ func (f *fakeBatchIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string,
 	// than once (nested sub-agent toolsets) must not collide in the disk
 	// capability manager's construction records. The first pin stays "reg-1".
 	if f.regs == nil {
-		f.regs = make(map[string]*BatchLeafRegistry)
+		f.regs = make(map[string]*toolwrap.PolicyLeafRegistry)
 	}
 	id := fmt.Sprintf("reg-%d", f.pins)
 	f.regs[id] = registry
@@ -74,7 +79,7 @@ func (f *fakeBatchIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTo
 	return reg.Resolve(name)
 }
 
-func (f *fakeBatchIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
+func (f *fakeBatchIngress) Registry(registryID string) (*toolwrap.PolicyLeafRegistry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	reg, ok := f.regs[registryID]
@@ -167,19 +172,19 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 		t.Fatalf("tool count changed: got %d want %d", len(seen), len(list))
 	}
 	for _, name := range work {
-		armed, ok := seen[name].(*batchIngressTool)
+		armed, ok := seen[name].(*toolwrap.BatchIngressTool)
 		if !ok {
 			t.Fatalf("%s: not armed through the batch ingress (%T)", name, seen[name])
 		}
 		if armed.Registry != fake.reg {
 			t.Fatalf("%s: armed against a foreign registry", name)
 		}
-		if _, ok := seen[name].(*batchIngressTool); !ok {
+		if _, ok := seen[name].(*toolwrap.BatchIngressTool); !ok {
 			t.Fatalf("%s: the batch ingress must be the ONLY arming wrapper (%T)", name, seen[name])
 		}
 	}
 	for _, name := range controls {
-		if _, ok := seen[name].(*batchIngressTool); ok {
+		if _, ok := seen[name].(*toolwrap.BatchIngressTool); ok {
 			t.Fatalf("D1 control %s must NOT be batch-wrapped", name)
 		}
 	}
@@ -191,14 +196,14 @@ func TestBatchWorkInventoryPerFamilyFlagOn(t *testing.T) {
 	// never. (Per-call authority, root and ledger counts:
 	// batch_install_inventory_test.go.)
 	for name, want := range map[string]struct{ escape, window, mode string }{
-		"bash":            {batchEscapeAuto, inlineWindow.String(), batchDeliverySync},
+		"bash":            {batchEscapeAuto, installwire.InlineWindow.String(), batchDeliverySync},
 		"run_command":     {batchEscapeNever, "", batchDeliverySync},
 		"agent":           {batchEscapeNever, "", batchDeliveryDetached},
 		"agentic_fetch":   {batchEscapeNever, "", batchDeliveryDetached},
 		"mcp_files__read": {batchEscapeNever, "", batchDeliverySync},
 		"view":            {batchEscapeNever, "", batchDeliverySync},
 	} {
-		armed := seen[name].(*batchIngressTool)
+		armed := seen[name].(*toolwrap.BatchIngressTool)
 		inv := armed.Inv.(batchInvocationSpec).inv
 		if inv.BackgroundEscape != want.escape {
 			t.Fatalf("%s: escape %q want %q", name, inv.BackgroundEscape, want.escape)
@@ -241,7 +246,7 @@ func TestUnboundCoordinatorArmsNoBatchTools(t *testing.T) {
 		t.Fatalf("bash leaf layers %v carry a deleted wrapper layer", layers)
 	}
 	for _, tool := range built.Tools {
-		if _, ok := tool.(*batchIngressTool); ok {
+		if _, ok := tool.(*toolwrap.BatchIngressTool); ok {
 			t.Fatalf("unbound coordinator produced a batch-armed tool")
 		}
 	}
@@ -312,7 +317,7 @@ func TestAgentDriverRunsPinnedLeaf(t *testing.T) {
 		// is by the RECORDED tool name.
 		Tool: AgentToolName, Input: []byte(`{"prompt":"hi"}`),
 		RegistryID: "reg-1", MessageID: "msg-1",
-	}, batchAgentHost{})
+	}, childagent.Host{})
 	if err != nil {
 		t.Fatalf("StartAgentTurn: %v", err)
 	}
@@ -350,7 +355,7 @@ func TestAgentDriverFailsClosedWithoutBinding(t *testing.T) {
 	restore := processBatchBinding.Swap(nil)
 	defer processBatchBinding.Store(restore)
 	deps := CoordinatorBatchAgentDeps()
-	if _, err := deps.Runs.StartAgentTurn(context.Background(), batchAgentRunRequest{RegistryID: "reg-1"}, batchAgentHost{}); !errors.Is(err, errBatchCoordinatorNotBound) {
+	if _, err := deps.Runs.StartAgentTurn(context.Background(), batchAgentRunRequest{RegistryID: "reg-1"}, childagent.Host{}); !errors.Is(err, errBatchCoordinatorNotBound) {
 		t.Fatalf("err %v, want errBatchCoordinatorNotBound", err)
 	}
 }
@@ -370,22 +375,22 @@ func TestMCPKindRoutingAndBridgeFallback(t *testing.T) {
 	defer processBatchBinding.Store(restore)
 	setBatchLeafKindOverride(func(tool string) (string, bool) {
 		if strings.HasPrefix(tool, "mcp_") {
-			return batchKindMCP, true
+			return batchdispatch.KindMCP, true
 		}
 		return "", false
 	})
 	defer setBatchLeafKindOverride(nil)
 
-	if got := batchLeafKind("mcp_files__read"); got != batchKindMCP {
+	if got := batchLeafKind("mcp_files__read"); got != batchdispatch.KindMCP {
 		t.Fatalf("mcp kind %q", got)
 	}
-	if got := batchLeafKind("view"); got != batchKindGeneric {
+	if got := batchLeafKind("view"); got != batchdispatch.KindGeneric {
 		t.Fatalf("generic kind %q", got)
 	}
 
 	// P1-4: the fallback resolves a bridge ONLY from a STAMPED invocation —
 	// stamp the context with the pinned registry the binding just pinned.
-	stamped := withBatchBridgeInvocation(batchCallCtx("sess-1"), batchBridgeInvocation{RegistryID: "reg-1", MessageID: "msg-1"})
+	stamped := state.WithBridgeInvocation(batchCallCtx("sess-1"), state.BridgeInvocation{RegistryID: "reg-1", MessageID: "msg-1"})
 	bridge := coordinatorBridgeFallback(stamped)
 	if bridge == nil {
 		t.Fatal("bridge fallback nil with a live binding")
@@ -423,7 +428,7 @@ func TestPrivateFetchArmsThroughIngress(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view")
 	// Record the runner-minted root so this test can drive the REAL
 	// execution-owner release trigger (Runner.Release) after the run.
-	runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+	runner := &diskRefusalRunner{RunnerHandle: env.install.Runtime.cfg.Runner}
 	env.install.Runtime.cfg.Runner = runner
 	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
 	if err != nil {
@@ -488,13 +493,13 @@ func TestPrivateFetchCustomProviderPassesExecutorAdmission(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view")
 	// Count the bound submission so the run is proven to have crossed the
 	// REAL Runner through SubmitBound (a root-owning bound run).
-	runner := &diskRefusalRunner{batchRunnerHandle: env.install.Runtime.cfg.Runner}
+	runner := &diskRefusalRunner{RunnerHandle: env.install.Runtime.cfg.Runner}
 	env.install.Runtime.cfg.Runner = runner
 	inventoryBindProcess(t, env)
 	// PRODUCTION wiring (agentic_fetch_tool.go): resolve the coordinator
 	// binding's OWN ingress and stamp it into the private-fetch build
 	// context under privateFetchIngressKey{}.
-	ingress := processCoordinatorBatchBinding().ingress
+	ingress := installwire.ProcessBinding(processBatchBinding).ingress
 	if ingress == nil {
 		t.Fatal("no coordinator binding ingress after inventoryBindProcess")
 	}
@@ -535,7 +540,7 @@ func TestBatchInstallWireRootSeams(t *testing.T) {
 	require.False(t, SetInlineWindowForTest(nil, false))
 
 	_, err := NewBatchWorkIngress(nil, NewBatchLeafRegistryStore())
-	require.Equal(t, errBatchWorkIngressDeps, err)
+	require.Equal(t, installwire.ErrIngressDeps, err)
 	_, err = NewBatchWorkIngressWithDiskBindings(nil, NewBatchLeafRegistryStore(), nil)
-	require.Equal(t, errBatchWorkIngressDeps, err)
+	require.Equal(t, installwire.ErrIngressDeps, err)
 }

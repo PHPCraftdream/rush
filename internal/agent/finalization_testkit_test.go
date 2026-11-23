@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -59,8 +61,8 @@ type finalizationDriverSeamEnv struct {
 	ctx       context.Context
 	call      SessionAgentCall
 	identity  coresession.AgentFinalizationIdentity
-	scope     finalizationPublicationScope
-	execution *finalizationExecution
+	scope     finalize.FinalizationPublicationScope
+	execution *finalize.FinalizationExecution
 	reader    coresession.AgentFinalizationScopeReader
 	stub      *finalizationSeamScopeStub
 }
@@ -78,19 +80,19 @@ func newFinalizationDriverSeamEnv(t *testing.T) finalizationDriverSeamEnv {
 	require.NoError(t, err)
 	env.stub = &finalizationSeamScopeStub{}
 	env.reader = session.NewAgentFinalizationScopeReader(env.identity.SessionID, env.stub, env.stub, env.stub, env.stub)
-	env.scope = finalizationPublicationScope{Store: coresession.NewAgentFinalizationStore(env.conn), Identity: env.identity}
-	env.execution = &finalizationExecution{
+	env.scope = finalize.FinalizationPublicationScope{Store: coresession.NewAgentFinalizationStore(env.conn), Identity: env.identity}
+	env.execution = &finalize.FinalizationExecution{
 		SessionID: env.identity.SessionID,
 		LogicalID: env.identity.LogicalCallID,
-		Gate:      newFinalizationGate(uint64(env.identity.Generation)),
-		Read: func(context.Context) (finalizationFacts, error) {
-			return finalizationFacts{Complete: true}, nil
+		Gate:      gate.New(uint64(env.identity.Generation)),
+		Read: func(context.Context) (gate.Facts, error) {
+			return gate.Facts{Complete: true}, nil
 		},
 		Scope:      env.scope,
 		ScopeFacts: env.reader,
 	}
 	env.call = SessionAgentCall{SessionID: env.identity.SessionID, LogicalCallID: env.identity.LogicalCallID}
-	env.ctx, err = withFinalizationExecution(t.Context(), env.execution)
+	env.ctx, err = finalize.WithFinalizationExecution(t.Context(), env.execution)
 	require.NoError(t, err)
 	return env
 }
@@ -99,7 +101,7 @@ func newFinalizationDriverSeamEnv(t *testing.T) finalizationDriverSeamEnv {
 func finalizationSeamHooks() FinalizationDriverHooks {
 	return FinalizationDriverHooks{
 		BindScope: func(context.Context, SessionAgentCall) error { return nil },
-		RecoverScope: func(context.Context, *finalizationExecution) (coresession.AgentFinalizationRecovery, error) {
+		RecoverScope: func(context.Context, *finalize.FinalizationExecution) (coresession.AgentFinalizationRecovery, error) {
 			return coresession.AgentFinalizationNoCandidate, nil
 		},
 		FinalizeTurn: func(context.Context, *turnStream) error { return nil },

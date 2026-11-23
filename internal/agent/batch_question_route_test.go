@@ -24,6 +24,12 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -41,17 +47,17 @@ import (
 // incarnation never held, so there is nothing to answer into.
 func TestBatchAskWithoutRouteRejectsBeforeHoldAndNotice(t *testing.T) {
 	tl := newQuestionTestTimeline(t)
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	askErr := make(chan error, 1)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		// The ask must not run on the Start goroutine: it would park Start.
 		go func() {
 			_, err := host.Ask(context.Background(), 2, "why?")
 			askErr <- err
 			// Mirror askAndShape's error branch: the turn finishes with an
 			// error response and exits, so the node settles.
-			t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+			t2.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 			t2.finish()
 			t2.exitNow()
 		}()
@@ -66,7 +72,7 @@ func TestBatchAskWithoutRouteRejectsBeforeHoldAndNotice(t *testing.T) {
 		"the ask must return instead of awaiting forever")
 	err = <-askErr
 	tl.addf("ask rejected: err=%v", err)
-	require.ErrorIs(t, err, ErrBatchQuestionNoRoute)
+	require.ErrorIs(t, err, batchinst.ErrBatchQuestionNoRoute)
 
 	// (b) NO child_question notice was published.
 	notices := factory.questionRig().publishedNotices()
@@ -109,9 +115,9 @@ func TestBatchAskWrapperNoRouteIsRetryable(t *testing.T) {
 	asked := make(chan struct{}, 1)
 	binding := batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) {
 		asked <- struct{}{}
-		return nil, fmt.Errorf("%w", ErrBatchQuestionNoRoute)
+		return nil, fmt.Errorf("%w", batchinst.ErrBatchQuestionNoRoute)
 	}}
-	ctx := withBatchAgentQuestionContext(withBatchAgentQuestionBinding(t.Context(), binding), 1)
+	ctx := state.WithQuestionContext(withBatchAgentQuestionBinding(t.Context(), binding), 1)
 	tool := batchAgentAskQuestionTool{}
 	response, err := tool.Run(ctx, fantasy.ToolCall{Name: "ask_question", Input: `{"question":"continue?"}`})
 	tl.addf("no-route ask: err=%v is_error=%v stop_turn=%v", err, response.IsError, response.StopTurn)
@@ -147,14 +153,14 @@ func TestBuildBatchQuestionToolsRouteTable(t *testing.T) {
 	}
 
 	t.Run("no_route_strips_ask", func(t *testing.T) {
-		got, err := buildBatchQuestionTools(base, withBatchQuestionRoute(context.Background(), false))
+		got, err := buildBatchQuestionTools(base, batchmeta.WithBatchQuestionRoute(context.Background(), false))
 		require.NoError(t, err)
 		require.NotContains(t, names(got), tools.AskQuestionToolName,
 			"a no-route incarnation must advertise NO ask_question")
 		require.Contains(t, names(got), "view", "the other tool must survive the strip")
 	})
 	t.Run("route_wraps_ask", func(t *testing.T) {
-		ctx := withBatchQuestionRoute(context.Background(), true)
+		ctx := batchmeta.WithBatchQuestionRoute(context.Background(), true)
 		ctx = withBatchAgentQuestionBinding(ctx, batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) { return nil, nil }})
 		got, err := buildBatchQuestionTools(base, ctx)
 		require.NoError(t, err)
@@ -202,7 +208,7 @@ func TestStartBatchAgentTurnRouteMarkerAndBinding(t *testing.T) {
 				mu.Unlock()
 				return fantasy.NewTextResponse("done"), nil
 			})
-			host := batchAgentHost{Ask: func(context.Context, int, string) (json.RawMessage, error) {
+			host := childagent.Host{Ask: func(context.Context, int, string) (json.RawMessage, error) {
 				return nil, errors.New("host ask must not run in this test")
 			}}
 			req := batchAgentRunRequest{Tool: "agent", Input: json.RawMessage(`{}`), QuestionRoute: route}
@@ -223,7 +229,7 @@ func TestStartBatchAgentTurnRouteMarkerAndBinding(t *testing.T) {
 			}
 			require.Eventually(t, func() bool { return capturedCtx() != nil }, 2*time.Second, time.Millisecond,
 				"the leaf must run on the stamped run context")
-			stampedRoute, routeOK := batchQuestionRouteFrom(capturedCtx())
+			stampedRoute, routeOK := batchmeta.BatchQuestionRouteFrom(capturedCtx())
 			_, bindingOK := batchAgentQuestionBindingFrom(capturedCtx())
 			tl.addf("stamped: route_ok=%v route=%v binding=%v", routeOK, stampedRoute, bindingOK)
 			require.True(t, routeOK, "the marker must be stamped on EVERY batch incarnation, both values")
@@ -252,9 +258,9 @@ func TestStartBatchAgentTurnRouteMarkerAndBinding(t *testing.T) {
 // subtest routes through modelInvocationAtCall FIRST: the route can only
 // ever come from the call context.
 func TestModelBatchSpecQuestionRouteStampingAndForgedInput(t *testing.T) {
-	payloadOf := func(t *testing.T, inv BatchInvocation, item batchModelItem) map[string]any {
+	payloadOf := func(t *testing.T, inv BatchInvocation, item modelcontrol.Item) map[string]any {
 		t.Helper()
-		spec, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{item}}, inv, modelRegistry("view"))
+		spec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{item}}, inv, modelRegistry("view"))
 		require.NoError(t, err)
 		var payload map[string]any
 		require.NoError(t, json.Unmarshal(spec.Batch.Items[0].Task.Payload, &payload))
@@ -267,18 +273,18 @@ func TestModelBatchSpecQuestionRouteStampingAndForgedInput(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, inv.QuestionRoute,
 			"an absent marker must default the invocation to route-ful (top-level sessions answer)")
-		payload := payloadOf(t, inv, batchModelItem{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)})
+		payload := payloadOf(t, inv, modelcontrol.Item{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)})
 		require.Equal(t, true, payload["question_route"],
 			"a route-ful leaf payload must carry question_route=true")
 	})
 	t.Run("batch_child_inherits_false", func(t *testing.T) {
 		// A no-route batch incarnation's control call: the child must
 		// inherit the false, so its leaf payload OMITS the key entirely.
-		inv, err := modelInvocationAtCall(withBatchQuestionRoute(batchCallCtx("owner"), false), BatchInvocation{SessionID: "owner", RegistryID: "reg"}, fantasy.ToolCall{ID: "call-nr", Name: "batch_run"})
+		inv, err := modelInvocationAtCall(batchmeta.WithBatchQuestionRoute(batchCallCtx("owner"), false), BatchInvocation{SessionID: "owner", RegistryID: "reg"}, fantasy.ToolCall{ID: "call-nr", Name: "batch_run"})
 		require.NoError(t, err)
 		require.False(t, inv.QuestionRoute,
 			"the present-false marker must win over the default: direct-path intake must not lose the route")
-		payload := payloadOf(t, inv, batchModelItem{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)})
+		payload := payloadOf(t, inv, modelcontrol.Item{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)})
 		_, present := payload["question_route"]
 		require.False(t, present,
 			"a no-route leaf payload must OMIT the key entirely (omitempty), not carry an explicit false")
@@ -287,10 +293,10 @@ func TestModelBatchSpecQuestionRouteStampingAndForgedInput(t *testing.T) {
 		// The model forges question_route inside the leaf tool's input AND
 		// the route the invocation actually carries is false: the forged
 		// key survives only as verbatim leaf input, never as payload policy.
-		inv, err := modelInvocationAtCall(withBatchQuestionRoute(batchCallCtx("owner"), false), BatchInvocation{SessionID: "owner", RegistryID: "reg"}, fantasy.ToolCall{ID: "call-forged", Name: "batch_run"})
+		inv, err := modelInvocationAtCall(batchmeta.WithBatchQuestionRoute(batchCallCtx("owner"), false), BatchInvocation{SessionID: "owner", RegistryID: "reg"}, fantasy.ToolCall{ID: "call-forged", Name: "batch_run"})
 		require.NoError(t, err)
 		require.False(t, inv.QuestionRoute)
-		payload := payloadOf(t, inv, batchModelItem{Tool: "view", Input: json.RawMessage(`{"path":"x","question_route":true}`)})
+		payload := payloadOf(t, inv, modelcontrol.Item{Tool: "view", Input: json.RawMessage(`{"path":"x","question_route":true}`)})
 		_, present := payload["question_route"]
 		require.False(t, present,
 			"the payload route must follow the trusted invocation (false/omitted), never the forged input key")
@@ -312,19 +318,19 @@ func TestModelBatchSpecQuestionRouteStampingAndForgedInput(t *testing.T) {
 func TestApplyBatchQuestionRouteFloor(t *testing.T) {
 	base := []string{"view", tools.AskQuestionToolName, "todos", tools.AskQuestionToolName, "fetch"}
 	t.Run("marker_absent_unchanged", func(t *testing.T) {
-		got := applyBatchQuestionRouteFloor(context.Background(), config.Agent{AllowedTools: base})
+		got := batchmeta.ApplyBatchQuestionRouteFloor(context.Background(), config.Agent{AllowedTools: base})
 		require.Equal(t, base, got.AllowedTools,
 			"a non-batch session's AllowedTools must stay byte-identical (names and order)")
 	})
 	t.Run("marker_false_strips_even_worker_layered", func(t *testing.T) {
 		// base already contains ask_question twice: the worker layering
 		// shape. An explicit model role can never restore the tool.
-		got := applyBatchQuestionRouteFloor(withBatchQuestionRoute(context.Background(), false), config.Agent{AllowedTools: base})
+		got := batchmeta.ApplyBatchQuestionRouteFloor(batchmeta.WithBatchQuestionRoute(context.Background(), false), config.Agent{AllowedTools: base})
 		require.Equal(t, []string{"view", "todos", "fetch"}, got.AllowedTools,
 			"every ask_question occurrence must be stripped, others preserved in order")
 	})
 	t.Run("marker_true_unchanged", func(t *testing.T) {
-		got := applyBatchQuestionRouteFloor(withBatchQuestionRoute(context.Background(), true), config.Agent{AllowedTools: base})
+		got := batchmeta.ApplyBatchQuestionRouteFloor(batchmeta.WithBatchQuestionRoute(context.Background(), true), config.Agent{AllowedTools: base})
 		require.Equal(t, base, got.AllowedTools,
 			"a route-ful build must stay byte-identical (names and order)")
 	})
@@ -360,12 +366,12 @@ func TestInvokeBatchWithCallContextStampsQuestionRoute(t *testing.T) {
 	})
 	t.Run("marker_false_inherits_false", func(t *testing.T) {
 		// A no-route batch incarnation calling directly: the marker wins.
-		inv := run(t, withBatchQuestionRoute(context.Background(), false))
+		inv := run(t, batchmeta.WithBatchQuestionRoute(context.Background(), false))
 		require.False(t, inv.QuestionRoute,
 			"the present-false marker must reach the ingress verbatim, or a no-route child mints route-ful leaves")
 	})
 	t.Run("marker_true_inherits_true", func(t *testing.T) {
-		inv := run(t, withBatchQuestionRoute(context.Background(), true))
+		inv := run(t, batchmeta.WithBatchQuestionRoute(context.Background(), true))
 		require.True(t, inv.QuestionRoute,
 			"the present-true marker must reach the ingress verbatim")
 	})
@@ -394,7 +400,7 @@ func (r *routeCaptureIngress) recorded() (BatchInvocation, int) {
 	return r.lastInv, r.invokes
 }
 
-func (r *routeCaptureIngress) PinLeafRegistry(*BatchLeafRegistry) (string, error) {
+func (r *routeCaptureIngress) PinLeafRegistry(*toolwrap.PolicyLeafRegistry) (string, error) {
 	return "", errors.New("not supported")
 }
 
@@ -402,7 +408,7 @@ func (r *routeCaptureIngress) ResolveLeaf(string, string) (fantasy.AgentTool, er
 	return nil, errors.New("not supported")
 }
 
-func (r *routeCaptureIngress) Registry(string) (*BatchLeafRegistry, error) {
+func (r *routeCaptureIngress) Registry(string) (*toolwrap.PolicyLeafRegistry, error) {
 	return nil, errors.New("not supported")
 }
 
@@ -471,7 +477,7 @@ func TestBatchAskWrapperNoRouteWithoutBindingNeverReachesRawAsk(t *testing.T) {
 	t.Run("marker_false_no_binding_retryable_raw_not_reached", func(t *testing.T) {
 		// A no-route incarnation with NO binding: the guard must fire
 		// before the binding fallback hands off to the raw tool.
-		resp, err := run(t, withBatchQuestionRoute(context.Background(), false))
+		resp, err := run(t, batchmeta.WithBatchQuestionRoute(context.Background(), false))
 		require.NoError(t, err, "the guard must refuse as a retryable tool response, not a Go error")
 		require.True(t, resp.IsError)
 		require.False(t, resp.StopTurn, "a no-route refusal must not end the turn")
@@ -491,10 +497,10 @@ func TestBatchAskWrapperNoRouteWithoutBindingNeverReachesRawAsk(t *testing.T) {
 	t.Run("marker_true_binding_no_route_retryable_raw_not_reached", func(t *testing.T) {
 		// A route-ful wrapper whose binding reports the wrapped sentinel:
 		// the mapping fires and the raw tool is never consulted.
-		ctx := withBatchQuestionRoute(context.Background(), true)
-		ctx = withBatchAgentQuestionContext(ctx, 1)
+		ctx := batchmeta.WithBatchQuestionRoute(context.Background(), true)
+		ctx = state.WithQuestionContext(ctx, 1)
 		ctx = withBatchAgentQuestionBinding(ctx, batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) {
-			return nil, fmt.Errorf("%w", ErrBatchQuestionNoRoute)
+			return nil, fmt.Errorf("%w", batchinst.ErrBatchQuestionNoRoute)
 		}})
 		resp, err := run(t, ctx)
 		require.NoError(t, err, "the wrapped sentinel must map to a retryable tool response")
@@ -518,9 +524,9 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 		// A non-batch call: nothing is stamped, legacy contracts stand.
 		base := context.WithValue(context.Background(), struct{ k string }{}, "marker")
 		ctx := armBatchQuestionTurnContext(base, SessionAgentCall{})
-		_, routeOK := batchQuestionRouteFrom(ctx)
+		_, routeOK := batchmeta.BatchQuestionRouteFrom(ctx)
 		require.False(t, routeOK, "a state-less call must stay a non-batch session (no route marker)")
-		require.Equal(t, 0, batchAgentQuestionDepth(ctx),
+		require.Equal(t, 0, state.QuestionDepth(ctx),
 			"a state-less call must carry no question depth")
 		require.Equal(t, "marker", ctx.Value(struct{ k string }{}),
 			"the untouched context must be returned, not a rebuilt one")
@@ -528,10 +534,10 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 	t.Run("route_ful_state_fully_armed", func(t *testing.T) {
 		call := SessionAgentCall{BatchQuestion: &batchChildQuestionState{Depth: 3, Route: true, Binding: binding, BindingOK: true}}
 		ctx := armBatchQuestionTurnContext(context.Background(), call)
-		route, ok := batchQuestionRouteFrom(ctx)
+		route, ok := batchmeta.BatchQuestionRouteFrom(ctx)
 		require.True(t, ok, "the route marker must be stamped for a batch call")
 		require.True(t, route, "the frozen route must re-arm verbatim")
-		require.Equal(t, 3, batchAgentQuestionDepth(ctx), "the frozen depth must re-arm verbatim")
+		require.Equal(t, 3, state.QuestionDepth(ctx), "the frozen depth must re-arm verbatim")
 		stamped, bindingOK := batchAgentQuestionBindingFrom(ctx)
 		require.True(t, bindingOK, "a binding-armed state must re-arm its binding")
 		require.NotNil(t, stamped.Ask, "the re-armed binding must carry the frozen Ask func")
@@ -539,10 +545,10 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 	t.Run("no_route_no_binding_state", func(t *testing.T) {
 		call := SessionAgentCall{BatchQuestion: &batchChildQuestionState{Depth: 1, Route: false, BindingOK: false}}
 		ctx := armBatchQuestionTurnContext(context.Background(), call)
-		route, ok := batchQuestionRouteFrom(ctx)
+		route, ok := batchmeta.BatchQuestionRouteFrom(ctx)
 		require.True(t, ok, "the marker must be stamped even when false: a batch child is not a non-batch session")
 		require.False(t, route, "the frozen false route must re-arm verbatim")
-		require.Equal(t, 1, batchAgentQuestionDepth(ctx), "the frozen depth must re-arm verbatim")
+		require.Equal(t, 1, state.QuestionDepth(ctx), "the frozen depth must re-arm verbatim")
 		_, bindingOK := batchAgentQuestionBindingFrom(ctx)
 		require.False(t, bindingOK,
 			"a BindingOK=false state must never arm a binding: a no-route child has no answer route")

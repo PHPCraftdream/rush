@@ -18,7 +18,7 @@ import (
 type pctScopeIngress struct {
 	mu       sync.Mutex
 	caps     *DiskProviderRegistry
-	regs     map[string]*BatchLeafRegistry
+	regs     map[string]*toolwrap.PolicyLeafRegistry
 	next     int
 	fail     bool
 	accepted bool
@@ -26,19 +26,19 @@ type pctScopeIngress struct {
 	handoff  *toolwrap.PctDelegationHandoff
 }
 
-func (i *pctScopeIngress) PinLeafRegistry(r *BatchLeafRegistry) (string, error) {
+func (i *pctScopeIngress) PinLeafRegistry(r *toolwrap.PolicyLeafRegistry) (string, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.next++
 	id := fmt.Sprintf("pct-registry-%d", i.next)
 	if i.regs == nil {
-		i.regs = make(map[string]*BatchLeafRegistry)
+		i.regs = make(map[string]*toolwrap.PolicyLeafRegistry)
 	}
 	i.regs[id] = r
 	return id, nil
 }
 
-func (i *pctScopeIngress) Registry(id string) (*BatchLeafRegistry, error) {
+func (i *pctScopeIngress) Registry(id string) (*toolwrap.PolicyLeafRegistry, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	r := i.regs[id]
@@ -97,9 +97,9 @@ type pctScopeFixture struct {
 	ingress  *pctScopeIngress
 	child    *toolwrap.PctChildToolScope
 	parent   *buildResourceScope
-	view     *batchIngressTool
+	view     *toolwrap.BatchIngressTool
 	captured *childagent.PctCapturedAgentTool
-	outer    *batchIngressTool
+	outer    *toolwrap.BatchIngressTool
 	registry string
 }
 
@@ -130,13 +130,13 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 	viewBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{viewTool}, childScope, false)
 	require.NoError(t, err, "build the inner child tool")
 	require.NotEmpty(t, viewBuild.RegistryID, "inner tool registry is pinned")
-	view, ok := viewBuild.Tools[0].(*batchIngressTool)
+	view, ok := viewBuild.Tools[0].(*toolwrap.BatchIngressTool)
 	require.True(t, ok, "inner tool is armed through the batch ingress")
 	captured := childagent.NewPctCapturedAgentTool(&countingTool{name: AgentToolName}, child)
 	outerBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{captured}, parent, false)
 	require.NoError(t, err, "build outer tool through captured wrapper")
 	require.NotEmpty(t, outerBuild.RegistryID, "outer registry is pinned")
-	outer, ok := outerBuild.Tools[0].(*batchIngressTool)
+	outer, ok := outerBuild.Tools[0].(*toolwrap.BatchIngressTool)
 	require.True(t, ok, "outer tool is armed through the batch ingress")
 	require.Equal(t, child, outer.PctChildScope, "outer assembly captures the actual child scope")
 	t.Cleanup(func() { parent.Close() })

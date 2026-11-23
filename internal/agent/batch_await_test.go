@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -742,7 +743,7 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 		liveRoot).Scan(&childNodeID, &token))
 	require.Greater(t, token, int64(0), "the live task child carries an incarnation token")
 	publisher := batchCoordinatorQuestionPublisher{store: env.store}
-	require.NoError(t, publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+	require.NoError(t, publisher.PublishChildQuestion(env.ctx, childagent.QuestionNotice{
 		Owner: env.sessionID, ChildSessionID: "sess-child-a5", NodeID: childNodeID,
 		Token: uint64(token), Depth: 1, Sequence: 1, Question: "continue?",
 	}))

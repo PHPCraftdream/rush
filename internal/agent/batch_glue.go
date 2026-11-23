@@ -13,6 +13,12 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -30,7 +36,7 @@ func NewBatchCLIBuilderWithQuestionRoute(c Coordinator, in BatchWorkIngress, que
 
 // SetBatchDriverClaimer wires the driver-marker store onto a coordinator
 // (internal/app composition root). Fails closed on nil receiver or store.
-func SetBatchDriverClaimer(c Coordinator, s BatchDriverClaimer) error {
+func SetBatchDriverClaimer(c Coordinator, s batchflow.BatchDriverClaimer) error {
 	if c == nil {
 		return errors.New("batch driver claimer: nil coordinator")
 	}
@@ -54,7 +60,7 @@ func SetBatchDriverClaimer(c Coordinator, s BatchDriverClaimer) error {
 // path's refresh — so reaction-failure markers, the paused-question
 // delivery and the empty-final-text notice keep their existing
 // semantics.
-func PscCoordinatorChildReactionFactsLate(get func() Coordinator) BatchChildReactionFacts {
+func PscCoordinatorChildReactionFactsLate(get func() Coordinator) state.BatchChildReactionFacts {
 	if get == nil {
 		return nil
 	}
@@ -62,11 +68,11 @@ func PscCoordinatorChildReactionFactsLate(get func() Coordinator) BatchChildReac
 		scope: func(ctx context.Context, childSessionID string) (CLIScopeState, error) {
 			c := get()
 			if c == nil {
-				return CLIScopeState{}, errPscChildScopeUnavailable
+				return CLIScopeState{}, state.ErrChildScopeUnavailable
 			}
 			src, ok := c.(ReactionDebtSource)
 			if !ok {
-				return CLIScopeState{}, errPscChildScopeUnavailable
+				return CLIScopeState{}, state.ErrChildScopeUnavailable
 			}
 			return src.CLIScope(ctx, childSessionID)
 		},
@@ -116,7 +122,7 @@ func BindCoordinatorBatchRuntimeBindings(c Coordinator, ingress BatchWorkIngress
 	// through the MCP kind; every other name keeps the built-in mapping.
 	setBatchLeafKindOverride(func(tool string) (string, bool) {
 		if strings.HasPrefix(tool, "mcp_") {
-			return batchKindMCP, true
+			return batchdispatch.KindMCP, true
 		}
 		return "", false
 	})
@@ -148,10 +154,10 @@ func SetCoordinatorSessionNoticeStore(c Coordinator, s *session.SessionNoticeSto
 // The returned payloads contain immutable role snapshots used by later queue
 // execution; config is read only from the coordinator's pinned snapshot.
 func AdmitBatchRoleContracts(ctx context.Context, c Coordinator, spec jobbatch.Spec) (jobbatch.Spec, error) {
-	if err := validateBatchSpecShapeForRoleAdmission(spec); err != nil {
+	if err := batchinst.ValidateSpecShapeForRoleAdmission(spec); err != nil {
 		return jobbatch.Spec{}, err
 	}
-	if batchRoleContractsWereAdmitted(ctx) {
+	if batchinst.RoleContractsWereAdmitted(ctx) {
 		if err := validateBatchRolePayloads(spec); err != nil {
 			return jobbatch.Spec{}, err
 		}
@@ -168,7 +174,7 @@ func AdmitBatchRoleContracts(ctx context.Context, c Coordinator, spec jobbatch.S
 		cfg, _ := cc.cfg.Snapshot()
 		return admitBatchRoleContracts(cfg, parentRoleContractFrom(ctx), spec)
 	}
-	if batchSpecHasCustomRole(spec) {
+	if batchinst.SpecHasCustomRole(spec) {
 		return jobbatch.Spec{}, fmt.Errorf("%w: custom role configuration unavailable", ErrAgentRoleUnconfigured)
 	}
 	return spec, nil
@@ -288,7 +294,7 @@ func SetCoordinatorFinalizationWiring(c Coordinator, deps FinalizationWiringDeps
 
 type batchCutoverGlueHost interface {
 	batchGlueNil() bool
-	batchGlueDriverClaimer() BatchDriverClaimer
+	batchGlueDriverClaimer() batchflow.BatchDriverClaimer
 	batchGlueBGArrival() *ctxMutex
 	batchGlueForeignLiveDriver(ctx context.Context, sessionID string) (bool, error)
 	batchGlueSessions() coresession.Service
@@ -299,7 +305,7 @@ type batchCutoverGlueHost interface {
 	batchGlueDriverHints() *batchDriverHints
 	batchGlueStopTree(sessionID string)
 	batchGlueCutoverFacts() BatchCutoverFacts
-	batchGlueRerunRuntime() (batchRunnerHandle, string, *session.BatchStore)
+	batchGlueRerunRuntime() (batchcore.RunnerHandle, string, *session.BatchStore)
 }
 
 type coordinatorBatchGlueHost struct{ coordinator *coordinator }
@@ -310,7 +316,7 @@ func newBatchCutoverGlueComponent(c *coordinator) *batchCutoverGlueComponent {
 
 func (h coordinatorBatchGlueHost) batchGlueNil() bool { return h.coordinator == nil }
 
-func (h coordinatorBatchGlueHost) batchGlueDriverClaimer() BatchDriverClaimer {
+func (h coordinatorBatchGlueHost) batchGlueDriverClaimer() batchflow.BatchDriverClaimer {
 	return h.coordinator.batchDriverClaimer
 }
 
@@ -352,13 +358,13 @@ func (h coordinatorBatchGlueHost) batchGlueCutoverFacts() BatchCutoverFacts {
 	return coordinatorBatchCutoverFacts(h.coordinator)
 }
 
-func (h coordinatorBatchGlueHost) batchGlueRerunRuntime() (batchRunnerHandle, string, *session.BatchStore) {
+func (h coordinatorBatchGlueHost) batchGlueRerunRuntime() (batchcore.RunnerHandle, string, *session.BatchStore) {
 	return batchRerunRuntime(h.coordinator)
 }
 
 type batchCutoverGlueComponent struct{ host batchCutoverGlueHost }
 
-func (g *batchCutoverGlueComponent) driverMarkerStore() BatchDriverClaimer {
+func (g *batchCutoverGlueComponent) driverMarkerStore() batchflow.BatchDriverClaimer {
 	if g.host.batchGlueNil() || g.host.batchGlueDriverClaimer() == nil {
 		return nil
 	}
@@ -407,7 +413,7 @@ func (g *batchCutoverGlueComponent) readTurnFactsBatch(ctx context.Context, fact
 	// reaction flow marked the notice reacted, so rule 4b's armed sleep
 	// cannot hold across a held child (the 45-minute hang). An unreadable
 	// read is conservative: not completion-only.
-	if src, ok := facts.(BatchHeldQuestionSource); ok {
+	if src, ok := facts.(batchlife.BatchHeldQuestionSource); ok {
 		if held, herr := src.ActionableHeldQuestions(ctx, sessionID); herr != nil || len(held) > 0 {
 			f.Debt.CompletionOnly = false
 		}
@@ -570,22 +576,22 @@ func (g *batchCutoverGlueComponent) batchRerunStopVoided(ctx context.Context, se
 }
 
 func (g *batchCutoverGlueComponent) heldQuestionAwaitRefusal(ctx context.Context, owner string) error {
-	src, ok := g.host.batchGlueCutoverFacts().(BatchHeldQuestionSource)
+	src, ok := g.host.batchGlueCutoverFacts().(batchlife.BatchHeldQuestionSource)
 	if !ok {
 		return nil
 	}
 	routes, err := src.ActionableHeldQuestions(ctx, owner)
 	if err != nil {
-		return batchHeldQuestionAwaitError(routes)
+		return batchlife.HeldQuestionAwaitError(routes)
 	}
 	if len(routes) == 0 {
 		return nil
 	}
-	return batchHeldQuestionAwaitError(routes)
+	return batchlife.HeldQuestionAwaitError(routes)
 }
 
 func (g *batchCutoverGlueComponent) batchHeldQuestionResumeRefusal(ctx context.Context, owner, child string) string {
-	src, ok := g.host.batchGlueCutoverFacts().(BatchHeldQuestionSource)
+	src, ok := g.host.batchGlueCutoverFacts().(batchlife.BatchHeldQuestionSource)
 	if !ok {
 		return ""
 	}
@@ -596,7 +602,7 @@ func (g *batchCutoverGlueComponent) batchHeldQuestionResumeRefusal(ctx context.C
 	if len(routes) == 0 {
 		return ""
 	}
-	var childRoutes []BatchHeldQuestionRoute
+	var childRoutes []batchlife.BatchHeldQuestionRoute
 	for _, route := range routes {
 		if route.ChildSessionID == child {
 			childRoutes = append(childRoutes, route)
@@ -607,11 +613,11 @@ func (g *batchCutoverGlueComponent) batchHeldQuestionResumeRefusal(ctx context.C
 	}
 	return fmt.Sprintf(
 		"resume_session_id %q would queue a NEW run behind this child's HELD batch question; the held ask wakes only on inject_agent, so the queued run could not start. Answer the held question instead: %s",
-		child, batchHeldQuestionHintText(childRoutes))
+		child, batchlife.HeldQuestionHintText(childRoutes))
 }
 
 func (g *batchCutoverGlueComponent) batchHeldQuestionResumeHint(ctx context.Context, owner string) string {
-	src, ok := g.host.batchGlueCutoverFacts().(BatchHeldQuestionSource)
+	src, ok := g.host.batchGlueCutoverFacts().(batchlife.BatchHeldQuestionSource)
 	if !ok {
 		return ""
 	}
@@ -619,5 +625,5 @@ func (g *batchCutoverGlueComponent) batchHeldQuestionResumeHint(ctx context.Cont
 	if err != nil || len(routes) == 0 {
 		return ""
 	}
-	return "\n" + batchHeldQuestionHintText(routes)
+	return "\n" + batchlife.HeldQuestionHintText(routes)
 }

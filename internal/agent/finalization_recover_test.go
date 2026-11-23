@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -43,9 +45,9 @@ func TestFinalizationRecoverScopeHookAdoptsIntactCandidate(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 5}
 	m := newFinalizationCandidateMessage(t, env.fakeEnv, id)
-	_, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
+	_, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
 	require.NoError(t, err)
-	hook := NewFinalizationRecoverScopeHook(env.messages)
+	hook := finalize.NewFinalizationRecoverScopeHook(env.messages)
 	verdict, err := hook(env.ctx, env.execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateAdopted, verdict)
@@ -64,11 +66,11 @@ func TestFinalizationRecoverScopeHookFailsStaleCandidate(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 7}
 	m := newFinalizationCandidateMessage(t, env.fakeEnv, id)
-	_, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
+	_, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
 	require.NoError(t, err)
 	_, err = env.conn.ExecContext(t.Context(), `DELETE FROM messages WHERE id=?`, m.ID)
 	require.NoError(t, err)
-	hook := NewFinalizationRecoverScopeHook(env.messages)
+	hook := finalize.NewFinalizationRecoverScopeHook(env.messages)
 	verdict, err := hook(env.ctx, env.execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationCandidateFailed, verdict)
@@ -91,7 +93,7 @@ func TestFinalizationRecoverScopeHookFailsStaleCandidate(t *testing.T) {
 // record fails the verdict assertion.
 func TestFinalizationRecoverScopeHookReportsNoneWithoutCandidate(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
-	hook := NewFinalizationRecoverScopeHook(env.messages)
+	hook := finalize.NewFinalizationRecoverScopeHook(env.messages)
 	verdict, err := hook(env.ctx, env.execution)
 	require.NoError(t, err)
 	require.Equal(t, session.AgentFinalizationNoCandidate, verdict)
@@ -112,12 +114,12 @@ func TestFinalizationRecoverScopeHookRestartAfterSealIsIdempotent(t *testing.T) 
 	env := newFinalizationDriverSeamEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 	m := newFinalizationCandidateMessage(t, env.fakeEnv, id)
-	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
+	persisted, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
 	require.NoError(t, err)
-	accepted, err := publishFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, persisted.Candidate)
+	accepted, err := finalize.PublishFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, persisted.Candidate)
 	require.NoError(t, err)
 	require.True(t, accepted.IsFinished())
-	hook := NewFinalizationRecoverScopeHook(env.messages)
+	hook := finalize.NewFinalizationRecoverScopeHook(env.messages)
 	verdict, err := hook(env.ctx, env.execution)
 	require.NoError(t, err, "a restart after a seal is idempotent, not a recovery failure")
 	require.Equal(t, session.AgentFinalizationNoCandidate, verdict)
@@ -143,10 +145,10 @@ func TestFinalizationRecoverScopeHookReadErrorKeepsCandidate(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 3}
 	m := newFinalizationCandidateMessage(t, env.fakeEnv, id)
-	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
+	persisted, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, id, m)
 	require.NoError(t, err)
 	broken := &finalizationRecoverBrokenReader{Service: env.messages, FinalizationReader: env.messages.(message.FinalizationReader)}
-	hook := NewFinalizationRecoverScopeHook(broken)
+	hook := finalize.NewFinalizationRecoverScopeHook(broken)
 	verdict, err := hook(env.ctx, env.execution)
 	require.ErrorIs(t, err, errFinalizationRecoverReaderInjected)
 	require.Equal(t, session.AgentFinalizationNoCandidate, verdict)
@@ -166,7 +168,7 @@ func TestFinalizationRecoverScopeHookReadErrorKeepsCandidate(t *testing.T) {
 // the gate or scope dereference instead of returning this error.
 func TestFinalizationRecoverScopeHookRefusesMissingExecution(t *testing.T) {
 	env := newFinalizationDriverSeamEnv(t)
-	hook := NewFinalizationRecoverScopeHook(env.messages)
+	hook := finalize.NewFinalizationRecoverScopeHook(env.messages)
 	_, err := hook(env.ctx, nil)
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+	require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 }

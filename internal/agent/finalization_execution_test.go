@@ -6,16 +6,17 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
 
-func testFinalizationExecution() *finalizationExecution {
-	return &finalizationExecution{
+func testFinalizationExecution() *finalize.FinalizationExecution {
+	return &finalize.FinalizationExecution{
 		SessionID: "session", LogicalID: "logical", Gate: gate.New(7),
-		Read: func(context.Context) (finalizationFacts, error) {
-			return finalizationFacts{Complete: true}, nil
+		Read: func(context.Context) (gate.Facts, error) {
+			return gate.Facts{Complete: true}, nil
 		},
 	}
 }
@@ -23,7 +24,7 @@ func testFinalizationExecution() *finalizationExecution {
 func TestFinalizationExecutionDoesNotLeakIntoAnotherCall(t *testing.T) {
 	t.Parallel()
 	execution := testFinalizationExecution()
-	ctx, err := withFinalizationExecution(t.Context(), execution)
+	ctx, err := finalize.WithFinalizationExecution(t.Context(), execution)
 	require.NoError(t, err)
 	for _, call := range []SessionAgentCall{
 		{SessionID: "child", LogicalCallID: "logical"},
@@ -37,8 +38,8 @@ func TestFinalizationExecutionDoesNotLeakIntoAnotherCall(t *testing.T) {
 	require.Same(t, execution, newTurnStream(turnStreamConfig{ctx: ctx, call: call}).finalization)
 	require.Nil(t, finalizationExecutionFor(context.Background(), call))
 	require.Nil(t, newTurnStream(turnStreamConfig{call: call}).finalization)
-	_, err = withFinalizationExecution(ctx, &finalizationExecution{SessionID: "session", LogicalID: "logical"})
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+	_, err = finalize.WithFinalizationExecution(ctx, &finalize.FinalizationExecution{SessionID: "session", LogicalID: "logical"})
+	require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 }
 
 func TestFinalizationStepRefreshesStampAfterOwnedWork(t *testing.T) {
@@ -53,19 +54,19 @@ func TestFinalizationStepRefreshesStampAfterOwnedWork(t *testing.T) {
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	second := ts.finalizationStamp
 	require.Greater(t, second.Serial(), first.Serial())
-	candidate := finalizationCandidate{MessageID: "message", Hash: "hash"}
+	candidate := gate.Candidate{MessageID: "message", Hash: "hash"}
 	publications := 0
-	publish := func(context.Context, finalizationCandidate) error {
+	publish := func(context.Context, gate.Candidate) error {
 		publications++
 		return nil
 	}
 	verdict, err := execution.Gate.TrySeal(t.Context(), first, candidate, execution.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationCompose, verdict)
+	require.Equal(t, gate.Compose, verdict)
 	require.Zero(t, publications)
 	verdict, err = execution.Gate.TrySeal(t.Context(), second, candidate, execution.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationAccepted, verdict)
+	require.Equal(t, gate.Accepted, verdict)
 	require.Equal(t, 1, publications)
 }
 
@@ -76,14 +77,14 @@ func TestFinalizationStepReadFailureClearsPreviousStamp(t *testing.T) {
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	require.NotZero(t, ts.finalizationStamp.Serial())
 	execution.Read = nil
-	require.ErrorIs(t, ts.beginFinalizationStep(t.Context()), ErrFinalizationFactsUnavailable)
+	require.ErrorIs(t, ts.beginFinalizationStep(t.Context()), gate.ErrFinalizationFactsUnavailable)
 	require.Zero(t, ts.finalizationStamp.Serial())
 }
 
 func TestFinalizationStepFinishIsProvisionalBeforeUsageFailure(t *testing.T) {
 	t.Parallel()
 	execution := testFinalizationExecution()
-	ctx, err := withFinalizationExecution(t.Context(), execution)
+	ctx, err := finalize.WithFinalizationExecution(t.Context(), execution)
 	require.NoError(t, err)
 	ts := newTurnStream(turnStreamConfig{
 		ctx: ctx, genCtx: ctx,
@@ -132,7 +133,7 @@ func TestPrepareStepCapturesFinalizationForEveryProviderStep(t *testing.T) {
 	require.Equal(t, 2, created)
 	execution.Read = nil
 	_, _, err = ts.prepareStep(t.Context(), options)
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+	require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 	require.Zero(t, ts.finalizationStamp.Serial())
 	require.Equal(t, 2, created, "unavailable facts must refuse before creating another assistant")
 	require.Zero(t, f.requests.Load(), "preparing a step never invokes the provider")

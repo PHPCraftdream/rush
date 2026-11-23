@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -173,7 +175,7 @@ func TestAwaitTasksRefusesHeldQuestionWithoutSleepOrTimer(t *testing.T) {
 				`SELECT node_id, token FROM batch_nodes WHERE root_id = ?1 AND node_id != root_id AND state IN ('pending','starting','running','cancelling') ORDER BY ordinal LIMIT 1`,
 				root).Scan(&nodeID, &token))
 			const child = "held-await-child"
-			require.NoError(t, (batchCoordinatorQuestionPublisher{store: env.store}).PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+			require.NoError(t, (batchCoordinatorQuestionPublisher{store: env.store}).PublishChildQuestion(env.ctx, childagent.QuestionNotice{
 				Owner: env.sessionID, ChildSessionID: child, NodeID: nodeID,
 				Token: uint64(token), Depth: 1, Sequence: 1, Question: "which option?",
 			}))
@@ -203,7 +205,7 @@ func TestAwaitTasksRefusesHeldQuestionWithoutSleepOrTimer(t *testing.T) {
 			tl.addf("tool-level await refused (max_wait=60): isError=true stopTurn=false")
 
 			_, err = coord.AwaitTasks(env.ctx, env.sessionID, mode, 0)
-			require.ErrorIs(t, err, ErrBatchAwaitHeldQuestion, "the held question refuses the await even with a SECOND live root")
+			require.ErrorIs(t, err, batchlife.ErrBatchAwaitHeldQuestion, "the held question refuses the await even with a SECOND live root")
 			require.Contains(t, err.Error(), nodeID)
 			require.Contains(t, err.Error(), child)
 			require.False(t, coord.arb.snapshot(env.sessionID).SleepAll,
@@ -229,7 +231,7 @@ func TestAwaitTasksRefusesHeldQuestionWithoutSleepOrTimer(t *testing.T) {
 				env.sessionID, session.NoticeKindChildQuestion).Scan(&delivery, &wake))
 			require.Equal(t, "void", delivery, "close-on-acceptance")
 			require.Equal(t, int64(0), wake)
-			src, ok := coordinatorBatchCutoverFacts(coord).(BatchHeldQuestionSource)
+			src, ok := coordinatorBatchCutoverFacts(coord).(batchlife.BatchHeldQuestionSource)
 			require.True(t, ok)
 			routes, rerr := src.ActionableHeldQuestions(env.ctx, env.sessionID)
 			require.NoError(t, rerr)
@@ -239,7 +241,7 @@ func TestAwaitTasksRefusesHeldQuestionWithoutSleepOrTimer(t *testing.T) {
 			// The second await no longer refuses with the held-question
 			// error; the live root is still running, so success is expected.
 			_, err = coord.AwaitTasks(env.ctx, env.sessionID, mode, 0)
-			require.NotErrorIs(t, err, ErrBatchAwaitHeldQuestion)
+			require.NotErrorIs(t, err, batchlife.ErrBatchAwaitHeldQuestion)
 			require.NoError(t, err)
 			tl.addf("follow-up await succeeded with both roots live")
 		})
@@ -260,11 +262,11 @@ func TestBatchAwaitWorkerBreaksWhenQuestionAppearsMidWait(t *testing.T) {
 	params := h.params("all", 0)
 	params.PollInterval = time.Millisecond
 	params.WaitCap = 50 * time.Millisecond
-	params.HeldQuestions = func(context.Context) ([]BatchHeldQuestionRoute, error) {
+	params.HeldQuestions = func(context.Context) ([]batchlife.BatchHeldQuestionRoute, error) {
 		if calls.Add(1) == 1 {
 			return nil, nil // no question at the initial evaluation
 		}
-		return []BatchHeldQuestionRoute{{NodeID: "held-mid-node", ChildSessionID: "held-mid-child", Token: 3, Depth: 1, Sequence: 1}}, nil
+		return []batchlife.BatchHeldQuestionRoute{{NodeID: "held-mid-node", ChildSessionID: "held-mid-child", Token: 3, Depth: 1, Sequence: 1}}, nil
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -282,7 +284,7 @@ func TestBatchAwaitWorkerBreaksWhenQuestionAppearsMidWait(t *testing.T) {
 		}
 	}, 5*time.Second, 5*time.Millisecond,
 		"the mid-wait question must break the wait with the refusal, not the cap")
-	require.ErrorIs(t, heldErr, ErrBatchAwaitHeldQuestion)
+	require.ErrorIs(t, heldErr, batchlife.ErrBatchAwaitHeldQuestion)
 	tl.addf("worker broke on the mid-wait question: err=ErrBatchAwaitHeldQuestion")
 }
 
@@ -380,7 +382,7 @@ func TestHeldQuestionIncidentChain(t *testing.T) {
 	}
 	require.NoError(t, BindCoordinatorBatchControls(coord, ingress, nil, live))
 	_, err = coord.AwaitTasks(ctx, env.sessionID, "all", 0)
-	require.ErrorIs(t, err, ErrBatchAwaitHeldQuestion)
+	require.ErrorIs(t, err, batchlife.ErrBatchAwaitHeldQuestion)
 	require.False(t, coord.arb.snapshot(env.sessionID).SleepAll,
 		"the old code returned a result and armed the 1h sleep/wake")
 	tl.addf("await refused before any sleep (reacted notice still routes)")
@@ -430,7 +432,7 @@ func TestHeldQuestionIncidentChain(t *testing.T) {
 	// 8. Await unblocked: no held-question refusal anymore (the root
 	// completed, so "nothing is running" is the expected refusal).
 	_, err = coord.AwaitTasks(ctx, env.sessionID, "all", 0)
-	require.NotErrorIs(t, err, ErrBatchAwaitHeldQuestion)
+	require.NotErrorIs(t, err, batchlife.ErrBatchAwaitHeldQuestion)
 	tl.addf("final await unblocked")
 
 	// 9. INSPECT: the answered question no longer promotes the child — no
@@ -473,7 +475,7 @@ func TestAwaitTasksWorkerRefusesHeldQuestion(t *testing.T) {
 	tl.addf("worker-owned question published: node=%s token=%d child=%s", nodeID, token, worker)
 
 	res, err := c.AwaitTasks(ctx, worker, "any", 0)
-	require.ErrorIs(t, err, ErrBatchAwaitHeldQuestion,
+	require.ErrorIs(t, err, batchlife.ErrBatchAwaitHeldQuestion,
 		"the worker path refuses on a held question instead of blocking")
 	require.False(t, res.Blocked, "the refusal fires at the initial evaluation")
 	tl.addf("worker await refused at the initial evaluation")
@@ -540,7 +542,7 @@ func TestWorkerAwaitBreaksOnRealPublicationMidWait(t *testing.T) {
 	select {
 	case r := <-done:
 		tl.addf("hint evaluation: err=%v blocked=%v timed_out=%v", r.err, r.res.Blocked, r.res.TimedOut)
-		require.ErrorIs(t, r.err, ErrBatchAwaitHeldQuestion)
+		require.ErrorIs(t, r.err, batchlife.ErrBatchAwaitHeldQuestion)
 		require.False(t, r.res.Blocked)
 		require.False(t, r.res.TimedOut, "deadline cannot substitute for the hint path")
 	case <-ctx.Done():
@@ -598,7 +600,7 @@ func TestWorkerAwaitRefusesOnRealHeldChild(t *testing.T) {
 	require.NoError(t, identityErr)
 	require.True(t, isWorker, "the fixture must actually enter the worker await branch")
 	res, err := coord.AwaitTasks(ctx, env.sessionID, "any", 0)
-	require.ErrorIs(t, err, ErrBatchAwaitHeldQuestion,
+	require.ErrorIs(t, err, batchlife.ErrBatchAwaitHeldQuestion,
 		"the worker path refuses on the REAL parked child's held question")
 	require.False(t, res.Blocked, "the refusal fires, not a blocked wait")
 	tl.addf("worker await refused on the real held child")

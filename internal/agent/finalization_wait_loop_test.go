@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -17,20 +19,20 @@ import (
 // execution's read closure, so tests can move the facts while the loop runs.
 type finalizationWaitFactsStub struct {
 	mu    sync.Mutex
-	facts finalizationFacts
+	facts gate.Facts
 }
 
 func newFinalizationWaitFactsStub() *finalizationWaitFactsStub {
-	return &finalizationWaitFactsStub{facts: finalizationFacts{Complete: true}}
+	return &finalizationWaitFactsStub{facts: gate.Facts{Complete: true}}
 }
 
-func (s *finalizationWaitFactsStub) read(context.Context) (finalizationFacts, error) {
+func (s *finalizationWaitFactsStub) read(context.Context) (gate.Facts, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.facts, nil
 }
 
-func (s *finalizationWaitFactsStub) set(fn func(*finalizationFacts)) {
+func (s *finalizationWaitFactsStub) set(fn func(*gate.Facts)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fn(&s.facts)
@@ -98,7 +100,7 @@ func newFinalizationWaitFixture(t *testing.T) *finalizationWaitFixture {
 	}
 	require.NoError(t, created.MarkFinalizationCandidate(identity))
 	created.CheckpointGeneration = 1
-	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, identity, created)
+	persisted, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, env.scope, identity, created)
 	require.NoError(t, err)
 	ts.finalizationCandidate = persisted
 	return &finalizationWaitFixture{env: env, facts: facts, ts: ts}
@@ -107,7 +109,7 @@ func newFinalizationWaitFixture(t *testing.T) *finalizationWaitFixture {
 // composeStub counts recompositions and records a real persisted candidate
 // under the fresh stamp, exactly as the default compose would.
 func (f *finalizationWaitFixture) composeStub(t *testing.T) FinalizationComposeFunc {
-	return func(ctx context.Context, in FinalizationComposeInput) (persistedFinalizationCandidate, error) {
+	return func(ctx context.Context, in FinalizationComposeInput) (finalize.PersistedFinalizationCandidate, error) {
 		f.mu.Lock()
 		f.composes++
 		f.mu.Unlock()
@@ -121,7 +123,7 @@ func (f *finalizationWaitFixture) composeStub(t *testing.T) FinalizationComposeF
 		require.NoError(t, err)
 		require.NoError(t, created.MarkFinalizationCandidate(identity))
 		created.CheckpointGeneration = 1
-		return persistFinalizationCandidate(ctx, f.env.sessions, f.env.messages, in.Execution.Scope, identity, created)
+		return finalize.PersistFinalizationCandidate(ctx, f.env.sessions, f.env.messages, in.Execution.Scope, identity, created)
 	}
 }
 
@@ -133,7 +135,7 @@ func (f *finalizationWaitFixture) composeCount() int {
 
 // bumpRevision moves the gate revision without an open mutation, so the next
 // trySeal sees the current stamp as stale.
-func bumpGateRevision(t *testing.T, gate *finalizationGate) {
+func bumpGateRevision(t *testing.T, gate *gate.Gate) {
 	t.Helper()
 	release, err := gate.AdmitMutation(false)
 	require.NoError(t, err)
@@ -162,8 +164,8 @@ func (f *finalizationWaitFixture) hook(override func(*FinalizationWaitDeps)) fun
 func TestFinalizationWaitLoopQuietFactsSealOnce(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
-		d.Compose = func(context.Context, FinalizationComposeInput) (persistedFinalizationCandidate, error) {
-			return persistedFinalizationCandidate{}, errors.New("compose must not run on quiet facts")
+		d.Compose = func(context.Context, FinalizationComposeInput) (finalize.PersistedFinalizationCandidate, error) {
+			return finalize.PersistedFinalizationCandidate{}, errors.New("compose must not run on quiet facts")
 		}
 	})
 	require.NoError(t, hook(t.Context(), f.ts))
@@ -174,7 +176,7 @@ func TestFinalizationWaitLoopQuietFactsSealOnce(t *testing.T) {
 
 func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.Descendants = 1 })
+	f.facts.set(func(x *gate.Facts) { x.Descendants = 1 })
 	var entered sync.Once
 	enteredWait := make(chan struct{})
 	hook := f.hook(func(d *FinalizationWaitDeps) {
@@ -197,7 +199,7 @@ func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 		if err == nil {
 			release()
 		}
-		f.facts.set(func(x *finalizationFacts) { x.Descendants = 0 })
+		f.facts.set(func(x *gate.Facts) { x.Descendants = 0 })
 	}()
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
@@ -206,7 +208,7 @@ func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 
 func TestFinalizationWaitLoopPollSeesExternalFactChange(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.Descendants = 1 })
+	f.facts.set(func(x *gate.Facts) { x.Descendants = 1 })
 	var entered sync.Once
 	enteredWait := make(chan struct{})
 	hook := f.hook(func(d *FinalizationWaitDeps) {
@@ -222,7 +224,7 @@ func TestFinalizationWaitLoopPollSeesExternalFactChange(t *testing.T) {
 	// can wake the loop.
 	go func() {
 		<-enteredWait
-		f.facts.set(func(x *finalizationFacts) { x.Descendants = 0 })
+		f.facts.set(func(x *gate.Facts) { x.Descendants = 0 })
 	}()
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)
@@ -231,7 +233,7 @@ func TestFinalizationWaitLoopPollSeesExternalFactChange(t *testing.T) {
 
 func TestFinalizationWaitLoopHeldQuestionPausesWithoutPublishing(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.HeldQuestion = true })
+	f.facts.set(func(x *gate.Facts) { x.HeldQuestion = true })
 	hook := f.hook(nil)
 	err := hook(t.Context(), f.ts)
 	var awaited *AwaitingAnswerError
@@ -246,9 +248,9 @@ func TestFinalizationWaitLoopHeldQuestionPausesWithoutPublishing(t *testing.T) {
 
 func TestFinalizationWaitLoopDebtSettledOnceThenSeals(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.Debt = 1 })
+	f.facts.set(func(x *gate.Facts) { x.Debt = 1 })
 	settler := &finalizationSettlerStub{onCall: func() {
-		f.facts.set(func(x *finalizationFacts) { x.Debt = 0 })
+		f.facts.set(func(x *gate.Facts) { x.Debt = 0 })
 	}}
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.Compose = f.composeStub(t)
@@ -261,7 +263,7 @@ func TestFinalizationWaitLoopDebtSettledOnceThenSeals(t *testing.T) {
 
 func TestFinalizationWaitLoopCancelDuringWaitReturnsContextError(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.Descendants = 1 })
+	f.facts.set(func(x *gate.Facts) { x.Descendants = 1 })
 	ctx, cancel := context.WithCancel(t.Context())
 	var entered sync.Once
 	enteredWait := make(chan struct{})
@@ -291,7 +293,7 @@ func TestFinalizationWaitLoopRecomposeLimitIsHonest(t *testing.T) {
 	bumpGateRevision(t, f.env.execution.Gate)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.MaxRecompositions = 2
-		d.Compose = func(ctx context.Context, in FinalizationComposeInput) (persistedFinalizationCandidate, error) {
+		d.Compose = func(ctx context.Context, in FinalizationComposeInput) (finalize.PersistedFinalizationCandidate, error) {
 			persisted, err := f.composeStub(t)(ctx, in)
 			if err != nil {
 				return persisted, err
@@ -320,8 +322,8 @@ func TestFinalizationWaitLoopStaleStampComposesExactlyOnce(t *testing.T) {
 func TestFinalizationWaitLoopSealAfterSealIsIdempotent(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
 	hook := f.hook(func(d *FinalizationWaitDeps) {
-		d.Compose = func(context.Context, FinalizationComposeInput) (persistedFinalizationCandidate, error) {
-			return persistedFinalizationCandidate{}, errors.New("compose must not run on an accepted gate")
+		d.Compose = func(context.Context, FinalizationComposeInput) (finalize.PersistedFinalizationCandidate, error) {
+			return finalize.PersistedFinalizationCandidate{}, errors.New("compose must not run on an accepted gate")
 		}
 	})
 	require.NoError(t, hook(t.Context(), f.ts))
@@ -394,5 +396,5 @@ func TestFinalizationWaitLoopWithoutExecutionFailsClosed(t *testing.T) {
 	ts := &turnStream{a: &sessionAgent{sessions: env.sessions, messages: env.messages}}
 	hook := NewFinalizationFinalizeTurnHook(FinalizationWaitDeps{})
 	err := hook(t.Context(), ts)
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+	require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 }

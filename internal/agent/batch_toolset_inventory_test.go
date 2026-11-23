@@ -28,6 +28,9 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
@@ -41,7 +44,7 @@ var batchInventoryNativeControls = []string{"batch_run", "batch_add", "batch_sta
 func batchInventoryControls() []fantasy.AgentTool {
 	controls := make([]fantasy.AgentTool, 0, 5)
 	for _, name := range batchInventoryNativeControls {
-		controls = append(controls, fantasy.NewAgentTool(name, "control", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		controls = append(controls, fantasy.NewAgentTool(name, "control", func(context.Context, modelcontrol.Params, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.NewTextResponse("ok"), nil
 		}))
 	}
@@ -254,7 +257,7 @@ func TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy(t *testing.T) {
 
 	// The production worker list (post-cutover: it carries no poll-tool
 	// entry at all) always gets the native reads layered in.
-	batched := workerToolNamesBatch(workerToolNames)
+	batched := batchinst.WorkerToolNames(workerToolNames)
 	require.NotContains(t, batched, "job_output",
 		"the deleted legacy poll name is absent from the worker layering")
 	require.Contains(t, batched, "batch_status")
@@ -274,7 +277,7 @@ func TestWorkerBatchGrantsNativeReadsIndependentlyOfLegacy(t *testing.T) {
 		}
 		stripped = append(stripped, name)
 	}
-	simulated := workerToolNamesBatch(stripped)
+	simulated := batchinst.WorkerToolNames(stripped)
 	require.NotContains(t, simulated, "job_output")
 	require.Contains(t, simulated, "batch_status",
 		"native read grants must survive a grant list that lacks them")
@@ -358,7 +361,7 @@ type modelControlCapture struct {
 	capture func(BatchInvocation)
 }
 
-func (m modelControlCapture) InstallBatchModelControls(reg *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
+func (m modelControlCapture) InstallBatchModelControls(reg *toolwrap.PolicyLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
 	m.capture(inv)
 	return m.tools, nil
 }

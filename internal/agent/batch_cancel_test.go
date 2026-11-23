@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +94,7 @@ func TestBatchCancelControlContextSurvivesCallerCancel(t *testing.T) {
 func TestBatchCancelHeldTerminationDoesNotSettle(t *testing.T) {
 	t.Parallel()
 	runner := newFakeCancelRunner()
-	out := make(chan batchCancelOutcome, 1)
+	out := make(chan batchmeta.CancelOutcome, 1)
 	go func() { out <- cancelBatchCall(context.Background(), fakeStopOnlyRunner{runner}, "root-1") }()
 	<-runner.gotCtx // Stop submitted.
 	// The root keeps running: doneRoot stays open. The caller must still get

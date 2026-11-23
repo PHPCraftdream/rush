@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -141,7 +142,7 @@ func (p finalizationQueueComponent) runFinalizationQueuedCall(ctx context.Contex
 		return nil, &ErrCallAlreadyAttempted{Err: executionCtx.Err()}
 	}
 	if err == nil && !handedOff {
-		return nil, &ErrCallAlreadyAttempted{Err: ErrFinalizationFactsUnavailable}
+		return nil, &ErrCallAlreadyAttempted{Err: gate.ErrFinalizationFactsUnavailable}
 	}
 	return result, err
 }

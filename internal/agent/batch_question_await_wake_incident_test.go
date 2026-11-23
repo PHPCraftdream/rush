@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -40,7 +41,7 @@ func TestChildQuestionDebtBreaksAwaitSleepForAnyAndAll(t *testing.T) {
 				`SELECT node_id, token FROM batch_nodes WHERE root_id = ?1 AND node_id != root_id AND state IN ('pending','starting','running','cancelling') ORDER BY ordinal LIMIT 1`,
 				root).Scan(&nodeID, &token))
 			require.Greater(t, token, int64(0))
-			require.NoError(t, (batchCoordinatorQuestionPublisher{store: env.store}).PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+			require.NoError(t, (batchCoordinatorQuestionPublisher{store: env.store}).PublishChildQuestion(env.ctx, childagent.QuestionNotice{
 				Owner: env.sessionID, ChildSessionID: "question-worker-" + mode, NodeID: nodeID,
 				Token: uint64(token), Depth: 1, Sequence: 1, Question: "which option?",
 			}))

@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -49,7 +52,7 @@ func bindBatchRunnerAdapter(runner *jobbatch.Runner, cache *batchOutputCache, cr
 	return a
 }
 
-var _ batchRunnerHandle = (*batchRunnerAdapter)(nil)
+var _ batchcore.RunnerHandle = (*batchRunnerAdapter)(nil)
 
 func (a *batchRunnerAdapter) OutputCache() *batchOutputCache { return a.outputCache }
 
@@ -66,7 +69,7 @@ func (a *batchRunnerAdapter) engineAdapter() *batchadapter.Runner {
 func (a *batchRunnerAdapter) registerCredentials(ctx context.Context, root string, specs []jobbatch.Spec) (func(), error) {
 	var registrations []batchadapter.CredentialRegistration
 	for _, spec := range specs {
-		entries, err := batchadapter.CollectCredentialRegistrations(root, spec, batchKindAgent, callCredentialsFrom(ctx), decodeBatchCredentialRegistration)
+		entries, err := batchadapter.CollectCredentialRegistrations(root, spec, batchdispatch.KindAgent, callCredentialsFrom(ctx), decodeBatchCredentialRegistration)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +79,7 @@ func (a *batchRunnerAdapter) registerCredentials(ctx context.Context, root strin
 		return a.credentials.RegisterBatch(registrations)
 	}
 	if len(registrations) > 0 {
-		return nil, errBatchCredentialEscrowMissing
+		return nil, batchadapter.ErrCredentialEscrowMissing
 	}
 	return func() {}, nil
 }
@@ -114,7 +117,7 @@ func (a *batchRunnerAdapter) Output(ctx context.Context, id jobbatch.ID, cursor 
 }
 
 func (a *batchRunnerAdapter) credentialRegistrations(ctx context.Context, root string, spec jobbatch.Spec) ([]batchCredentialRegistration, error) {
-	entries, err := batchadapter.CollectCredentialRegistrations(root, spec, batchKindAgent, callCredentialsFrom(ctx), decodeBatchCredentialRegistration)
+	entries, err := batchadapter.CollectCredentialRegistrations(root, spec, batchdispatch.KindAgent, callCredentialsFrom(ctx), decodeBatchCredentialRegistration)
 	if len(entries) == 0 {
 		return nil, err
 	}
@@ -139,7 +142,7 @@ func (a *batchRunnerAdapter) ownerFor(root jobbatch.ID) string {
 // Compatibility for cutover store access and existing installer tests.
 type batchAttachAdapter struct{ store *session.BatchStore }
 
-func (a batchAttachAdapter) ProbeLive(ctx context.Context, p batchAttachProbe) (jobbatch.ID, bool, error) {
+func (a batchAttachAdapter) ProbeLive(ctx context.Context, p batchcore.AttachProbe) (jobbatch.ID, bool, error) {
 	return (batchadapter.StoreAttach{Store: a.store}).ProbeLive(ctx, p)
 }
 
@@ -148,11 +151,11 @@ func (a batchAttachAdapter) ProbeLive(ctx context.Context, p batchAttachProbe) (
 func newBatchExecutorFamilies(agentDeps batchAgentDeps) map[string]batchLeafFamily {
 	generic := newBatchGenericFamily()
 	return map[string]batchLeafFamily{
-		batchKindGeneric: generic,
-		batchKindMCP:     generic,
-		batchKindShell:   batchShellFamily{},
-		batchKindArgv:    batchArgvFamily{},
-		batchKindAgent:   newBatchAgentFamily(agentDeps),
+		batchdispatch.KindGeneric: generic,
+		batchdispatch.KindMCP:     generic,
+		batchdispatch.KindShell:   batchShellFamily{},
+		batchdispatch.KindArgv:    batchArgvFamily{},
+		batchdispatch.KindAgent:   newBatchAgentFamily(agentDeps),
 	}
 }
 
@@ -262,11 +265,11 @@ type BatchInstall struct {
 	CommitHook   func(context.Context, jobbatch.Transition) error
 	Runtime      *batchRuntime
 	RunnerHandle *batchRunnerAdapter
-	Attach       batchAttachStore
+	Attach       batchcore.AttachStore
 	Delivery     batchDelivery
 	Done         batchDoneSource
-	Elector      batchElector
-	NoticePull   batchNoticePull
+	Elector      batchcore.Elector
+	NoticePull   batchlife.NoticePull
 	Sessions     coresession.Service
 	CLIPump      *session.BatchControlPump
 	DiskBindings *DiskProviderRegistry

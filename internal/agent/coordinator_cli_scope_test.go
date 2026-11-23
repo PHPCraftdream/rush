@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -194,7 +196,7 @@ func TestCLIScope_LaunchGateStates(t *testing.T) {
 	require.NoError(t, err)
 	seedCompletedJob(t, env.conn, sess.ID, "call-1", "command", "")
 
-	coord.arb.pace(sess.ID, coord.driverHints.hintSeqOf(sess.ID), time.Hour, false, pacePaidUnreacted)
+	coord.arb.pace(sess.ID, coord.driverHints.hintSeqOf(sess.ID), time.Hour, false, drainctl.PacePaidUnreacted)
 	st, err := coord.CLIScope(ctx, sess.ID)
 	require.NoError(t, err)
 	requireScope(t, st, false, DrainPaced)
@@ -206,7 +208,7 @@ func TestCLIScope_LaunchGateStates(t *testing.T) {
 	requireScope(t, st, false, DrainPaced, "a paid failure is not reopened by a newer fact")
 
 	coord.arb.resetGate(sess.ID)
-	coord.arb.pace(sess.ID, coord.driverHints.hintSeqOf(sess.ID), time.Hour, true, paceUncounted)
+	coord.arb.pace(sess.ID, coord.driverHints.hintSeqOf(sess.ID), time.Hour, true, batchlife.PaceUncounted)
 	coord.driverHints.bumpHint(sess.ID)
 	st, err = coord.CLIScope(ctx, sess.ID)
 	require.NoError(t, err)
@@ -214,7 +216,7 @@ func TestCLIScope_LaunchGateStates(t *testing.T) {
 
 	coord.arb.resetGate(sess.ID)
 	for range drainDormantStreak {
-		coord.arb.pace(sess.ID, coord.driverHints.hintSeqOf(sess.ID), time.Hour, false, pacePaidUnreacted)
+		coord.arb.pace(sess.ID, coord.driverHints.hintSeqOf(sess.ID), time.Hour, false, drainctl.PacePaidUnreacted)
 	}
 	st, err = coord.CLIScope(ctx, sess.ID)
 	require.NoError(t, err)

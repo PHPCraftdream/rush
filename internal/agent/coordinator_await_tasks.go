@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
@@ -125,7 +126,7 @@ func (c *coordinator) AwaitTasks(ctx context.Context, sessionID, mode string, ma
 		create = func() (string, error) {
 			view, err := c.ScheduleWakeOnceDelay(ctx, sessionID, int64(maxWaitSeconds),
 				fmt.Sprintf(sessionwake.AwaitTasksMaxWaitPrefix+" %d task(s) may still be running: %s",
-					len(waiting), awaitTaskSummary(waiting)))
+					len(waiting), batchlife.AwaitTaskSummary(waiting)))
 			return view.ScheduleID, err
 		}
 	}
@@ -187,8 +188,8 @@ func (c *coordinator) awaitTasksForBatchWorker(ctx context.Context, sessionID, m
 		// question (even one marked reacted by the owner's reaction flow)
 		// breaks the wait instead of blocking in-tool for up to the 40m cap.
 		// unknown facts (capability absent) never gate: nil, nil.
-		HeldQuestions: func(ctx context.Context) ([]BatchHeldQuestionRoute, error) {
-			src, ok := coordinatorBatchCutoverFacts(c).(BatchHeldQuestionSource)
+		HeldQuestions: func(ctx context.Context) ([]batchlife.BatchHeldQuestionRoute, error) {
+			src, ok := coordinatorBatchCutoverFacts(c).(batchlife.BatchHeldQuestionSource)
 			if !ok {
 				return nil, nil
 			}

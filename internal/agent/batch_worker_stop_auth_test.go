@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -61,7 +63,7 @@ func TestInstalledModelControlWorkerStopScope(t *testing.T) {
 		root := jobbatch.ID("worker-stop-" + ref)
 		payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-" + ref, SessionID: owner, Input: json.RawMessage(`{"file_path":"/tmp/stop-fixture"}`), RegistryID: env.registryID})
 		require.NoError(t, err)
-		spec := jobbatch.OneItem(jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload})
+		spec := jobbatch.OneItem(jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload})
 		_, err = env.install.RunnerHandle.Submit(env.ctx, jobbatch.SubmitRequest{Root: root, Ref: ref, Spec: spec})
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
@@ -78,7 +80,7 @@ func TestInstalledModelControlWorkerStopScope(t *testing.T) {
 		makeTask := func(suffix string) jobbatch.Spec {
 			payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-" + ref + suffix, SessionID: owner, Input: json.RawMessage(`{"file_path":"/tmp/stop-fixture"}`), RegistryID: env.registryID})
 			require.NoError(t, err)
-			return jobbatch.OneItem(jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload})
+			return jobbatch.OneItem(jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload})
 		}
 		root := jobbatch.ID("worker-stop-" + ref)
 		spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyAll, Items: []jobbatch.Spec{makeTask("-a"), makeTask("-b")}}}
@@ -101,7 +103,7 @@ func TestInstalledModelControlWorkerStopScope(t *testing.T) {
 		t.Helper()
 		select {
 		case launch := <-executor.started:
-			require.Equal(t, batchKindGeneric, launch.Task.Kind)
+			require.Equal(t, batchdispatch.KindGeneric, launch.Task.Kind)
 		case <-env.ctx.Done():
 			t.Fatal("executor did not return an execution")
 		}
@@ -237,7 +239,7 @@ func TestInstalledModelControlWorkerStopScope(t *testing.T) {
 	inv := batchTestModelInv(env, "worker-tool")
 	inv.SessionID, inv.WorkerStopScope = "worker", true
 	workerTool := newBatchModelTools(c, inv, modelRegistry("view"))[4]
-	input, err := json.Marshal(batchModelParams{Root: string(root), Node: node})
+	input, err := json.Marshal(modelcontrol.Params{Root: string(root), Node: node})
 	require.NoError(t, err)
 	response, err := workerTool.Run(context.WithValue(env.ctx, tools.SessionIDContextKey, "worker"), fantasy.ToolCall{Name: "batch_stop", Input: string(input)})
 	require.NoError(t, err)
@@ -254,7 +256,7 @@ func TestInstalledModelControlWorkerStopScope(t *testing.T) {
 	root, node = seed(env.sessionID, "tool-ancestor")
 	awaitStart()
 	workerTool = newBatchModelTools(c, inv, modelRegistry("view"))[4]
-	input, err = json.Marshal(batchModelParams{Root: string(root), Node: node})
+	input, err = json.Marshal(modelcontrol.Params{Root: string(root), Node: node})
 	require.NoError(t, err)
 	response, err = workerTool.Run(context.WithValue(env.ctx, tools.SessionIDContextKey, "worker"), fantasy.ToolCall{Name: "batch_stop", Input: string(input)})
 	require.NoError(t, err)

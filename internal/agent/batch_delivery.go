@@ -9,24 +9,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
-var (
-	errBatchDeliveryDeps         = batchcore.ErrDeliveryDeps
-	errBatchDeliveryOwner        = batchcore.ErrDeliveryOwner
-	errBatchDoneUnavailable      = batchcore.ErrDoneUnavailable
-	errBatchInlineElectionFailed = batchcore.ErrInlineElectionFailed
-	errBatchDeliveryUnknownMode  = batchcore.ErrDeliveryUnknownMode
-	errBatchEscapeWindowRequired = batchcore.ErrEscapeWindowRequired
-	errBatchEscapeWindowInvalid  = batchcore.ErrEscapeWindowInvalid
-)
-
-const (
-	batchStartedResponseSuffix  = batchcore.StartedResponseSuffix
-	batchInlineElectionAttempts = batchcore.InlineElectionAttempts
-)
-
 type (
 	batchDoneSource = batchcore.DoneSource
-	batchElector    = batchcore.Elector
 )
 
 type batchDeliveryDeps struct {
@@ -35,10 +19,10 @@ type batchDeliveryDeps struct {
 	// always deliver under the invoking session (batchDeliveryImpl.owner).
 	Owner string
 	Done  batchDoneSource
-	Elect batchElector
+	Elect batchcore.Elector
 	// Runner is the engine handle; SYNC caller cancellation submits Stop
 	// through it (cancelBatchCall). Required, fails closed without it.
-	Runner batchRunnerHandle
+	Runner batchcore.RunnerHandle
 	// ArmSupervision arms (or resumes) the owner session's supervision
 	// timer when this delivery answers with the STARTED response — the
 	// legacy asyncTool arming point restored for the batch runtime (package

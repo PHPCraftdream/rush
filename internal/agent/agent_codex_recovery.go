@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -130,7 +131,7 @@ func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryS
 		}
 	} else {
 		if a.coord.drainCredentialBoundary(ctx, state.Session.ID) {
-			return nil, ErrCredentialBindingUnavailable
+			return nil, diskport.ErrCredentialBindingUnavailable
 		}
 		selected, _, err := requestedRoleSlot(state.Cfg, state.Session, RequestedModelRole(config.SelectedModelTypeWorker))
 		if err != nil {

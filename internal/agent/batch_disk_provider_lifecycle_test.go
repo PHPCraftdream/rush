@@ -29,6 +29,8 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -318,7 +320,7 @@ func newLifecycleInstall(t *testing.T) *lifecycleInstall {
 	t.Helper()
 	store, conn, _ := newTestBatchStore(t)
 	leaf := newLifecycleCaptureLeaf()
-	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{leaf})
+	fingerprint := installwire.ToolsetFingerprint([]fantasy.AgentTool{leaf})
 	deps := installTestDeps(t, store, conn, "unused")
 	// Executor nil: newBatchInstall builds the REAL default batchExecutor
 	// (generic/MCP/shell/argv/agent families) — the production Start path
@@ -434,8 +436,8 @@ func lifecycleInvocation(t *testing.T, env *lifecycleInstall, bindingID, callID,
 }
 
 // lifecycleProbe builds the live-attach probe for one call identity.
-func lifecycleProbe(hash, callID string) batchAttachProbe {
-	return batchAttachProbe{
+func lifecycleProbe(hash, callID string) batchcore.AttachProbe {
+	return batchcore.AttachProbe{
 		Owner: lifecycleSessionID, Host: "host", RunnerID: "runner-1",
 		ToolCallID: callID, InputHash: hash,
 	}
@@ -654,7 +656,7 @@ func TestBatchDetachedDeliveryRetainsLeaseUntilDispose(t *testing.T) {
 	require.NoError(t, err)
 	// FIRST real assertion: detached delivery returned the started response
 	// while the execution is still live behind the gate.
-	require.True(t, strings.HasPrefix(resp.Content, "batch root ") && strings.HasSuffix(resp.Content, batchStartedResponseSuffix),
+	require.True(t, strings.HasPrefix(resp.Content, "batch root ") && strings.HasSuffix(resp.Content, batchcore.StartedResponseSuffix),
 		"detached delivery must return the started response, got %q", resp.Content)
 
 	// production mutation caught: if detached delivery disposed the leases

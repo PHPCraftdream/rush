@@ -46,6 +46,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -387,7 +388,7 @@ func TestBatchInjectBridge_DeterministicRunnerRejections(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, BatchHeldQuestionFact{Owner: owner, NodeID: node, Token: 42, Depth: 1}, fact)
 	require.Equal(t, 5, runner.count())
-	var msg batchAgentInjectMessage
+	var msg batchinst.AgentInjectMessage
 	require.NoError(t, json.Unmarshal(runner.injects[4].msg, &msg))
 	require.Equal(t, 1, msg.Depth, "the answer addresses the held depth from the marker")
 	require.Equal(t, uint64(1), msg.Sequence, "the answer names the marker's published question sequence")

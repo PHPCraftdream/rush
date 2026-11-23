@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -36,7 +37,7 @@ func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobb
 	if err := validateBatchRolePayloads(spec); err != nil {
 		return nil, err
 	}
-	_, _, leaves, err := batchSpecNodes([]jobbatch.Spec{spec})
+	_, _, leaves, err := batchinst.SpecNodes([]jobbatch.Spec{spec}, batchAdmissionTool)
 	if err != nil {
 		return nil, fmt.Errorf("batch CLI admission: %w", err)
 	}
@@ -51,7 +52,7 @@ func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobb
 			return nil, errors.New("batch CLI: invalid submit reference")
 		}
 	}
-	if err := validateBatch(i.Runtime.cfg.Profile, batchRankContext{Root: root}, nil, []jobbatch.Spec{spec}, i.Runtime.cfg.MaxDepth, i.Runtime.cfg.MaxNodes, i.Runtime.cfg.Resolver); err != nil {
+	if err := validateBatch(i.Runtime.cfg.Profile, batchinst.RankContext{Root: root}, nil, []jobbatch.Spec{spec}, i.Runtime.cfg.MaxDepth, i.Runtime.cfg.MaxNodes, i.Runtime.cfg.Resolver); err != nil {
 		return nil, fmt.Errorf("batch CLI admission: %w", err)
 	}
 	_, batch, err := i.RunnerHandle.SubmitBound(ctx, jobbatch.SubmitRequest{Root: root, Spec: spec, Ref: submitRef})
@@ -263,7 +264,7 @@ func (i *BatchInstall) AddCLI(ctx context.Context, root, parent jobbatch.ID, ite
 			return err
 		}
 	}
-	if err := validateBatch(i.Runtime.cfg.Profile, batchRankContext{Root: root}, nil, items, i.Runtime.cfg.MaxDepth-parentDepth, i.Runtime.cfg.MaxNodes-(1+len(snapshot.Descendants)), i.Runtime.cfg.Resolver); err != nil {
+	if err := validateBatch(i.Runtime.cfg.Profile, batchinst.RankContext{Root: root}, nil, items, i.Runtime.cfg.MaxDepth-parentDepth, i.Runtime.cfg.MaxNodes-(1+len(snapshot.Descendants)), i.Runtime.cfg.Resolver); err != nil {
 		return fmt.Errorf("batch CLI add admission: %w", err)
 	}
 	_, err = i.RunnerHandle.Add(ctx, jobbatch.AddRequest{Parent: parent, Items: items, Ref: "batch-cli-add:" + string(root)})

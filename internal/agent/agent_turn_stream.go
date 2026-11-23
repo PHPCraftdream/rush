@@ -14,6 +14,8 @@ import (
 	"charm.land/fantasy/providers/google"
 	"charm.land/fantasy/providers/openai"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
@@ -121,10 +123,10 @@ type turnStream struct {
 
 	fatalTools *fatalToolCollector
 
-	finalization      *finalizationExecution
-	finalizationStamp finalizationStamp
+	finalization      *finalize.FinalizationExecution
+	finalizationStamp gate.Stamp
 	// finalizationCandidate is the last committed candidate of this turn.
-	finalizationCandidate persistedFinalizationCandidate
+	finalizationCandidate finalize.PersistedFinalizationCandidate
 	fenceCheckpoint       func() int64
 
 	smartModel   Model

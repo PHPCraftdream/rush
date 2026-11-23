@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -29,7 +31,7 @@ type drainHost interface {
 	arbiter() *arbiter
 	driverHints() *batchDriverHints
 	sessionNoticeStore() *session.SessionNoticeStore
-	driverMarkerStore() BatchDriverClaimer
+	driverMarkerStore() batchflow.BatchDriverClaimer
 	sessionsService() coresession.Service
 	persistentMode() bool
 	backgroundPendingCompletions(sessionID string) bool
@@ -65,7 +67,7 @@ func (h coordinatorDrainHost) sessionNoticeStore() *session.SessionNoticeStore {
 	return h.coordinator.sessionNoticeStore()
 }
 
-func (h coordinatorDrainHost) driverMarkerStore() BatchDriverClaimer {
+func (h coordinatorDrainHost) driverMarkerStore() batchflow.BatchDriverClaimer {
 	return h.coordinator.driverMarkerStore()
 }
 
@@ -409,7 +411,7 @@ func (w *drainComponent) noteTurnFailed(sessionID string) {
 	if w.host.coordinatorIsNil() || sessionID == "" {
 		return
 	}
-	w.host.arbiter().pace(sessionID, 0, drainRetryAfterFailure(), false, paceUncounted)
+	w.host.arbiter().pace(sessionID, 0, drainRetryAfterFailure(), false, batchlife.PaceUncounted)
 }
 
 // noteRefusal reports a pre-loop refusal of any call kind to the gate: the

@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -120,11 +121,11 @@ func TestModelBatchRunHonorsIOGroupLimit(t *testing.T) {
 		}
 	}
 	require.NotNil(t, runTool)
-	items := make([]batchModelItem, limit+1)
+	items := make([]modelcontrol.Item, limit+1)
 	for i := range items {
-		items[i] = batchModelItem{Tool: "view", Input: json.RawMessage(`{}`)}
+		items[i] = modelcontrol.Item{Tool: "view", Input: json.RawMessage(`{}`)}
 	}
-	input, err := json.Marshal(batchModelParams{Spec: batchModelSpec{Mode: "parallel", Items: items}})
+	input, err := json.Marshal(modelcontrol.Params{Spec: modelcontrol.Spec{Mode: "parallel", Items: items}})
 	require.NoError(t, err)
 	ctx := batchCallCtx(env.sessionID)
 	resp, err := runTool.Run(ctx, fantasy.ToolCall{ID: "model-facing-limited-run", Name: "batch_run", Input: string(input)})
@@ -154,7 +155,7 @@ func TestModelBatchRunHonorsIOGroupLimit(t *testing.T) {
 
 func TestInstalledModelControlRecursiveDefaultsAndPinnedPolicy(t *testing.T) {
 	inv := BatchInvocation{SessionID: "owner", CallID: "call", RegistryID: "reg", Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: "view"}}
-	spec, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)}, {Batch: &batchModelSpec{Mode: "sequential", Notify: "each", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{"path":"y"}`)}}}}}}, inv, modelRegistry("view"))
+	spec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{"path":"x"}`)}, {Batch: &modelcontrol.Spec{Mode: "sequential", Notify: "each", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{"path":"y"}`)}}}}}}, inv, modelRegistry("view"))
 	require.NoError(t, err)
 	require.Equal(t, jobbatch.NotifyAll, spec.Batch.Notify, "explicit omitted notify defaults to all")
 	require.Empty(t, spec.Batch.OnFail)
@@ -169,9 +170,9 @@ func TestInstalledModelControlRecursiveDefaultsAndPinnedPolicy(t *testing.T) {
 
 func TestInstalledModelControlRejectsNestedControlAndUnavailableLeaf(t *testing.T) {
 	inv := BatchInvocation{SessionID: "owner", CallID: "c", RegistryID: "reg", Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: "view"}}
-	_, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Batch: &batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "batch_stop", Input: json.RawMessage(`{}`)}}}}}}, inv, modelRegistry("view"))
+	_, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Batch: &modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "batch_stop", Input: json.RawMessage(`{}`)}}}}}}, inv, modelRegistry("view"))
 	require.ErrorContains(t, err, "cannot be a batch leaf")
-	_, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "edit", Input: json.RawMessage(`{}`)}}}, inv, modelRegistry("view"))
+	_, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "edit", Input: json.RawMessage(`{}`)}}}, inv, modelRegistry("view"))
 	require.ErrorContains(t, err, "unavailable")
 }
 
@@ -183,7 +184,7 @@ func TestInstalledModelControlRunAdmissionAndDelivery(t *testing.T) {
 			inv := batchTestModelInv(env, "real-run-"+notify)
 			reg, err := env.registries.Resolve(env.registryID)
 			require.NoError(t, err)
-			root, err := c.Run(env.ctx, inv, reg, batchModelSpec{Mode: "parallel", Notify: notify, Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}})
+			root, err := c.Run(env.ctx, inv, reg, modelcontrol.Spec{Mode: "parallel", Notify: notify, Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}}})
 			require.NoError(t, err)
 			require.NotEmpty(t, root)
 			snap, err := env.store.Read(env.ctx, env.sessionID, string(root))
@@ -201,7 +202,7 @@ func TestInstalledModelControlRunAdmissionAndDelivery(t *testing.T) {
 
 func TestInstalledModelControlRunMatchesOneItemNotifyAll(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view")
-	task := batchTestLeaf(batchKindGeneric, "view", "").Task
+	task := batchTestLeaf(batchdispatch.KindGeneric, "view", "").Task
 	var payload batchLeafPayload
 	require.NoError(t, json.Unmarshal(task.Payload, &payload))
 	payload.SessionID, payload.ToolCallID = env.sessionID, "oneitem-call"
@@ -233,7 +234,7 @@ func TestInstalledModelControlNestedAddAndOwnedAncestor(t *testing.T) {
 	reg, err := env.registries.Resolve(env.registryID)
 	require.NoError(t, err)
 	inv := batchTestModelInv(env, "run-seed-call")
-	root, err := c.Run(env.ctx, inv, reg, batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}})
+	root, err := c.Run(env.ctx, inv, reg, modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}}})
 	require.NoError(t, err)
 	require.NotEmpty(t, root)
 	select {
@@ -243,7 +244,7 @@ func TestInstalledModelControlNestedAddAndOwnedAncestor(t *testing.T) {
 	}
 	addInv := batchTestModelInv(env, "nested-add")
 	addInv.SessionID = "grandchild"
-	items := []batchModelItem{{Batch: &batchModelSpec{Mode: "sequential", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}}}}
+	items := []modelcontrol.Item{{Batch: &modelcontrol.Spec{Mode: "sequential", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}}}}}
 	ids, err := c.Add(env.ctx, "grandchild", string(root), "", addInv, reg, items)
 	require.NoError(t, err)
 	require.Len(t, ids, 1)
@@ -254,7 +255,7 @@ func TestInstalledModelControlNestedAddAndOwnedAncestor(t *testing.T) {
 func TestInstalledModelControlStatusOwnershipAndIncomplete(t *testing.T) {
 	env := newBatchInventoryEnv(t, "view")
 	root := jobbatch.ID("status-root")
-	task := batchTestLeaf(batchKindGeneric, "view", "").Task
+	task := batchTestLeaf(batchdispatch.KindGeneric, "view", "").Task
 	snap := batchOwnerTree(t, env, root, []jobbatch.Spec{{Task: task}}, "status-call")
 	c := batchOwnedControl(t, env, batchControlProfile(t))
 	got, err := c.StatusNode(env.ctx, "child", string(root), snap.Nodes[1].NodeID)
@@ -271,7 +272,7 @@ func TestInstalledModelControlOutputGapAndLimit(t *testing.T) {
 	started := make(chan struct{}, 1)
 	gate.started = started
 	root := jobbatch.ID("output-root-r13")
-	task := batchTestLeaf(batchKindGeneric, "view", "").Task
+	task := batchTestLeaf(batchdispatch.KindGeneric, "view", "").Task
 	snap := batchOwnerTree(t, env, root, []jobbatch.Spec{{Task: task}}, "output-call")
 	node := snap.Nodes[1].NodeID
 	select {
@@ -294,7 +295,7 @@ func TestInstalledModelControlOutputGapAndLimit(t *testing.T) {
 	require.True(t, chunk["truncated"].(bool))
 	require.False(t, chunk["eof"].(bool))
 	toolSet := newBatchModelTools(c, batchTestModelInv(env, "output-tool"), modelRegistry("view"))
-	params, err := json.Marshal(batchModelParams{Root: string(root), Node: node})
+	params, err := json.Marshal(modelcontrol.Params{Root: string(root), Node: node})
 	require.NoError(t, err)
 	resp, err := toolSet[3].Run(context.WithValue(env.ctx, tools.SessionIDContextKey, env.sessionID), fantasy.ToolCall{Name: "batch_output", Input: string(params)})
 	require.NoError(t, err)
@@ -315,7 +316,7 @@ func TestInstalledModelControlAddNotifyEachOutbox(t *testing.T) {
 	reg, err := env.registries.Resolve(env.registryID)
 	require.NoError(t, err)
 	seedInv := batchTestModelInv(env, "seed-run-call")
-	root, err := c.Run(env.ctx, seedInv, reg, batchModelSpec{Mode: "parallel", Notify: "each", Items: []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}}})
+	root, err := c.Run(env.ctx, seedInv, reg, modelcontrol.Spec{Mode: "parallel", Notify: "each", Items: []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}}})
 	require.NoError(t, err)
 	require.NotEmpty(t, root)
 	select {
@@ -324,7 +325,7 @@ func TestInstalledModelControlAddNotifyEachOutbox(t *testing.T) {
 		t.Fatal("seed task did not enter held Start")
 	}
 	inv := batchTestModelInv(env, "later-add-call")
-	ids, err := c.Add(env.ctx, env.sessionID, string(root), "", inv, reg, []batchModelItem{{Tool: "view", Input: json.RawMessage(`{}`)}})
+	ids, err := c.Add(env.ctx, env.sessionID, string(root), "", inv, reg, []modelcontrol.Item{{Tool: "view", Input: json.RawMessage(`{}`)}})
 	require.NoError(t, err)
 	require.Len(t, ids, 1)
 	select {
@@ -354,7 +355,7 @@ func TestInstalledModelControlStopRootAndDescendant(t *testing.T) {
 			started := make(chan struct{}, 1)
 			gate.started = started
 			root := jobbatch.ID("stop-root-r13-" + target)
-			task := batchTestLeaf(batchKindGeneric, "view", "").Task
+			task := batchTestLeaf(batchdispatch.KindGeneric, "view", "").Task
 			snap := batchOwnerTree(t, env, root, []jobbatch.Spec{{Task: task}}, "stop-call-"+target)
 			select {
 			case <-started:

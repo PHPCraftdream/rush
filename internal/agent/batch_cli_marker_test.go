@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +33,7 @@ func cliMarkerAgentSpec(t *testing.T, callID string) jobbatch.Spec {
 	require.NoError(t, err)
 	return jobbatch.Spec{Batch: &jobbatch.BatchSpec{
 		Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyAll,
-		Items: []jobbatch.Spec{{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}},
+		Items: []jobbatch.Spec{{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}}},
 	}}
 }
 
@@ -229,7 +230,7 @@ func TestBatchCLIAddUnownedRootFailsCleanly(t *testing.T) {
 		Root: root,
 		Spec: jobbatch.Spec{Batch: &jobbatch.BatchSpec{
 			Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyAll,
-			Items: []jobbatch.Spec{{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}},
+			Items: []jobbatch.Spec{{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}}},
 		}},
 		Ref: "cli-add-unowned",
 	})

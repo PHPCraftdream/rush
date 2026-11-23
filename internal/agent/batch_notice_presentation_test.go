@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -127,7 +128,7 @@ func TestBatchQuestionNotice_ExactDeliveryAndAwaitingCount(t *testing.T) {
 	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord) })
 
 	publisher := batchCoordinatorQuestionPublisher{store: session.NewBatchStore(env.conn)}
-	require.NoError(t, publisher.PublishChildQuestion(ctx, batchChildQuestionNotice{
+	require.NoError(t, publisher.PublishChildQuestion(ctx, childagent.QuestionNotice{
 		Owner: owner.ID, ChildSessionID: child.ID, NodeID: childNode,
 		Token: uint64(tok), Depth: 1, Sequence: 1, Question: "continue with plan B?",
 	}))

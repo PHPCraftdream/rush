@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -159,7 +160,7 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 			}
 			selectedRoleContract = cloneRoleContractForCall(task.SelectedRoleContract)
 			if requested.Role != "" && !requested.Role.Builtin() {
-				if err := validateSelectedBatchRole(selectedRoleContract, string(requested.Role), bind.roleContract); err != nil {
+				if err := batchinst.ValidateSelectedRole(selectedRoleContract, string(requested.Role), bind.roleContract); err != nil {
 					return jobbatch.Spec{}, err
 				}
 			} else if selectedRoleContract != nil {
@@ -195,7 +196,7 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 		if err != nil {
 			return jobbatch.Spec{}, err
 		}
-		group, _, err := classifyBatchLeaf(batchLeafKind(task.Tool), task.Tool, batchMCPCapability{})
+		group, _, err := batchinst.ClassifyLeaf(batchLeafKind(task.Tool), task.Tool, batchinst.MCPCapability{}, batchAdmissionPolicy())
 		if err != nil {
 			return jobbatch.Spec{}, err
 		}
@@ -246,7 +247,7 @@ func (b *BatchCLIBuilder) admitRoles(ctx context.Context, spec jobbatch.Spec) (j
 	if b == nil || b.coord == nil {
 		return jobbatch.Spec{}, errors.New("batch CLI: installed coordinator is required")
 	}
-	if batchRoleContractsWereAdmitted(ctx) {
+	if batchinst.RoleContractsWereAdmitted(ctx) {
 		if err := validateBatchRolePayloads(spec); err != nil {
 			return jobbatch.Spec{}, err
 		}

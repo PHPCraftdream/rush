@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -41,7 +42,7 @@ func TestBatchGateRefusalUntouchedON(t *testing.T) {
 	// arbiterVerdict then returns gateShut's rule-9 defer "retry pause
 	// after an unreacted attempt" (HintOpens false), so the launch verdict
 	// is a refusal while the batch debt stays.
-	coord.arb.pace(env.sessionID, 0, time.Minute, false, pacePaidUnreacted)
+	coord.arb.pace(env.sessionID, 0, time.Minute, false, drainctl.PacePaidUnreacted)
 
 	// The production ON capture (agent_turn.go): fills att.batchSnapshot,
 	// leaves att.snapshot zero.
@@ -88,7 +89,7 @@ func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 
 	// Refusal twin: visible debt + a paced gate -> the gate must stay paced
 	// (the pre-fix predicate already covered this).
-	coord.arb.pace(env.sessionID, 0, time.Minute, false, pacePaidUnreacted)
+	coord.arb.pace(env.sessionID, 0, time.Minute, false, drainctl.PacePaidUnreacted)
 	attRefused := &drainAttempt{
 		sessionID:     env.sessionID,
 		outcome:       drainNoTurn,
@@ -130,7 +131,7 @@ func TestBatchPendingLeftONNoDebtResetsGate(t *testing.T) {
 	require.NoError(t, err)
 
 	// A paced gate the reset must clear.
-	coord.arb.pace(env.sessionID, 0, time.Minute, false, pacePaidUnreacted)
+	coord.arb.pace(env.sessionID, 0, time.Minute, false, drainctl.PacePaidUnreacted)
 
 	// The production predicate inputs (agent_turn.go att block): the ON
 	// capture is empty (fresh env, nothing invoked) and the pending-inclusive

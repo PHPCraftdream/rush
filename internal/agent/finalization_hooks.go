@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -25,7 +26,7 @@ type FinalizationDriverHooks struct {
 	BindScope func(context.Context, SessionAgentCall) error
 	// RecoverScope recovers the persisted candidate at start/restart
 	// (RecoverCandidate + resumeCandidateSerial, L4).
-	RecoverScope func(context.Context, *finalizationExecution) (session.AgentFinalizationRecovery, error)
+	RecoverScope func(context.Context, *finalize.FinalizationExecution) (session.AgentFinalizationRecovery, error)
 	// FinalizeTurn runs the wait/compose/seal loop at the end of a turn (L5).
 	FinalizeTurn func(context.Context, *turnStream) error
 	// OnCancel is the cancellation entry from the coordinator interrupt (L6).

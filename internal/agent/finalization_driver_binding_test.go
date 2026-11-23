@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -105,9 +106,9 @@ func TestFinalizationDriverBindingCannotWidenAncestorAuthority(t *testing.T) {
 
 func TestFinalizationLogicalIdentityDoesNotRebindAnExistingCall(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
-	logical, err := finalizationLogicalIdentity(fixture.capability, fixture.child.SessionID, "")
+	logical, err := finalize.FinalizationLogicalIdentity(fixture.capability, fixture.child.SessionID, "")
 	require.NoError(t, err)
 	require.Equal(t, fixture.child.LogicalCallID, logical)
-	_, err = finalizationLogicalIdentity(fixture.capability, fixture.child.SessionID, "other")
+	_, err = finalize.FinalizationLogicalIdentity(fixture.capability, fixture.child.SessionID, "other")
 	require.ErrorIs(t, err, session.ErrAgentFinalizationChanged)
 }

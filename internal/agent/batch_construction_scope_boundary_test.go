@@ -47,6 +47,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -64,11 +66,11 @@ type failingModelControls struct{ err error }
 
 // BatchModelControl interface; the test never reaches these — the install
 // step always fails first.
-func (f failingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, batchModelSpec) (jobbatch.ID, error) {
+func (f failingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, modelcontrol.Spec) (jobbatch.ID, error) {
 	return jobbatch.ID(""), f.err
 }
 
-func (f failingModelControls) Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []batchModelItem) ([]jobbatch.ID, error) {
+func (f failingModelControls) Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []modelcontrol.Item) ([]jobbatch.ID, error) {
 	return nil, f.err
 }
 
@@ -84,7 +86,7 @@ func (f failingModelControls) Stop(context.Context, string, string, string) (any
 	return nil, f.err
 }
 
-func (f failingModelControls) InstallBatchModelControls(*BatchLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error) {
+func (f failingModelControls) InstallBatchModelControls(*toolwrap.PolicyLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error) {
 	return nil, f.err
 }
 

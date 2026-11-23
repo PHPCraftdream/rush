@@ -9,8 +9,4 @@ func batchControlAvailability(filteredTools []fantasy.AgentTool, allowed []strin
 	return batchinst.ControlAvailability(filteredTools, allowed, batchWorkTarget)
 }
 
-func workerToolNamesBatch(names []string) []string { return batchinst.WorkerToolNames(names) }
-
-func workerLayeredToolNames() []string { return workerToolNamesBatch(workerToolNames) }
-
-func folderScopeCommandToolSet() map[string]struct{} { return batchinst.FolderScopeCommandToolSet() }
+func workerLayeredToolNames() []string { return batchinst.WorkerToolNames(workerToolNames) }

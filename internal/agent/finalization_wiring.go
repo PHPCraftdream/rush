@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -50,7 +52,7 @@ type finalizationWiring struct {
 	holds       session.FinalizationPhysicalHoldsFacts
 	debtFacts   session.FinalizationReactionDebtFacts
 	settler     session.AgentFinalizationDebtSettler
-	cancel      *finalizationCancelRegistry
+	cancel      *finalize.FinalizationCancelRegistry
 	authorities *FinalizationAuthorityRegistry
 	poll        time.Duration
 	hooks       FinalizationDriverHooks
@@ -103,7 +105,7 @@ func newFinalizationWiring(deps FinalizationWiringDeps, coord *coordinator) (*fi
 		holds:       holds,
 		debtFacts:   ds,
 		settler:     ds,
-		cancel:      newFinalizationCancelRegistry(),
+		cancel:      finalize.NewFinalizationCancelRegistry(),
 		authorities: deps.Authorities,
 		// The wait loop re-reads durable facts at this cadence; changes made by
 		// the batch runner never signal the in-process gate. The 5-minute
@@ -112,13 +114,13 @@ func newFinalizationWiring(deps FinalizationWiringDeps, coord *coordinator) (*fi
 	}
 	w.hooks = FinalizationDriverHooks{
 		BindScope:    w.bindScopeHook(),
-		RecoverScope: NewFinalizationRecoverScopeHook(deps.Messages),
+		RecoverScope: finalize.NewFinalizationRecoverScopeHook(deps.Messages),
 		FinalizeTurn: NewFinalizationFinalizeTurnHook(FinalizationWaitDeps{
 			Settler:           ds,
 			PollInterval:      w.poll,
 			MaxRecompositions: -1,
 		}),
-		OnCancel: NewFinalizationOnCancelHook(w.cancel),
+		OnCancel: finalize.NewFinalizationOnCancelHook(w.cancel),
 	}
 	if err := w.hooks.Validate(); err != nil {
 		return nil, err
@@ -136,41 +138,41 @@ func (w *finalizationWiring) scopeFacts(ownerSessionID string) coresession.Agent
 // finalizationFacts snapshot. The database runs with a single open connection,
 // so the three reads below are strictly sequential and no read runs outside a
 // transaction while one is open.
-func (w *finalizationWiring) readFacts(ctx context.Context, identity coresession.AgentFinalizationIdentity) (finalizationFacts, error) {
+func (w *finalizationWiring) readFacts(ctx context.Context, identity coresession.AgentFinalizationIdentity) (gate.Facts, error) {
 	if w == nil || w.store == nil || w.conn == nil || w.noticeStore == nil {
-		return finalizationFacts{}, ErrFinalizationFactsUnavailable
+		return gate.Facts{}, gate.ErrFinalizationFactsUnavailable
 	}
 	if err := ctx.Err(); err != nil {
-		return finalizationFacts{}, err
+		return gate.Facts{}, err
 	}
 	if identity.SessionID == "" || identity.LogicalCallID == "" || identity.Generation <= 0 {
-		return finalizationFacts{}, ErrFinalizationFactsUnavailable
+		return gate.Facts{}, gate.ErrFinalizationFactsUnavailable
 	}
 	questions, err := w.noticeStore.PendingChildQuestions(ctx, identity.SessionID)
 	if err != nil {
-		return finalizationFacts{}, fmt.Errorf("finalization facts: pending child questions: %w", err)
+		return gate.Facts{}, fmt.Errorf("finalization facts: pending child questions: %w", err)
 	}
 	record, err := w.store.Snapshot(ctx, identity)
 	if err != nil {
-		return finalizationFacts{}, fmt.Errorf("finalization facts: durable snapshot: %w", err)
+		return gate.Facts{}, fmt.Errorf("finalization facts: durable snapshot: %w", err)
 	}
 	tx, err := w.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return finalizationFacts{}, fmt.Errorf("finalization facts: begin scope transaction: %w", err)
+		return gate.Facts{}, fmt.Errorf("finalization facts: begin scope transaction: %w", err)
 	}
 	facts, scopeErr := w.scopeFacts(identity.SessionID).FinalizationSealScopeFacts(ctx, tx)
 	if rollbackErr := tx.Rollback(); rollbackErr != nil && scopeErr == nil {
 		scopeErr = fmt.Errorf("finalization facts: rollback scope transaction: %w", rollbackErr)
 	}
 	if scopeErr != nil {
-		return finalizationFacts{}, fmt.Errorf("finalization facts: scope facts: %w", scopeErr)
+		return gate.Facts{}, fmt.Errorf("finalization facts: scope facts: %w", scopeErr)
 	}
 	if !facts.Complete {
 		// Fail closed: incomplete facts must never look quiet.
-		return finalizationFacts{}, fmt.Errorf("%w: finalization scope facts incomplete",
-			ErrFinalizationFactsUnavailable)
+		return gate.Facts{}, fmt.Errorf("%w: finalization scope facts incomplete",
+			gate.ErrFinalizationFactsUnavailable)
 	}
-	return finalizationFacts{
+	return gate.Facts{
 		DurableRevision: uint64(record.Revision),
 		Complete:        true,
 		Own:             int(record.OpenTickets),
@@ -186,7 +188,7 @@ func (w *finalizationWiring) readFacts(ctx context.Context, identity coresession
 // newExecution builds the per-call execution when the call owns a finalization
 // authority of its own. Calls without a requirement, or descendants that only
 // inherit a foreign authority, get no execution and stay inert.
-func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationExecution, error) {
+func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalize.FinalizationExecution, error) {
 	requirement := call.FinalizationAuthorities.Requirement()
 	if requirement == nil {
 		return nil, nil
@@ -203,14 +205,14 @@ func (w *finalizationWiring) newExecution(call SessionAgentCall) (*finalizationE
 	if !found {
 		return nil, nil
 	}
-	execution := &finalizationExecution{
+	execution := &finalize.FinalizationExecution{
 		SessionID:  identity.SessionID,
 		LogicalID:  identity.LogicalCallID,
-		Gate:       newFinalizationGate(uint64(identity.Generation)),
-		Scope:      finalizationPublicationScope{Store: w.store, Identity: identity},
+		Gate:       gate.New(uint64(identity.Generation)),
+		Scope:      finalize.FinalizationPublicationScope{Store: w.store, Identity: identity},
 		ScopeFacts: w.scopeFacts(identity.SessionID),
 	}
-	execution.Read = func(ctx context.Context) (finalizationFacts, error) {
+	execution.Read = func(ctx context.Context) (gate.Facts, error) {
 		return w.readFacts(ctx, identity)
 	}
 	return execution, nil
@@ -257,7 +259,7 @@ func (w *finalizationWiring) startExecution(ctx context.Context, call SessionAge
 	if execution == nil {
 		return ctx, func() {}, nil
 	}
-	execCtx, err := withFinalizationExecution(ctx, execution)
+	execCtx, err := finalize.WithFinalizationExecution(ctx, execution)
 	if err != nil {
 		return nil, nil, err
 	}

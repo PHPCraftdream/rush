@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
@@ -480,7 +481,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			continue
 		}
 		class := classifyStepCall(call, result, stepClassifyCtx{})
-		var meta asyncToolMetadata
+		var meta batchmeta.AsyncToolMetadata
 		_ = json.Unmarshal([]byte(result.ClientMetadata), &meta)
 		command, isCommand := asyncLaunchCommand(call)
 		repeated := false
@@ -519,7 +520,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 // -- but with NO claim: it never produced a "started" result, so there is no
 // launch for the guard to exclude (an inline `sleep 2` must not read as
 // progress, nor as an outstanding launch).
-func chainIdleClaim(call fantasy.ToolCallContent, meta asyncToolMetadata) (string, bool) {
+func chainIdleClaim(call fantasy.ToolCallContent, meta batchmeta.AsyncToolMetadata) (string, bool) {
 	isAsyncLaunch := meta.Async && meta.ClaimID != ""
 	isInlineResult := !meta.Async && meta.Inline
 	if !isAsyncLaunch && !isInlineResult {

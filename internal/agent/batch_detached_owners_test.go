@@ -43,6 +43,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -63,7 +64,7 @@ func TestDetachedDeliveryRetainsOwners(t *testing.T) {
 	resp, err := env.install.Runtime.Invoke(context.Background(), inv, env.leaf, call)
 	require.NoError(t, err)
 	// Detached delivery returned the started response while the work runs.
-	require.True(t, strings.HasPrefix(resp.Content, "batch root ") && strings.HasSuffix(resp.Content, batchStartedResponseSuffix),
+	require.True(t, strings.HasPrefix(resp.Content, "batch root ") && strings.HasSuffix(resp.Content, batchcore.StartedResponseSuffix),
 		"detached delivery must return the started response, got %q", resp.Content)
 
 	// SDK/caller return: only the Call owner drops.
@@ -112,7 +113,7 @@ func TestDetachedDebtRetentionIndependentRelease(t *testing.T) {
 	inv, call, _, hash := h2aGatedInvocation(t, env, env.bindingID, "call-debt-1", batchDeliveryDetached)
 	resp, err := env.install.Runtime.Invoke(context.Background(), inv, env.leaf, call)
 	require.NoError(t, err)
-	require.True(t, strings.HasSuffix(resp.Content, batchStartedResponseSuffix), "detached started response")
+	require.True(t, strings.HasSuffix(resp.Content, batchcore.StartedResponseSuffix), "detached started response")
 	root, attached, err := env.install.Attach.ProbeLive(context.Background(), h2aProbe(env, hash, "call-debt-1"))
 	require.NoError(t, err)
 	require.True(t, attached, "live before settlement")

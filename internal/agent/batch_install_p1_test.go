@@ -22,6 +22,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -364,7 +367,7 @@ func TestBatchAgentRouterDispatchesByRecordedTool(t *testing.T) {
 		results := make(chan jobbatch.Result, 1)
 		if _, err := executor.Start(env.ctx, jobbatch.Launch{
 			ID: jobbatch.ID("node-" + name), Token: 1,
-			Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload},
+			Task: jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload},
 		}, func(r jobbatch.Result) { results <- r }); err != nil {
 			t.Fatalf("%s: executor start: %v", name, err)
 		}
@@ -405,8 +408,8 @@ func TestCoordinatorBridgeBindsToStampedInvocation(t *testing.T) {
 	fake := &bridgeTestIngress{registries: registries}
 	setProcessBatchBindingForTest(t, &batchCoordinatorBinding{ingress: fake})
 
-	bridgeA := coordinatorBridgeFallback(withBatchBridgeInvocation(context.Background(), batchBridgeInvocation{RegistryID: "reg-A", MessageID: "m1"}))
-	bridgeB := coordinatorBridgeFallback(withBatchBridgeInvocation(context.Background(), batchBridgeInvocation{RegistryID: "reg-B", MessageID: "m2"}))
+	bridgeA := coordinatorBridgeFallback(state.WithBridgeInvocation(context.Background(), state.BridgeInvocation{RegistryID: "reg-A", MessageID: "m1"}))
+	bridgeB := coordinatorBridgeFallback(state.WithBridgeInvocation(context.Background(), state.BridgeInvocation{RegistryID: "reg-B", MessageID: "m2"}))
 	if bridgeA == nil || bridgeB == nil {
 		t.Fatalf("stamped invocations must each get a bridge (A=%v B=%v)", bridgeA, bridgeB)
 	}
@@ -451,7 +454,7 @@ func TestCoordinatorBridgeBindsToStampedInvocation(t *testing.T) {
 	if got := coordinatorBridgeFallback(context.Background()); got != nil {
 		t.Fatalf("unstamped context must keep the legacy no-bridge behaviour, got %v", got)
 	}
-	if got := coordinatorBridgeFallback(withBatchBridgeInvocation(context.Background(), batchBridgeInvocation{})); got != nil {
+	if got := coordinatorBridgeFallback(state.WithBridgeInvocation(context.Background(), state.BridgeInvocation{})); got != nil {
 		t.Fatalf("stamp without a registry id must be refused, got %v", got)
 	}
 }
@@ -493,7 +496,7 @@ func (f *bridgeTestIngress) callsFor(registryID string) int {
 	return f.perReg[registryID]
 }
 
-func (f *bridgeTestIngress) PinLeafRegistry(r *BatchLeafRegistry) (string, error) {
+func (f *bridgeTestIngress) PinLeafRegistry(r *toolwrap.PolicyLeafRegistry) (string, error) {
 	id := uuid.NewString()
 	return id, f.registries.Register(id, r)
 }
@@ -506,7 +509,7 @@ func (f *bridgeTestIngress) ResolveLeaf(registryID, name string) (fantasy.AgentT
 	return reg.Resolve(name)
 }
 
-func (f *bridgeTestIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
+func (f *bridgeTestIngress) Registry(registryID string) (*toolwrap.PolicyLeafRegistry, error) {
 	return f.registries.Resolve(registryID)
 }
 
@@ -559,7 +562,7 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 	startCtx = context.WithValue(startCtx, tools.MessageIDContextKey, "start-msg")
 	results := make(chan jobbatch.Result, 1)
 	if _, err := executor.Start(startCtx, jobbatch.Launch{
-		ID: "n1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload},
+		ID: "n1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload},
 	}, func(r jobbatch.Result) { results <- r }); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -583,10 +586,10 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 	if got := tools.GetMessageFromContext(leafCtx); got != "pinned-msg" {
 		t.Fatalf("message id %q, want the PINNED message id (start-ctx value leaked)", got)
 	}
-	if got, _ := leafCtx.Value(batchFolderScopeContextKey{}).(*permission.FolderScopeSpec); got == nil {
+	if got, _ := leafCtx.Value(batchdispatch.FolderScopeContextKey{}).(*permission.FolderScopeSpec); got == nil {
 		t.Fatal("pinned folder scope lost in the executor-built ctx")
 	}
-	if got, _ := leafCtx.Value(batchRunAllowlistContextKey{}).(*permission.RunAllowlistSpec); got == nil {
+	if got, _ := leafCtx.Value(batchdispatch.RunAllowlistContextKey{}).(*permission.RunAllowlistSpec); got == nil {
 		t.Fatal("pinned run allowlist lost in the executor-built ctx")
 	}
 	if got := tools.GetModelNameFromContext(leafCtx); got != "pinned-model" {

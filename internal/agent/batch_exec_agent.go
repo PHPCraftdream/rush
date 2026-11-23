@@ -8,8 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -17,25 +20,9 @@ import (
 
 type batchAgentRunRequest = state.RunRequest[*batchLeafPolicyContext, BatchWorkIngress]
 
-// batchAgentHost is the per-incarnation control surface handed to the run
-// factory. Ask parks the ask_question tool call on a held question until an
-// injected answer at the same depth arrives; the tool turns it into a
-// successful question-shaped response, keeping the node live meanwhile.
-// BindChildSession records the delegation child session; the returned error
-// is fatal to the launch — the child must not run.
-type batchAgentHost = childagent.Host
-
-// batchAgentTurnResult is one turn loop's outcome. An optional task_outcome
-// declaration may only reclassify a clean closure in this incarnation.
-type batchAgentTurnResult = childagent.TurnResult
-
-// batchAgentTurn is one launched agent turn loop. Result is valid after Done;
-// Exit also waits for cleanup. Stop acknowledges the request, not settlement.
-type batchAgentTurn = childagent.Turn
-
 type (
-	batchAgentRunFactory       = state.RunFactory[batchAgentRunRequest]
-	batchChildQuestionResolver = state.QuestionResolver
+	batchAgentRunFactory = state.RunFactory[batchAgentRunRequest]
+
 	batchAgentDescendantReader = state.DescendantReader[batchAgentRunRequest]
 	batchAgentDeps             = state.Deps[batchAgentRunRequest]
 )
@@ -60,7 +47,7 @@ func callIngress(env batchLeafEnv) BatchWorkIngress {
 }
 
 func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.Launch, p batchLeafPayload, report func(jobbatch.Result)) (jobbatch.Execution, error) {
-	if invalid, _ := ctx.Value(batchAgentDepthInvalidContextKey{}).(bool); invalid {
+	if invalid, _ := ctx.Value(batchdispatch.AgentDepthInvalidContextKey{}).(bool); invalid {
 		return nil, errors.New("batch agent depth must be between 0 and 32")
 	}
 	if p.AgentDepth != nil && (*p.AgentDepth < 0 || *p.AgentDepth > MaxAgentDepthForResume) {
@@ -95,7 +82,7 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	req.SetHandoff(pctClaimCapturedHandoffViaIngress(env, p))
 	req.Ingress = callIngress(env)
 	e := &batchAgentExecution{
-		cache: env.OutputCache, nodeID: l.ID, rootID: batchOutputRoot(l.ID),
+		cache: env.OutputCache, nodeID: l.ID, rootID: batchmeta.OutputRoot(l.ID),
 		deps:          f.deps,
 		req:           req,
 		pctHandoff:    req.Handoff(),
@@ -128,11 +115,11 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 		// (batchLeafRunContext), so batchDiskProviderFrom(runCtx) works in
 		// the driver. NOT batchLeafRunContext — it would re-stamp
 		// session/message, which the agent family sets below.
-		runCtx = context.WithValue(runCtx, batchDiskProviderContextKey{}, p.diskProvider)
+		runCtx = context.WithValue(runCtx, batchdispatch.DiskProviderContextKey{}, p.diskProvider)
 	}
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, p.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, messageID)
-	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{
+	runCtx = state.WithBridgeInvocation(runCtx, state.BridgeInvocation{
 		RegistryID: p.RegistryID, MessageID: messageID,
 		AgentDepth: func() int {
 			if p.AgentDepth != nil {
@@ -181,10 +168,10 @@ func (e *batchAgentExecution) recordExecutionNoChild() {
 	state.MarkNoChildSelected(&e.mu, &e.req)
 }
 
-func (e *batchAgentExecution) launch(runCtx context.Context) (batchAgentTurn, error) {
-	return state.Launch(runCtx, e.deps.Runs, e.snapshotExecutionRequest, batchAgentHost{
+func (e *batchAgentExecution) launch(runCtx context.Context) (childagent.Turn, error) {
+	return state.Launch(runCtx, e.deps.Runs, e.snapshotExecutionRequest, childagent.Host{
 		Ask: e.askBatchQuestion, BindChildSession: e.bindChildSession, NoChildSelected: e.recordExecutionNoChild,
-	}, func(err error) error { return newBatchStartError("agent_start_panic", err) })
+	}, func(err error) error { return batchdispatch.NewStartError("agent_start_panic", err) })
 }
 
 type batchAgentExecution struct {
@@ -197,7 +184,7 @@ type batchAgentExecution struct {
 	cancel context.CancelFunc
 
 	mu            sync.Mutex
-	turn          batchAgentTurn
+	turn          childagent.Turn
 	lifecycle     state.ExecutionLifecycle
 	pctHandoff    *toolwrap.PctDelegationHandoff
 	driverDone    chan struct{} // Driver goroutine exit: late kill barrier.
@@ -226,7 +213,7 @@ func (e *batchAgentExecution) askBatchQuestion(ctx context.Context, depth int, q
 	// ask call) can never park the scope or emit a child_question
 	// notice, so there is no eternal await and no fake success.
 	if !e.questionRoute {
-		return nil, ErrBatchQuestionNoRoute
+		return nil, batchinst.ErrBatchQuestionNoRoute
 	}
 	h, err := e.scope.hold(depth)
 	if err != nil {
@@ -263,12 +250,12 @@ func (e *batchAgentExecution) publishQuestion(ctx context.Context, depth int, qu
 	return e.scope.PublishQuestion(func(sequence uint64) error {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), batchQuestionPersistenceTimeout)
 		defer cancel()
-		return e.deps.QuestionPublisher.PublishChildQuestion(ctx, batchChildQuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
+		return e.deps.QuestionPublisher.PublishChildQuestion(ctx, childagent.QuestionNotice{Owner: req.SessionID, ChildSessionID: req.ChildSessionID, NodeID: string(req.NodeID), Token: req.Token, Depth: depth, Sequence: sequence, Question: question})
 	})
 }
 
 // watch waits for turn completion, then confirmed scope closure, and reports exactly once.
-func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, report func(jobbatch.Result)) {
+func (e *batchAgentExecution) watch(ctx context.Context, turn childagent.Turn, report func(jobbatch.Result)) {
 	defer close(e.watcherDone)
 	read := func(ctx context.Context, req batchAgentRunRequest) (bool, bool) {
 		return e.deps.Descendants.DescendantsLive(ctx, req)
@@ -279,7 +266,8 @@ func (e *batchAgentExecution) watch(ctx context.Context, turn batchAgentTurn, re
 	// Package S (jb/psc): settle with the child's refreshed final outcome
 	// for this delegation, never the captured initial (pre-reaction)
 	// answer.
-	e.finish(batchAgentScopeResult(pscRefreshedTurnResult(e.deps.ChildFacts, e.snapshotExecutionRequest(), turn.Result(), turn.Err()), turn.Err(), e.scope.stop()), report)
+	res := pscRefreshedTurnResult(e.deps.ChildFacts, e.snapshotExecutionRequest(), turn.Result(), turn.Err())
+	e.finish(state.ScopeResult(res.Response, res.Declared, turn.Err(), e.scope.stop()), report)
 }
 
 // finish fixes the terminal result once, retains the output and reports.
@@ -332,7 +320,7 @@ func (e *batchAgentExecution) Inject(ctx context.Context, msg json.RawMessage) e
 	if stopped {
 		return ErrBatchAgentStopped
 	}
-	var m batchAgentInjectMessage
+	var m batchinst.AgentInjectMessage
 	if err := json.Unmarshal(msg, &m); err != nil {
 		return fmt.Errorf("%w: %v", ErrBatchAgentNotHeld, err)
 	}
@@ -355,15 +343,10 @@ func (e *batchAgentExecution) Dispose(ctx context.Context) error {
 	return e.lifecycle.Dispose(ctx, &e.mu, e.finished, e.driverDone, e.watcherDone, e.pctHandoff)
 }
 
-// batchAgentScopeResult classifies confirmed closure, not a stop acknowledgement.
-func batchAgentScopeResult(res batchAgentTurnResult, turnErr error, stopped bool) jobbatch.Result {
-	return state.ScopeResult(res.Response, res.Declared, turnErr, stopped)
-}
-
 // pscRefreshedTurnResult uses the child's final outcome at confirmed closure.
-func pscRefreshedTurnResult(facts BatchChildReactionFacts, req batchAgentRunRequest, res batchAgentTurnResult, turnErr error) batchAgentTurnResult {
+func pscRefreshedTurnResult(facts state.BatchChildReactionFacts, req batchAgentRunRequest, res childagent.TurnResult, turnErr error) childagent.TurnResult {
 	if response, ok := state.RefreshTurnResponse(facts, req, res.Response, turnErr); ok {
-		return batchAgentTurnResult{Response: response}
+		return childagent.TurnResult{Response: response}
 	}
 	return res
 }

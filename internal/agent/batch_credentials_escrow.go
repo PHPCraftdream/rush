@@ -39,8 +39,6 @@ func newBatchCredentialEscrow() *batchCredentialEscrow {
 	return &batchCredentialEscrow{batchadapter.NewCredentialEscrow()}
 }
 
-var errBatchCredentialEscrowMissing = batchadapter.ErrCredentialEscrowMissing
-
 func (k batchCredentialKey) adapterKey() batchadapter.CredentialKey {
 	return batchadapter.CredentialKey{RegistryID: k.registryID, SessionID: k.sessionID, MessageID: k.messageID, CallID: k.callID, Tool: k.tool}
 }

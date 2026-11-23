@@ -25,6 +25,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -50,9 +53,9 @@ func TestStaleAnswerCannotResolveNextQuestionSameDepth(t *testing.T) {
 		mu.Unlock()
 		tl.addf("answer decoded: %s", s)
 	}
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		go func() {
 			// Production binds the child session before any ask
 			// (batch_install_question.go:35 refuses an empty ChildSessionID);
@@ -62,14 +65,14 @@ func TestStaleAnswerCannotResolveNextQuestionSameDepth(t *testing.T) {
 			ask := func(q string) {
 				answer, err := host.Ask(context.Background(), 1, q)
 				if err != nil {
-					t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+					t2.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 				} else {
 					record(answer)
 				}
 			}
 			ask("first?")
 			ask("second?")
-			t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse("done")}, nil)
+			t2.setRes(childagent.TurnResult{Response: fantasy.NewTextResponse("done")}, nil)
 			t2.finish()
 			t2.exitNow()
 		}()
@@ -88,7 +91,7 @@ func TestStaleAnswerCannotResolveNextQuestionSameDepth(t *testing.T) {
 	require.NoError(t, err)
 	_, err = env.install.RunnerHandle.Submit(env.ctx, jobbatch.SubmitRequest{
 		Root: jobbatch.ID(root),
-		Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}},
+		Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}},
 		Ref:  "call-stale-seq",
 	})
 	require.NoError(t, err, "the agent root is admitted")
@@ -131,7 +134,7 @@ func TestStaleAnswerCannotResolveNextQuestionSameDepth(t *testing.T) {
 
 	// R1's captured wire: the STALE message is built ONCE, before any
 	// delivery, and only injected later (after Q2 is asked).
-	stale, merr := json.Marshal(batchAgentInjectMessage{Depth: 1, Sequence: 1, Text: json.RawMessage(`"stale-one"`)})
+	stale, merr := json.Marshal(batchinst.AgentInjectMessage{Depth: 1, Sequence: 1, Text: json.RawMessage(`"stale-one"`)})
 	require.NoError(t, merr)
 	tl.addf("R1 stale wire captured before any delivery (depth=1 sequence=1)")
 

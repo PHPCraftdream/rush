@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -30,7 +31,7 @@ func NewFinalizationBindScopeHook(agent *sessionAgent) func(context.Context, Ses
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		trusted, err := finalizationLogicalIdentity(call.FinalizationAuthorities, call.SessionID, call.LogicalCallID)
+		trusted, err := finalize.FinalizationLogicalIdentity(call.FinalizationAuthorities, call.SessionID, call.LogicalCallID)
 		if err != nil {
 			return err
 		}

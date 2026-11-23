@@ -9,6 +9,8 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -159,7 +161,7 @@ func batchTerminalTestOneItemSpec(t *testing.T, registryID string) jobbatch.Spec
 	t.Helper()
 	payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-1", SessionID: "owner", Input: json.RawMessage(`{"path":"p"}`), RegistryID: registryID})
 	require.NoError(t, err)
-	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}
+	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}}
 }
 
 // The attach adapter accepts an identical retry exactly once (one launch
@@ -186,7 +188,7 @@ func TestBatchAttachAdapterIdenticalRetryAttachesOnce(t *testing.T) {
 	hash := batchInvocationHash(spec)
 	root := installSubmit(t, install, spec)
 	adapter := batchAttachAdapter{store: store}
-	got, attached, err := adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash})
+	got, attached, err := adapter.ProbeLive(ctx, batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash})
 	require.NoError(t, err)
 	require.True(t, attached, "an identical retry attaches to the live root")
 	require.Equal(t, root, got)
@@ -195,7 +197,7 @@ func TestBatchAttachAdapterIdenticalRetryAttachesOnce(t *testing.T) {
 	require.Equal(t, 1, count, "exactly ONE launch reservation exists for the call")
 	// Changed identity (a different registry id => different canonical hash)
 	// is refused.
-	_, _, err = adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: batchInvocationHash(batchTerminalTestOneItemSpec(t, "reg-2"))})
+	_, _, err = adapter.ProbeLive(ctx, batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: batchInvocationHash(batchTerminalTestOneItemSpec(t, "reg-2"))})
 	require.ErrorIs(t, err, session.ErrBatchInputMismatch)
 	// Release the gate so the root settles and the Runner closes cleanly.
 	gate.letGo()
@@ -221,16 +223,16 @@ func TestBatchAttachAdapterFallbackCarriesGroupAndTimeout(t *testing.T) {
 	})
 	require.NoError(t, err)
 	root := r.Snapshot.Root.RootID
-	got, attached, err := adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &task})})
+	got, attached, err := adapter.ProbeLive(ctx, batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &task})})
 	require.NoError(t, err)
 	require.True(t, attached, "the bare-task hash attaches through the RECONSTRUCTED fallback (group and timeout preserved)")
 	require.Equal(t, jobbatch.ID(root), got)
 	diverged := task
 	diverged.Timeout = 6 * time.Second
-	_, _, err = adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &diverged})})
+	_, _, err = adapter.ProbeLive(ctx, batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &diverged})})
 	require.ErrorIs(t, err, session.ErrBatchInputMismatch)
 	diverged = task
 	diverged.Group = "other"
-	_, _, err = adapter.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &diverged})})
+	_, _, err = adapter.ProbeLive(ctx, batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-fb", InputHash: batchInvocationHash(jobbatch.Spec{Task: &diverged})})
 	require.ErrorIs(t, err, session.ErrBatchInputMismatch)
 }

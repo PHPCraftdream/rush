@@ -6,6 +6,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -56,13 +57,13 @@ func TestBatchCredentialRegistrationIsTransactional(t *testing.T) {
 	require.Equal(t, "old", creds.Credentials[0].APIKey)
 	complete()
 	_, _, err = escrow.consume(newKey, "root.1")
-	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+	require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 }
 
 func TestBatchCredentialAdapterRegistrationIgnoresNonAgentPayload(t *testing.T) {
 	adapter := &batchRunnerAdapter{}
 	registrations, err := adapter.credentialRegistrations(context.Background(), "root", jobbatch.Spec{
-		Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: []byte("not-json")},
+		Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: []byte("not-json")},
 	})
 	require.NoError(t, err)
 	require.Empty(t, registrations)

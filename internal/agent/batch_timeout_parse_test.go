@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,7 +61,7 @@ func TestBatchIngressDirectWakeOnlyTimeoutCarriedInPayload(t *testing.T) {
 	p, err := decodeLeafPayload(specs[0])
 	require.NoError(t, err)
 	require.NotNil(t, p.Timeout)
-	require.Equal(t, batchTimeoutWakeOnly, p.Timeout.Kind)
+	require.Equal(t, batchinst.TimeoutWakeOnly, p.Timeout.Kind)
 	require.Equal(t, 30, p.Timeout.Seconds)
 
 	// Hash determinism: the same logical call built again (fresh time, same
@@ -139,7 +141,7 @@ func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	inv := BatchInvocation{SessionID: "sess-1", CallID: "call-model", RegistryID: "reg-1"}
 
 	// Ambiguous: item timeout AND nested input timeout.
-	spec, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{
+	spec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{
 		Tool: "bash", Input: json.RawMessage(`{"command":"x","timeout":{"seconds":10,"kind":"terminate_and_wake"}}`), Timeout: "10s",
 	}}}, inv, reg)
 	require.ErrorContains(t, err, "ambiguous; provide at most one")
@@ -147,7 +149,7 @@ func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 
 	// Positive twin: ONLY the nested input terminate intent feeds the
 	// termination deadline.
-	spec, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{
+	spec, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{
 		Tool: "bash", Input: json.RawMessage(`{"command":"x","timeout":{"seconds":10,"kind":"terminate_and_wake"}}`),
 	}}}, inv, reg)
 	require.NoError(t, err)
@@ -159,7 +161,7 @@ func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	require.Nil(t, p.Timeout)
 
 	// Positive twin: ONLY the explicit string form keeps today's contract.
-	spec, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{
+	spec, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{
 		Tool: "bash", Input: json.RawMessage(`{"command":"x"}`), Timeout: "10s",
 	}}}, inv, reg)
 	require.NoError(t, err)
@@ -168,7 +170,7 @@ func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	require.Equal(t, 10*time.Second, spec.Batch.Items[0].Task.Timeout)
 
 	// Positive twin: ONLY a bare-number input timeout rides the payload.
-	spec, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{
+	spec, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{
 		Tool: "bash", Input: json.RawMessage(`{"command":"x","timeout":30}`),
 	}}}, inv, reg)
 	require.NoError(t, err)
@@ -178,6 +180,6 @@ func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	p, err = decodeLeafPayload(spec.Batch.Items[0])
 	require.NoError(t, err)
 	require.NotNil(t, p.Timeout)
-	require.Equal(t, batchTimeoutWakeOnly, p.Timeout.Kind)
+	require.Equal(t, batchinst.TimeoutWakeOnly, p.Timeout.Kind)
 	require.Equal(t, 30, p.Timeout.Seconds)
 }

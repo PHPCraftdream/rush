@@ -9,11 +9,11 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 )
 
-func quietFinalizationTestFacts(context.Context) (finalizationFacts, error) {
-	return finalizationFacts{Complete: true}, nil
+func quietFinalizationTestFacts(context.Context) (gate.Facts, error) {
+	return gate.Facts{Complete: true}, nil
 }
 
-func requireFinalizationCancelled(t *testing.T, g *finalizationGate, want bool, msgAndArgs ...any) {
+func requireFinalizationCancelled(t *testing.T, g *gate.Gate, want bool, msgAndArgs ...any) {
 	t.Helper()
 	_, _, err := g.WaitState(t.Context(), quietFinalizationTestFacts)
 	if want {
@@ -23,17 +23,8 @@ func requireFinalizationCancelled(t *testing.T, g *finalizationGate, want bool, 
 	}
 }
 
-func requireFinalizationSealed(t *testing.T, g *finalizationGate, want bool) {
+func requireFinalizationSealed(t *testing.T, g *gate.Gate, want bool) {
 	t.Helper()
 	verdict, _, _ := g.WaitState(t.Context(), quietFinalizationTestFacts)
-	require.Equal(t, want, verdict == finalizationAccepted)
-}
-
-func TestFinalizationGateSentinelIdentity(t *testing.T) {
-	t.Parallel()
-	if ErrFinalizationFactsUnavailable != gate.ErrFinalizationFactsUnavailable ||
-		ErrFinalizationSealed != gate.ErrFinalizationSealed ||
-		ErrFinalizationScopeChanged != gate.ErrFinalizationScopeChanged {
-		t.Fatal("agent and gate must share the same finalization sentinels")
-	}
+	require.Equal(t, want, verdict == gate.Accepted)
 }

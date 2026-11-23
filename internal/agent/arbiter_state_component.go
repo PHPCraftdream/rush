@@ -55,7 +55,7 @@ func (a *arbiter) pruneOverCap(sid string, notices []sessionnotice.PendingNotice
 	a.PruneOverCap(sid, notices)
 }
 
-func (a *arbiter) pace(sid string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) (becameDormant bool) {
+func (a *arbiter) pace(sid string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainctl.Pace) (becameDormant bool) {
 	return a.Pace(sid, hintAt, wait, hintOpens, kind)
 }
 
