@@ -58,24 +58,16 @@ func (c *coordinator) wakeLaunchPorts() wakectl.LaunchPorts {
 	}
 }
 
-// wakeScheduler is the cancellation-only view required by batch rehome's
-// await timer cleanup. The worker itself is owned by wakectl.
-type wakeScheduler struct {
-	store interface {
-		CancelSchedule(context.Context, string, string, time.Time) error
-	}
-	now    func() time.Time
-	notify func()
-}
-
-func (s *wakeScheduler) Notify() { s.notify() }
+// wakeScheduler is the cancellation-only view the await-timer cleanup holds;
+// the type itself lives in wakectl.
+type wakeScheduler = wakectl.CancellationView
 
 func (c *coordinator) wakeSchedulerFor() (*wakeScheduler, error) {
 	s, err := c.wakeWorker().RequireScheduler()
 	if err != nil {
 		return nil, err
 	}
-	return &wakeScheduler{store: s, now: s.Now, notify: s.Notify}, nil
+	return wakectl.NewCancellationView(s), nil
 }
 
 // WakeScheduleController is the optional interface the App asserts the
@@ -84,15 +76,7 @@ func (c *coordinator) wakeSchedulerFor() (*wakeScheduler, error) {
 // itself: every test fake implementing Coordinator would have to grow the
 // two methods for nothing (same reasoning as
 // coordinator_work_scope.go's own not-on-the-interface note).
-type WakeScheduleController interface {
-	// SetWakeScheduleStore hands the coordinator the durable wake-schedule
-	// store and starts the stage-4b worker over it. nil (or a second call)
-	// is a no-op.
-	SetWakeScheduleStore(store *sessionwake.WakeScheduleStore)
-	// StopWakeScheduler terminates the worker; safe to call repeatedly
-	// and on a coordinator that never got a store.
-	StopWakeScheduler()
-}
+type WakeScheduleController = wakectl.WakeScheduleController
 
 func (c *coordinator) SetWakeScheduleStore(store *sessionwake.WakeScheduleStore) {
 	if c != nil {

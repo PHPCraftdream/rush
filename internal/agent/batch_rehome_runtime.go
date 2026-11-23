@@ -68,7 +68,7 @@ func (w *batchRehomeRuntimeComponent) cancelAwaitTimer(sessionID, id string) {
 	sched, err := w.host.wakeSchedulerFor()
 	if err == nil {
 		// Internal cleanup is idempotent, unlike the model-facing tool.
-		err = sched.store.CancelSchedule(ctx, sessionID, id, sched.now())
+		err = sched.CancelSchedule(ctx, sessionID, id)
 		if err == nil {
 			sched.Notify()
 		}
