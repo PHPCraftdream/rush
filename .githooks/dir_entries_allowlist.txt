@@ -45,7 +45,7 @@ internal/app 46
 # offset by the new root api_remotes_integration_test.go (+1).
 internal/config 43
 # 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
-internal/config/discover 13
+# internal/config/discover 13 -> 5: the D2-3 tail merged probe/enricher files in-package (the planned discover+local subpackage split is blocked: the local probe files call the parent package's unexported doRequest/Config plumbing, which a sub-package may not import); row retired.
 internal/session/heartbeat 10
 internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
@@ -55,10 +55,7 @@ internal/session 13
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
 internal/session/service 37
 internal/kit/sys/shell 17
-# internal/config/domains/datadir 9: born with 9 elements (lane D2-4 cluster 1: datadir, global_dir, global_testguard,
-# globalpaths, worktreehome, load_skills, systemconfig_unix/windows (an OS pair) and export); falls to <= 7 when the
-# small files merge (D2-6).
-internal/config/domains/datadir 9
+# internal/config/domains/datadir 9 -> 7: the D2-6 tail merged export.go into datadir.go and global_testguard.go into global_dir.go; row retired.
 # born over the limit (MV3, plan D3); falls at EX lanes
 internal/session/batch/sessionbatch 28
 # internal/session/run/sessionrun is born with 12 elements: all 12 run-queue production files move together (lane MV4,
