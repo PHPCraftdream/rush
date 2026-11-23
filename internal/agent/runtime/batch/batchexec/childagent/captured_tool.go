@@ -92,3 +92,9 @@ func (t *PctCapturedAgentTool) CapturedScope() *toolwrap.PctChildToolScope {
 func (t *PctCapturedAgentTool) PolicyLeafTool() fantasy.AgentTool {
 	return t.AgentTool
 }
+
+// CapturedAgentToolFrom narrows the policy walk to the concrete child wrapper.
+func CapturedAgentToolFrom(tool fantasy.AgentTool) *PctCapturedAgentTool {
+	captured, _ := toolwrap.CapturedToolFrom(tool).(*PctCapturedAgentTool)
+	return captured
+}
