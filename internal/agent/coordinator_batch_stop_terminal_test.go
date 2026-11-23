@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func TestCoordinatorBatchStopAnswersPendingAfterNaturalSettlement(t *testing.T) 
 	root := batchRootID()
 	payload, err := json.Marshal(batchLeafPayload{Tool: leaf.name, ToolCallID: "terminal-child", SessionID: env.sessionID, Input: json.RawMessage(`{}`), RegistryID: env.registryID})
 	require.NoError(t, err)
-	_, err = env.install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}, Ref: "terminal-child"})
+	_, err = env.install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}}, Ref: "terminal-child"})
 	require.NoError(t, err)
 	won, err := env.install.Elector.ElectStarted(ctx, env.sessionID, root)
 	require.NoError(t, err)
@@ -39,7 +40,7 @@ func TestCoordinatorBatchStopAnswersPendingAfterNaturalSettlement(t *testing.T) 
 	coordinatorBatchBindings.Store(c, &batchCoordinatorBinding{ingress: ingress, live: env.live})
 	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 	originalRunner := env.install.Runtime.cfg.Runner
-	runner := &retryStopRunner{batchRunnerHandle: originalRunner}
+	runner := &retryStopRunner{RunnerHandle: originalRunner}
 	env.install.Runtime.cfg.Runner = runner
 	t.Cleanup(func() { env.install.Runtime.cfg.Runner = originalRunner })
 

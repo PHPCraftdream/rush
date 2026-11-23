@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +20,7 @@ type gatedQuestionPublication struct {
 	committed atomic.Bool
 }
 
-func (p *gatedQuestionPublication) PublishChildQuestion(ctx context.Context, _ batchChildQuestionNotice) error {
+func (p *gatedQuestionPublication) PublishChildQuestion(ctx context.Context, _ childagent.QuestionNotice) error {
 	close(p.entered)
 	select {
 	case <-p.release:
@@ -106,7 +108,7 @@ func TestBatchScopeZeroSequenceCannotResolveUnpublishedHold(t *testing.T) {
 	_, err := scope.hold(1)
 	require.NoError(t, err)
 	called := false
-	err = scope.deliverWithCommit(batchAgentInjectMessage{Depth: 1, Sequence: 0}, func() error { called = true; return nil })
+	err = scope.deliverWithCommit(batchinst.AgentInjectMessage{Depth: 1, Sequence: 0}, func() error { called = true; return nil })
 	tl.addf("zero-sequence answer: err=%v committed=%v", err, called)
 	require.ErrorIs(t, err, ErrBatchAgentNotHeld)
 	require.False(t, called)

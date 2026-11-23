@@ -42,6 +42,7 @@ import (
 	"github.com/google/uuid"
 
 	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 )
 
 // pinnedBatchRegistryIDs returns the distinct pinned batch registry
@@ -55,7 +56,7 @@ func pinnedBatchRegistryIDs(list []fantasy.AgentTool) []string {
 	ids := make([]string, 0, len(list))
 	seen := make(map[string]struct{}, len(list))
 	for _, tool := range list {
-		ingress, ok := tool.(*batchIngressTool)
+		ingress, ok := tool.(*toolwrap.BatchIngressTool)
 		if !ok || ingress.Bind != nil || ingress.Inv.RegistryID() == "" {
 			continue
 		}

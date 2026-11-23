@@ -11,6 +11,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -39,7 +41,7 @@ func batchGenericTestExecutor(tool fantasy.AgentTool, beforeResolve ...func()) *
 			before()
 		}
 		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{tool.Info().Name: {Tool: tool}}), nil
-	}}, map[string]batchLeafFamily{batchKindGeneric: family, batchKindMCP: family})
+	}}, map[string]batchLeafFamily{batchdispatch.KindGeneric: family, batchdispatch.KindMCP: family})
 }
 
 func batchGenericTestStart(t *testing.T, e *batchExecutor, kind, name string) (jobbatch.Execution, chan jobbatch.Result) {
@@ -79,7 +81,7 @@ func TestBatchGenericStopWaitsForReturn(t *testing.T) {
 		<-release
 		return fantasy.NewTextResponse("partial"), ctx.Err()
 	}}
-	e, reports := batchGenericTestStart(t, batchGenericTestExecutor(tool), batchKindMCP, tool.name)
+	e, reports := batchGenericTestStart(t, batchGenericTestExecutor(tool), batchdispatch.KindMCP, tool.name)
 	batchWait(t, entered)
 	require.NoError(t, e.Stop(context.Background()))
 	require.NoError(t, e.Stop(context.Background()))
@@ -130,7 +132,7 @@ func TestBatchGenericOutcomeAndOutput(t *testing.T) {
 				<-release
 				return tc.response, tc.err
 			}}
-			e, reports := batchGenericTestStart(t, batchGenericTestExecutor(tool), batchKindGeneric, tool.name)
+			e, reports := batchGenericTestStart(t, batchGenericTestExecutor(tool), batchdispatch.KindGeneric, tool.name)
 			if tc.stop {
 				require.NoError(t, e.Stop(context.Background()))
 			}
@@ -166,7 +168,7 @@ func TestBatchGenericOutcomeAndOutput(t *testing.T) {
 
 func TestBatchGenericPanic(t *testing.T) {
 	tool := &batchGenericTestTool{name: "view", run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) { panic("private") }}
-	_, reports := batchGenericTestStart(t, batchGenericTestExecutor(tool), batchKindGeneric, tool.name)
+	_, reports := batchGenericTestStart(t, batchGenericTestExecutor(tool), batchdispatch.KindGeneric, tool.name)
 	r := batchGenericTestReport(t, reports)
 	require.Equal(t, jobbatch.StateFailed, r.State)
 	require.Equal(t, "tool_panic", r.Code)
@@ -181,12 +183,12 @@ func TestBatchGenericRejectedStarts(t *testing.T) {
 	e := batchGenericTestExecutor(tool)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := e.Start(ctx, batchTestLaunch(batchKindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(jobbatch.Result) { t.Error("rejected Start reported") })
+	_, err := e.Start(ctx, batchTestLaunch(batchdispatch.KindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(jobbatch.Result) { t.Error("rejected Start reported") })
 	require.ErrorIs(t, err, context.Canceled)
 	for _, name := range []string{"missing", "await_tasks", "batch_run", "ask_question", "stop_agent"} {
 		p, err := json.Marshal(batchLeafPayload{Tool: name, SessionID: "s"})
 		require.NoError(t, err)
-		_, err = e.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: p}}, func(jobbatch.Result) { t.Error("rejected Start reported") })
+		_, err = e.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: p}}, func(jobbatch.Result) { t.Error("rejected Start reported") })
 		var coded interface{ Code() string }
 		require.ErrorAs(t, err, &coded)
 		require.Equal(t, "tool_unavailable", coded.Code())
@@ -228,7 +230,7 @@ func TestBatchGenericSharedMCPStopIsolation(t *testing.T) {
 		p, err := json.Marshal(batchLeafPayload{Tool: tool.name, SessionID: t.Name(), Input: json.RawMessage(`{"id":"` + id + `"}`)})
 		require.NoError(t, err)
 		reports := make(chan jobbatch.Result, 2)
-		e, err := executor.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchKindMCP, Payload: p}}, func(r jobbatch.Result) { reports <- r })
+		e, err := executor.Start(context.Background(), jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: batchdispatch.KindMCP, Payload: p}}, func(r jobbatch.Result) { reports <- r })
 		require.NoError(t, err)
 		return e, reports
 	}
@@ -266,7 +268,7 @@ func TestBatchGenericResolverCancellation(t *testing.T) {
 		return fantasy.ToolResponse{}, nil
 	}}
 	e := batchGenericTestExecutor(tool, cancel)
-	execution, err := e.Start(ctx, batchTestLaunch(batchKindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(jobbatch.Result) { t.Error("cancelled resolver reported") })
+	execution, err := e.Start(ctx, batchTestLaunch(batchdispatch.KindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(jobbatch.Result) { t.Error("cancelled resolver reported") })
 	require.ErrorIs(t, err, context.Canceled)
 	require.Nil(t, execution)
 }
@@ -299,7 +301,7 @@ func TestBatchGenericStartLifetime(t *testing.T) {
 		return fantasy.NewTextResponse("ok"), nil
 	}}
 	reports := make(chan jobbatch.Result, 2)
-	_, err := batchGenericTestExecutor(tool).Start(ctx, batchTestLaunch(batchKindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(r jobbatch.Result) { reports <- r })
+	_, err := batchGenericTestExecutor(tool).Start(ctx, batchTestLaunch(batchdispatch.KindGeneric, `{"tool":"view","session_id":"s","input":{}}`), func(r jobbatch.Result) { reports <- r })
 	require.NoError(t, err)
 	batchWait(t, entered)
 	cancel()
@@ -325,6 +327,6 @@ type batchGenericExecution struct {
 }
 
 func (e *batchGenericExecution) run(ctx context.Context, tool fantasy.AgentTool, call fantasy.ToolCall, report func(jobbatch.Result)) {
-	e.GenericExecution = batchexec.NewGeneric(e.cancel, batchExecutionOutput(e.cache, e.nodeID, e.rootID, batchOutputCursorClamp))
+	e.GenericExecution = batchexec.NewGeneric(e.cancel, batchExecutionOutput(e.cache, e.nodeID, e.rootID, batchmeta.OutputCursorClamp))
 	e.Run(ctx, tool, call, report)
 }

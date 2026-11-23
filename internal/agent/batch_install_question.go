@@ -6,13 +6,13 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
 type (
-	batchChildQuestionNotice    = childagent.QuestionNotice
-	batchChildQuestionPublisher = childagent.QuestionPublisher
-	batchAgentAskQuestionTool   = childagent.AskQuestionTool[batchQuestionContextPort]
+	batchAgentAskQuestionTool = childagent.AskQuestionTool[batchQuestionContextPort]
 )
 
 // The store literals remain compatible with root callers and fixtures. The
@@ -22,11 +22,11 @@ type batchCoordinatorQuestionPublisher struct {
 	wake  func(context.Context, string)
 }
 
-func (p batchCoordinatorQuestionPublisher) PublishChildQuestion(ctx context.Context, n batchChildQuestionNotice) error {
+func (p batchCoordinatorQuestionPublisher) PublishChildQuestion(ctx context.Context, n childagent.QuestionNotice) error {
 	return newBatchQuestionPublisher(p.store, p.wake).PublishChildQuestion(ctx, n)
 }
 
-func newBatchQuestionPublisher(store *session.BatchStore, wake func(context.Context, string)) batchChildQuestionPublisher {
+func newBatchQuestionPublisher(store *session.BatchStore, wake func(context.Context, string)) childagent.QuestionPublisher {
 	if store == nil {
 		return childagent.NewQuestionPublisher(nil, wake)
 	}
@@ -50,5 +50,6 @@ func (batchQuestionContextPort) AskFrom(ctx context.Context) (func(context.Conte
 	return binding.Ask, ok
 }
 
-func (batchQuestionContextPort) Depth(ctx context.Context) int { return batchAgentQuestionDepth(ctx) }
-func (batchQuestionContextPort) NoRouteError() error           { return ErrBatchQuestionNoRoute }
+func (batchQuestionContextPort) Depth(ctx context.Context) int { return state.QuestionDepth(ctx) }
+
+func (batchQuestionContextPort) NoRouteError() error { return batchinst.ErrBatchQuestionNoRoute }

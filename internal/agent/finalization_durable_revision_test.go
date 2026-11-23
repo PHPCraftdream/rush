@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -16,14 +18,14 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	_, err := scope.Store.Admit(t.Context(), scope.Identity, "before-driver")
 	require.NoError(t, err)
 	require.NoError(t, scope.Store.Release(t.Context(), scope.Identity, "before-driver"))
-	execution := &finalizationExecution{
-		SessionID: "session", LogicalID: "logical", Gate: newFinalizationGate(7),
-		Read: func(ctx context.Context) (finalizationFacts, error) {
+	execution := &finalize.FinalizationExecution{
+		SessionID: "session", LogicalID: "logical", Gate: gate.New(7),
+		Read: func(ctx context.Context) (gate.Facts, error) {
 			record, readErr := scope.Store.Snapshot(ctx, scope.Identity)
 			if readErr != nil {
-				return finalizationFacts{}, readErr
+				return gate.Facts{}, readErr
 			}
-			return finalizationFacts{Complete: true, DurableRevision: uint64(record.Revision), Own: int(record.OpenTickets), Cancelled: record.Cancelled}, nil
+			return gate.Facts{Complete: true, DurableRevision: uint64(record.Revision), Own: int(record.OpenTickets), Cancelled: record.Cancelled}, nil
 		},
 	}
 	created, err := env.messages.Create(t.Context(), "session", message.CreateMessageParams{
@@ -39,13 +41,13 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	require.EqualValues(t, 2, ts.currentAssistant.FinishPart().FinalizationRevision)
 	persistCandidate := func() {
 		stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
-		_, persistErr := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, stepID, *ts.currentAssistant)
+		_, persistErr := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, stepID, *ts.currentAssistant)
 		require.NoError(t, persistErr)
 	}
 	persistCandidate()
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
-	candidate := finalizationCandidate{MessageID: created.ID, Hash: hash}
+	candidate := gate.Candidate{MessageID: created.ID, Hash: hash}
 
 	// A separate store represents work that did not signal this local gate.
 	external := session.NewAgentFinalizationStore(env.conn)
@@ -53,10 +55,10 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	require.NoError(t, err)
 	require.NoError(t, external.Release(t.Context(), scope.Identity, "external-work"))
 	publications := 0
-	publish := func(ctx context.Context, candidate finalizationCandidate) error {
+	publish := func(ctx context.Context, candidate gate.Candidate) error {
 		publications++
 		stamp := ts.finalizationStamp
-		_, publishErr := publishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
+		_, publishErr := finalize.PublishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
 			Key: execution.LogicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 		}, candidate)
 		return publishErr
@@ -69,7 +71,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	})
 	verdict, err := execution.Gate.TrySeal(t.Context(), first, candidate, execution.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationCompose, verdict)
+	require.Equal(t, gate.Compose, verdict)
 	require.Zero(t, publications, "quiet external work still invalidates pre-work composition")
 	require.NoError(t, ts.beginFinalizationStep(t.Context()))
 	require.EqualValues(t, 4, ts.finalizationStamp.DurableRevision())
@@ -77,7 +79,7 @@ func TestFinalizationDurableRevisionSurvivesLocalGateReconstruction(t *testing.T
 	persistCandidate()
 	verdict, err = execution.Gate.TrySeal(t.Context(), ts.finalizationStamp, candidate, execution.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationAccepted, verdict)
+	require.Equal(t, gate.Accepted, verdict)
 	require.Equal(t, 1, publications)
 	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)

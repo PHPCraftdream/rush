@@ -10,6 +10,8 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -22,7 +24,7 @@ import (
 type installFakeExecutor struct{ content string }
 
 func (e installFakeExecutor) Start(_ context.Context, _ jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
-	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchEnvelope(fantasy.NewTextResponse(e.content))})
+	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchdispatch.Envelope(fantasy.NewTextResponse(e.content))})
 	return installFakeExecution{}, nil
 }
 
@@ -63,7 +65,7 @@ func (e *gatingInstallExecutor) Start(ctx context.Context, _ jobbatch.Launch, re
 	case <-ctx.Done():
 		return gatingInstallExecution{}, ctx.Err()
 	}
-	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchEnvelope(fantasy.NewTextResponse(e.content))})
+	report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchdispatch.Envelope(fantasy.NewTextResponse(e.content))})
 	return gatingInstallExecution{content: e.content}, nil
 }
 
@@ -107,7 +109,7 @@ func installOneItemSpec(t *testing.T, content string) jobbatch.Spec {
 	// contents carry different hashes (the mismatch probes rely on that).
 	payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-1", SessionID: "owner", Input: json.RawMessage(`{"path":"` + content + `"}`), RegistryID: "reg-1"})
 	require.NoError(t, err)
-	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}
+	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}}
 }
 
 func installSubmit(t *testing.T, install *BatchInstall, spec jobbatch.Spec) jobbatch.ID {
@@ -168,7 +170,7 @@ func TestBatchRunnerAdapterRejectsMalformedSpecShapes(t *testing.T) {
 	install := installRunnerForTest(t, ctx, installTestDeps(t, store, conn, "ok"))
 	for _, spec := range []jobbatch.Spec{
 		{},
-		{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric}, Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel}},
+		{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric}, Batch: &jobbatch.BatchSpec{Mode: jobbatch.ModeParallel}},
 	} {
 		_, err := install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{Root: jobbatch.ID(uuid.NewString()), Spec: spec})
 		require.ErrorIs(t, err, jobbatch.ErrInvalidSpec)
@@ -225,17 +227,17 @@ func TestBatchAttachAdapterProbesLiveRootWithFences(t *testing.T) {
 	spec := installOneItemSpec(t, "")
 	root := installSubmit(t, install, spec)
 	hash := batchInvocationHash(spec)
-	got, attached, err := install.Attach.ProbeLive(ctx, batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash})
+	got, attached, err := install.Attach.ProbeLive(ctx, batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash})
 	require.NoError(t, err)
 	require.True(t, attached)
 	require.Equal(t, root, got)
 	for name, tc := range map[string]struct {
-		probe batchAttachProbe
+		probe batchcore.AttachProbe
 		want  error
 	}{
-		"hash mismatch":   {probe: batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: batchInvocationHash(installOneItemSpec(t, "other"))}, want: session.ErrBatchInputMismatch},
-		"foreign host":    {probe: batchAttachProbe{Owner: "owner", Host: "elsewhere", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash}, want: session.ErrBatchForeignLiveHost},
-		"runner mismatch": {probe: batchAttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-2", ToolCallID: "call-1", InputHash: hash}, want: session.ErrBatchRunnerMismatch},
+		"hash mismatch":   {probe: batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: batchInvocationHash(installOneItemSpec(t, "other"))}, want: session.ErrBatchInputMismatch},
+		"foreign host":    {probe: batchcore.AttachProbe{Owner: "owner", Host: "elsewhere", RunnerID: "runner-1", ToolCallID: "call-1", InputHash: hash}, want: session.ErrBatchForeignLiveHost},
+		"runner mismatch": {probe: batchcore.AttachProbe{Owner: "owner", Host: "host", RunnerID: "runner-2", ToolCallID: "call-1", InputHash: hash}, want: session.ErrBatchRunnerMismatch},
 	} {
 		_, attached, err := install.Attach.ProbeLive(ctx, tc.probe)
 		require.Error(t, err, name+": mismatch is an error, not a resubmission")
@@ -402,8 +404,8 @@ func TestInstallBatchRuntimeFailsClosed(t *testing.T) {
 func TestNewBatchExecutorFamiliesRegistersAllKinds(t *testing.T) {
 	t.Parallel()
 	families := newBatchExecutorFamilies(batchAgentDeps{})
-	for _, kind := range []string{batchKindGeneric, batchKindMCP, batchKindShell, batchKindArgv, batchKindAgent} {
+	for _, kind := range []string{batchdispatch.KindGeneric, batchdispatch.KindMCP, batchdispatch.KindShell, batchdispatch.KindArgv, batchdispatch.KindAgent} {
 		require.Contains(t, families, kind, kind)
 	}
-	require.Equal(t, families[batchKindGeneric], families[batchKindMCP], "MCP leaves run through the pinned generic leaf path")
+	require.Equal(t, families[batchdispatch.KindGeneric], families[batchdispatch.KindMCP], "MCP leaves run through the pinned generic leaf path")
 }

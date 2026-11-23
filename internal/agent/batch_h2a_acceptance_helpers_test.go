@@ -31,6 +31,8 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -164,7 +166,7 @@ func newH2aGatedInstallWithLeafWrap(t *testing.T, wrap func(fantasy.AgentTool) f
 	if wrap != nil {
 		leaf = wrap(leaf)
 	}
-	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{leaf})
+	fingerprint := installwire.ToolsetFingerprint([]fantasy.AgentTool{leaf})
 	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = nil // the REAL default batchExecutor
 	deps.DonePoll = time.Millisecond
@@ -225,8 +227,8 @@ func h2aGatedInvocation(t *testing.T, env *h2aGatedInstall, bindingID, callID, d
 	return inv, call, spec, batchInvocationHash(spec)
 }
 
-func h2aProbe(env *h2aGatedInstall, hash, callID string) batchAttachProbe {
-	return batchAttachProbe{
+func h2aProbe(env *h2aGatedInstall, hash, callID string) batchcore.AttachProbe {
+	return batchcore.AttachProbe{
 		Owner: env.sessionID, Host: "host", RunnerID: "runner-1",
 		ToolCallID: callID, InputHash: hash,
 	}

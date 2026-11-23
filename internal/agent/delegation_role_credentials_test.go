@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/fantasy"
@@ -80,7 +81,7 @@ func TestExplicitRoleCannotRebindCredentialedParentWithoutBundle(t *testing.T) {
 	_, err = coord.runSubAgent(t.Context(), subAgentParams{
 		Agent: child, SessionID: parent, AgentMessageID: "m", ToolCallID: "c", Prompt: "p", SessionTitle: "refused", RequestedModelRole: "smart",
 	})
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	after, err := coord.sessions.ListAll(t.Context())
 	require.NoError(t, err)
 	require.Len(t, after, len(before), "a missing tenant bundle must fail before a child can select operator credentials")

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/fantasy"
@@ -23,11 +25,11 @@ func TestAgentRoleAdmissionRejectsInvalidValuesAcrossBatchAdapters(t *testing.T)
 			input := json.RawMessage(`{"prompt":"p","role":` + value + `}`)
 			_, err := (BatchExternalSpec{Tool: AgentToolName, Input: input}).Spec()
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
-			_, err = modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: AgentToolName, Input: input}}}, inv, modelRegistry(AgentToolName))
+			_, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: AgentToolName, Input: input}}}, inv, modelRegistry(AgentToolName))
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
 			_, err = batchOneItemSpec(inv, fantasy.ToolCall{Name: AgentToolName}, input)
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
-			var inputErr batchToolInputError
+			var inputErr batchcore.ToolInputError
 			require.ErrorAs(t, err, &inputErr)
 		})
 	}
@@ -84,7 +86,7 @@ func TestAgentRoleBatchAdaptersAcceptConfiguredCustomNames(t *testing.T) {
 			input := json.RawMessage(`{"prompt":"p","role":"` + role + `"}`)
 			_, err := (BatchExternalSpec{Tool: AgentToolName, Input: input}).Spec()
 			require.NoError(t, err, "external parsing checks syntax, not configured definitions")
-			modelSpec, err := modelBatchSpec(batchModelSpec{Mode: "parallel", Items: []batchModelItem{{Tool: AgentToolName, Input: input}}}, inv, modelRegistry(AgentToolName))
+			modelSpec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: AgentToolName, Input: input}}}, inv, modelRegistry(AgentToolName))
 			require.NoError(t, err)
 			modelPayload := batchPayloadAt(t, modelSpec.Batch.Items[0])
 			require.Equal(t, role, modelPayload.SelectedRoleContract.Name)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -82,7 +83,7 @@ func (c *coordinator) guardTurnDiskFence(ctx context.Context, sessionID string, 
 	// run supersedes the stored fence at admission (internal/app
 	// ExecuteRun). It must pass without consulting a stale fence that may
 	// name a binding this process no longer holds.
-	if opts != nil && executionProviderIntentFrom(ctx, sessionID) == ExecutionProviderOS && opts.DiskBindingID == "" && tools.IsOSDisk(opts.DiskProvider) {
+	if opts != nil && batchlife.ExecutionProviderIntentFrom(ctx, sessionID) == batchlife.ExecutionProviderOS && opts.DiskBindingID == "" && tools.IsOSDisk(opts.DiskProvider) {
 		return nil
 	}
 	var source *session.SessionExecutionRequirement

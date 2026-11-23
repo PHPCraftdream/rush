@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/fantasy"
@@ -18,7 +19,7 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 	ctx, _ := customRoleDispatchContext(t, contract, nil, config.SelectedModelTypeSmart)
 	var calls []SessionAgentCall
 	var boundIDs []string
-	lifecycle := batchAgentLifecycle{
+	lifecycle := state.Lifecycle{
 		BindChildSession: func(bindCtx context.Context, id string) error {
 			bound, found, err := coord.sessions.(session.SessionRoleContractStore).GetSessionRoleContract(bindCtx, id)
 			require.NoError(t, err)
@@ -29,7 +30,7 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 		},
 		NoChildSelected: func() { t.Error("successful custom-role dispatch must select its child") },
 	}
-	ctx = withBatchAgentLifecycle(ctx, lifecycle)
+	ctx = state.WithLifecycle(ctx, lifecycle)
 	child := newMockAgent(customRoleDispatchOperator, 128, func(runCtx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		require.Len(t, boundIDs, len(calls)+1, "lifecycle binding must precede every child run, including resume")
 		require.Equal(t, call.SessionID, boundIDs[len(boundIDs)-1])
@@ -74,7 +75,7 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 	require.NoError(t, coord.sessions.RequestCancel(t.Context(), childID))
 	resumeCtx := WithCallOptions(t.Context(), &CallOptions{})
 	t.Cleanup(callBuildScopeFrom(resumeCtx).Close)
-	resumeCtx = withBatchAgentLifecycle(resumeCtx, lifecycle)
+	resumeCtx = state.WithLifecycle(resumeCtx, lifecycle)
 	response, err = coord.runSubAgent(resumeCtx, subAgentParams{
 		Agent: child, SessionID: parent, ResumeSessionID: childID,
 		AgentMessageID: "refresh-message-2", ToolCallID: "refresh-call-2", Prompt: "second request",
@@ -100,7 +101,7 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 
 	bindFailure := errors.New("custom-role lifecycle bind failed")
 	noChild := 0
-	refusedCtx := withBatchAgentLifecycle(resumeCtx, batchAgentLifecycle{
+	refusedCtx := state.WithLifecycle(resumeCtx, state.Lifecycle{
 		BindChildSession: func(context.Context, string) error { return bindFailure },
 		NoChildSelected:  func() { noChild++ },
 	})

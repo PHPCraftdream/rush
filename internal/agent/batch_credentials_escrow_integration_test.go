@@ -9,6 +9,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +42,11 @@ type escrowTestIngress struct{ store *BatchLeafRegistryStore }
 func (i escrowTestIngress) Invoke(context.Context, BatchInvocation, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	return fantasy.ToolResponse{}, nil
 }
-func (i escrowTestIngress) PinLeafRegistry(*BatchLeafRegistry) (string, error) { return "", nil }
+
+func (i escrowTestIngress) PinLeafRegistry(*toolwrap.PolicyLeafRegistry) (string, error) {
+	return "", nil
+}
+
 func (i escrowTestIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTool, error) {
 	registry, err := i.store.Resolve(registryID)
 	if err != nil {
@@ -47,7 +55,7 @@ func (i escrowTestIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTo
 	return registry.Resolve(name)
 }
 
-func (i escrowTestIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
+func (i escrowTestIngress) Registry(registryID string) (*toolwrap.PolicyLeafRegistry, error) {
 	return i.store.Resolve(registryID)
 }
 
@@ -57,7 +65,7 @@ type escrowAgentExecutor struct {
 	mu       sync.Mutex
 	reqs     []batchAgentRunRequest
 	payloads [][]byte
-	turns    []batchAgentTurn
+	turns    []childagent.Turn
 	wg       sync.WaitGroup
 	launched chan struct{}
 }
@@ -81,7 +89,7 @@ func (e *escrowAgentExecutor) Start(ctx context.Context, launch jobbatch.Launch,
 	e.reqs = append(e.reqs, req)
 	e.payloads = append(e.payloads, append([]byte(nil), launch.Task.Payload...))
 	e.mu.Unlock()
-	turn, err := e.deps.Runs.StartAgentTurn(ctx, req, batchAgentHost{})
+	turn, err := e.deps.Runs.StartAgentTurn(ctx, req, childagent.Host{})
 	if err != nil {
 		return nil, err
 	}
@@ -104,15 +112,15 @@ func (e *escrowAgentExecutor) Start(ctx context.Context, launch jobbatch.Launch,
 	return escrowTurnExecution{turn: turn}, nil
 }
 
-func (e *escrowAgentExecutor) snapshot() ([]batchAgentRunRequest, [][]byte, []batchAgentTurn) {
+func (e *escrowAgentExecutor) snapshot() ([]batchAgentRunRequest, [][]byte, []childagent.Turn) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]batchAgentRunRequest(nil), e.reqs...),
 		append([][]byte(nil), e.payloads...),
-		append([]batchAgentTurn(nil), e.turns...)
+		append([]childagent.Turn(nil), e.turns...)
 }
 
-type escrowTurnExecution struct{ turn batchAgentTurn }
+type escrowTurnExecution struct{ turn childagent.Turn }
 
 func (e escrowTurnExecution) Stop(ctx context.Context) error { return e.turn.Stop(ctx) }
 func (e escrowTurnExecution) Dispose(context.Context) error {
@@ -133,7 +141,7 @@ func escrowAgentSpec(t *testing.T, callID string) jobbatch.Spec {
 		Policy:          &batchLeafPolicyContext{MessageID: "message", RestrictedToolset: "agent"},
 	})
 	require.NoError(t, err)
-	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}
+	return jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}}
 }
 
 func TestBatchCredentialDriverRejectsMissingEscrow(t *testing.T) {
@@ -152,7 +160,7 @@ func TestBatchCredentialDriverRejectsMissingEscrow(t *testing.T) {
 		NodeID: "root.1", SessionID: "session", MessageID: "message", ToolCallID: "call",
 		Tool: "agent", RegistryID: "registry", CallCredentials: true, Ingress: escrowTestIngress{store: store},
 	}
-	turn, err := (batchCoordinatorAgentRuns{}).StartAgentTurn(context.Background(), req, batchAgentHost{})
+	turn, err := (batchCoordinatorAgentRuns{}).StartAgentTurn(context.Background(), req, childagent.Host{})
 	if turn != nil {
 		close(tool.release)
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -164,7 +172,7 @@ func TestBatchCredentialDriverRejectsMissingEscrow(t *testing.T) {
 			t.Error("agent driver failed to exit")
 		}
 	}
-	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+	require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 	require.EqualError(t, err, "batch credential escrow entry missing or already consumed")
 	require.Zero(t, tool.count())
 }
@@ -251,13 +259,13 @@ func TestBatchCredentialSubmitAddDriverLifecycle(t *testing.T) {
 	require.NoError(t, store.credentialEscrow().Register(pendingKey.adapterKey(), string(root), escrowTestCreds("pending-secret")))
 	require.NoError(t, adapter.Release(closeCtx, root))
 	_, _, err = store.credentialEscrow().consume(pendingKey, string(root)+".1")
-	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+	require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 	for _, req := range requests {
 		_, _, err := store.credentialEscrow().consume(batchCredentialKey{
 			registryID: req.RegistryID, sessionID: req.SessionID, messageID: req.MessageID,
 			callID: req.ToolCallID, tool: req.Tool,
 		}, string(req.NodeID))
-		require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+		require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 	}
 	require.NoError(t, runner.Close(closeCtx))
 	executor.wg.Wait()

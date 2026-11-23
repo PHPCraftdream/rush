@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -36,8 +37,8 @@ func TestModelBatchRunSameCallIDRetry(t *testing.T) {
 		}
 	}
 	require.NotNil(t, runTool)
-	input, err := json.Marshal(batchModelParams{Spec: batchModelSpec{
-		Mode: "parallel", Items: []batchModelItem{{Tool: "fs_write", Input: json.RawMessage(h2aLeafInput(env.targetPath))}},
+	input, err := json.Marshal(modelcontrol.Params{Spec: modelcontrol.Spec{
+		Mode: "parallel", Items: []modelcontrol.Item{{Tool: "fs_write", Input: json.RawMessage(h2aLeafInput(env.targetPath))}},
 	}})
 	require.NoError(t, err)
 	call := fantasy.ToolCall{ID: "reused-call-id", Name: "batch_run", Input: string(input)}

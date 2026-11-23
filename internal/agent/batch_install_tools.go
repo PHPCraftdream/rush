@@ -11,12 +11,6 @@ import (
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
-// batchIngressTool is the root compatibility alias over the moved ingress
-// shell (internal/agent/runtime/policy/toolwrap/ingress.go): the staying
-// root files that type-switch the armed wrapper and the ingress assertions
-// keep compiling until their files move in later chunks.
-type batchIngressTool = toolwrap.BatchIngressTool
-
 // batchInvocationSpec adapts the root-owned BatchInvocation template onto
 // the toolwrap.Invocation port: immutable call-site identity ops. Every op
 // returns a NEW view; the template value inside is never mutated (same
@@ -225,16 +219,9 @@ func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinator
 			}
 			if template.AutoEscape {
 				inv.BackgroundEscape = batchEscapeAuto
-				inv.Delivery.Window = inlineWindow.String()
+				inv.Delivery.Window = installwire.InlineWindow.String()
 			}
 			return newBatchIngressShell(tool, leaves, bind, inv, deferred)
 		},
 	})
-}
-
-// batchToolsetFingerprint is the restricted-toolset identity of one build:
-// the sorted tool names. Two builds with different toolsets carry different
-// pinned registries AND different fingerprints.
-func batchToolsetFingerprint(list []fantasy.AgentTool) string {
-	return installwire.ToolsetFingerprint(list)
 }

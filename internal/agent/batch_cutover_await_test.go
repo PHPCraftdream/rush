@@ -23,6 +23,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -338,7 +339,7 @@ func (e *cutoverEnv) submitBatchRoot(callID string, items int, leaf *gatedLeaf) 
 			Input: json.RawMessage(`{"p":1}`), RegistryID: e.registryID,
 		})
 		require.NoError(e.t, err)
-		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}})
+		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}})
 	}
 	root := uuid.NewString()
 	_, err := e.install.RunnerHandle.Submit(e.ctx, jobbatch.SubmitRequest{
@@ -371,7 +372,7 @@ func (e *cutoverEnv) submitBatchRootUnannounced(callID string, items int, leaf *
 			Input: json.RawMessage(`{"p":1}`), RegistryID: e.registryID,
 		})
 		require.NoError(e.t, err)
-		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}})
+		specs = append(specs, jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}})
 	}
 	root := uuid.NewString()
 	_, err := e.install.RunnerHandle.Submit(e.ctx, jobbatch.SubmitRequest{
@@ -768,8 +769,8 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	// Production truth (batch_commit.go writes task_kind = Spec.Task.Kind;
 	// batch_ingress.go maps run_command onto the argv family): the refs'
 	// ToolName is the TASK KIND, not the leaf name.
-	require.Contains(t, toolText, batchKindGeneric, "the tool response names the generic batch children by task kind")
-	require.Contains(t, toolText, batchKindArgv, "the tool response names the detached run_command root by task kind")
+	require.Contains(t, toolText, batchdispatch.KindGeneric, "the tool response names the generic batch children by task kind")
+	require.Contains(t, toolText, batchdispatch.KindArgv, "the tool response names the detached run_command root by task kind")
 	// The renderer emits "- %s (tool_call_id %s, ...)" per ref, so the call
 	// ids tie the names to the real children. Production truth: every
 	// subtree ref carries the ROOT's tool_call_id (batchLiveFact propagates

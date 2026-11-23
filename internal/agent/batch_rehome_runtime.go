@@ -9,12 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
-
-func awaitTaskSummary(refs []tools.AwaitTaskRef) string { return batchlife.AwaitTaskSummary(refs) }
 
 // clearSleepAll disarms the session's await_tasks sleep and cancels its
 // pending max_wait once schedule. Called on EVERY drain launch that is
@@ -97,8 +93,4 @@ func (c *coordinator) arbClearSleepAll(sessionID string) string {
 
 func (c *coordinator) bgShellManager() *shellbg.BackgroundShellManager {
 	return c.background
-}
-
-func stallToolStalled(sessionID, callID string, since time.Duration) string {
-	return batchlife.StallToolStalled(sessionID, callID, since)
 }

@@ -5,12 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/stretchr/testify/require"
 )
 
 type failedHeldQuestionFacts struct{ BatchCutoverFacts }
 
-func (failedHeldQuestionFacts) ActionableHeldQuestions(context.Context, string) ([]BatchHeldQuestionRoute, error) {
+func (failedHeldQuestionFacts) ActionableHeldQuestions(context.Context, string) ([]batchlife.BatchHeldQuestionRoute, error) {
 	return nil, errors.New("question state read failed")
 }
 

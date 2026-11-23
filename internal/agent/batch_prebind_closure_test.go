@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +25,7 @@ func (l prebindClosureLeaf) Run(ctx context.Context, _ fantasy.ToolCall) (fantas
 
 type prebindClosureFactory struct{ leaf fantasy.AgentTool }
 
-func (f prebindClosureFactory) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error) {
+func (f prebindClosureFactory) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host childagent.Host) (childagent.Turn, error) {
 	return startBatchAgentTurn(ctx, req, host, f.leaf, nil, func() {})
 }
 
@@ -35,7 +37,7 @@ func TestBatchPrebindFailureSettlesScope(t *testing.T) {
 			defer cancel()
 			leaf := prebindClosureLeaf{run: func(ctx context.Context) (fantasy.ToolResponse, error) {
 				trace.addf("leaf entered: %s", kind)
-				lifecycle := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
+				lifecycle := ctx.Value(state.LifecycleContextKey{}).(state.Lifecycle)
 				switch kind {
 				case "denied":
 					return fantasy.NewTextErrorResponse("Tool call blocked by hook"), nil
@@ -93,14 +95,14 @@ func TestBatchDriverSuccessfulBindDoesNotDeclareNoChild(t *testing.T) {
 	defer cancel()
 	var missing atomic.Int32
 	leaf := prebindClosureLeaf{run: func(ctx context.Context) (fantasy.ToolResponse, error) {
-		lifecycle := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle)
+		lifecycle := ctx.Value(state.LifecycleContextKey{}).(state.Lifecycle)
 		if err := lifecycle.BindChildSession(ctx, "child"); err != nil {
 			return fantasy.ToolResponse{}, err
 		}
 		trace.addf("child bound; leaf fails afterwards")
 		return fantasy.ToolResponse{}, errors.New("failure after bind")
 	}}
-	turn, err := startBatchAgentTurn(ctx, batchAgentRunRequest{}, batchAgentHost{
+	turn, err := startBatchAgentTurn(ctx, batchAgentRunRequest{}, childagent.Host{
 		BindChildSession: func(context.Context, string) error { return nil },
 		NoChildSelected:  func() { missing.Add(1); trace.addf("no child declared") },
 	}, leaf, nil, func() {})

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -26,7 +28,7 @@ func TestPersistFinalizationCandidateCommitsMessageAndIdentityTogether(t *testin
 	scope := finalizationStoredScope(t, env, id)
 	m := newFinalizationCandidateMessage(t, env, id)
 
-	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
+	persisted, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, persisted.Candidate.MessageID)
 	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
@@ -40,7 +42,7 @@ func TestPersistFinalizationCandidateCommitsMessageAndIdentityTogether(t *testin
 	require.False(t, stored.IsFinished())
 	require.NoError(t, stored.VerifyFinalizationCandidate(id, persisted.Candidate.Hash))
 
-	accepted, err := publishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, persisted.Candidate)
+	accepted, err := finalize.PublishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, persisted.Candidate)
 	require.NoError(t, err, "publication follows the candidate commit")
 	require.True(t, accepted.IsFinished())
 }
@@ -53,8 +55,8 @@ func TestPersistFinalizationCandidateStaleWritesNothing(t *testing.T) {
 	_, err := scope.Store.Admit(t.Context(), scope.Identity, "late-work")
 	require.NoError(t, err)
 
-	_, err = persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
-	require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+	_, err = finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
+	require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
 	require.Empty(t, record.CandidateMessageID)
@@ -64,26 +66,26 @@ func TestPersistFinalizationCandidateStaleWritesNothing(t *testing.T) {
 
 	wrong := id
 	wrong.Key = "other"
-	_, err = persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, wrong, m)
-	require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+	_, err = finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, wrong, m)
+	require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 }
 
 func TestPublicationRefusesCandidateIdentityOrHashMismatch(t *testing.T) {
-	for name, mutate := range map[string]func(*message.FinalizationIdentity, *finalizationCandidate){
-		"serial":  func(id *message.FinalizationIdentity, _ *finalizationCandidate) { id.Serial = 9 },
-		"hash":    func(_ *message.FinalizationIdentity, c *finalizationCandidate) { c.Hash = "other" },
-		"message": func(_ *message.FinalizationIdentity, c *finalizationCandidate) { c.MessageID = "other" },
+	for name, mutate := range map[string]func(*message.FinalizationIdentity, *gate.Candidate){
+		"serial":  func(id *message.FinalizationIdentity, _ *gate.Candidate) { id.Serial = 9 },
+		"hash":    func(_ *message.FinalizationIdentity, c *gate.Candidate) { c.Hash = "other" },
+		"message": func(_ *message.FinalizationIdentity, c *gate.Candidate) { c.MessageID = "other" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := testEnv(t)
 			id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 			scope := finalizationStoredScope(t, env, id)
 			m := newFinalizationCandidateMessage(t, env, id)
-			persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
+			persisted, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 			require.NoError(t, err)
 			presented, candidate := id, persisted.Candidate
 			mutate(&presented, &candidate)
-			_, err = publishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, presented, candidate)
+			_, err = finalize.PublishFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, presented, candidate)
 			require.Error(t, err)
 			stored, err := env.messages.Get(t.Context(), m.ID)
 			require.NoError(t, err)
@@ -100,14 +102,14 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 5}
 	scope := finalizationStoredScope(t, env, id)
 	m := newFinalizationCandidateMessage(t, env, id)
-	_, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
+	_, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, m)
 	require.NoError(t, err)
-	quiet := func(context.Context) (finalizationFacts, error) { return finalizationFacts{Complete: true}, nil }
+	quiet := func(context.Context) (gate.Facts, error) { return gate.Facts{Complete: true}, nil }
 
 	execution := testFinalizationExecution()
-	execution.Gate = newFinalizationGate(1)
+	execution.Gate = gate.New(1)
 	execution.Scope = scope
-	hook := NewFinalizationRecoverScopeHook(env.messages)
+	hook := finalize.NewFinalizationRecoverScopeHook(env.messages)
 	restarted := execution.Gate
 	verdict, err := hook(t.Context(), execution)
 	require.NoError(t, err)
@@ -119,7 +121,7 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 	_, err = env.conn.ExecContext(t.Context(), `DELETE FROM messages WHERE id=?`, m.ID)
 	require.NoError(t, err)
 	execution = testFinalizationExecution()
-	execution.Gate = newFinalizationGate(1)
+	execution.Gate = gate.New(1)
 	execution.Scope = scope
 	failedGate := execution.Gate
 	verdict, err = hook(t.Context(), execution)
@@ -130,7 +132,7 @@ func TestRecoverFinalizationCandidateResumesStepCounter(t *testing.T) {
 	require.EqualValues(t, 6, stamp.Serial(), "a failed candidate still raises the counter")
 }
 
-func finalizationCandidateStream(env fakeEnv, scope finalizationPublicationScope, m *message.Message) *turnStream {
+func finalizationCandidateStream(env fakeEnv, scope finalize.FinalizationPublicationScope, m *message.Message) *turnStream {
 	execution := testFinalizationExecution()
 	execution.Scope = scope
 	return &turnStream{
@@ -173,8 +175,8 @@ func TestPersistStepFinishFailsClosedWithoutDurableScope(t *testing.T) {
 	env := testEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
 	m := newFinalizationCandidateMessage(t, env, id)
-	ts := finalizationCandidateStream(env, finalizationPublicationScope{}, &m)
-	require.ErrorIs(t, ts.persistStepFinish(), ErrFinalizationFactsUnavailable)
+	ts := finalizationCandidateStream(env, finalize.FinalizationPublicationScope{}, &m)
+	require.ErrorIs(t, ts.persistStepFinish(), gate.ErrFinalizationFactsUnavailable)
 	stored, err := env.messages.Get(t.Context(), m.ID)
 	require.NoError(t, err)
 	require.Nil(t, stored.FinishPart())

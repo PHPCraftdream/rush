@@ -6,11 +6,6 @@ package agent
 
 import "github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 
-const (
-	inlineWindowSeconds = installwire.InlineWindowSeconds
-	inlineWindow        = installwire.InlineWindow
-)
-
 // SetInlineWindowForTest zeroes (on=false) or restores (on=true) the
 // coordinator's inline window -- the A14 test seam: 0 = the pre-A14
 // "started" flow, byte for byte. package app's e2e harnesses disable it

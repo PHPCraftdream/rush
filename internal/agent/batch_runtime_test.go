@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/stretchr/testify/require"
 )
@@ -176,8 +178,8 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 		seen[p.Policy.RegistryID] = true
 		// The full policy set travels: scope, allowlist, message id.
 		ctx := batchLeafRunContext(context.Background(), p)
-		require.Equal(t, p.Policy.FolderScope, ctx.Value(batchFolderScopeContextKey{}))
-		require.Equal(t, p.Policy.RunAllowlist, ctx.Value(batchRunAllowlistContextKey{}))
+		require.Equal(t, p.Policy.FolderScope, ctx.Value(batchdispatch.FolderScopeContextKey{}))
+		require.Equal(t, p.Policy.RunAllowlist, ctx.Value(batchdispatch.RunAllowlistContextKey{}))
 		require.NotEmpty(t, p.Policy.MessageID)
 		require.NotEmpty(t, p.Policy.RestrictedToolset)
 	}
@@ -222,6 +224,6 @@ func TestInvokeValidateSubmitFailsBeforeRunnerCall(t *testing.T) {
 	_, err = rt.Invoke(context.Background(), testInvocation(), newTestLeaf("mystery_tool"),
 		call)
 	require.ErrorIs(t, err, errBatchSubmitBeforeInvalid)
-	require.True(t, errors.Is(err, errBatchUnknownTool))
+	require.True(t, errors.Is(err, batchinst.ErrBatchUnknownTool))
 	require.Zero(t, runner.submitCalls(), "runner must not be called after admission failure")
 }

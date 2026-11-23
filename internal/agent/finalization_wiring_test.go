@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -52,7 +54,7 @@ func newFinalizationWiringAssembled(t *testing.T, env fakeEnv, stub *finalizatio
 		holds:       holds,
 		debtFacts:   debt,
 		settler:     session.NewFinalizationDebtStore(env.conn),
-		cancel:      newFinalizationCancelRegistry(),
+		cancel:      finalize.NewFinalizationCancelRegistry(),
 		poll:        defaultSupervisionInterval(),
 	}
 }
@@ -144,7 +146,7 @@ func newFinalizationFactsEnv(t *testing.T) (fakeEnv, *finalizationWiring, *final
 
 // readFactsMust reads facts or fails the test; never hold a transaction
 // across this call: the wiring opens and rolls back its own.
-func readFactsMust(t *testing.T, w *finalizationWiring, identity coresession.AgentFinalizationIdentity) finalizationFacts {
+func readFactsMust(t *testing.T, w *finalizationWiring, identity coresession.AgentFinalizationIdentity) gate.Facts {
 	t.Helper()
 	facts, err := w.readFacts(t.Context(), identity)
 	require.NoError(t, err)
@@ -241,7 +243,7 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 		w := newFinalizationWiringAssembled(t, env, stub)
 		w.holds = nil // One nil composite member must break completeness.
 		_, err = w.readFacts(t.Context(), identity)
-		require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+		require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 	})
 
 	t.Run("missing durable record wraps the row error", func(t *testing.T) {
@@ -255,7 +257,7 @@ func TestFinalizationWiringReadFactsMapsDurableFacts(t *testing.T) {
 	t.Run("empty identity is refused", func(t *testing.T) {
 		_, w, _, _ := newFinalizationFactsEnv(t)
 		_, err := w.readFacts(t.Context(), coresession.AgentFinalizationIdentity{})
-		require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+		require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 	})
 }
 
@@ -355,11 +357,11 @@ func TestFinalizationWiringStartExecutionRegistersAndUnregisters(t *testing.T) {
 
 // finalizationWiringPublish builds the trySeal publish closure used by the
 // integration tests; it counts publications and stamps the durable identity.
-func finalizationWiringPublish(env fakeEnv, ts *turnStream, scope finalizationPublicationScope, counter *int) func(context.Context, finalizationCandidate) error {
-	return func(ctx context.Context, candidate finalizationCandidate) error {
+func finalizationWiringPublish(env fakeEnv, ts *turnStream, scope finalize.FinalizationPublicationScope, counter *int) func(context.Context, gate.Candidate) error {
+	return func(ctx context.Context, candidate gate.Candidate) error {
 		*counter++
 		stamp := ts.finalizationStamp
-		_, err := publishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
+		_, err := finalize.PublishFinalizationCandidate(ctx, env.sessions, env.messages, scope, message.FinalizationIdentity{
 			Key: ts.finalization.LogicalID, Generation: stamp.Epoch(), Revision: stamp.DurableRevision(), Serial: stamp.Serial(),
 		}, candidate)
 		return err
@@ -411,7 +413,7 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	}
 	persistCandidate := func() {
 		stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
-		_, err := persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.Scope, stepID, *ts.currentAssistant)
+		_, err := finalize.PersistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.Scope, stepID, *ts.currentAssistant)
 		require.NoError(t, err)
 	}
 	publications := 0
@@ -423,10 +425,10 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	persistCandidate()
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
-	candidate := finalizationCandidate{MessageID: created.ID, Hash: hash}
+	candidate := gate.Candidate{MessageID: created.ID, Hash: hash}
 	verdict, err := exec.Gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationWaitWork, verdict)
+	require.Equal(t, gate.WaitWork, verdict)
 	require.Zero(t, publications, "noisy facts must not publish")
 
 	// Clear the descendant: project the root and its task to completed.
@@ -449,7 +451,7 @@ func TestFinalizationWiringIntegrationWaitSealAccepted(t *testing.T) {
 	persistCandidate()
 	verdict, err = exec.Gate.TrySeal(execCtx, ts.finalizationStamp, candidate, exec.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationAccepted, verdict)
+	require.Equal(t, gate.Accepted, verdict)
 	require.Equal(t, 1, publications)
 
 	record, err := coresession.NewAgentFinalizationStore(env.conn).Snapshot(execCtx, identity)
@@ -506,15 +508,15 @@ func TestFinalizationWiringTrySealPausesOnHeldQuestion(t *testing.T) {
 	require.NoError(t, ts.beginFinalizationStep(execCtx))
 	require.NoError(t, ts.markFinalizationStep())
 	stepID := ts.currentAssistant.FinishPart().FinalizationIdentity()
-	_, err = persistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.Scope, stepID, *ts.currentAssistant)
+	_, err = finalize.PersistFinalizationCandidate(execCtx, env.sessions, env.messages, exec.Scope, stepID, *ts.currentAssistant)
 	require.NoError(t, err)
 	hash, err := ts.currentAssistant.FinalizationContentHash()
 	require.NoError(t, err)
 	publications := 0
 	publish := finalizationWiringPublish(env, ts, exec.Scope, &publications)
-	verdict, err := exec.Gate.TrySeal(execCtx, ts.finalizationStamp, finalizationCandidate{MessageID: created.ID, Hash: hash}, exec.Read, publish)
+	verdict, err := exec.Gate.TrySeal(execCtx, ts.finalizationStamp, gate.Candidate{MessageID: created.ID, Hash: hash}, exec.Read, publish)
 	require.NoError(t, err)
-	require.Equal(t, finalizationPauseQuestion, verdict)
+	require.Equal(t, gate.PauseQuestion, verdict)
 	require.Zero(t, publications)
 }
 
@@ -550,7 +552,7 @@ func TestFinalizationWiringOnCancelUnblocksWaiter(t *testing.T) {
 	// back as WaitWork with a signal.
 	verdict, changed, err := exec.Gate.WaitState(t.Context(), exec.Read)
 	require.NoError(t, err)
-	require.Equal(t, finalizationWaitWork, verdict)
+	require.Equal(t, gate.WaitWork, verdict)
 	require.NotNil(t, changed)
 
 	// Cancel first, then observe the unblock with a bounded select.

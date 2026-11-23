@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ func TestBatchQuestionPublisherWakesOwnerAfterDurablePublish(t *testing.T) {
 			wakes = append(wakes, owner)
 		},
 	}
-	err := publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+	err := publisher.PublishChildQuestion(env.ctx, childagent.QuestionNotice{
 		Owner: env.sessionID, ChildSessionID: "child-wake", NodeID: nodeID,
 		Token: uint64(token), Depth: 1, Sequence: 1, Question: "which port?",
 	})

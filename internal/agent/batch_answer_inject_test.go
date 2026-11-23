@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -26,9 +28,9 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	// the injected answer arrives (the askAndShape production-shaped host
 	// ask from the R11G rig).
 	const answer = `42 — proceed`
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		// Production binds the child session inside the agent run
 		// (batch_exec_agent.go launches the run with
 		// BindChildSession: e.bindChildSession); the fixture mirrors that
@@ -60,7 +62,7 @@ func TestAWa5AgentChildAnswerViaRunnerInject(t *testing.T) {
 	require.NoError(t, err)
 	_, err = env.install.RunnerHandle.Submit(env.ctx, jobbatch.SubmitRequest{
 		Root: jobbatch.ID(root),
-		Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}},
+		Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}},
 		Ref:  "call-a5i-agent",
 	})
 	require.NoError(t, err, "the agent root is admitted")

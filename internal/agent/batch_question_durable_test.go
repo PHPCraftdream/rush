@@ -38,6 +38,9 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -71,7 +74,7 @@ func bqdToolNames(list []fantasy.AgentTool) []string {
 // shaping of call.Tools.
 func bqdShapedTools(t *testing.T, route bool) []fantasy.AgentTool {
 	t.Helper()
-	ctx := withBatchQuestionRoute(context.Background(), route)
+	ctx := batchmeta.WithBatchQuestionRoute(context.Background(), route)
 	if route {
 		ctx = withBatchAgentQuestionBinding(ctx, batchAgentQuestionBinding{
 			Ask: func(context.Context, int, string) (json.RawMessage, error) { return nil, nil },
@@ -380,17 +383,17 @@ func TestDrainCallForCarriesDriverCapability(t *testing.T) {
 // published a notice BEFORE checking the durable payload's route.
 func TestBatchOneItemSpecPayloadRunsNoRouteInRealExecutor(t *testing.T) {
 	tl := newQuestionTestTimeline(t)
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	askErr := make(chan error, 1)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		// The ask must not run on the Start goroutine: it would park Start.
 		go func() {
 			_, err := host.Ask(context.Background(), 2, "why?")
 			askErr <- err
 			// Mirror askAndShape's error branch: the turn finishes with an
 			// error response and exits, so the node settles.
-			t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+			t2.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 			t2.finish()
 			t2.exitNow()
 		}()
@@ -419,7 +422,7 @@ func TestBatchOneItemSpecPayloadRunsNoRouteInRealExecutor(t *testing.T) {
 		"the ask must return instead of awaiting forever")
 	err = <-askErr
 	tl.addf("ask rejected: err=%v", err)
-	require.ErrorIs(t, err, ErrBatchQuestionNoRoute)
+	require.ErrorIs(t, err, batchinst.ErrBatchQuestionNoRoute)
 
 	// (b) NO child_question notice was published.
 	notices := factory.questionRig().publishedNotices()

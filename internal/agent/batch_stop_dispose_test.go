@@ -49,6 +49,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -74,8 +75,8 @@ func TestStopHoldsExecutionUntilPhysicalDispose(t *testing.T) {
 	spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{
 		Mode: jobbatch.ModeParallel, Notify: jobbatch.NotifyAll, MaxParallel: 1,
 		Items: []jobbatch.Spec{
-			{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: leafPayload(pathA, "call-stop-a")}},
-			{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: leafPayload(pathB, "call-stop-b")}},
+			{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: leafPayload(pathA, "call-stop-a")}},
+			{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: leafPayload(pathB, "call-stop-b")}},
 		},
 	}}
 	root := installSubmit(t, env.install, spec)

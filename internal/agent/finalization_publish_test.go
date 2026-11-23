@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -34,9 +36,9 @@ func (p *finalizationPublishProbe) UpdateTx(ctx context.Context, tx *sql.Tx, can
 	}, nil
 }
 
-func finalizationStoredScope(t *testing.T, env fakeEnv, id message.FinalizationIdentity) finalizationPublicationScope {
+func finalizationStoredScope(t *testing.T, env fakeEnv, id message.FinalizationIdentity) finalize.FinalizationPublicationScope {
 	t.Helper()
-	scope := finalizationPublicationScope{
+	scope := finalize.FinalizationPublicationScope{
 		Store:    session.NewAgentFinalizationStore(env.conn),
 		Identity: session.AgentFinalizationIdentity{SessionID: "session", LogicalCallID: id.Key, Generation: int64(id.Generation)},
 	}
@@ -44,7 +46,7 @@ func finalizationStoredScope(t *testing.T, env fakeEnv, id message.FinalizationI
 	return scope
 }
 
-func finalizationStoredCandidate(t *testing.T, env fakeEnv, scope finalizationPublicationScope, id message.FinalizationIdentity) finalizationCandidate {
+func finalizationStoredCandidate(t *testing.T, env fakeEnv, scope finalize.FinalizationPublicationScope, id message.FinalizationIdentity) gate.Candidate {
 	t.Helper()
 	candidate, err := env.messages.Create(t.Context(), "session", message.CreateMessageParams{
 		Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "settled final"}},
@@ -52,7 +54,7 @@ func finalizationStoredCandidate(t *testing.T, env fakeEnv, scope finalizationPu
 	require.NoError(t, err)
 	require.NoError(t, candidate.MarkFinalizationCandidate(id))
 	candidate.CheckpointGeneration = 1
-	persisted, err := persistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, candidate)
+	persisted, err := finalize.PersistFinalizationCandidate(t.Context(), env.sessions, env.messages, scope, id, candidate)
 	require.NoError(t, err)
 	stored, err := env.messages.Get(t.Context(), candidate.ID)
 	require.NoError(t, err)
@@ -73,7 +75,7 @@ func TestFinalizationPublicationCommitsBeforeItsTerminalEvent(t *testing.T) {
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
-	accepted, err := publishFinalizationCandidate(ctx, env.sessions, probe, scope, id, candidate)
+	accepted, err := finalize.PublishFinalizationCandidate(ctx, env.sessions, probe, scope, id, candidate)
 	require.NoError(t, err)
 	require.True(t, accepted.IsFinished())
 	record, err := scope.Store.Snapshot(ctx, scope.Identity)
@@ -85,7 +87,7 @@ func TestFinalizationPublicationCommitsBeforeItsTerminalEvent(t *testing.T) {
 	require.True(t, probe.sawCommitted.Load(), "terminal publication must observe the accepted row after commit")
 	require.EqualValues(t, 1, probe.updates.Load())
 	require.EqualValues(t, 1, probe.publications.Load())
-	_, err = publishFinalizationCandidate(ctx, env.sessions, probe, scope, id, candidate)
+	_, err = finalize.PublishFinalizationCandidate(ctx, env.sessions, probe, scope, id, candidate)
 	require.NoError(t, err, "a verified receipt is idempotent")
 	require.EqualValues(t, 1, probe.updates.Load())
 	require.EqualValues(t, 1, probe.publications.Load(), "re-reading an accepted receipt must not publish another terminal event")
@@ -100,7 +102,7 @@ func TestFinalizationPersistedCancelRefusesBeforeCandidateWrite(t *testing.T) {
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
-	_, err := publishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
+	_, err := finalize.PublishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, probe.updates.Load())
 	require.Zero(t, probe.publications.Load())
@@ -118,8 +120,8 @@ func TestFinalizationChangedCandidateRollsBackWithoutTerminalEvent(t *testing.T)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
 	candidate.Hash = "different"
-	_, err := publishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
-	require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+	_, err := finalize.PublishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
+	require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 	require.Zero(t, probe.updates.Load())
 	require.Zero(t, probe.publications.Load())
 	stored, err := env.messages.Get(t.Context(), candidate.MessageID)
@@ -158,8 +160,8 @@ func TestFinalizationPublicationRefusesDurableWorkAndStaleRevision(t *testing.T)
 					t.Logf("phase=durable-publication release=%t identity=%+v record=%+v read_error=%v updates=%d publications=%d", release, id, record, readErr, probe.updates.Load(), probe.publications.Load())
 				}
 			})
-			_, err = publishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
-			require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+			_, err = finalize.PublishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
+			require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 			require.Zero(t, probe.updates.Load())
 			require.Zero(t, probe.publications.Load())
 			stored, err := env.messages.Get(t.Context(), candidate.MessageID)
@@ -188,7 +190,7 @@ func TestFinalizationMessageWriteFailureRollsBackDurableSeal(t *testing.T) {
 	reader, supported := env.messages.(message.FinalizationReader)
 	require.True(t, supported)
 	probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
-	_, err := publishFinalizationCandidate(t.Context(), env.sessions, &finalizationFailingUpdate{probe}, scope, id, candidate)
+	_, err := finalize.PublishFinalizationCandidate(t.Context(), env.sessions, &finalizationFailingUpdate{probe}, scope, id, candidate)
 	require.ErrorIs(t, err, sql.ErrConnDone)
 	record, err := scope.Store.Snapshot(t.Context(), scope.Identity)
 	require.NoError(t, err)
@@ -199,7 +201,7 @@ func TestFinalizationMessageWriteFailureRollsBackDurableSeal(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
 	require.Zero(t, probe.publications.Load())
-	accepted, err := publishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
+	accepted, err := finalize.PublishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
 	require.NoError(t, err, "rollback must leave the same candidate publishable")
 	require.True(t, accepted.IsFinished())
 	require.EqualValues(t, 1, probe.publications.Load())
@@ -233,8 +235,8 @@ func TestFinalizationPublicationRequiresMatchingDurableReceipts(t *testing.T) {
 			reader, supported := env.messages.(message.FinalizationReader)
 			require.True(t, supported)
 			probe := &finalizationPublishProbe{Service: env.messages, FinalizationReader: reader}
-			_, err = publishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
-			require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+			_, err = finalize.PublishFinalizationCandidate(t.Context(), env.sessions, probe, scope, id, candidate)
+			require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 			require.Zero(t, probe.updates.Load())
 			require.Zero(t, probe.publications.Load())
 			after, err := scope.Store.Snapshot(t.Context(), scope.Identity)

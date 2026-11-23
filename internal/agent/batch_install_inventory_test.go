@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -272,21 +274,21 @@ func TestBatchWorkInventoryRealFamilies(t *testing.T) {
 		run    func(t *testing.T, env *batchInventoryEnv) (fantasy.ToolResponse, error)
 		callID string
 	}{
-		{name: "bash (shell family)", tool: "bash", kind: batchKindShell, callID: "call-inv-bash"},
-		{name: "run_command (argv family)", tool: "run_command", kind: batchKindArgv, callID: "call-inv-argv"},
-		{name: "view (generic family)", tool: "view", kind: batchKindGeneric, callID: "call-inv-view"},
-		{name: "edit (generic family)", tool: "edit", kind: batchKindGeneric, callID: "call-inv-edit"},
-		{name: "fs_read (generic family)", tool: "fs_read", kind: batchKindGeneric, callID: "call-inv-fsread"},
+		{name: "bash (shell family)", tool: "bash", kind: batchdispatch.KindShell, callID: "call-inv-bash"},
+		{name: "run_command (argv family)", tool: "run_command", kind: batchdispatch.KindArgv, callID: "call-inv-argv"},
+		{name: "view (generic family)", tool: "view", kind: batchdispatch.KindGeneric, callID: "call-inv-view"},
+		{name: "edit (generic family)", tool: "edit", kind: batchdispatch.KindGeneric, callID: "call-inv-edit"},
+		{name: "fs_read (generic family)", tool: "fs_read", kind: batchdispatch.KindGeneric, callID: "call-inv-fsread"},
 		{
 			name: "MCP (mcp_ name routes through the MCP kind)", tool: "mcp_files__read",
-			kind: batchKindMCP, opts: []func(*BatchInstallDeps){inventoryMCPResolver}, callID: "call-inv-mcp",
+			kind: batchdispatch.KindMCP, opts: []func(*BatchInstallDeps){inventoryMCPResolver}, callID: "call-inv-mcp",
 			run: func(t *testing.T, env *batchInventoryEnv) (fantasy.ToolResponse, error) {
 				// The flag-on binding sets exactly this override
 				// (batch_install_ingress.go); reproduce it so the kind
 				// routing is observable without a full coordinator.
 				setBatchLeafKindOverride(func(tool string) (string, bool) {
 					if len(tool) >= 4 && tool[:4] == "mcp_" {
-						return batchKindMCP, true
+						return batchdispatch.KindMCP, true
 					}
 					return "", false
 				})
@@ -296,7 +298,7 @@ func TestBatchWorkInventoryRealFamilies(t *testing.T) {
 		},
 		{
 			name: "agent (delegation through the pinned registry)", tool: "agent",
-			kind: batchKindAgent, opts: []func(*BatchInstallDeps){inventoryAgentDeps}, callID: "call-inv-agent",
+			kind: batchdispatch.KindAgent, opts: []func(*BatchInstallDeps){inventoryAgentDeps}, callID: "call-inv-agent",
 			run: func(t *testing.T, env *batchInventoryEnv) (fantasy.ToolResponse, error) {
 				inventoryBindProcess(t, env)
 				return env.invoke("call-inv-agent", "agent")
@@ -304,7 +306,7 @@ func TestBatchWorkInventoryRealFamilies(t *testing.T) {
 		},
 		{
 			name: "agentic_fetch (delegation dispatches by the recorded tool)", tool: "agentic_fetch",
-			kind: batchKindAgent, opts: []func(*BatchInstallDeps){inventoryAgentDeps}, callID: "call-inv-fetch",
+			kind: batchdispatch.KindAgent, opts: []func(*BatchInstallDeps){inventoryAgentDeps}, callID: "call-inv-fetch",
 			run: func(t *testing.T, env *batchInventoryEnv) (fantasy.ToolResponse, error) {
 				inventoryBindProcess(t, env)
 				return env.invoke("call-inv-fetch", "agentic_fetch")
@@ -312,11 +314,11 @@ func TestBatchWorkInventoryRealFamilies(t *testing.T) {
 		},
 		{
 			name: "CLI bridge call (stamped invocation ctx)", tool: "view",
-			kind: batchKindGeneric, callID: "call-inv-bridge",
+			kind: batchdispatch.KindGeneric, callID: "call-inv-bridge",
 			run: func(t *testing.T, env *batchInventoryEnv) (fantasy.ToolResponse, error) {
 				inventoryBindProcess(t, env)
 				ctx := batchCallCtx(env.sessionID)
-				stamped := withBatchBridgeInvocation(ctx, batchBridgeInvocation{RegistryID: env.registryID, MessageID: "msg-1"})
+				stamped := state.WithBridgeInvocation(ctx, state.BridgeInvocation{RegistryID: env.registryID, MessageID: "msg-1"})
 				bridge := coordinatorBridgeFallback(stamped)
 				if bridge == nil {
 					t.Fatal("a stamped invocation must resolve its bridge through ITS pinned registry")

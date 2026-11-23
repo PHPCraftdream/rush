@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -117,7 +118,7 @@ type coordinator struct {
 	// batchDriverClaimer is the durable session-driver-marker store
 	// (sessionhosts.HostStore): claim/release AND the foreign-driver read go
 	// through it. See batch_cutover_driver.go / batch_rehome_coord_runtime.go.
-	batchDriverClaimer BatchDriverClaimer
+	batchDriverClaimer batchflow.BatchDriverClaimer
 
 	// diskCaps is the App-owned capability manager bound at batch install
 	// (disk_provider_capability.go); nil on flag-off Apps and bare
@@ -276,7 +277,7 @@ type BatchRuntimeCapabilities struct {
 	ModelControl   BatchModelControl
 	DiskBindings   *DiskProviderRegistry
 	LiveReader     *session.BatchLiveReader
-	DriverClaimer  BatchDriverClaimer
+	DriverClaimer  batchflow.BatchDriverClaimer
 	CutoverFacts   BatchCutoverFacts
 	HeldAnswerSink BatchHeldAnswerSink
 	NoticeStore    *session.SessionNoticeStore

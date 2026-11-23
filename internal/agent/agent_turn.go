@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
@@ -63,7 +65,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// session's prior idle state is moot and must not race this turn's own
 	// request.
 	a.cancelCacheKeepAlive(call.SessionID)
-	stall := drainctl.ArmTurnStall(call.SessionID, call.CallOptions, stallToolStalled)
+	stall := drainctl.ArmTurnStall(call.SessionID, call.CallOptions, batchlife.StallToolStalled)
 	defer drainctl.DisarmTurnStall(call.SessionID)
 
 	// R3-1: consume THIS call's pinned tool slice when it carries one, so
@@ -101,7 +103,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// ask tool — fail closed, never a raw ask on an unattended child.
 	ctx = armBatchQuestionTurnContext(ctx, call)
 	if state := call.BatchQuestion; state != nil && !state.Route {
-		agentTools = stripAskQuestionTools(agentTools)
+		agentTools = batchmeta.StripAskQuestionTools(agentTools)
 		call.Tools = agentTools
 	}
 	// One immutable snapshot for the whole turn (task #265). Resolving these

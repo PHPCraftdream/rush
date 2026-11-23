@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +23,7 @@ func TestBatchAgentReactionScope_OwedDebtKeepsScopeOpen(t *testing.T) {
 			return CLIScopeState{Drain: DrainOwed}, nil
 		},
 	}
-	live, complete := pscCombineDescendantFacts(context.Background(), facts, "child", false, true)
+	live, complete := state.CombineDescendantFacts(context.Background(), facts, "child", false, true)
 	require.True(t, live, "an owed completion reaction must keep the delegation scope open")
 	require.True(t, complete, "a readable owed-debt read must not degrade completeness")
 }
@@ -35,7 +37,7 @@ func TestBatchAgentReactionScope_PacedReactionKeepsScopeOpen(t *testing.T) {
 			return CLIScopeState{Drain: DrainPaced}, nil
 		},
 	}
-	live, complete := pscCombineDescendantFacts(context.Background(), facts, "child", false, true)
+	live, complete := state.CombineDescendantFacts(context.Background(), facts, "child", false, true)
 	require.True(t, live, "a paced reaction must keep the delegation scope open")
 	require.True(t, complete)
 }
@@ -47,7 +49,7 @@ func TestBatchAgentReactionScope_RunningChildWorkKeepsScopeOpen(t *testing.T) {
 			return CLIScopeState{WorkOpen: true}, nil
 		},
 	}
-	live, complete := pscCombineDescendantFacts(context.Background(), facts, "child", false, true)
+	live, complete := state.CombineDescendantFacts(context.Background(), facts, "child", false, true)
 	require.True(t, live, "running work on a live host must keep the delegation scope open")
 	require.True(t, complete)
 }
@@ -61,7 +63,7 @@ func TestBatchAgentReactionScope_IncompleteChildReadStaysOpen(t *testing.T) {
 			return CLIScopeState{}, errors.New("boom")
 		},
 	}
-	live, complete := pscCombineDescendantFacts(context.Background(), facts, "child", false, true)
+	live, complete := state.CombineDescendantFacts(context.Background(), facts, "child", false, true)
 	require.True(t, live, "a failed child scope read must keep the scope open")
 	require.False(t, complete, "a failed child scope read must be reported incomplete")
 }
@@ -76,7 +78,7 @@ func TestBatchAgentReactionScope_NonActionableDebtClosesScope(t *testing.T) {
 				return CLIScopeState{Drain: drain}, nil
 			},
 		}
-		live, complete := pscCombineDescendantFacts(context.Background(), facts, "child", false, true)
+		live, complete := state.CombineDescendantFacts(context.Background(), facts, "child", false, true)
 		require.False(t, live, "drain %d: non-actionable debt must not keep the scope open", drain)
 		require.True(t, complete, "drain %d: non-actionable debt must report a complete read", drain)
 	}
@@ -93,7 +95,7 @@ func TestBatchAgentReactionScope_RefreshReplacesStaleYieldWithFinalOutcome(t *te
 	}
 	got := pscRefreshedTurnResult(facts,
 		batchAgentRunRequest{ChildSessionID: "child", ToolCallID: "call-agent", Tool: "agent"},
-		batchAgentTurnResult{Response: fantasy.ToolResponse{Content: "root waiting"}},
+		childagent.TurnResult{Response: fantasy.ToolResponse{Content: "root waiting"}},
 		nil)
 	require.Equal(t, "child done: build output received", got.Response.Content)
 	require.False(t, got.Response.IsError)
@@ -110,7 +112,7 @@ func TestBatchAgentReactionScope_RefreshDeliversReactionFailureNotStaleSuccess(t
 	}
 	got := pscRefreshedTurnResult(facts,
 		batchAgentRunRequest{ChildSessionID: "child", ToolCallID: "call-agent", Tool: "agent"},
-		batchAgentTurnResult{Response: fantasy.ToolResponse{Content: "root waiting"}},
+		childagent.TurnResult{Response: fantasy.ToolResponse{Content: "root waiting"}},
 		nil)
 	require.True(t, got.Response.IsError)
 	require.Contains(t, got.Response.Content, "wake_failed")
@@ -125,7 +127,7 @@ func TestBatchAgentReactionScope_RefreshKeepsInitialWhenOutcomeUnavailable(t *te
 	}
 	got := pscRefreshedTurnResult(facts,
 		batchAgentRunRequest{ChildSessionID: "child", ToolCallID: "call-agent", Tool: "agent"},
-		batchAgentTurnResult{Response: fantasy.ToolResponse{Content: "root waiting", IsError: false}},
+		childagent.TurnResult{Response: fantasy.ToolResponse{Content: "root waiting", IsError: false}},
 		nil)
 	require.Equal(t, "root waiting", got.Response.Content)
 	require.False(t, got.Response.IsError)
@@ -133,7 +135,7 @@ func TestBatchAgentReactionScope_RefreshKeepsInitialWhenOutcomeUnavailable(t *te
 
 func TestBatchAgentReactionScope_RefreshSkippedForTurnErrorNoChildAndUnselected(t *testing.T) {
 	t.Parallel()
-	initial := batchAgentTurnResult{Response: fantasy.ToolResponse{Content: "root waiting"}}
+	initial := childagent.TurnResult{Response: fantasy.ToolResponse{Content: "root waiting"}}
 	cases := []struct {
 		name string
 		req  batchAgentRunRequest
@@ -196,8 +198,8 @@ type pscFakeTurn struct {
 	resp       fantasy.ToolResponse
 }
 
-func (t *pscFakeTurn) Done() <-chan struct{}        { return t.done }
-func (t *pscFakeTurn) Exit() <-chan struct{}        { return t.exit }
-func (t *pscFakeTurn) Result() batchAgentTurnResult { return batchAgentTurnResult{Response: t.resp} }
-func (t *pscFakeTurn) Err() error                   { return nil }
-func (t *pscFakeTurn) Stop(context.Context) error   { return nil }
+func (t *pscFakeTurn) Done() <-chan struct{}         { return t.done }
+func (t *pscFakeTurn) Exit() <-chan struct{}         { return t.exit }
+func (t *pscFakeTurn) Result() childagent.TurnResult { return childagent.TurnResult{Response: t.resp} }
+func (t *pscFakeTurn) Err() error                    { return nil }
+func (t *pscFakeTurn) Stop(context.Context) error    { return nil }

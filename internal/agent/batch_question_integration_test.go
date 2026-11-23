@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -84,7 +86,7 @@ func TestBatchQuestionDurableNoticeExactlyOnce(t *testing.T) {
 	nodeID, token := questionTestNode(t, env, "q-once")
 	child := "child-sess-once"
 	publisher := batchCoordinatorQuestionPublisher{store: env.store}
-	identity := batchChildQuestionNotice{
+	identity := childagent.QuestionNotice{
 		Owner: env.sessionID, ChildSessionID: child, NodeID: nodeID,
 		Token: uint64(token), Depth: 2, Sequence: 1, Question: "why?",
 	}
@@ -120,7 +122,7 @@ func TestBatchQuestionRefusesStaleIncarnation(t *testing.T) {
 	env := newBatchInventoryEnv(t, "agent")
 	nodeID, token := questionTestNode(t, env, "q-stale")
 	publisher := batchCoordinatorQuestionPublisher{store: env.store}
-	err := publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+	err := publisher.PublishChildQuestion(env.ctx, childagent.QuestionNotice{
 		Owner: env.sessionID, ChildSessionID: "child-stale", NodeID: nodeID,
 		Token: uint64(token) + 1, Depth: 1, Sequence: 1, Question: "still there?",
 	})
@@ -134,17 +136,17 @@ func TestBatchQuestionRefusesStaleIncarnation(t *testing.T) {
 // Messenger seam, the asker goroutine never exits until it arrives, and the
 // node settles exactly once with the answer as the child output.
 func TestBatchQuestionAnswerRoutesSameExecution(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		// The ask must NOT run on the Start goroutine: host.Ask parks on the
 		// hold until the test's answer arrives, and Start would deadlock.
 		go func() {
 			answer, err := host.Ask(context.Background(), 3, "why?")
 			if err != nil {
-				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+				t2.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 			} else {
-				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
+				t2.setRes(childagent.TurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
 			}
 			t2.finish()
 			t2.exitNow()
@@ -202,7 +204,7 @@ func TestBatchQuestionWrapperDelegatesAtStampedDepth(t *testing.T) {
 		calls <- askCall{depth: depth, question: question}
 		return json.RawMessage(`"因为"`), nil
 	}}
-	ctx := withBatchAgentQuestionContext(withBatchAgentQuestionBinding(context.Background(), binding), 4)
+	ctx := state.WithQuestionContext(withBatchAgentQuestionBinding(context.Background(), binding), 4)
 	resp, err := wrapper.Run(ctx, fantasy.ToolCall{ID: "ask-1", Name: tools.AskQuestionToolName, Input: `{"question":"why?"}`})
 	require.NoError(t, err)
 	require.False(t, resp.IsError)
@@ -225,7 +227,7 @@ func TestBatchQuestionWrapperDelegatesAtStampedDepth(t *testing.T) {
 func TestBatchQuestionPublishFailsClosedWithoutIdentity(t *testing.T) {
 	env := newBatchInventoryEnv(t, "agent")
 	publisher := batchCoordinatorQuestionPublisher{store: env.store}
-	require.Error(t, publisher.PublishChildQuestion(env.ctx, batchChildQuestionNotice{
+	require.Error(t, publisher.PublishChildQuestion(env.ctx, childagent.QuestionNotice{
 		Owner: env.sessionID, NodeID: "root", Token: 1, Depth: 1, Sequence: 1,
 	}))
 	require.Equal(t, 0, countQuestionNotices(t, env, env.sessionID))

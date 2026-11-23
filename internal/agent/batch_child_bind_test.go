@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -53,7 +54,7 @@ func batchBindAgentFixture(t *testing.T) (fakeEnv, *session.BatchStore, string, 
 func TestBatchDelegationPersistsChildLinkBeforeChildRuns(t *testing.T) {
 	t.Parallel()
 	env, store, owner, rootID, taskNodeID := batchBindAgentFixture(t)
-	lifecycle := batchAgentLifecycle{
+	lifecycle := state.Lifecycle{
 		BindChildSession: func(ctx context.Context, id string) error {
 			return store.BatchBindChildSession(ctx, owner, "host", "runner", rootID, taskNodeID, 0, id)
 		},
@@ -76,7 +77,7 @@ func TestBatchDelegationPersistsChildLinkBeforeChildRuns(t *testing.T) {
 	coord := newTestCoordinator(t, env, "bind-provider", config.ProviderConfig{ID: "bind-provider"})
 	coord.subAgentDrivers = newSubAgentDriverRegistry()
 
-	_, err := coord.runSubAgent(withBatchAgentLifecycle(t.Context(), lifecycle), subAgentParams{
+	_, err := coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: stub, SessionID: owner, AgentMessageID: "msg-bind", ToolCallID: "call-bind",
 		Prompt: "go", SessionTitle: "child",
 	})
@@ -91,7 +92,7 @@ func TestBatchDelegationPersistsChildLinkBeforeChildRuns(t *testing.T) {
 
 	// The validated-resume path must persist too: same child, same edge.
 	observedLink = sql.NullString{}
-	_, err = coord.runSubAgent(withBatchAgentLifecycle(t.Context(), lifecycle), subAgentParams{
+	_, err = coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: stub, SessionID: owner, ResumeSessionID: childID, Prompt: "continue",
 	})
 	require.NoError(t, err)
@@ -105,7 +106,7 @@ func TestBatchBindFailureIsFatalToLaunch(t *testing.T) {
 	env, store, owner, rootID, taskNodeID := batchBindAgentFixture(t)
 	injected := errors.New("bind injected")
 	var noChild atomic.Int64
-	lifecycle := batchAgentLifecycle{
+	lifecycle := state.Lifecycle{
 		BindChildSession: func(ctx context.Context, id string) error {
 			if err := store.BatchBindChildSession(ctx, owner, "host", "runner", rootID, taskNodeID, 0, id); err != nil {
 				return err
@@ -127,7 +128,7 @@ func TestBatchBindFailureIsFatalToLaunch(t *testing.T) {
 	// the child run unbound → the error assertion fails and entries becomes
 	// 1; skipping the defer's NoChildSelected marking would leave the node
 	// unmarked → the noChild assertion fails.
-	_, err := coord.runSubAgent(withBatchAgentLifecycle(t.Context(), lifecycle), subAgentParams{
+	_, err := coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: stub, SessionID: owner, AgentMessageID: "msg-bind-fail", ToolCallID: "call-bind-fail",
 		Prompt: "go", SessionTitle: "child",
 	})

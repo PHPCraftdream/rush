@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -114,9 +115,9 @@ func TestModelControlRunAddInheritance(t *testing.T) {
 	// batch_run (detached): the root id returns while the leaf parks in the
 	// provider gate — the root stays open behind the gate.
 	ctx := batchCallCtx(env.sessionID)
-	runInput, err := json.Marshal(batchModelParams{Spec: batchModelSpec{
+	runInput, err := json.Marshal(modelcontrol.Params{Spec: modelcontrol.Spec{
 		Mode: "parallel", Notify: "each", MaxParallel: 2,
-		Items: []batchModelItem{{Tool: "fs_write", Input: json.RawMessage(h2aLeafInput(path1))}},
+		Items: []modelcontrol.Item{{Tool: "fs_write", Input: json.RawMessage(h2aLeafInput(path1))}},
 	}})
 	require.NoError(t, err)
 	runRoot := make(chan string, 1)
@@ -160,8 +161,8 @@ waitInFlight:
 		}
 		time.Sleep(time.Millisecond)
 	}
-	addInput, err := json.Marshal(batchModelParams{Root: rootID, Items: []batchModelItem{
-		{Batch: &batchModelSpec{Mode: "sequential", Items: []batchModelItem{
+	addInput, err := json.Marshal(modelcontrol.Params{Root: rootID, Items: []modelcontrol.Item{
+		{Batch: &modelcontrol.Spec{Mode: "sequential", Items: []modelcontrol.Item{
 			{Tool: "fs_write", Input: json.RawMessage(h2aLeafInput(path2))},
 			{Tool: "fs_write", Input: json.RawMessage(h2aLeafInput(path3))},
 		}}},
@@ -213,7 +214,7 @@ waitInFlight:
 
 	// Denial: an unknown tool in Add is refused before any submission or
 	// provider side effect.
-	badInput, err := json.Marshal(batchModelParams{Root: rootID, Items: []batchModelItem{
+	badInput, err := json.Marshal(modelcontrol.Params{Root: rootID, Items: []modelcontrol.Item{
 		{Tool: "definitely-not-pinned", Input: json.RawMessage(`{}`)},
 	}})
 	require.NoError(t, err)

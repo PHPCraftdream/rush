@@ -10,14 +10,11 @@ type batchAgentScope struct {
 	state *childagent.Scope
 }
 
-type batchAgentInjectMessage = batchinst.AgentInjectMessage
-
 var (
-	ErrBatchAgentNotHeld                 = batchinst.ErrBatchAgentNotHeld
-	ErrBatchAgentStopped                 = batchinst.ErrBatchAgentStopped
-	ErrBatchAgentStaleGeneration         = batchinst.ErrBatchAgentStaleGeneration
-	ErrBatchAgentQuestionHeld            = batchinst.ErrBatchAgentQuestionHeld
-	ErrBatchQuestionNoRoute              = batchinst.ErrBatchQuestionNoRoute
+	ErrBatchAgentNotHeld         = batchinst.ErrBatchAgentNotHeld
+	ErrBatchAgentStopped         = batchinst.ErrBatchAgentStopped
+	ErrBatchAgentStaleGeneration = batchinst.ErrBatchAgentStaleGeneration
+
 	ErrBatchQuestionCapabilityNotDurable = batchinst.ErrBatchQuestionCapabilityNotDurable
 )
 
@@ -36,6 +33,6 @@ func (s *batchAgentScope) hold(depth int) (*childagent.HeldQuestion, error) {
 	return s.state.Hold(depth)
 }
 func (s *batchAgentScope) discardHold(h *childagent.HeldQuestion) { s.state.DiscardHold(h) }
-func (s *batchAgentScope) deliverWithCommit(msg batchAgentInjectMessage, commit func() error) error {
+func (s *batchAgentScope) deliverWithCommit(msg batchinst.AgentInjectMessage, commit func() error) error {
 	return s.state.DeliverWithCommit(msg, commit)
 }

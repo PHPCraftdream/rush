@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -294,7 +295,7 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
 	require.False(t, batchSnap.Empty())
 
-	require.False(t, f.coord.arb.pace(f.sessID, 0, time.Hour, false, pacePaidUnreacted))
+	require.False(t, f.coord.arb.pace(f.sessID, 0, time.Hour, false, drainctl.PacePaidUnreacted))
 
 	att := &drainAttempt{
 		sessionID: f.sessID, snapshot: batchSnap,

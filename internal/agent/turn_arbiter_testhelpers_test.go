@@ -61,7 +61,7 @@ func (c *coordinator) bumpConsecutiveResume(sessionID string) {
 // paceDrainGate is the test fixture spelling of the gate pacing (the
 // production writer paths are accountDrainAttempt/noteDrainRefused; tests
 // pace by hand to reach a given gate state).
-func paceDrainGateOn(c *coordinator, owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainPace) bool {
+func paceDrainGateOn(c *coordinator, owner string, hintAt uint64, wait time.Duration, hintOpens bool, kind drainctl.Pace) bool {
 	if c == nil {
 		return false
 	}

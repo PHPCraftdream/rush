@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -92,7 +94,7 @@ func newRound2DriverScopeInstall(t *testing.T) *round2DriverScopeInstall {
 	bindingID, err := bindings.RegisterProvider(round2FakeDisk{DiskProvider: tools.OSDisk()})
 	require.NoError(t, err)
 	stub := &round2ScopeProbeLeaf{t: t}
-	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{stub})
+	fingerprint := installwire.ToolsetFingerprint([]fantasy.AgentTool{stub})
 	registryID := "r2reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()
 	require.NoError(t, registries.Register(registryID, newPolicyToolBuild([]fantasy.AgentTool{stub}).Leaves))
@@ -129,7 +131,7 @@ func (e *round2DriverScopeInstall) submitViewAgentRoot() jobbatch.ID {
 	payload, err := json.Marshal(batchLeafPayload{Tool: "view", ToolCallID: "call-r2-view", SessionID: e.sessionID, Input: json.RawMessage(`{}`), RegistryID: e.registryID, Policy: &batchLeafPolicyContext{RegistryID: e.registryID, RestrictedToolset: e.fingerprint, DiskProvider: true, DiskBindingID: e.bindingID}})
 	require.NoError(e.t, err)
 	root := jobbatch.ID("root-r2-" + uuid.NewString()[:8])
-	_, err = e.install.RunnerHandle.Submit(context.Background(), jobbatch.SubmitRequest{Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}, Ref: "call-r2-view"})
+	_, err = e.install.RunnerHandle.Submit(context.Background(), jobbatch.SubmitRequest{Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}}, Ref: "call-r2-view"})
 	require.NoError(e.t, err)
 	return root
 }
@@ -191,7 +193,7 @@ func TestAgenticFetchToolProductionStampArmsIngress(t *testing.T) {
 	h.coord.filetracker = filetracker.NewService(db.New(env.conn))
 	h.coord.cfg.Config().Options.DataDirectory = dataDir
 	runnerOrig := env.install.Runtime.cfg.Runner
-	runner := &round2StampRunner{diskRefusalRunner: &diskRefusalRunner{batchRunnerHandle: runnerOrig}, releaseFrom: runnerOrig, installRunner: env.install.Runner}
+	runner := &round2StampRunner{diskRefusalRunner: &diskRefusalRunner{RunnerHandle: runnerOrig}, releaseFrom: runnerOrig, installRunner: env.install.Runner}
 	env.install.Runtime.cfg.Runner = runner
 	ingress, err := NewBatchWorkIngress(env.install.Runtime, env.registries)
 	require.NoError(t, err)

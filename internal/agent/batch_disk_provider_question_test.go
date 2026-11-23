@@ -73,6 +73,9 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -186,7 +189,7 @@ func (l *questionProviderLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 	// Production lifecycle shape: bind the child session before the child
 	// turn (mirrors the coordinator's runSubAgent binding via the
 	// driver-stamped batchAgentLifecycle).
-	if lifecycle, ok := ctx.Value(batchAgentLifecycleContextKey{}).(batchAgentLifecycle); ok && lifecycle.BindChildSession != nil {
+	if lifecycle, ok := ctx.Value(state.LifecycleContextKey{}).(state.Lifecycle); ok && lifecycle.BindChildSession != nil {
 		if err := lifecycle.BindChildSession(ctx, l.childSession); err != nil {
 			l.t.Logf("q8 child bind failed: child=%s err=%v", l.childSession, err)
 			return fantasy.ToolResponse{}, err
@@ -508,7 +511,7 @@ func newQuestionInstall(t *testing.T) *questionInstall {
 // newQuestionInstallWithQuestionResolver is newQuestionInstall with the
 // execution-side question-resolution seam injectable: nil falls back to the
 // real store (production wiring), a test may pass a failing resolver.
-func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQuestionResolver) *questionInstall {
+func newQuestionInstallWithQuestionResolver(t *testing.T, resolver state.QuestionResolver) *questionInstall {
 	t.Helper()
 	store, conn, _ := newTestBatchStore(t)
 	bindings := NewDiskProviderRegistry()
@@ -544,7 +547,7 @@ func newQuestionInstallWithQuestionResolver(t *testing.T, resolver batchChildQue
 	require.NoError(t, fake.MkdirAll(context.Background(), realDir, 0o755))
 	leaf := newQuestionProviderLeaf(t, bindingID, childSession, path1, path2,
 		realDir, sessions, messages, q, conn)
-	fingerprint := batchToolsetFingerprint([]fantasy.AgentTool{leaf})
+	fingerprint := installwire.ToolsetFingerprint([]fantasy.AgentTool{leaf})
 	registryID := "q8-reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()
 	require.NoError(t, registries.Register(registryID, newTestPolicyLeafRegistry(map[string]testPolicyLeaf{
@@ -631,7 +634,7 @@ func (env *questionInstall) submitAgentRoot() jobbatch.ID {
 	require.NoError(env.t, err)
 	root := jobbatch.ID("root-q8-" + uuid.NewString()[:8])
 	_, err = env.install.RunnerHandle.Submit(context.Background(), jobbatch.SubmitRequest{
-		Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}},
+		Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}},
 		Ref: "call-q8",
 	})
 	require.NoError(env.t, err, "the agent root is admitted")

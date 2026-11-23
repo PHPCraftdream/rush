@@ -20,7 +20,13 @@
 # 208 -> 207: lane L2 (DM0b mailbox) moved queued_call_resolution.go whole
 # into internal/agent/runtime/exec/mailbox; the other seven mailbox files stay
 # because their state machine is read white-box by root tests.
-internal/agent 207
+# 207 -> 201: lane L3 (DM0b batch families) retired 157 root compatibility aliases for
+# declarations that already lived under internal/agent/runtime/batch and deleted the six
+# declaration-free files batch_delivery_drain.go, batch_exec_binding.go,
+# batch_managed_call.go, batch_rehome_drain_pace.go, batch_rehome_tool_metadata.go and
+# batch_timeout_parse.go; the count is 195 production files + 6 code subdirectories.
+# See docs/plans/2026-11-22-dm0b-l3-ledger.tsv. Only down from here.
+internal/agent 201
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81

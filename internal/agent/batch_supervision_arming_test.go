@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -50,7 +51,7 @@ func (f *psvJoiningDone) AwaitDone(ctx context.Context, owner string, root jobba
 	return env, ok, err
 }
 
-func psvDeliveryImplWithArming(t *testing.T, done batchDoneSource, elector batchElector, arm func(context.Context, string)) *batchDeliveryImpl {
+func psvDeliveryImplWithArming(t *testing.T, done batchDoneSource, elector batchcore.Elector, arm func(context.Context, string)) *batchDeliveryImpl {
 	t.Helper()
 	impl, err := newBatchDelivery(batchDeliveryDeps{Owner: "owner-1", Done: done, Elect: elector, Runner: noopDeliveryRunner(), ArmSupervision: arm})
 	require.NoError(t, err)

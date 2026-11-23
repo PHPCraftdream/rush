@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -43,7 +44,7 @@ func batchRerunStopWorthy(state string) bool {
 // per-coordinator (BindCoordinatorBatchRuntime, batch_install_ingress.go);
 // nil means not bound — the caller and its log treat that as "retire by
 // delivery fencing only".
-func batchRerunRuntime(c *coordinator) (runner batchRunnerHandle, host string, store *session.BatchStore) {
+func batchRerunRuntime(c *coordinator) (runner batchcore.RunnerHandle, host string, store *session.BatchStore) {
 	bind := coordinatorBatchBindingFor(c)
 	if bind == nil {
 		return nil, "", nil

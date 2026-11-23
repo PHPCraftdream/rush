@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -69,7 +71,7 @@ var ErrFinalizationRecomposeLimit = errors.New("finalization recomposition limit
 
 // mapFinalizationSealReason derives the typed seal refusal cause from the
 // facts the gate observed; a held question is a pause path, not a reason.
-func mapFinalizationSealReason(f finalizationFacts) coresession.AgentFinalizationSealReason {
+func mapFinalizationSealReason(f gate.Facts) coresession.AgentFinalizationSealReason {
 	switch {
 	case f.Cancelled:
 		return coresession.AgentFinalizationSealCancelled
@@ -88,7 +90,7 @@ func mapFinalizationSealReason(f finalizationFacts) coresession.AgentFinalizatio
 	}
 }
 
-func (d FinalizationWaitDeps) status(phase FinalizationWaitPhase, f finalizationFacts) FinalizationWaitStatus {
+func (d FinalizationWaitDeps) status(phase FinalizationWaitPhase, f gate.Facts) FinalizationWaitStatus {
 	return FinalizationWaitStatus{
 		Phase:         phase,
 		Reason:        mapFinalizationSealReason(f),
@@ -101,7 +103,7 @@ func (d FinalizationWaitDeps) status(phase FinalizationWaitPhase, f finalization
 	}
 }
 
-func (d FinalizationWaitDeps) emit(phase FinalizationWaitPhase, f finalizationFacts) {
+func (d FinalizationWaitDeps) emit(phase FinalizationWaitPhase, f gate.Facts) {
 	st := d.status(phase, f)
 	if d.OnState != nil {
 		d.OnState(st)
@@ -132,7 +134,7 @@ func NewFinalizationFinalizeTurnHook(deps FinalizationWaitDeps) func(context.Con
 func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationWaitDeps) error {
 	execution := ts.finalization
 	if execution == nil {
-		return fmt.Errorf("%w: finalization execution unavailable", ErrFinalizationFactsUnavailable)
+		return fmt.Errorf("%w: finalization execution unavailable", gate.ErrFinalizationFactsUnavailable)
 	}
 	poll := deps.PollInterval
 	if poll <= 0 {
@@ -153,7 +155,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 		// hold; trySeal re-reads and refuses under the lock.
 		facts, err := execution.Read(ctx)
 		if err != nil {
-			facts = finalizationFacts{}
+			facts = gate.Facts{}
 		}
 		if err := ctx.Err(); err != nil {
 			deps.emit(FinalizationPhaseFailed, facts)
@@ -164,7 +166,7 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 		if err != nil {
 			// An already sealed gate answers Accepted plus ErrFinalizationSealed;
 			// sealing twice is idempotent and must not publish again.
-			if verdict == finalizationAccepted && errors.Is(err, ErrFinalizationSealed) {
+			if verdict == gate.Accepted && errors.Is(err, gate.ErrFinalizationSealed) {
 				deps.emit(FinalizationPhaseAccepted, facts)
 				return nil
 			}
@@ -172,19 +174,19 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 			return fmt.Errorf("finalization seal failed: %w", err)
 		}
 		switch verdict {
-		case finalizationAccepted:
+		case gate.Accepted:
 			deps.emit(FinalizationPhaseAccepted, facts)
 			return nil
-		case finalizationPauseQuestion:
+		case gate.PauseQuestion:
 			deps.emit(FinalizationPhasePaused, facts)
 			return &AwaitingAnswerError{Question: finalizationHeldQuestionText, SessionID: ts.call.SessionID}
-		case finalizationCompose:
+		case gate.Compose:
 			if scopeChanged {
 				scopeChanged = false
 				deps.emit(FinalizationPhaseWaiting, facts)
 				// The durable side said "not yet": time heals, recomposition
 				// cannot, so settle debts and wait instead of burning budget.
-				if err := settleFinalizationDebts(ctx, deps.Settler, execution.SessionID); err != nil {
+				if err := finalize.SettleFinalizationDebts(ctx, deps.Settler, execution.SessionID); err != nil {
 					return err
 				}
 				if err := waitFinalizationRound(ctx, poll, nil); err != nil {
@@ -202,9 +204,9 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 				deps.emit(FinalizationPhaseFailed, facts)
 				return err
 			}
-		case finalizationWaitWork:
+		case gate.WaitWork:
 			deps.emit(FinalizationPhaseWaiting, facts)
-			if err := settleFinalizationDebts(ctx, deps.Settler, execution.SessionID); err != nil {
+			if err := finalize.SettleFinalizationDebts(ctx, deps.Settler, execution.SessionID); err != nil {
 				return err
 			}
 			waitVerdict, changed, err := execution.Gate.WaitState(ctx, execution.Read)
@@ -212,14 +214,14 @@ func runFinalizationWait(ctx context.Context, ts *turnStream, deps FinalizationW
 				deps.emit(FinalizationPhaseFailed, facts)
 				return fmt.Errorf("finalization wait state read failed: %w", err)
 			}
-			if waitVerdict != finalizationWaitWork {
+			if waitVerdict != gate.WaitWork {
 				// The facts moved while arming the signal; re-evaluate from the
 				// top so trySeal sees the fresh state.
 				continue
 			}
 			if changed == nil {
 				deps.emit(FinalizationPhaseFailed, facts)
-				return fmt.Errorf("%w: finalization change signal unavailable", ErrFinalizationFactsUnavailable)
+				return fmt.Errorf("%w: finalization change signal unavailable", gate.ErrFinalizationFactsUnavailable)
 			}
 			if err := waitFinalizationRound(ctx, poll, changed); err != nil {
 				return err

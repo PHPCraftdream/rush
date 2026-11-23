@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -78,9 +79,9 @@ func TestCredentialedRootSurvivesRestartDrainRefused(t *testing.T) {
 	restarted := f.coord
 	f.requests.Store(0)
 	_, _, err = restarted.drainCallFor(context.Background(), f.sessID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	_, _, err = restarted.drainCallFor(context.Background(), child.ID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable, "driverless child inherits its root's durable credential requirement")
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable, "driverless child inherits its root's durable credential requirement")
 	call, prep, err = restarted.drainCallFor(context.Background(), unmarked.ID)
 	require.NoError(t, err)
 	require.True(t, call.IsDrain)
@@ -121,7 +122,7 @@ func TestCredentialedAdmissionWithoutMarkerStoreStillRefusesInProcessDrain(t *te
 	require.True(t, f.coord.isCredentialedRoot(f.sessID))
 
 	_, _, err = f.coord.drainCallFor(context.Background(), f.sessID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.Zero(t, f.requests.Load(), "in-memory refusal must not reach the configured provider")
 }
 
@@ -136,7 +137,7 @@ func TestCredentialRequirementLookupAndAncestorDriverDrain(t *testing.T) {
 	f.coord.credentialReqs = store
 
 	_, _, err = f.coord.drainCallFor(context.Background(), child.ID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable, "unbound child must inherit durable credential requirement")
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable, "unbound child must inherit durable credential requirement")
 
 	childCreds := &CredentialSet{
 		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
@@ -184,6 +185,6 @@ func TestCredentialRequirementLookupErrorsFailClosed(t *testing.T) {
 	f.coord.credentialReqs = store
 	require.True(t, f.coord.credentialedSessionOrAncestor(context.Background(), f.sessID))
 	_, _, err = f.coord.drainCallFor(context.Background(), f.sessID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.False(t, errors.Is(err, ErrDiskProviderUnavailable))
 }

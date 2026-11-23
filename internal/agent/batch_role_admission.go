@@ -14,20 +14,8 @@ func WithAdmittedBatchRoleContracts(ctx context.Context) context.Context {
 	return batchinst.WithAdmittedBatchRoleContracts(ctx)
 }
 
-func batchRoleContractsWereAdmitted(ctx context.Context) bool {
-	return batchinst.RoleContractsWereAdmitted(ctx)
-}
-
 func configForBatchInvocation(inv BatchInvocation) (*config.Config, error) {
 	return batchinst.ConfigForBatchInvocation(inv.roleConfig)
-}
-
-func batchSpecHasCustomRole(spec jobbatch.Spec) bool {
-	return batchinst.SpecHasCustomRole(spec)
-}
-
-func validateBatchSpecShapeForRoleAdmission(spec jobbatch.Spec) error {
-	return batchinst.ValidateSpecShapeForRoleAdmission(spec)
 }
 
 func admitBatchRoleContracts(cfg *config.Config, inherited *session.RoleContract, spec jobbatch.Spec) (jobbatch.Spec, error) {
@@ -38,14 +26,6 @@ func admitBatchRoleContracts(cfg *config.Config, inherited *session.RoleContract
 		},
 		ResolveCustom: ResolveRoleContract,
 	})
-}
-
-func validateSelectedBatchRole(contract *session.RoleContract, selected string, inherited *session.RoleContract) error {
-	return batchinst.ValidateSelectedRole(contract, selected, inherited)
-}
-
-func roleContractInherits(child, parent *session.RoleContract) bool {
-	return batchinst.RoleContractInherits(child, parent)
 }
 
 func validateBatchRolePayloads(spec jobbatch.Spec) error {

@@ -25,6 +25,8 @@ import (
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -35,11 +37,11 @@ import (
 // workingModelControls installs real controls so scope tests reach their intended boundary.
 type workingModelControls struct{}
 
-func (workingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, batchModelSpec) (jobbatch.ID, error) {
+func (workingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, modelcontrol.Spec) (jobbatch.ID, error) {
 	return jobbatch.ID(""), nil
 }
 
-func (workingModelControls) Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []batchModelItem) ([]jobbatch.ID, error) {
+func (workingModelControls) Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []modelcontrol.Item) ([]jobbatch.ID, error) {
 	return nil, nil
 }
 
@@ -55,7 +57,7 @@ func (workingModelControls) Stop(context.Context, string, string, string) (any, 
 	return nil, nil
 }
 
-func (workingModelControls) InstallBatchModelControls(registry *BatchLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
+func (workingModelControls) InstallBatchModelControls(registry *toolwrap.PolicyLeafRegistry, inv BatchInvocation) ([]fantasy.AgentTool, error) {
 	return NewInstalledBatchModelControl(nil, nil, nil, nil, nil, "", "", nil, nil).InstallBatchModelControls(registry, inv)
 }
 
@@ -357,7 +359,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	}
 	registryProbes := make([]queuedRegistryProbe, 0, len(queuedTools))
 	for _, armed := range queuedTools {
-		if ingress, ok := armed.(*batchIngressTool); ok {
+		if ingress, ok := armed.(*toolwrap.BatchIngressTool); ok {
 			registryProbes = append(registryProbes, queuedRegistryProbe{
 				registryID: ingress.Inv.RegistryID(),
 				// Derive the offered pinned-leaf probe name from the queued

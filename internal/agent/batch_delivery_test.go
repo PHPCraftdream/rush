@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -121,7 +122,7 @@ func deliveryTestInvocation(mode string) BatchInvocation {
 
 // noopDeliveryRunner is a Runner handle for tests that never cancel: Stop is
 // never reached.
-func noopDeliveryRunner() batchRunnerHandle {
+func noopDeliveryRunner() batchcore.RunnerHandle {
 	return fakeStopOnlyRunner{newFakeCancelRunner()}
 }
 
@@ -159,7 +160,7 @@ func TestBatchDeliverySyncUnavailableEnvelope(t *testing.T) {
 	// Never released: close with no completion -> unavailable, never settled.
 	close(done.release)
 	_, err = impl.DeliverBatch(context.Background(), "root-1", deliveryTestInvocation(batchDeliverySync))
-	require.ErrorIs(t, err, errBatchDoneUnavailable)
+	require.ErrorIs(t, err, batchcore.ErrDoneUnavailable)
 }
 
 // Acceptance: finish-before-ack — the root finished before the caller's ack —
@@ -202,11 +203,11 @@ func TestBatchDeliveryInlineFailedAckExhausted(t *testing.T) {
 	t.Parallel()
 	envelope := fantasy.NewTextResponse("done")
 	done := newFakeDone(envelope)
-	elector := fakeElector{inlineFailFirst: batchInlineElectionAttempts}
+	elector := fakeElector{inlineFailFirst: batchcore.InlineElectionAttempts}
 	impl := deliveryImpl(t, done, &elector)
 	done.finish(envelope)
 	_, err := impl.DeliverBatch(context.Background(), "root-1", deliveryTestInvocation(batchDeliveryInline))
-	require.ErrorIs(t, err, errBatchInlineElectionFailed)
+	require.ErrorIs(t, err, batchcore.ErrInlineElectionFailed)
 	require.Zero(t, elector.inlineSuccesses.Load(), "no duplicate election committed")
 	require.True(t, done.done, "completion stays durable for the outbox consumers")
 }
@@ -405,7 +406,7 @@ func TestBatchDeliveryEscapeWindowTypedErrors(t *testing.T) {
 	for _, tc := range []struct {
 		window string
 		err    error
-	}{{"", errBatchEscapeWindowRequired}, {"soon", errBatchEscapeWindowInvalid}, {"0s", errBatchEscapeWindowInvalid}} {
+	}{{"", batchcore.ErrEscapeWindowRequired}, {"soon", batchcore.ErrEscapeWindowInvalid}, {"0s", batchcore.ErrEscapeWindowInvalid}} {
 		inv := deliveryTestInvocation(batchDeliverySync)
 		inv.BackgroundEscape = batchEscapeAuto
 		inv.Delivery.Window = tc.window
@@ -448,13 +449,13 @@ func TestBatchDeliveryEscapeAutoDetachedStaysDetached(t *testing.T) {
 func TestBatchDeliveryConstructorFailsClosed(t *testing.T) {
 	t.Parallel()
 	_, err := newBatchDelivery(batchDeliveryDeps{})
-	require.ErrorIs(t, err, errBatchDeliveryDeps)
+	require.ErrorIs(t, err, batchcore.ErrDeliveryDeps)
 	// The Runner is REQUIRED: without it a cancelled sync caller could not
 	// submit Stop.
 	_, err = newBatchDelivery(batchDeliveryDeps{Owner: "owner-1", Done: newFakeDone(fantasy.ToolResponse{}), Elect: &fakeElector{}})
-	require.ErrorIs(t, err, errBatchDeliveryDeps)
+	require.ErrorIs(t, err, batchcore.ErrDeliveryDeps)
 	_, err = newBatchDelivery(batchDeliveryDeps{Owner: "", Done: newFakeDone(fantasy.ToolResponse{}), Elect: &fakeElector{}, Runner: noopDeliveryRunner()})
-	require.ErrorIs(t, err, errBatchDeliveryOwner)
+	require.ErrorIs(t, err, batchcore.ErrDeliveryOwner)
 }
 
 func TestBatchDeliveryUnknownMode(t *testing.T) {
@@ -463,5 +464,5 @@ func TestBatchDeliveryUnknownMode(t *testing.T) {
 	require.NoError(t, err)
 	inv := deliveryTestInvocation("mystery")
 	_, err = impl.DeliverBatch(context.Background(), "root-1", inv)
-	require.ErrorIs(t, err, errBatchDeliveryUnknownMode)
+	require.ErrorIs(t, err, batchcore.ErrDeliveryUnknownMode)
 }

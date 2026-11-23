@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -134,7 +135,7 @@ func TestBatchExecutionOwnerIsRetainedUntilDispose(t *testing.T) {
 	execKey := diskOwnerKey{kind: diskOwnerExecution, instance: "exec-1", bindingID: binding, registryID: "exec-lease"}
 	require.NoError(t, caps.acquire(execKey))
 	var once bool
-	wrapped := newBatchBindingExecution(testBatchLeaseExecution{}, func() {
+	wrapped := batchexec.WithBindingLease(testBatchLeaseExecution{}, func() {
 		if once {
 			return
 		}

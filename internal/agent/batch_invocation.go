@@ -13,7 +13,6 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
-	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -262,16 +261,4 @@ func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Conte
 		}
 	}
 	return batchdispatch.LeafRunContext(base, p.SessionID, p.AgentDepth, WithAgentDepth, policy, p.diskProvider)
-}
-
-type (
-	batchFolderScopeContextKey       = batchdispatch.FolderScopeContextKey
-	batchRunAllowlistContextKey      = batchdispatch.RunAllowlistContextKey
-	batchCustomDiskContextKey        = batchdispatch.CustomDiskContextKey
-	batchAgentDepthInvalidContextKey = batchdispatch.AgentDepthInvalidContextKey
-	batchDiskProviderContextKey      = batchdispatch.DiskProviderContextKey
-)
-
-func batchDiskProviderFrom(ctx context.Context) tools.DiskProvider {
-	return batchdispatch.DiskProviderFrom(ctx)
 }

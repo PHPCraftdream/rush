@@ -31,16 +31,19 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
 
 // markerCaptureSpec is the batch_run raw spec under test: ONE agent
 // item with an explicit timeout.
-func markerCaptureSpec() batchModelSpec {
-	return batchModelSpec{
+func markerCaptureSpec() modelcontrol.Spec {
+	return modelcontrol.Spec{
 		Mode: "parallel",
-		Items: []batchModelItem{{
+		Items: []modelcontrol.Item{{
 			Tool:    "agent",
 			Input:   json.RawMessage(`{"prompt":"work"}`),
 			Timeout: "90s",
@@ -115,7 +118,7 @@ func (e *markerCaptureExecutor) Start(_ context.Context, launch jobbatch.Launch,
 	go func() {
 		defer e.wg.Done()
 		<-e.release
-		report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchEnvelope(fantasy.NewTextResponse("done"))})
+		report(jobbatch.Result{State: jobbatch.StateCompleted, Details: batchdispatch.Envelope(fantasy.NewTextResponse("done"))})
 	}()
 	return markerCaptureExecution{}, nil
 }
@@ -169,7 +172,7 @@ func newMarkerModelControlEnv(t *testing.T) *markerModelControlEnv {
 	store, conn, _ := newTestBatchStore(t)
 	tool := &escrowTestTool{started: make(chan context.Context, 1), release: make(chan struct{})}
 	tools := []fantasy.AgentTool{tool}
-	fingerprint := batchToolsetFingerprint(tools)
+	fingerprint := installwire.ToolsetFingerprint(tools)
 	executor := newMarkerCaptureExecutor()
 	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = executor
@@ -225,7 +228,7 @@ func TestStampBatchCallCredentialsPreservesEveryTaskSpecField(t *testing.T) {
 	})
 	require.NoError(t, err)
 	spec := jobbatch.Spec{Task: &jobbatch.TaskSpec{
-		Kind: batchKindAgent, Group: "some-group", Payload: payload, Timeout: 90 * time.Second,
+		Kind: batchdispatch.KindAgent, Group: "some-group", Payload: payload, Timeout: 90 * time.Second,
 	}}
 	stamped, err := stampBatchCallCredentials(
 		withCallCredentials(context.Background(), escrowTestCreds("topsecret")), spec)
@@ -272,8 +275,8 @@ func TestStampBatchCallCredentialsPreservesBatchSpec(t *testing.T) {
 		Mode: jobbatch.ModeSequential, OnFail: jobbatch.OnFailContinue, Notify: jobbatch.NotifyEach,
 		MaxParallel: 3,
 		Items: []jobbatch.Spec{
-			{Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: agentPayload, Timeout: 90 * time.Second}},
-			{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: genericPayload, Timeout: 5 * time.Second}},
+			{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: agentPayload, Timeout: 90 * time.Second}},
+			{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: genericPayload, Timeout: 5 * time.Second}},
 		},
 	}}
 	stamped, err := stampBatchCallCredentials(
@@ -319,16 +322,16 @@ func TestStampBatchCallCredentialsRequiresCredentialsForMarkedPayload(t *testing
 	})
 	require.NoError(t, err)
 	_, err = stampBatchCallCredentials(context.Background(), jobbatch.Spec{
-		Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: marked, Timeout: 90 * time.Second},
+		Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: marked, Timeout: 90 * time.Second},
 	})
-	require.ErrorIs(t, err, errBatchCallCredentialsRequired)
+	require.ErrorIs(t, err, batchadapter.ErrCallCredentialsRequired)
 	unmarked, err := json.Marshal(batchLeafPayload{
 		Tool: "agent", ToolCallID: "call-unmarked", SessionID: "session", RegistryID: "registry",
 		Input: json.RawMessage(`{"prompt":"work"}`),
 	})
 	require.NoError(t, err)
 	stamped, err := stampBatchCallCredentials(context.Background(), jobbatch.Spec{
-		Task: &jobbatch.TaskSpec{Kind: batchKindAgent, Payload: unmarked, Timeout: 90 * time.Second},
+		Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: unmarked, Timeout: 90 * time.Second},
 	})
 	require.NoError(t, err)
 	require.NotContains(t, string(stamped.Task.Payload), "call_credentials", "an unmarked payload stays unmarked without credentials")
@@ -358,7 +361,7 @@ func TestModelControlRunAgentLeafTimeoutReachesExecutor(t *testing.T) {
 	env.executor.waitCaptured(t)
 	launches := env.executor.snapshotLaunches()
 	require.Len(t, launches, 1)
-	require.Equal(t, batchKindAgent, launches[0].Task.Kind)
+	require.Equal(t, batchdispatch.KindAgent, launches[0].Task.Kind)
 	require.Equal(t, 90*time.Second, launches[0].Task.Timeout, "the model-requested timeout must reach the executor untouched")
 	var payload batchLeafPayload
 	require.NoError(t, json.Unmarshal(launches[0].Task.Payload, &payload))

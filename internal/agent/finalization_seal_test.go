@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -24,7 +26,7 @@ func (s *sessionScopeStub) FinalizationSealScopeFacts(context.Context, *sql.Tx) 
 func TestFinalizationSealWrapperIsInertWithoutScope(t *testing.T) {
 	env := testEnv(t)
 	id := message.FinalizationIdentity{Key: "logical", Generation: 1, Serial: 1}
-	candidate := finalizationCandidate{MessageID: "m", Hash: "h"}
+	candidate := gate.Candidate{MessageID: "m", Hash: "h"}
 	messageCount := func() int64 {
 		var n int64
 		require.NoError(t, env.conn.QueryRowContext(t.Context(),
@@ -40,9 +42,9 @@ func TestFinalizationSealWrapperIsInertWithoutScope(t *testing.T) {
 	messages, finalizations := messageCount(), finalizationCount()
 
 	_, err := sealFinalizationCandidate(t.Context(), nil, env.messages, id, candidate)
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+	require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 	_, err = sealFinalizationCandidate(t.Context(), testFinalizationExecution(), env.messages, id, candidate)
-	require.ErrorIs(t, err, ErrFinalizationFactsUnavailable)
+	require.ErrorIs(t, err, gate.ErrFinalizationFactsUnavailable)
 	require.Equal(t, messages, messageCount())
 	require.Equal(t, finalizations, finalizationCount())
 
@@ -50,8 +52,8 @@ func TestFinalizationSealWrapperIsInertWithoutScope(t *testing.T) {
 	require.EqualValues(t, 1, finalizationCount(), "the stored scope binds one record")
 	mismatch := id
 	mismatch.Key = "other"
-	_, err = sealFinalizationCandidate(t.Context(), &finalizationExecution{SessionID: "session", LogicalID: "logical", Scope: scope}, env.messages, mismatch, candidate)
-	require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+	_, err = sealFinalizationCandidate(t.Context(), &finalize.FinalizationExecution{SessionID: "session", LogicalID: "logical", Scope: scope}, env.messages, mismatch, candidate)
+	require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 	require.Equal(t, messages, messageCount())
 	require.EqualValues(t, 1, finalizationCount())
 
@@ -73,12 +75,12 @@ func TestFinalizationSealWrapperSealsThroughGate(t *testing.T) {
 	candidate := finalizationStoredCandidate(t, env, execution.Scope, id)
 	stamp, err := execution.Gate.BeginCandidate(t.Context(), execution.Read)
 	require.NoError(t, err)
-	verdict, err := execution.Gate.TrySeal(t.Context(), stamp, candidate, execution.Read, func(ctx context.Context, c finalizationCandidate) error {
+	verdict, err := execution.Gate.TrySeal(t.Context(), stamp, candidate, execution.Read, func(ctx context.Context, c gate.Candidate) error {
 		_, err := sealFinalizationCandidate(ctx, execution, env.messages, id, c)
 		return err
 	})
 	require.NoError(t, err)
-	require.Equal(t, finalizationAccepted, verdict)
+	require.Equal(t, gate.Accepted, verdict)
 	record, err := execution.Scope.Store.Snapshot(t.Context(), execution.Scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "accepted", record.Phase)
@@ -108,12 +110,12 @@ func TestFinalizationSealWrapperMapsRefusalsToScopeChanges(t *testing.T) {
 	require.NoError(t, err)
 	stamp, err := execution.Gate.BeginCandidate(t.Context(), execution.Read)
 	require.NoError(t, err)
-	verdict, err := execution.Gate.TrySeal(t.Context(), stamp, candidate, execution.Read, func(ctx context.Context, c finalizationCandidate) error {
+	verdict, err := execution.Gate.TrySeal(t.Context(), stamp, candidate, execution.Read, func(ctx context.Context, c gate.Candidate) error {
 		_, err := sealFinalizationCandidate(ctx, execution, env.messages, id, c)
 		return err
 	})
 	require.NoError(t, err)
-	require.Equal(t, finalizationCompose, verdict)
+	require.Equal(t, gate.Compose, verdict)
 	_, _, err = execution.Gate.WaitState(t.Context(), execution.Read)
 	require.NoError(t, err, "a deterministic not-yet must never latch a gate failure")
 	record, err := execution.Scope.Store.Snapshot(t.Context(), execution.Scope.Identity)
@@ -123,7 +125,7 @@ func TestFinalizationSealWrapperMapsRefusalsToScopeChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, stored.IsFinished())
 	_, err = sealFinalizationCandidate(t.Context(), execution, env.messages, id, candidate)
-	require.ErrorIs(t, err, ErrFinalizationScopeChanged)
+	require.ErrorIs(t, err, gate.ErrFinalizationScopeChanged)
 }
 
 // Revert-check: a wrapper that treats persisted cancel as retryable

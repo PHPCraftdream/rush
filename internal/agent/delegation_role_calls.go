@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -83,7 +84,7 @@ func (c *coordinator) restoreRequestedDelegationCall(ctx context.Context, call S
 			return SessionAgentCall{}, fmt.Errorf("%w: delegated role has no parent", ErrAgentRoleMismatch)
 		}
 		if call.Credentials == nil && c.drainCredentialBoundary(ctx, child.ID) {
-			return SessionAgentCall{}, ErrCredentialBindingUnavailable
+			return SessionAgentCall{}, diskport.ErrCredentialBindingUnavailable
 		}
 		if call.SmartModel == nil {
 			return c.refreshRequestedDelegationCall(ctx, child.ParentSessionID, call)
@@ -119,7 +120,7 @@ func (c *coordinator) restoreRequestedDelegationCall(ctx context.Context, call S
 		return SessionAgentCall{}, fmt.Errorf("%w: delegated role has no parent", ErrAgentRoleMismatch)
 	}
 	if call.Credentials == nil && c.drainCredentialBoundary(ctx, child.ID) {
-		return SessionAgentCall{}, ErrCredentialBindingUnavailable
+		return SessionAgentCall{}, diskport.ErrCredentialBindingUnavailable
 	}
 	return c.refreshRequestedDelegationCall(ctx, child.ParentSessionID, call)
 }

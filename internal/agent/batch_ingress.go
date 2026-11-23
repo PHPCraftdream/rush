@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -30,7 +31,7 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 		CanonicalInput: batchCanonicalInput, StampCredentials: stampBatchCallCredentials,
 		AgentDepth: &inv.AgentDepth, AgentDepthSet: &inv.AgentDepthSet,
 		DefaultDepth: DefaultAgentDepth, MaxDepth: MaxAgentDepthForResume,
-		MissingCallID: errBatchMissingCallID, NilLeaf: errBatchNilLeaf, ControlPlaneLeaf: errBatchControlPlaneLeaf,
+		MissingCallID: errBatchMissingCallID, NilLeaf: errBatchNilLeaf, ControlPlaneLeaf: batchinst.ErrBatchControlPlaneLeaf,
 		BuildSpec: func(input json.RawMessage) (jobbatch.Spec, error) {
 			return batchOneItemSpec(inv, call, input)
 		},
@@ -49,7 +50,7 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 	if runner == nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("%w", errBatchRunnerNotWired)
 	}
-	probe := batchAttachProbe{
+	probe := batchcore.AttachProbe{
 		Owner: inv.SessionID, Host: r.cfg.Host, RunnerID: r.cfg.RunnerID,
 		ToolCallID: call.ID, InputHash: hash,
 		SubmittedMessageID: inv.MessageID, SubmittedRegistryID: inv.RegistryID,
@@ -75,12 +76,12 @@ func (r *batchRuntime) Invoke(ctx context.Context, inv BatchInvocation, leaf fan
 }
 
 // submit adapts the root invocation and runtime wiring to batchcore.
-func (r *batchRuntime) submit(ctx context.Context, runner batchRunnerHandle, inv BatchInvocation, spec jobbatch.Spec, callID string) (jobbatch.ID, error) {
+func (r *batchRuntime) submit(ctx context.Context, runner batchcore.RunnerHandle, inv BatchInvocation, spec jobbatch.Spec, callID string) (jobbatch.ID, error) {
 	params := batchcore.SubmitParams{
 		Owner: inv.SessionID, RegistryID: inv.RegistryID, DiskBindingID: inv.Policy.DiskBindingID,
 		CallID: callID, Spec: spec, Runner: runner,
 		Admit: func(root jobbatch.ID, spec jobbatch.Spec) error {
-			waiter := batchRankContext{Rank: inv.WaiterRank, Root: root}
+			waiter := batchinst.RankContext{Rank: inv.WaiterRank, Root: root}
 			return ValidateSubmit(r.cfg.Profile, waiter, nil, spec, r.cfg.MaxDepth, r.cfg.MaxNodes, r.cfg.Resolver)
 		},
 		InvalidAdmission: errBatchSubmitBeforeInvalid,
@@ -95,9 +96,6 @@ func (r *batchRuntime) submit(ctx context.Context, runner batchRunnerHandle, inv
 	}
 	return batchcore.Submit(ctx, params)
 }
-
-// Keep the private fixture type and builder on the root adapter.
-type batchToolInputError = batchcore.ToolInputError
 
 func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.RawMessage) (jobbatch.Spec, error) {
 	return batchcore.OneItemSpec(call, input, inv.AgentDepth, func(role string) (*session.RoleContract, error) {
@@ -114,7 +112,7 @@ func batchOneItemSpec(inv BatchInvocation, call fantasy.ToolCall, input json.Raw
 			AgentDepth: fields.AgentDepth,
 		}
 		if fields.WakeOnlySeconds != nil {
-			payload.Timeout = &batchLeafTimeoutSpec{Kind: batchTimeoutWakeOnly, Seconds: *fields.WakeOnlySeconds}
+			payload.Timeout = &batchLeafTimeoutSpec{Kind: batchinst.TimeoutWakeOnly, Seconds: *fields.WakeOnlySeconds}
 		}
 		return json.Marshal(payload)
 	}, lookupBatchLeafKindOverride)

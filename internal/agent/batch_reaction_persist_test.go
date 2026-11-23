@@ -18,6 +18,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -51,7 +52,7 @@ func seedBatchCompletionDebt(t *testing.T, f *attemptFixture, callID string) (*s
 	require.NoError(t, err)
 	_, err = install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{
 		Root: root,
-		Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}},
+		Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}},
 		Ref:  callID,
 	})
 	require.NoError(t, err)

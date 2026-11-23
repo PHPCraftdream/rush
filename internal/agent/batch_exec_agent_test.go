@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -22,7 +26,7 @@ type batchAgentTestTurn struct {
 	done    chan struct{}
 	exit    chan struct{}
 	resMu   sync.Mutex
-	res     batchAgentTurnResult
+	res     childagent.TurnResult
 	err     error
 	stopped chan struct{}
 	stopErr error
@@ -30,7 +34,7 @@ type batchAgentTestTurn struct {
 	trace   *batchAgentTestTrace
 }
 
-func newBatchAgentTestTurn(res batchAgentTurnResult, err error) *batchAgentTestTurn {
+func newBatchAgentTestTurn(res childagent.TurnResult, err error) *batchAgentTestTurn {
 	return &batchAgentTestTurn{
 		done: make(chan struct{}), exit: make(chan struct{}),
 		res: res, err: err, stopped: make(chan struct{}),
@@ -53,7 +57,7 @@ func (t *batchAgentTestTurn) exitNow() {
 	}
 }
 
-func (t *batchAgentTestTurn) setRes(res batchAgentTurnResult, err error) {
+func (t *batchAgentTestTurn) setRes(res childagent.TurnResult, err error) {
 	t.resMu.Lock()
 	t.res, t.err = res, err
 	t.resMu.Unlock()
@@ -67,7 +71,7 @@ func (t *batchAgentTestTurn) Exit() <-chan struct{} {
 	return t.exit
 }
 
-func (t *batchAgentTestTurn) Result() batchAgentTurnResult {
+func (t *batchAgentTestTurn) Result() childagent.TurnResult {
 	t.resMu.Lock()
 	defer t.resMu.Unlock()
 	return t.res
@@ -91,12 +95,12 @@ func (t *batchAgentTestTurn) Stop(context.Context) error {
 type batchAgentTestFactory struct {
 	turn    *batchAgentTestTurn
 	turnErr error
-	host    batchAgentHost
+	host    childagent.Host
 	req     batchAgentRunRequest
 	ctx     context.Context // The run context the factory received.
 	started chan struct{}
 	panics  bool
-	useTurn func(*batchAgentTestTurn, batchAgentHost)
+	useTurn func(*batchAgentTestTurn, childagent.Host)
 	rigOnce sync.Once
 	rig     *batchAgentTestQuestionRig
 }
@@ -111,21 +115,21 @@ func newBatchAgentTestFactory(turn *batchAgentTestTurn) *batchAgentTestFactory {
 // adapter closures).
 type batchAgentTestQuestionRig struct {
 	mu        sync.Mutex
-	published []batchChildQuestionNotice
+	published []childagent.QuestionNotice
 	holder    atomic.Pointer[batchAgentExecution]
 }
 
-func (r *batchAgentTestQuestionRig) PublishChildQuestion(_ context.Context, n batchChildQuestionNotice) error {
+func (r *batchAgentTestQuestionRig) PublishChildQuestion(_ context.Context, n childagent.QuestionNotice) error {
 	r.mu.Lock()
 	r.published = append(r.published, n)
 	r.mu.Unlock()
 	return nil
 }
 
-func (r *batchAgentTestQuestionRig) publishedNotices() []batchChildQuestionNotice {
+func (r *batchAgentTestQuestionRig) publishedNotices() []childagent.QuestionNotice {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]batchChildQuestionNotice(nil), r.published...)
+	return append([]childagent.QuestionNotice(nil), r.published...)
 }
 
 func (r *batchAgentTestQuestionRig) inject(depth int, sequence uint64, text string) error {
@@ -133,7 +137,7 @@ func (r *batchAgentTestQuestionRig) inject(depth int, sequence uint64, text stri
 	if exec == nil {
 		return ErrBatchAgentNotHeld
 	}
-	payload, err := json.Marshal(batchAgentInjectMessage{Depth: depth, Sequence: sequence, Text: json.RawMessage(text)})
+	payload, err := json.Marshal(batchinst.AgentInjectMessage{Depth: depth, Sequence: sequence, Text: json.RawMessage(text)})
 	if err != nil {
 		return err
 	}
@@ -147,7 +151,7 @@ func (f *batchAgentTestFactory) questionRig() *batchAgentTestQuestionRig {
 	return f.rig
 }
 
-func (f *batchAgentTestFactory) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error) {
+func (f *batchAgentTestFactory) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host childagent.Host) (childagent.Turn, error) {
 	if f.panics {
 		panic("factory boom")
 	}
@@ -168,13 +172,13 @@ func (f *batchAgentTestFactory) StartAgentTurn(ctx context.Context, req batchAge
 
 // askAndShape mimics the ask_question tool: it asks through the host and
 // only finishes the turn once the answer arrived.
-func askAndShape(turn *batchAgentTestTurn, host batchAgentHost, depth int, question string) {
+func askAndShape(turn *batchAgentTestTurn, host childagent.Host, depth int, question string) {
 	go func() {
 		answer, err := host.Ask(context.Background(), depth, question)
 		if err != nil {
-			turn.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+			turn.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 		} else {
-			turn.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
+			turn.setRes(childagent.TurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
 		}
 		turn.finish()
 		turn.exitNow()
@@ -239,9 +243,9 @@ func batchAgentTestRunWithPayload(t *testing.T, deps batchAgentDeps, factory *ba
 	if deps.Poll == 0 {
 		deps.Poll = time.Millisecond
 	}
-	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchKindAgent: newBatchAgentFamily(deps)})
+	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchdispatch.KindAgent: newBatchAgentFamily(deps)})
 	reports := make(chan jobbatch.Result, 4)
-	exec, err := e.Start(context.Background(), jobbatch.Launch{ID: "root.1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: payload}}, func(r jobbatch.Result) {
+	exec, err := e.Start(context.Background(), jobbatch.Launch{ID: "root.1", Token: 1, Task: jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: payload}}, func(r jobbatch.Result) {
 		tr.addf("scope report: state=%s summary=%q", r.State, r.Summary)
 		reports <- r
 	})
@@ -308,7 +312,7 @@ func TestBatchCoordinatorDescendantsUsesChildOwnerTree(t *testing.T) {
 // RC1/RC13: the scope reports only after the turn ended AND descendants are
 // confirmed terminal, exactly once.
 func TestBatchAgentScopeWaitsForTurnAndDescendants(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("done")}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("done")}, nil)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 
 	// Turn running, descendants terminal: still no report.
@@ -341,7 +345,7 @@ func TestBatchAgentScopeWaitsForTurnAndDescendants(t *testing.T) {
 
 // RC3: an incomplete read is treated as live, never as closed.
 func TestBatchAgentIncompleteReadKeepsScopeOpen(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("done")}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("done")}, nil)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 	reader.set(true, false) // Incomplete read: unknown, conservative.
 	turn.finish()
@@ -359,9 +363,9 @@ func TestBatchAgentIncompleteReadKeepsScopeOpen(t *testing.T) {
 func TestBatchAgentHeldQuestionKeepsNodeLive(t *testing.T) {
 	for _, otherWork := range []bool{false, true} {
 		t.Run(fmt.Sprintf("other_work_%v", otherWork), func(t *testing.T) {
-			turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+			turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 			factory := newBatchAgentTestFactory(turn)
-			factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+			factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 				askAndShape(t2, host, 2, "why?")
 			}
 			e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
@@ -394,7 +398,7 @@ func TestBatchAgentHeldQuestionKeepsNodeLive(t *testing.T) {
 // RC10 backstop: even with the turn ended, a held question keeps the scope
 // open until the answer is injected.
 func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
 	done := make(chan struct{})
@@ -428,9 +432,9 @@ func TestBatchAgentHeldQuestionAfterTurnEnded(t *testing.T) {
 
 // RC7: an answer reaches exactly its addressed depth, never another one.
 func TestBatchAgentInjectRoutesByDepth(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		askAndShape(t2, host, 3, "why?")
 	}
 	e, factory, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, factory)
@@ -459,7 +463,7 @@ func TestBatchAgentInjectRoutesByDepth(t *testing.T) {
 // and a message is never delivered after terminality.
 func TestBatchAgentInjectVsStopRace(t *testing.T) {
 	for i := 0; i < 200; i++ {
-		turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("done")}, context.Canceled)
+		turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("done")}, context.Canceled)
 		e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 		var wg sync.WaitGroup
 		stopErr := make(chan error, 1)
@@ -488,7 +492,7 @@ func TestBatchAgentInjectVsStopRace(t *testing.T) {
 
 // RC4 (deterministic order): a message is never delivered after Stop.
 func TestBatchAgentInjectRejectedAfterStop(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("x")}, context.Canceled)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("x")}, context.Canceled)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 	require.NoError(t, e.Stop(context.Background()))
 	require.ErrorIs(t, jobbatch.Messenger(e).Inject(context.Background(), json.RawMessage(`{"depth":1}`)), ErrBatchAgentStopped)
@@ -502,7 +506,7 @@ func TestBatchAgentInjectRejectedAfterStop(t *testing.T) {
 // RC5: a terminal incarnation rejects Inject as stale; a message can never
 // reach a new incarnation through the old handle.
 func TestBatchAgentInjectStaleGeneration(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("done")}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("done")}, nil)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 	turn.finish()
 	turn.exitNow()
@@ -514,16 +518,16 @@ func TestBatchAgentInjectStaleGeneration(t *testing.T) {
 // RC8: Stop at depth touches exactly the addressed subtree; a sibling leaf
 // from the same family runs to completion.
 func TestBatchAgentStopAtDepthLeavesSiblingsUntouched(t *testing.T) {
-	turnA := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("a")}, context.Canceled)
-	turnB := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("b")}, nil)
+	turnA := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("a")}, context.Canceled)
+	turnB := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("b")}, nil)
 	eA, _, reader, reportsA := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turnA))
 
 	// Sibling B shares only the descendant reader.
 	readerB := newBatchAgentTestReader(false, false)
 	depsB := batchAgentDeps{Runs: &batchAgentStaticFactory{turn: turnB}, Descendants: readerB, Poll: time.Millisecond}
-	eB := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchKindAgent: newBatchAgentFamily(depsB)})
+	eB := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchdispatch.KindAgent: newBatchAgentFamily(depsB)})
 	reportsB := make(chan jobbatch.Result, 2)
-	_, err := eB.Start(context.Background(), jobbatch.Launch{ID: "root.2", Token: 1, Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: batchAgentTestPayload(t, "sibling")}}, func(r jobbatch.Result) { reportsB <- r })
+	_, err := eB.Start(context.Background(), jobbatch.Launch{ID: "root.2", Token: 1, Task: jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: batchAgentTestPayload(t, "sibling")}}, func(r jobbatch.Result) { reportsB <- r })
 	require.NoError(t, err)
 
 	require.NoError(t, eA.Stop(context.Background()))
@@ -541,7 +545,7 @@ func TestBatchAgentStopAtDepthLeavesSiblingsUntouched(t *testing.T) {
 
 // RC6: the stop acknowledgement never settles the node.
 func TestBatchAgentStopAckDoesNotSettle(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("x")}, context.Canceled)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("x")}, context.Canceled)
 	e, factory, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 	// The turn already ended; the descendants are still live.
 	reader.set(true, true)
@@ -560,10 +564,10 @@ func TestBatchAgentStopAckDoesNotSettle(t *testing.T) {
 
 // RC8b: Dispose waits for the late kill (driver exit) before releasing.
 func TestBatchAgentDisposeWaitsForLateKill(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("x")}, context.Canceled)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("x")}, context.Canceled)
 	lateKill := make(chan struct{})
 	factory := newBatchAgentTestFactory(turn)
-	factory.useTurn = func(t2 *batchAgentTestTurn, _ batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, _ childagent.Host) {
 		go func() {
 			<-lateKill
 			close(t2.exit)
@@ -586,18 +590,18 @@ func TestBatchAgentDisposeWaitsForLateKill(t *testing.T) {
 
 // RC9: Dispose releases the generation state; no goroutine leaks.
 func TestBatchAgentDisposeGenerationCleanup(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	var askers sync.WaitGroup
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		askers.Add(1)
 		go func() {
 			defer askers.Done()
 			answer, err := host.Ask(context.Background(), 1, "why?")
 			if err != nil {
-				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+				t2.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 			} else {
-				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
+				t2.setRes(childagent.TurnResult{Response: fantasy.NewTextResponse(string(answer))}, nil)
 			}
 			t2.finish()
 			t2.exitNow()
@@ -653,9 +657,9 @@ func TestBatchAgentDisposeGenerationCleanup(t *testing.T) {
 // RC12: a panic in the run factory is contained at Start.
 func TestBatchAgentRunFactoryPanicContained(t *testing.T) {
 	reader := newBatchAgentTestReader(false, false)
-	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchKindAgent: newBatchAgentFamily(batchAgentDeps{Runs: &batchAgentTestFactory{panics: true}, Descendants: reader})})
-	_, startErr := e.Start(context.Background(), jobbatch.Launch{ID: "n", Task: jobbatch.TaskSpec{Kind: batchKindAgent, Payload: batchAgentTestPayload(t, "s")}}, func(jobbatch.Result) {})
-	var se *batchStartError
+	e := newBatchExecutor(batchLeafEnv{}, map[string]batchLeafFamily{batchdispatch.KindAgent: newBatchAgentFamily(batchAgentDeps{Runs: &batchAgentTestFactory{panics: true}, Descendants: reader})})
+	_, startErr := e.Start(context.Background(), jobbatch.Launch{ID: "n", Task: jobbatch.TaskSpec{Kind: batchdispatch.KindAgent, Payload: batchAgentTestPayload(t, "s")}}, func(jobbatch.Result) {})
+	var se *batchdispatch.StartError
 	require.ErrorAs(t, startErr, &se)
 	require.Equal(t, "agent_start_panic", se.Code())
 }
@@ -663,7 +667,7 @@ func TestBatchAgentRunFactoryPanicContained(t *testing.T) {
 // RC13b: denied and failed agent runs map to Failed with the evidence.
 func TestBatchAgentDeniedOrErrorRunsFail(t *testing.T) {
 	t.Run("run_error", func(t *testing.T) {
-		turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("partial")}, errors.New("provider down"))
+		turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("partial")}, errors.New("provider down"))
 		e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 		turn.finish()
 		turn.exitNow()
@@ -675,7 +679,7 @@ func TestBatchAgentDeniedOrErrorRunsFail(t *testing.T) {
 		require.NoError(t, jobbatch.Disposer(e).Dispose(context.Background()))
 	})
 	t.Run("is_error", func(t *testing.T) {
-		turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse("denied by permission")}, nil)
+		turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextErrorResponse("denied by permission")}, nil)
 		e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 		turn.finish()
 		turn.exitNow()
@@ -691,7 +695,7 @@ func TestBatchAgentDeniedOrErrorRunsFail(t *testing.T) {
 // RC15: one terminal report per node even when the reader flickers and a
 // stop interleaves.
 func TestBatchAgentOneTerminalReportPerNode(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{Response: fantasy.NewTextResponse("done")}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{Response: fantasy.NewTextResponse("done")}, nil)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 	reader.set(true, true)
 	reader.set(false, true)
@@ -715,7 +719,7 @@ func TestBatchAgentOneTerminalReportPerNode(t *testing.T) {
 func TestBatchAgentDeclaredOutcome(t *testing.T) {
 	turn := &batchAgentTestTurn{
 		done: make(chan struct{}), exit: make(chan struct{}), stopped: make(chan struct{}),
-		res: batchAgentTurnResult{
+		res: childagent.TurnResult{
 			Response: fantasy.NewTextResponse("ok"),
 			Declared: jobbatch.Outcome{State: jobbatch.StateFailed, Code: "task_outcome", Summary: "declared failure"},
 		},
@@ -735,14 +739,15 @@ func TestBatchAgentDeclaredOutcome(t *testing.T) {
 // A declaration whose state is not a reportable terminal state is ignored: the
 // clean closure stays Completed, it never becomes an empty state.
 func TestBatchAgentScopeResultIgnoresUnreportableDeclaration(t *testing.T) {
-	for _, state := range []jobbatch.State{jobbatch.StatePending, jobbatch.StateRunning, jobbatch.StateSkipped, "bogus"} {
-		r := batchAgentScopeResult(batchAgentTurnResult{
+	for _, st := range []jobbatch.State{jobbatch.StatePending, jobbatch.StateRunning, jobbatch.StateSkipped, "bogus"} {
+		res := childagent.TurnResult{
 			Response: fantasy.NewTextResponse("ok"),
-			Declared: jobbatch.Outcome{State: state, Code: "task_outcome", Summary: "declared"},
-		}, nil, false)
-		require.Equal(t, jobbatch.StateCompleted, r.State, string(state))
-		require.Equal(t, "ok", r.Summary, string(state))
-		require.Empty(t, r.Code, string(state))
+			Declared: jobbatch.Outcome{State: st, Code: "task_outcome", Summary: "declared"},
+		}
+		r := state.ScopeResult(res.Response, res.Declared, nil, false)
+		require.Equal(t, jobbatch.StateCompleted, r.State, string(st))
+		require.Equal(t, "ok", r.Summary, string(st))
+		require.Empty(t, r.Code, string(st))
 	}
 }
 
@@ -753,7 +758,7 @@ func TestBatchScopeDeliverRejectsStopped(t *testing.T) {
 	_, err := s.hold(1)
 	require.NoError(t, err)
 	s.beginStop()
-	require.ErrorIs(t, s.state.Deliver(batchAgentInjectMessage{Depth: 1}), ErrBatchAgentStopped)
+	require.ErrorIs(t, s.state.Deliver(batchinst.AgentInjectMessage{Depth: 1}), ErrBatchAgentStopped)
 
 	s2 := newBatchAgentScope()
 	_, err = s2.hold(2)
@@ -762,14 +767,14 @@ func TestBatchScopeDeliverRejectsStopped(t *testing.T) {
 		require.EqualValues(t, 1, sequence)
 		return nil
 	}))
-	require.NoError(t, s2.state.Deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}))
-	require.ErrorIs(t, s2.state.Deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentNotHeld)
+	require.NoError(t, s2.state.Deliver(batchinst.AgentInjectMessage{Depth: 2, Sequence: 1}))
+	require.ErrorIs(t, s2.state.Deliver(batchinst.AgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentNotHeld)
 	s2.beginStop()
-	require.ErrorIs(t, s2.state.Deliver(batchAgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentStopped)
+	require.ErrorIs(t, s2.state.Deliver(batchinst.AgentInjectMessage{Depth: 2, Sequence: 1}), ErrBatchAgentStopped)
 }
 
-type batchAgentStaticFactory struct{ turn batchAgentTurn }
+type batchAgentStaticFactory struct{ turn childagent.Turn }
 
-func (f *batchAgentStaticFactory) StartAgentTurn(context.Context, batchAgentRunRequest, batchAgentHost) (batchAgentTurn, error) {
+func (f *batchAgentStaticFactory) StartAgentTurn(context.Context, batchAgentRunRequest, childagent.Host) (childagent.Turn, error) {
 	return f.turn, nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -69,7 +70,7 @@ func TestCustomRoleContinuationRejectsForgedBroaderStoredContract(t *testing.T) 
 	require.ErrorIs(t, err, ErrAgentRoleMismatch)
 	missingBundle := SessionAgentCall{SessionID: child.ID, RequestedModelRole: "analyst", RoleContract: contract}
 	_, err = coord.restoreRequestedDelegationCall(t.Context(), missingBundle)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 
 	// A same-name persisted binding that is wider than the call's admission
 	// snapshot must fail closed too; the durable row cannot silently replace

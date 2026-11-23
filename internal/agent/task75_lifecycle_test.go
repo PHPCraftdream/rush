@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func TestTask75BatchLifecycleBindsBeforeProviderAndKeepsChildSelected(t *testing
 
 	var events []string
 	var noChild atomic.Int64
-	lifecycle := batchAgentLifecycle{
+	lifecycle := state.Lifecycle{
 		BindChildSession: func(_ context.Context, id string) error {
 			events = append(events, "bind:"+id)
 			return nil
@@ -34,7 +35,7 @@ func TestTask75BatchLifecycleBindsBeforeProviderAndKeepsChildSelected(t *testing
 		return agentResultWithText("done"), nil
 	})
 
-	_, err = coord.runSubAgent(withBatchAgentLifecycle(t.Context(), lifecycle), subAgentParams{
+	_, err = coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: childAgent, SessionID: parent.ID, AgentMessageID: "task75-message", ToolCallID: "task75-call",
 		Prompt: "run", SessionTitle: "task75 child",
 	})
@@ -60,7 +61,7 @@ func TestTask75ResumeLifecycleCleanupFollowsValidBind(t *testing.T) {
 	coord.suspendAutoResume(child.ID)
 
 	var noChild atomic.Int64
-	lifecycle := batchAgentLifecycle{
+	lifecycle := state.Lifecycle{
 		BindChildSession: func(_ context.Context, id string) error {
 			require.Equal(t, child.ID, id)
 			require.Equal(t, 1, coord.consecutiveResume(id), "resume state must remain until the child is successfully bound")
@@ -85,7 +86,7 @@ func TestTask75ResumeLifecycleCleanupFollowsValidBind(t *testing.T) {
 		return agentResultWithText("resumed"), nil
 	})
 
-	_, err = coord.runSubAgent(withBatchAgentLifecycle(t.Context(), lifecycle), subAgentParams{
+	_, err = coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: childAgent, SessionID: parent.ID, ResumeSessionID: child.ID, Prompt: "continue",
 	})
 	require.NoError(t, err)
@@ -109,7 +110,7 @@ func TestTask75FailedResumeBindPreservesLifecycleState(t *testing.T) {
 
 	injected := errors.New("task75 lifecycle bind failed")
 	var noChild atomic.Int64
-	lifecycle := batchAgentLifecycle{
+	lifecycle := state.Lifecycle{
 		BindChildSession: func(_ context.Context, id string) error {
 			require.Equal(t, child.ID, id)
 			return injected
@@ -122,7 +123,7 @@ func TestTask75FailedResumeBindPreservesLifecycleState(t *testing.T) {
 		return agentResultWithText("must not run"), nil
 	})
 
-	_, err = coord.runSubAgent(withBatchAgentLifecycle(t.Context(), lifecycle), subAgentParams{
+	_, err = coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: childAgent, SessionID: parent.ID, ResumeSessionID: child.ID, Prompt: "continue",
 	})
 	require.ErrorIs(t, err, injected, "the lifecycle bind wrapper must preserve its cause")

@@ -5,34 +5,35 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
 func TestBatchOutputCacheSuffixAndCursorContinuation(t *testing.T) {
 	cache := newBatchOutputCache()
-	data := []byte(strings.Repeat("x", batchOutputTaskLimit+97))
+	data := []byte(strings.Repeat("x", batchmeta.OutputTaskLimit+97))
 	cache.putFor("t", "r", jobbatch.OutputChunk{Data: data, Next: uint64(len(data)), EOF: true})
 	chunk, _, _, _, ok := cache.readWithMetadata("t", 0)
-	if !ok || len(chunk.Data) != batchOutputTaskLimit || chunk.Oldest != 97 || !chunk.Truncated {
+	if !ok || len(chunk.Data) != batchmeta.OutputTaskLimit || chunk.Oldest != 97 || !chunk.Truncated {
 		t.Fatalf("suffix %#v", chunk)
 	}
 	cursor := uint64(97)
 	page, _, retained, truncated, found := cache.readWithMetadata("t", cursor)
-	if !found || !truncated || retained != batchOutputTaskLimit {
+	if !found || !truncated || retained != batchmeta.OutputTaskLimit {
 		t.Fatalf("first page metadata: found=%v truncated=%v retained=%d", found, truncated, retained)
 	}
 	total := uint64(len(data))
 	first := outputResponse(page, total, retained, truncated).(map[string]any)
-	if len(first["data"].(string)) != batchModelOutputLimit || first["next_cursor"] != uint64(97+batchModelOutputLimit) || first["total_bytes"] != uint64(len(data)) || first["retained_bytes"] != batchOutputTaskLimit || first["eof"] != false {
+	if len(first["data"].(string)) != batchModelOutputLimit || first["next_cursor"] != uint64(97+batchModelOutputLimit) || first["total_bytes"] != uint64(len(data)) || first["retained_bytes"] != batchmeta.OutputTaskLimit || first["eof"] != false {
 		t.Fatalf("first page response %#v", first)
 	}
 	cursor = first["next_cursor"].(uint64)
 	page, _, retained, truncated, found = cache.readWithMetadata("t", cursor)
-	if !found || retained != batchOutputTaskLimit {
+	if !found || retained != batchmeta.OutputTaskLimit {
 		t.Fatalf("second page metadata: found=%v retained=%d", found, retained)
 	}
 	second := outputResponse(page, total, retained, truncated).(map[string]any)
-	if len(second["data"].(string)) != batchModelOutputLimit || second["next_cursor"] != uint64(97+2*batchModelOutputLimit) || second["total_bytes"] != uint64(len(data)) || second["retained_bytes"] != batchOutputTaskLimit {
+	if len(second["data"].(string)) != batchModelOutputLimit || second["next_cursor"] != uint64(97+2*batchModelOutputLimit) || second["total_bytes"] != uint64(len(data)) || second["retained_bytes"] != batchmeta.OutputTaskLimit {
 		t.Fatalf("second page response %#v", second)
 	}
 	cursor = second["next_cursor"].(uint64)
@@ -134,7 +135,7 @@ func TestBatchOutputCacheCursorContractPerFamily(t *testing.T) {
 	cache.putFor("clamp", "root", chunk)
 	cache.putFor("agent", "root", chunk)
 	cache.putFor("shell", "root", chunk)
-	cache.putForContract("argv", "root", chunk, batchOutputCursorArgvRestart)
+	cache.putForContract("argv", "root", chunk, batchmeta.OutputCursorArgvRestart)
 	families := []struct {
 		id   jobbatch.ID
 		live func(uint64) jobbatch.OutputChunk
@@ -185,7 +186,7 @@ func TestBatchOutputCacheCursorContractPerFamily(t *testing.T) {
 	truncData := []byte("defgh")
 	truncChunk := jobbatch.OutputChunk{Data: append([]byte(nil), truncData...), Oldest: 3, Next: 8, EOF: true}
 	cache.putFor("shell-trunc", "root", truncChunk)
-	cache.putForContract("argv-trunc", "root", truncChunk, batchOutputCursorArgvRestart)
+	cache.putForContract("argv-trunc", "root", truncChunk, batchmeta.OutputCursorArgvRestart)
 	truncCursors := []uint64{0, 3, 5, 8, 13}
 	expectedShellTrunc := []jobbatch.OutputChunk{
 		{Data: []byte("defgh"), Next: 8, EOF: true, Oldest: 3, Truncated: true},

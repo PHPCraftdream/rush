@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/stretchr/testify/require"
 )
 
@@ -123,7 +124,7 @@ func TestAllowConfiguredRoleFallbackCredentialedRootMarkedAndDrainRefused(t *tes
 	require.True(t, f.coord.isCredentialedRoot(f.sessID), "admitted credentialed root must be marked")
 
 	_, _, err = f.coord.drainCallFor(context.Background(), f.sessID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 }
 
 func TestDrainCredentialedRootRefusalIsRootOnly(t *testing.T) {
@@ -135,7 +136,7 @@ func TestDrainCredentialedRootRefusalIsRootOnly(t *testing.T) {
 	f.coord.cfg = nil
 
 	_, _, err := f.coord.drainCallFor(ctx, f.sessID)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.Zero(t, f.requests.Load(), "a refused root drain must not reach the configured model/provider")
 	require.False(t, errors.Is(err, ErrDiskProviderUnavailable))
 
@@ -163,8 +164,8 @@ func TestDrainCredentialedRootTerminalWakeAndRecheck(t *testing.T) {
 	f.coord.markCredentialedRoot(f.sessID)
 	f.coord.addToRecheckSet(f.sessID)
 
-	err := f.coord.handleDrainBuildError(f.sessID, ErrCredentialBindingUnavailable)
-	require.ErrorIs(t, err, ErrCredentialBindingUnavailable)
+	err := f.coord.handleDrainBuildError(f.sessID, diskport.ErrCredentialBindingUnavailable)
+	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
 	require.Empty(t, f.coord.drainRecheckSet(), "credential refusal must not schedule periodic retries")
 	row := f.row(context.Background(), "call-1")
 	require.Zero(t, row.Reacted)

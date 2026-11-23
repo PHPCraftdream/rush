@@ -26,7 +26,7 @@ func TestBatchCredentialEscrowRegisterConsumeRelease(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "tenant-secret", got.Credentials[0].APIKey)
 	_, _, err = e.consume(key, "root.1")
-	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+	require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 	releaseRegistration()
 	require.NoError(t, e.Register(key.adapterKey(), "root", escrowTestCreds("tenant-secret")))
 	_, complete2, err := e.consume(key, "root.1")
@@ -36,7 +36,7 @@ func TestBatchCredentialEscrowRegisterConsumeRelease(t *testing.T) {
 	complete()
 	complete2()
 	_, _, err = e.consume(key, "root.1")
-	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+	require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 }
 
 func TestBatchCredentialEscrowConcurrentIsolationAndSingleConsume(t *testing.T) {
@@ -133,7 +133,7 @@ func TestBatchCredentialEscrowReleaseRacesConsume(t *testing.T) {
 				close(releaseGate)
 				result := <-consumed
 				wg.Wait()
-				require.ErrorIs(t, result.err, errBatchCredentialEscrowMissing)
+				require.ErrorIs(t, result.err, batchadapter.ErrCredentialEscrowMissing)
 				require.Nil(t, result.creds)
 			} else {
 				close(consumeGate)
@@ -144,7 +144,7 @@ func TestBatchCredentialEscrowReleaseRacesConsume(t *testing.T) {
 				require.Equal(t, "secret", result.creds.Credentials[0].APIKey)
 			}
 			_, _, err := e.consume(key, "root.1")
-			require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+			require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 		})
 	}
 }
@@ -154,7 +154,7 @@ func TestBatchCredentialEscrowMissingAndWrongRootFailClosed(t *testing.T) {
 	key := batchCredentialKey{registryID: "r", sessionID: "s", messageID: "m", callID: "c", tool: "agent"}
 	require.NoError(t, e.Register(key.adapterKey(), "root", nil))
 	_, _, err := e.consume(key, "other.1")
-	require.ErrorIs(t, err, errBatchCredentialEscrowMissing)
+	require.ErrorIs(t, err, batchadapter.ErrCredentialEscrowMissing)
 	creds, complete, err := e.consume(key, "root.1")
 	require.NoError(t, err)
 	require.Nil(t, creds)

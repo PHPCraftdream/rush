@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/wakectl"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
@@ -22,7 +23,7 @@ func (c *coordinator) wakeWorker() *wakeScheduleWorker {
 func (c *coordinator) wakeBuildErrorPorts() wakectl.BuildErrorPorts {
 	return wakectl.BuildErrorPorts{
 		IsProcessDependencyUnavailable: func(err error) bool {
-			return errors.Is(err, ErrDiskProviderUnavailable) || errors.Is(err, ErrCredentialBindingUnavailable)
+			return errors.Is(err, ErrDiskProviderUnavailable) || errors.Is(err, diskport.ErrCredentialBindingUnavailable)
 		},
 		ClearFromRecheckSet: c.clearFromRecheckSet,
 		NoteDrainRefused:    c.noteDrainRefused,

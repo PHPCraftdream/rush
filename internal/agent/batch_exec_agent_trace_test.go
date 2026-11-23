@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -95,7 +96,7 @@ func batchAgentFailureReport(t *testing.T) string {
 }
 
 func TestBatchAgentTraceRecordsTransitionsAndReports(t *testing.T) {
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	e, _, reader, reports := batchAgentTestRun(t, batchAgentDeps{}, newBatchAgentTestFactory(turn))
 	reader.set(true, true)
 	turn.finish()

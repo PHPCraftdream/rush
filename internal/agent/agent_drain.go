@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -63,7 +64,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		}
 	}
 	if _, ok := c.subAgentDrivers.get(sessionID); !ok && c.drainCredentialBoundary(ctx, sessionID) {
-		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", ErrCredentialBindingUnavailable, sessionID)
+		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", diskport.ErrCredentialBindingUnavailable, sessionID)
 	}
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
 		// §6.2 (preserved from the old wakeNoticeCall driver branch): every

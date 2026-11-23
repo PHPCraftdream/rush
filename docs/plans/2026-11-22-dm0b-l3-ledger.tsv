@@ -1,0 +1,981 @@
+# Lane L3 ledger (docs/plans/2026-11-22-dm0b-scc-cut.md section 5, row L3 "batch families").
+#
+# One row per declaration of each of the 60 root files the layout TSV assigns to
+# batchinst / batchflow / finalize / batchassemble that still existed at HEAD: 883
+# declarations, struct fields and interface methods included (2 further scope files are
+# comment-only and carry no declarations).
+# Columns:
+#   record row_id source_file kind symbol source_line target_file target_symbol
+#   disposition hit line_end proof
+# Dispositions: present 612, requalified 87, port 17,
+# blank 12, retired 150, retired_adapter 5.
+#   present           unchanged: its comment-free token stream is identical at HEAD and now
+#   requalified       identical after the lane's rename map (old root name -> package-
+#                     qualified destination name) or after a promoted embedded-field
+#                     selector follows its type's new name
+#   retired           the root declaration is deleted; target_symbol/target_file is the
+#                     pre-existing destination declaration it aliased, and every former
+#                     reference now names it directly
+#   retired_adapter   as retired, and the forwarder was curried: each former call site
+#                     inlines exactly the arguments the wrapper supplied
+#   port              body changed by an inlined curried adapter (the deleted wrapper
+#                     supplied the missing arguments) or by a promoted embedded-field
+#                     selector that follows its type's new name
+#   blank             var _ compile-time assertion (no identity of its own)
+# hit = sha256_16 over the whitespace-normalised HEAD source span of the declaration,
+# before the rename map is applied (comparison strips comments on both sides).
+# Verifier: .rush/tmp/sprint0/l3/ledger.py (scratch, not checked in): token alignment,
+# unclaimed-removal, target-existence and unclaimed-addition checks over the scope files
+# and every other file the lane touched.
+# Documented tolerance classes of this lane:
+#   - curried adapters inlined at their call sites: classifyBatchLeaf, batchSpecNodes,
+#     processCoordinatorBatchBinding, newBatchStartError, batchAgentScopeResult
+#   - promoted embedded-field selectors renamed with their type alias
+#   - three aliases deliberately KEPT as thin root adapters because
+#     internal/agent/agent_turn_step.go was at 899 lines and may not grow: the file
+#     keeps 900 lines, so isBatchStartedToolResult and isFinalizationCandidate stay in
+#     batch_delivery.go / finalization_gate.go.
+record	row_id	source_file	kind	symbol	source_line	target_file	target_symbol	disposition	hit	line_end	proof
+decl	1	batch_admission.go	type	batchMCPCapability	11	internal/agent/runtime/batch/batchinst/batch_admission.go	MCPCapability	retired	f49720a6891d3f94	11	destination symbol batchinst.MCPCapability declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	2	batch_admission.go	type	batchMCPCapabilityResolver	12	internal/agent/runtime/batch/batchinst/batch_admission.go	MCPCapabilityResolver	retired	1d3733130ab26dd4	12	destination symbol batchinst.MCPCapabilityResolver declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	3	batch_admission.go	type	batchRankContext	13	internal/agent/runtime/batch/batchinst/batch_admission.go	RankContext	retired	2b7511639b759eb8	13	destination symbol batchinst.RankContext declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	4	batch_admission.go	type	batchDependencyEdge	14	internal/agent/runtime/batch/batchinst/batch_admission.go	DependencyEdge	retired	10307fe775c6fcca	14	destination symbol batchinst.DependencyEdge declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	5	batch_admission.go	var	errBatchControlPlaneLeaf	18	internal/agent/runtime/batch/batchinst/batch_admission.go	ErrBatchControlPlaneLeaf	retired	675e8e851203d0e7	18	destination symbol batchinst.ErrBatchControlPlaneLeaf declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	6	batch_admission.go	var	errBatchUnknownTool	19	internal/agent/runtime/batch/batchinst/batch_admission.go	ErrBatchUnknownTool	retired	5c74f4c47d16cec6	19	destination symbol batchinst.ErrBatchUnknownTool declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	7	batch_admission.go	var	errBatchMCPCapabilityUnknown	20	internal/agent/runtime/batch/batchinst/batch_admission.go	ErrBatchMCPCapabilityUnknown	retired	39b34d56c45ac91c	20	destination symbol batchinst.ErrBatchMCPCapabilityUnknown declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing)
+decl	8	batch_admission.go	func	batchAdmissionPolicy	24			present	20cc072bbeca4363	30	
+decl	9	batch_admission.go	func	batchAdmissionTool	32			present	b59ad209b72d8fcb	36	
+decl	10	batch_admission.go	func	batchAdmissionProfile	38			present	6758bf4399e2a146	43	
+decl	11	batch_admission.go	func	classifyBatchLeaf	45	internal/agent/runtime/batch/batchinst/batch_admission.go	ClassifyLeaf	retired_adapter	6fe6d57efb61b2f8	47	destination symbol batchinst.ClassifyLeaf declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing); curried wrapper inlined with the same arguments at every call site
+decl	12	batch_admission.go	func	batchSpecNodes	49	internal/agent/runtime/batch/batchinst/batch_admission.go	SpecNodes	retired_adapter	35798402f98a91eb	51	destination symbol batchinst.SpecNodes declared in internal/agent/runtime/batch/batchinst/batch_admission.go (pre-existing); curried wrapper inlined with the same arguments at every call site
+decl	13	batch_admission.go	func	ValidateSubmit	53			requalified	a52b61466fdf135c	55	
+decl	14	batch_admission.go	func	ValidateAdd	57			requalified	158cf1f31283b621	59	
+decl	15	batch_admission.go	func	validateBatch	61			requalified	8699034336c97382	63	
+decl	16	batch_allowed_controls.go	func	batchControlAvailability	8			present	9fef9bc49ed048a5	10	
+decl	17	batch_allowed_controls.go	func	workerToolNamesBatch	12	internal/agent/runtime/batch/batchinst/batch_allowed_controls.go	WorkerToolNames	retired	03c10ee12126ee6d	12	destination symbol batchinst.WorkerToolNames declared in internal/agent/runtime/batch/batchinst/batch_allowed_controls.go (pre-existing)
+decl	18	batch_allowed_controls.go	func	workerLayeredToolNames	14			requalified	9436d5a249a0a9b8	14	
+decl	19	batch_allowed_controls.go	func	folderScopeCommandToolSet	16	internal/agent/runtime/batch/batchinst/batch_allowed_controls.go	FolderScopeCommandToolSet	retired	595a5f9be85fa641	16	destination symbol batchinst.FolderScopeCommandToolSet declared in internal/agent/runtime/batch/batchinst/batch_allowed_controls.go (pre-existing)
+decl	20	batch_cancel.go	type	batchCancelOutcome	10	internal/agent/runtime/batch/batchmeta/cancel_glue.go	CancelOutcome	retired	0b97efd80f338335	10	destination symbol batchmeta.CancelOutcome declared in internal/agent/runtime/batch/batchmeta/cancel_glue.go (pre-existing)
+decl	21	batch_cancel.go	func	cancelBatchCall	12			requalified	7ddc4e483d7ee132	14	
+decl	22	batch_cli_runtime.go	method	SubmitCLI	18			present	c9adebc6e8f7c1f6	20	
+decl	23	batch_cli_runtime.go	method	SubmitCLIRef	26			port	9a9d37eefef41f23	79	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	24	batch_cli_runtime.go	func	validateBatchOwnerPayloads	83			present	dfd50f2eb7e8fc71	96	
+decl	25	batch_cli_runtime.go	method	OwnsCLI	98			present	bd2e0a01db2edeea	100	
+decl	26	batch_cli_runtime.go	method	CLIOwner	102			present	b22c20fc637072c7	107	
+decl	27	batch_cli_runtime.go	method	commitCLIControl	109			present	46ae2f209d9d50de	150	
+decl	28	batch_cli_runtime.go	method	PumpCLIControls	152			present	40b7c542d42e2bb3	158	
+decl	29	batch_cli_runtime.go	method	RetainCLIConstruction	160			present	4fa18bb801d32353	173	
+decl	30	batch_cli_runtime.go	var	ErrBatchCLIOutputExpired	177			present	913a16671b392eaa	177	
+decl	31	batch_cli_runtime.go	method	CLIOutput	179			present	eb98ed7371202096	195	
+decl	32	batch_cli_runtime.go	method	ReleaseCLIAfterResult	197			present	8c65403fbcbd6190	212	
+decl	33	batch_cli_runtime.go	method	WaitCLI	214			present	10c6ec10144ab059	223	
+decl	34	batch_cli_runtime.go	method	AddCLI	226			requalified	25c1d67523ba08ef	271	
+decl	35	batch_credentials_escrow.go	type	batchCredentialKey	9			present	274b796f8006763f	15	
+decl	36	batch_credentials_escrow.go	field	batchCredentialKey.registryID	10			present	84b56b9f53160d77	10	
+decl	37	batch_credentials_escrow.go	field	batchCredentialKey.sessionID	11			present	126b159da1aad011	11	
+decl	38	batch_credentials_escrow.go	field	batchCredentialKey.messageID	12			present	c086bef01a4cf04e	12	
+decl	39	batch_credentials_escrow.go	field	batchCredentialKey.callID	13			present	ad6c3ad14d7ebbc7	13	
+decl	40	batch_credentials_escrow.go	field	batchCredentialKey.tool	14			present	e1be89165cac3e7c	14	
+decl	41	batch_credentials_escrow.go	type	batchCredentialLeaf	17			present	a6a4f2749bb2f5dc	20	
+decl	42	batch_credentials_escrow.go	field	batchCredentialLeaf.<embedded>	18			present	cce5b9917655b123	18	
+decl	43	batch_credentials_escrow.go	field	batchCredentialLeaf.escrow	19			present	73798fc05a087782	19	
+decl	44	batch_credentials_escrow.go	method	credentialEscrow	22			present	fdd16b0955bceba7	22	
+decl	45	batch_credentials_escrow.go	method	PolicyLeafTool	26			present	305331ac7a4f8646	26	
+decl	46	batch_credentials_escrow.go	method	UnwrapCapturedCredentialLeaf	32			present	0613327d6be273a9	34	
+decl	47	batch_credentials_escrow.go	type	batchCredentialEscrow	36			present	3977b829884c6041	36	
+decl	48	batch_credentials_escrow.go	field	batchCredentialEscrow.<embedded>	36			present	3977b829884c6041	36	
+decl	49	batch_credentials_escrow.go	func	newBatchCredentialEscrow	38			present	aa9f220f08a8f8c8	40	
+decl	50	batch_credentials_escrow.go	var	errBatchCredentialEscrowMissing	42	internal/agent/runtime/batch/batchadapter/escrow.go	ErrCredentialEscrowMissing	retired	1917dec31bd2f786	42	destination symbol batchadapter.ErrCredentialEscrowMissing declared in internal/agent/runtime/batch/batchadapter/escrow.go (pre-existing)
+decl	51	batch_credentials_escrow.go	method	adapterKey	44			present	05da7dc5946e972f	46	
+decl	52	batch_credentials_escrow.go	method	adapterEscrow	48			present	f3b5b77c8df7bc3c	53	
+decl	53	batch_credentials_escrow.go	method	consume	55			present	cf76267f62a23de1	57	
+decl	54	batch_credentials_escrow.go	method	releaseRoot	59			present	2d733e173efd25bd	59	
+decl	55	batch_credentials_escrow.go	type	batchCredentialRegistration	61			present	b70a18615dc4d50a	65	
+decl	56	batch_credentials_escrow.go	field	batchCredentialRegistration.key	62			present	fef7bf8b8b331393	62	
+decl	57	batch_credentials_escrow.go	field	batchCredentialRegistration.root	63			present	e719a3171f36bff9	63	
+decl	58	batch_credentials_escrow.go	field	batchCredentialRegistration.creds	64			present	90d27615ecaae9f7	64	
+decl	59	batch_credentials_escrow.go	func	batchCredentialKeyFor	67			present	54964ef4372a2c2b	74	
+decl	60	batch_credentials_marker.go	var	errBatchCallCredentialsRequired	11	internal/agent/runtime/batch/batchadapter/marker.go	ErrCallCredentialsRequired	retired	636d84140bbd37ff	11	destination symbol batchadapter.ErrCallCredentialsRequired declared in internal/agent/runtime/batch/batchadapter/marker.go (pre-existing)
+decl	61	batch_credentials_marker.go	func	stampBatchCallCredentials	13			requalified	10e7817a69d673bf	15	
+decl	62	batch_credentials_marker.go	func	decodeBatchCredentialMarker	17			present	9b98c254765e0cfc	26	
+decl	63	batch_credentials_marker.go	func	decodeBatchCredentialRegistration	28			present	940a7b5d716927a4	34	
+decl	64	batch_cutover_driver.go	type	BatchDriverClaimer	13	internal/agent/runtime/batch/batchflow/batch_cutover_driver.go	BatchDriverClaimer	retired	f32ed438d761ac29	13	destination symbol batchflow.BatchDriverClaimer declared in internal/agent/runtime/batch/batchflow/batch_cutover_driver.go (pre-existing)
+decl	65	batch_cutover_driver.go	method	driverMarkerStore	19			requalified	da25717e03bbc743	21	
+decl	66	batch_delivery.go	var	errBatchDeliveryDeps	13	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrDeliveryDeps	retired	a204307ba4907922	13	destination symbol batchcore.ErrDeliveryDeps declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	67	batch_delivery.go	var	errBatchDeliveryOwner	14	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrDeliveryOwner	retired	445fd5af56122f6c	14	destination symbol batchcore.ErrDeliveryOwner declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	68	batch_delivery.go	var	errBatchDoneUnavailable	15	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrDoneUnavailable	retired	ac7276bc13d76bfa	15	destination symbol batchcore.ErrDoneUnavailable declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	69	batch_delivery.go	var	errBatchInlineElectionFailed	16	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrInlineElectionFailed	retired	86cd1dbaf5e120f9	16	destination symbol batchcore.ErrInlineElectionFailed declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	70	batch_delivery.go	var	errBatchDeliveryUnknownMode	17	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrDeliveryUnknownMode	retired	f82ec2010f973b23	17	destination symbol batchcore.ErrDeliveryUnknownMode declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	71	batch_delivery.go	var	errBatchEscapeWindowRequired	18	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrEscapeWindowRequired	retired	fc147c6919b3dc0d	18	destination symbol batchcore.ErrEscapeWindowRequired declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	72	batch_delivery.go	var	errBatchEscapeWindowInvalid	19	internal/agent/runtime/batch/batchcore/batch_delivery.go	ErrEscapeWindowInvalid	retired	5e181f1151917b22	19	destination symbol batchcore.ErrEscapeWindowInvalid declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	73	batch_delivery.go	const	batchStartedResponseSuffix	23	internal/agent/runtime/batch/batchcore/batch_delivery.go	StartedResponseSuffix	retired	cc8dee08101ed027	23	destination symbol batchcore.StartedResponseSuffix declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	74	batch_delivery.go	const	batchInlineElectionAttempts	24	internal/agent/runtime/batch/batchcore/batch_delivery.go	InlineElectionAttempts	retired	c20ea2209de432af	24	destination symbol batchcore.InlineElectionAttempts declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	75	batch_delivery.go	type	batchDoneSource	28			present	e986a568a24a74ca	28	
+decl	76	batch_delivery.go	type	batchElector	29	internal/agent/runtime/batch/batchcore/batch_delivery.go	Elector	retired	c8d24e6b9866a68f	29	destination symbol batchcore.Elector declared in internal/agent/runtime/batch/batchcore/batch_delivery.go (pre-existing)
+decl	77	batch_delivery.go	type	batchDeliveryDeps	32			requalified	91ade469009a29ed	60	
+decl	78	batch_delivery.go	field	batchDeliveryDeps.Owner	36			present	0cc18fe1d41a0917	36	
+decl	79	batch_delivery.go	field	batchDeliveryDeps.Done	37			present	6b3880e6f306756d	37	
+decl	80	batch_delivery.go	field	batchDeliveryDeps.Elect	38			requalified	54ad0c665ef7352e	38	
+decl	81	batch_delivery.go	field	batchDeliveryDeps.Runner	41			requalified	abfa662df2b2d9f3	41	
+decl	82	batch_delivery.go	field	batchDeliveryDeps.ArmSupervision	52			present	0e39dd21ecef3f48	52	
+decl	83	batch_delivery.go	field	batchDeliveryDeps.Timer	55			present	78f068c0a1d16911	55	
+decl	84	batch_delivery.go	field	batchDeliveryDeps.ToolResultReceipt	59			present	4fa5d311b89b456e	59	
+decl	85	batch_delivery.go	type	batchDeliveryImpl	63			present	59c025964d388aff	63	
+decl	86	batch_delivery.go	field	batchDeliveryImpl.core	63			present	59c025964d388aff	63	
+decl	87	batch_delivery.go	func	newBatchDelivery	65			present	cced4157a73d882f	86	
+decl	88	batch_delivery.go	method	DeliverBatch	88			present	37c2fe37b9b57e3d	93	
+decl	89	batch_delivery.go	func	batchStartedResponse	95			present	403551b175d64c2f	97	
+decl	90	batch_delivery.go	func	isBatchStartedToolResult	99			present	340dd273c1af83c2	101	
+decl	91	batch_delivery_drain.go	type	batchNoticePull	5	internal/agent/runtime/batch/batchlife/web_drain.go	NoticePull	retired	d0e0fa07f26f97d1	5	destination symbol batchlife.NoticePull declared in internal/agent/runtime/batch/batchlife/web_drain.go (pre-existing)
+decl	92	batch_depth_payload.go	type	batchExternalDepthPayload	7			present	8cbfa113fb9afba4	7	
+decl	93	batch_exec.go	const	batchKindGeneric	21	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	KindGeneric	retired	151a455f59649925	21	destination symbol batchdispatch.KindGeneric declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	94	batch_exec.go	const	batchKindMCP	22	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	KindMCP	retired	e28dcc9abe3684dd	22	destination symbol batchdispatch.KindMCP declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	95	batch_exec.go	const	batchKindShell	23	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	KindShell	retired	e57042400e12d557	23	destination symbol batchdispatch.KindShell declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	96	batch_exec.go	const	batchKindArgv	24	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	KindArgv	retired	d69ec3e95ae0c38e	24	destination symbol batchdispatch.KindArgv declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	97	batch_exec.go	const	batchKindAgent	25	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	KindAgent	retired	357743a6165d8a9e	25	destination symbol batchdispatch.KindAgent declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	98	batch_exec.go	const	batchCodeBadPayload	26	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	CodeBadPayload	retired	82718fb089a85e8b	26	destination symbol batchdispatch.CodeBadPayload declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	99	batch_exec.go	const	batchCodeUnknownKind	27	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	CodeUnknownKind	retired	9e29bf3f8b4b4558	27	destination symbol batchdispatch.CodeUnknownKind declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	100	batch_exec.go	const	batchCodeNoLeaf	28	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	CodeNoLeaf	retired	c8db530291d7edd4	28	destination symbol batchdispatch.CodeNoLeaf declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	101	batch_exec.go	const	batchCodeNoBinding	29	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	CodeNoBinding	retired	a6decc9236f25e40	29	destination symbol batchdispatch.CodeNoBinding declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	102	batch_exec.go	type	batchLeafPayload	37			present	a00a3e024449d7b1	74	
+decl	103	batch_exec.go	field	batchLeafPayload.Tool	38			present	2efc1d0403988af6	38	
+decl	104	batch_exec.go	field	batchLeafPayload.ToolCallID	39			present	b331acd1bc5fbfc9	39	
+decl	105	batch_exec.go	field	batchLeafPayload.SessionID	40			present	4f0568d423519890	40	
+decl	106	batch_exec.go	field	batchLeafPayload.Input	41			present	1fce7c845f4c3514	41	
+decl	107	batch_exec.go	field	batchLeafPayload.RegistryID	42			present	a6fcc3d292cfa916	42	
+decl	108	batch_exec.go	field	batchLeafPayload.Policy	43			present	d120065f63dbf6fb	43	
+decl	109	batch_exec.go	field	batchLeafPayload.SelectedRoleContract	46			present	16252ea89f9aae22	46	
+decl	110	batch_exec.go	field	batchLeafPayload.CallCredentials	47			present	a820ef84c9041d37	47	
+decl	111	batch_exec.go	field	batchLeafPayload.QuestionRoute	55			present	89e1792063f594d3	55	
+decl	112	batch_exec.go	field	batchLeafPayload.Timeout	68			present	e9d0f377fb5a1d52	68	
+decl	113	batch_exec.go	field	batchLeafPayload.AgentDepth	70			present	ba9ecb17a3fffa4c	70	
+decl	114	batch_exec.go	field	batchLeafPayload.diskProvider	73			present	158906eae03ddb88	73	
+decl	115	batch_exec.go	type	batchLeafTimeoutSpec	77			present	b0425a34aa0a71a6	80	
+decl	116	batch_exec.go	field	batchLeafTimeoutSpec.Kind	78			present	c531acc6c0a79543	78	
+decl	117	batch_exec.go	field	batchLeafTimeoutSpec.Seconds	79			present	09a35f3e1effd41c	79	
+decl	118	batch_exec.go	type	batchLeafEnv	82			present	a330e52edbd3c939	94	
+decl	119	batch_exec.go	field	batchLeafEnv.OutputCache	83			present	e52ee25bb0ec5bd6	83	
+decl	120	batch_exec.go	field	batchLeafEnv.Leaves	85			present	53da93cd976b63bf	85	
+decl	121	batch_exec.go	field	batchLeafEnv.DiskBindings	86			present	5095e6a27a64fa40	86	
+decl	122	batch_exec.go	field	batchLeafEnv.Ingress	93			present	dc32ee67f1a9c689	93	
+decl	123	batch_exec.go	type	batchLeafFamily	99			present	fe50f1b6dd63e65c	101	
+decl	124	batch_exec.go	iface_method	batchLeafFamily.start	100			present	254764557fe5e819	100	
+decl	125	batch_exec.go	type	batchStartError	103	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	StartError	retired	051e924467f210a9	103	destination symbol batchdispatch.StartError declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	126	batch_exec.go	func	newBatchStartError	105	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	NewStartError	retired_adapter	cac07e2495664efd	107	destination symbol batchdispatch.NewStartError declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing); curried wrapper inlined with the same arguments at every call site
+decl	127	batch_exec.go	type	batchExecutor	111			present	b749df2bdb4027c7	114	
+decl	128	batch_exec.go	field	batchExecutor.router	112			present	6e18ffb2ad319651	112	
+decl	129	batch_exec.go	field	batchExecutor.decorateExecution	113			present	912b7341b82db14b	113	
+decl	130	batch_exec.go	var	_	116			blank	7d41064cea5bd087	116	blank identifier assertion; 1 in this file at HEAD
+decl	131	batch_exec.go	func	newBatchExecutor	118			port	920c96ab640604aa	134	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	132	batch_exec.go	method	Start	136			present	3eb8deff2524e762	140	
+decl	133	batch_exec.go	func	prepareBatchLeaf	142			requalified	a40905121bf507a5	249	
+decl	134	batch_exec.go	method	resolveLeaf	254			requalified	b3e59aa119fc1147	267	
+decl	135	batch_exec.go	func	batchEnvelope	269	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	Envelope	retired	a6f25a6269da1111	269	destination symbol batchdispatch.Envelope declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	136	batch_exec.go	func	batchResultFromResponse	271	internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go	ResultFromResponse	retired	ef850b40b549f7e0	273	destination symbol batchdispatch.ResultFromResponse declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_exec.go (pre-existing)
+decl	137	batch_exec_agent.go	type	batchAgentRunRequest	18			present	84e6dad556539cee	18	
+decl	138	batch_exec_agent.go	type	batchAgentHost	26	internal/agent/runtime/batch/batchcore/batch_runtime.go	Host	retired	3b5f4680e102b655	26	destination symbol childagent.Host declared in internal/agent/runtime/batch/batchcore/batch_runtime.go (pre-existing)
+decl	139	batch_exec_agent.go	type	batchAgentTurnResult	30	internal/agent/runtime/batch/batchexec/childagent/driver.go	TurnResult	retired	0bc7a58b96408c57	30	destination symbol childagent.TurnResult declared in internal/agent/runtime/batch/batchexec/childagent/driver.go (pre-existing)
+decl	140	batch_exec_agent.go	type	batchAgentTurn	34	internal/agent/runtime/batch/batchexec/childagent/driver.go	Turn	retired	469dbaec66e71646	34	destination symbol childagent.Turn declared in internal/agent/runtime/batch/batchexec/childagent/driver.go (pre-existing)
+decl	141	batch_exec_agent.go	type	batchAgentRunFactory	37			port	933df99c6d7154cf	37	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	142	batch_exec_agent.go	type	batchChildQuestionResolver	38	internal/agent/runtime/batch/batchexec/childagent/state/executor_request.go	QuestionResolver	retired	212b76309165d619	38	destination symbol state.QuestionResolver declared in internal/agent/runtime/batch/batchexec/childagent/state/executor_request.go (pre-existing)
+decl	143	batch_exec_agent.go	type	batchAgentDescendantReader	39			present	c3ae1e623a706243	39	
+decl	144	batch_exec_agent.go	type	batchAgentDeps	40			present	976ae314f426d898	40	
+decl	145	batch_exec_agent.go	type	batchAgentFamily	45			present	14e14fd4bb570468	45	
+decl	146	batch_exec_agent.go	field	batchAgentFamily.deps	45			present	14e14fd4bb570468	45	
+decl	147	batch_exec_agent.go	func	newBatchAgentFamily	47			present	3b563751bc30830d	49	
+decl	148	batch_exec_agent.go	var	_	51			blank	90686210f320a8c5	51	blank identifier assertion; 5 in this file at HEAD
+decl	149	batch_exec_agent.go	func	callIngress	55			present	2d5817c3623368b8	60	
+decl	150	batch_exec_agent.go	method	start	62			requalified	743d6c5d3953ca1c	170	
+decl	151	batch_exec_agent.go	method	snapshotExecutionRequest	172			present	3a5a033a6bff22f8	174	
+decl	152	batch_exec_agent.go	method	bindChildSession	176			present	5b3e8ccc7ff5bb33	178	
+decl	153	batch_exec_agent.go	method	recordExecutionNoChild	180			present	714caee9b32a91f2	182	
+decl	154	batch_exec_agent.go	method	launch	184			requalified	fe59563bb775c890	188	
+decl	155	batch_exec_agent.go	type	batchAgentExecution	190			requalified	1ec6fb14a4c99783	208	
+decl	156	batch_exec_agent.go	field	batchAgentExecution.cache	191			present	ae02665563af0374	191	
+decl	157	batch_exec_agent.go	field	batchAgentExecution.nodeID	192			present	a589e771ea964d80	192	
+decl	158	batch_exec_agent.go	field	batchAgentExecution.rootID	193			present	182c52ef00f3ac2c	193	
+decl	159	batch_exec_agent.go	field	batchAgentExecution.deps	194			present	885b64ceab1b0eaa	194	
+decl	160	batch_exec_agent.go	field	batchAgentExecution.req	195			present	d2640b06bae0b848	195	
+decl	161	batch_exec_agent.go	field	batchAgentExecution.scope	196			present	5c5c151a33cda6d6	196	
+decl	162	batch_exec_agent.go	field	batchAgentExecution.cancel	197			present	a3ff171a9b4e9aac	197	
+decl	163	batch_exec_agent.go	field	batchAgentExecution.mu	199			present	9828eed58ec6f9c7	199	
+decl	164	batch_exec_agent.go	field	batchAgentExecution.turn	200			requalified	0b8532c0bef030ec	200	
+decl	165	batch_exec_agent.go	field	batchAgentExecution.lifecycle	201			present	923787fd6fe17f74	201	
+decl	166	batch_exec_agent.go	field	batchAgentExecution.pctHandoff	202			present	97f1fa46a5eb5574	202	
+decl	167	batch_exec_agent.go	field	batchAgentExecution.driverDone	203			present	5de941051204d035	203	
+decl	168	batch_exec_agent.go	field	batchAgentExecution.watcherDone	204			present	70751dae1d462b5b	204	
+decl	169	batch_exec_agent.go	field	batchAgentExecution.finished	205			present	15f2566afdd912de	205	
+decl	170	batch_exec_agent.go	field	batchAgentExecution.internal	206			present	808a457bbc92c58b	206	
+decl	171	batch_exec_agent.go	field	batchAgentExecution.questionRoute	207			present	4a75b7fc1254972e	207	
+decl	172	batch_exec_agent.go	var	_	211			blank	a88b70ed40021058	211	blank identifier assertion; 5 in this file at HEAD
+decl	173	batch_exec_agent.go	var	_	212			blank	bfb30239aec2bf98	212	blank identifier assertion; 5 in this file at HEAD
+decl	174	batch_exec_agent.go	var	_	213			blank	eac24cab8dc560b4	213	blank identifier assertion; 5 in this file at HEAD
+decl	175	batch_exec_agent.go	var	_	214			blank	bfb26ff4e3934b0b	214	blank identifier assertion; 5 in this file at HEAD
+decl	176	batch_exec_agent.go	method	heldDepth	218			present	eaeeef031ac186eb	220	
+decl	177	batch_exec_agent.go	method	askBatchQuestion	223			requalified	21ac5a114ca6036b	254	
+decl	178	batch_exec_agent.go	const	batchQuestionPersistenceTimeout	256			present	756c82981f5b97d6	256	
+decl	179	batch_exec_agent.go	method	publishQuestion	258			requalified	372fd2b2d4fffddc	268	
+decl	180	batch_exec_agent.go	method	watch	271			port	b5ebc3e0530feb71	283	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	181	batch_exec_agent.go	method	finish	286			present	82d3e68980f3dc26	292	
+decl	182	batch_exec_agent.go	method	Stop	296			present	b9428a73e66de5e6	313	
+decl	183	batch_exec_agent.go	method	resolvePublishedQuestions	316			present	08c1231fb1caffb8	318	
+decl	184	batch_exec_agent.go	method	Inject	324			requalified	95222193dba623ea	342	
+decl	185	batch_exec_agent.go	method	ReadOutput	345			present	99bff4512986ad05	347	
+decl	186	batch_exec_agent.go	method	Dispose	354			present	cc4d07ed4a573d48	356	
+decl	187	batch_exec_agent.go	func	batchAgentScopeResult	359	internal/agent/runtime/batch/batchexec/childagent/state/executor_result.go	ScopeResult	retired_adapter	1861d3160a09b2a7	361	destination symbol state.ScopeResult declared in internal/agent/runtime/batch/batchexec/childagent/state/executor_result.go (pre-existing); curried wrapper inlined with the same arguments at every call site
+decl	188	batch_exec_agent.go	func	pscRefreshedTurnResult	364			requalified	d6ca582c0bb1ae4a	369	
+decl	189	batch_exec_agent.go	func	pctClaimCapturedHandoffViaIngress	375			present	20739123ee14903d	397	
+decl	190	batch_exec_argv.go	type	batchArgvFamily	16			present	0fba2acabe5b1583	16	
+decl	191	batch_exec_argv.go	var	_	18			blank	ce928b8d72260f3d	18	blank identifier assertion; 1 in this file at HEAD
+decl	192	batch_exec_argv.go	method	start	20			requalified	425cf83ef222618f	56	
+decl	193	batch_exec_argv.go	type	batchArgvHandle	59	internal/agent/runtime/batch/batchexec/argv.go	ArgvHandle	retired	6255ff4f0dadd7d5	59	destination symbol batchexec.ArgvHandle declared in internal/agent/runtime/batch/batchexec/argv.go (pre-existing)
+decl	194	batch_exec_argv.go	func	newRetainedArgv	61			requalified	8137fd9ec33248bb	70	
+decl	195	batch_exec_binding.go	func	newBatchBindingExecution	8	internal/agent/runtime/batch/batchexec/binding.go	WithBindingLease	retired	cf5740eddaabab1f	10	destination symbol batchexec.WithBindingLease declared in internal/agent/runtime/batch/batchexec/binding.go (pre-existing)
+decl	196	batch_exec_generic.go	type	batchGenericFamily	15			present	79c5f56d3067c405	15	
+decl	197	batch_exec_generic.go	func	newBatchGenericFamily	17			present	c4ab9f215f56794c	17	
+decl	198	batch_exec_generic.go	method	start	19			requalified	9a0f7ea083d1a8fa	84	
+decl	199	batch_exec_generic.go	func	batchControlTarget	86			present	aaa277e6f5ebbc9c	94	
+decl	200	batch_exec_generic.go	func	batchExecutionOutput	96			requalified	8737c789184bae1f	102	
+decl	201	batch_exec_shell.go	type	batchShellFamily	14			present	d5df479d48303ba0	14	
+decl	202	batch_exec_shell.go	var	_	16			blank	66708827a5941f66	16	blank identifier assertion; 1 in this file at HEAD
+decl	203	batch_exec_shell.go	method	start	18			requalified	4e244e3f54972961	49	
+decl	204	batch_exec_shell.go	func	newRetainedShell	51			requalified	f6a344c526b5a90d	60	
+decl	205	batch_external_spec.go	type	BatchExternalSpec	8			present	b29c13377f03eaa5	8	
+decl	206	batch_external_spec.go	var	_	12			blank	9abd64b6f6470f6f	12	blank identifier assertion; 2 in this file at HEAD
+decl	207	batch_external_spec.go	var	_	13			blank	fa27b2f3c84a2f0f	13	blank identifier assertion; 2 in this file at HEAD
+decl	208	batch_external_spec.go	func	ParseBatchExternalSpecJSON	16			present	b03af48e8cca96d2	18	
+decl	209	batch_external_spec.go	func	ParseBatchExternalSpecJSONWithAgentDepth	20			present	560996369d63bde8	22	
+decl	210	batch_held_question_route.go	type	BatchHeldQuestionRoute	11	internal/agent/runtime/batch/batchlife/held_question.go	BatchHeldQuestionRoute	retired	fa9b1f63c5b45ad2	11	destination symbol batchlife.BatchHeldQuestionRoute declared in internal/agent/runtime/batch/batchlife/held_question.go (pre-existing)
+decl	211	batch_held_question_route.go	type	BatchHeldQuestionSource	12	internal/agent/runtime/batch/batchlife/held_question.go	BatchHeldQuestionSource	retired	5f17d935f7067d0a	12	destination symbol batchlife.BatchHeldQuestionSource declared in internal/agent/runtime/batch/batchlife/held_question.go (pre-existing)
+decl	212	batch_held_question_route.go	var	ErrBatchAwaitHeldQuestion	15	internal/agent/runtime/batch/batchlife/held_question.go	ErrBatchAwaitHeldQuestion	retired	7d2ef1cedd227bb7	15	destination symbol batchlife.ErrBatchAwaitHeldQuestion declared in internal/agent/runtime/batch/batchlife/held_question.go (pre-existing)
+decl	213	batch_held_question_route.go	func	batchQuestionMarkerSequence	17	internal/agent/runtime/batch/batchlife/held_question.go	QuestionMarkerSequence	retired	48fffdfe0935266e	17	destination symbol batchlife.QuestionMarkerSequence declared in internal/agent/runtime/batch/batchlife/held_question.go (pre-existing)
+decl	214	batch_held_question_route.go	func	batchActionableHeldQuestionRoutes	19			requalified	1892e593f0cda933	26	
+decl	215	batch_held_question_route.go	func	batchHeldQuestionAwaitError	28	internal/agent/runtime/batch/batchlife/held_question.go	HeldQuestionAwaitError	retired	135a74bd278ae715	30	destination symbol batchlife.HeldQuestionAwaitError declared in internal/agent/runtime/batch/batchlife/held_question.go (pre-existing)
+decl	216	batch_held_question_route.go	func	batchHeldQuestionHintText	32	internal/agent/runtime/batch/batchlife/held_question.go	HeldQuestionHintText	retired	892f81dac9c667d4	34	destination symbol batchlife.HeldQuestionHintText declared in internal/agent/runtime/batch/batchlife/held_question.go (pre-existing)
+decl	217	batch_held_question_route.go	method	heldQuestionAwaitRefusal	39			present	f2501144213dc4de	41	
+decl	218	batch_held_question_route.go	method	batchHeldQuestionResumeRefusal	45			present	218aceabdec1ed6f	47	
+decl	219	batch_held_question_route.go	method	batchHeldQuestionResumeHint	52			present	b369e10d20397e32	54	
+decl	220	batch_ingress.go	method	Invoke	27			requalified	2cf2ecc871ef98ed	75	
+decl	221	batch_ingress.go	method	submit	78			requalified	3b7bba08aa732005	97	
+decl	222	batch_ingress.go	type	batchToolInputError	100	internal/agent/runtime/batch/batchcore/batch_ingress.go	ToolInputError	retired	89c8e34eebaa8bb0	100	destination symbol batchcore.ToolInputError declared in internal/agent/runtime/batch/batchcore/batch_ingress.go (pre-existing)
+decl	223	batch_ingress.go	func	batchOneItemSpec	102			requalified	34b8def0c96e7d4b	121	
+decl	224	batch_ingress.go	func	batchLeafKind	123			present	888d13c494a13545	125	
+decl	225	batch_ingress.go	func	lookupBatchLeafKindOverride	127			present	8a332264e66a4a0d	132	
+decl	226	batch_ingress.go	var	batchLeafKindOverride	137			present	6fe5673793bb8dea	137	
+decl	227	batch_ingress.go	func	setBatchLeafKindOverride	140			present	a2c5e8b52bb69ed2	146	
+decl	228	batch_install_adapters.go	type	batchRunnerAdapter	29			present	f3a101b66be5af79	40	
+decl	229	batch_install_adapters.go	field	batchRunnerAdapter.outputCache	30			present	403e92aff9fc8c73	30	
+decl	230	batch_install_adapters.go	field	batchRunnerAdapter.runner	31			present	28d2475c7c21c445	31	
+decl	231	batch_install_adapters.go	field	batchRunnerAdapter.credentials	32			present	0f9dfb6eb268cecd	32	
+decl	232	batch_install_adapters.go	field	batchRunnerAdapter.state	33			present	22ddc31961f94e96	33	
+decl	233	batch_install_adapters.go	field	batchRunnerAdapter.mu	37			present	9232183b38a08fbc	37	
+decl	234	batch_install_adapters.go	field	batchRunnerAdapter.started	38			present	a58713268551445d	38	
+decl	235	batch_install_adapters.go	field	batchRunnerAdapter.owners	39			present	68c5075768ede454	39	
+decl	236	batch_install_adapters.go	func	newBatchRunnerAdapter	42			present	3deaeaf76402f368	44	
+decl	237	batch_install_adapters.go	func	bindBatchRunnerAdapter	46			present	5929fdf1df98556c	50	
+decl	238	batch_install_adapters.go	var	_	52			blank	da1b8783ae5bf345	52	blank identifier assertion; 1 in this file at HEAD
+decl	239	batch_install_adapters.go	method	OutputCache	54			present	33cb1dc95c747922	54	
+decl	240	batch_install_adapters.go	method	engineAdapter	56			present	cffe4bde9cd4b13e	64	
+decl	241	batch_install_adapters.go	method	registerCredentials	66			requalified	efba6f449033a529	82	
+decl	242	batch_install_adapters.go	method	Submit	84			present	0a9712caf94e4ea4	86	
+decl	243	batch_install_adapters.go	method	SubmitBound	88			present	fae1063cd0fd3d33	90	
+decl	244	batch_install_adapters.go	method	Stop	92			present	b96968666988c313	94	
+decl	245	batch_install_adapters.go	method	Release	96			present	eb082aaef23155f3	98	
+decl	246	batch_install_adapters.go	method	Add	100			present	0aaa1b90793882de	102	
+decl	247	batch_install_adapters.go	method	Snapshot	104			present	252f36ab5aed18fd	106	
+decl	248	batch_install_adapters.go	method	View	108			present	3a547d0536d3f912	110	
+decl	249	batch_install_adapters.go	method	Output	112			present	ea82d9a90e3bbdf9	114	
+decl	250	batch_install_adapters.go	method	credentialRegistrations	116			requalified	76187737ec0a63c5	127	
+decl	251	batch_install_adapters.go	method	batchFor	131			present	9de66d9c6de16917	133	
+decl	252	batch_install_adapters.go	method	ownerFor	135			present	9910ed953c19a8e3	137	
+decl	253	batch_install_adapters.go	type	batchAttachAdapter	140			present	bf160230ae05086b	140	
+decl	254	batch_install_adapters.go	field	batchAttachAdapter.store	140			present	bf160230ae05086b	140	
+decl	255	batch_install_adapters.go	method	ProbeLive	142			requalified	90c54d49d69f08f4	144	
+decl	256	batch_install_adapters.go	func	newBatchExecutorFamilies	148			requalified	8217fb6a5c37ca9c	157	
+decl	257	batch_install_adapters.go	type	BatchInstallDeps	163			present	32c74be55478998a	217	
+decl	258	batch_install_adapters.go	field	BatchInstallDeps.Host	166			present	28df0f4054b40848	166	
+decl	259	batch_install_adapters.go	field	BatchInstallDeps.RunnerID	166			present	28df0f4054b40848	166	
+decl	260	batch_install_adapters.go	field	BatchInstallDeps.Owner	166			present	28df0f4054b40848	166	
+decl	261	batch_install_adapters.go	field	BatchInstallDeps.Profile	168			present	c097bcb1538e463d	168	
+decl	262	batch_install_adapters.go	field	BatchInstallDeps.Registries	171			present	bfb1d8698d323c68	171	
+decl	263	batch_install_adapters.go	field	BatchInstallDeps.Store	173			present	22ee0f6660550557	173	
+decl	264	batch_install_adapters.go	field	BatchInstallDeps.Messages	174			present	5a5402841d9bd77d	174	
+decl	265	batch_install_adapters.go	field	BatchInstallDeps.Executor	178			present	0d4bd63505f77d75	178	
+decl	266	batch_install_adapters.go	field	BatchInstallDeps.DecorateExecution	182			present	8a85782691a59a87	182	
+decl	267	batch_install_adapters.go	field	BatchInstallDeps.AgentDeps	185			present	4e7c6e3b6bbde451	185	
+decl	268	batch_install_adapters.go	field	BatchInstallDeps.Resolver	188			present	b9880a538d2bc988	188	
+decl	269	batch_install_adapters.go	field	BatchInstallDeps.Limits	191			present	e9e8e9b4b7a92f41	191	
+decl	270	batch_install_adapters.go	field	BatchInstallDeps.CommitTimeout	192			present	4f8d0d3d148e35a5	192	
+decl	271	batch_install_adapters.go	field	BatchInstallDeps.ControlTimeout	192			present	4f8d0d3d148e35a5	192	
+decl	272	batch_install_adapters.go	field	BatchInstallDeps.RecordRetention	193			present	26c18c82fa40c063	193	
+decl	273	batch_install_adapters.go	field	BatchInstallDeps.DonePoll	196			present	cffec20956c8775d	196	
+decl	274	batch_install_adapters.go	field	BatchInstallDeps.CompletionWake	201			present	ccb908bcd53bb9eb	201	
+decl	275	batch_install_adapters.go	field	BatchInstallDeps.QuestionWake	202			present	0871c52ba634bc5b	202	
+decl	276	batch_install_adapters.go	field	BatchInstallDeps.ArmSupervision	208			present	0e39dd21ecef3f48	208	
+decl	277	batch_install_adapters.go	field	BatchInstallDeps.FinalizationAuthorityFor	214			present	91e9c5568567e2a9	214	
+decl	278	batch_install_adapters.go	field	BatchInstallDeps.Sessions	215			present	1eb05a0a092eec4d	215	
+decl	279	batch_install_adapters.go	field	BatchInstallDeps.DiskBindings	216			present	5095e6a27a64fa40	216	
+decl	280	batch_install_adapters.go	func	pwCompletionWakeHook	228			present	593f9ffe106c678a	254	
+decl	281	batch_install_adapters.go	type	BatchInstall	257			requalified	79cc8bf29075563f	279	
+decl	282	batch_install_adapters.go	field	BatchInstall.mu	258			present	9828eed58ec6f9c7	258	
+decl	283	batch_install_adapters.go	field	BatchInstall.runnerCfg	259			present	5faa387827b8037a	259	
+decl	284	batch_install_adapters.go	field	BatchInstall.Runner	261			present	69b17137a3326ed7	261	
+decl	285	batch_install_adapters.go	field	BatchInstall.CommitHook	262			present	eeef442f15e03bf9	262	
+decl	286	batch_install_adapters.go	field	BatchInstall.Runtime	263			present	3fc284f9877b8e5c	263	
+decl	287	batch_install_adapters.go	field	BatchInstall.RunnerHandle	264			present	27b260f27b02c3db	264	
+decl	288	batch_install_adapters.go	field	BatchInstall.Attach	265			requalified	ada6d7586667dc72	265	
+decl	289	batch_install_adapters.go	field	BatchInstall.Delivery	266			present	fe6cfe248b22f168	266	
+decl	290	batch_install_adapters.go	field	BatchInstall.Done	267			present	6b3880e6f306756d	267	
+decl	291	batch_install_adapters.go	field	BatchInstall.Elector	268			requalified	5bac0826eb1e0e9a	268	
+decl	292	batch_install_adapters.go	field	BatchInstall.NoticePull	269			requalified	72c6275f53807ed9	269	
+decl	293	batch_install_adapters.go	field	BatchInstall.Sessions	270			present	1eb05a0a092eec4d	270	
+decl	294	batch_install_adapters.go	field	BatchInstall.CLIPump	271			present	4b1fc7105a3e8abf	271	
+decl	295	batch_install_adapters.go	field	BatchInstall.DiskBindings	272			present	5095e6a27a64fa40	272	
+decl	296	batch_install_adapters.go	field	BatchInstall.RootLeases	276			present	9f356adad135ca3c	276	
+decl	297	batch_install_adapters.go	field	BatchInstall.OutputCache	277			present	e52ee25bb0ec5bd6	277	
+decl	298	batch_install_adapters.go	field	BatchInstall.cliAccepted	278			present	3eea787ca9e17608	278	
+decl	299	batch_install_adapters.go	method	BindFinalizationResultGate	284			present	099b5ca6c4f4e6a0	291	
+decl	300	batch_install_adapters.go	func	InstallBatchRuntime	297			present	48ee2bd5b729da04	308	
+decl	301	batch_install_adapters.go	const	batchDormantInstallOwner	316			present	d5723166a00c4f53	316	
+decl	302	batch_install_adapters.go	func	batchCommitOwnerFor	325			present	2e1551d7a6af4664	342	
+decl	303	batch_install_adapters.go	func	InstallBatchRuntimeDeferred	350			present	39ad93f3bc70457e	352	
+decl	304	batch_install_adapters.go	func	newBatchInstall	356			present	ab65e879f2d7b995	501	
+decl	305	batch_install_adapters.go	method	DrainDiskBindings	513			present	9d5e1f1b245e9ed8	519	
+decl	306	batch_install_adapters.go	method	BuildRunner	525			present	5d1681745a004b25	538	
+decl	307	batch_install_adapters.go	func	batchStoreChildBind	543			present	4604675982613d86	547	
+decl	308	batch_install_agent_driver.go	var	errBatchCoordinatorNotBound	21			present	10d7c03f4e27224a	21	
+decl	309	batch_install_agent_driver.go	type	batchCoordinatorAgentRuns	24			present	90d0cd7fb8553904	24	
+decl	310	batch_install_agent_driver.go	method	StartAgentTurn	31			port	479e4b9083c32464	77	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	311	batch_install_agent_driver.go	func	startBatchAgentTurn	79			requalified	cf00faaf28a309af	144	
+decl	312	batch_install_agent_driver.go	func	CoordinatorBatchAgentDeps	153			present	1387cc9b5479761f	158	
+decl	313	batch_install_bridge.go	func	coordinatorBridgeFallback	14			port	85cede0bcea27dcd	42	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	314	batch_install_ingress.go	type	BatchLeafRegistry	25	internal/agent/runtime/policy/toolwrap/role_policy.go	PolicyLeafRegistry	retired	60799f2b46b75a24	25	destination symbol toolwrap.PolicyLeafRegistry declared in internal/agent/runtime/policy/toolwrap/role_policy.go (pre-existing)
+decl	315	batch_install_ingress.go	type	BatchModelControl	27			requalified	a47a0a87ab33e195	27	
+decl	316	batch_install_ingress.go	func	NewBatchModelControl	29			requalified	d98dc76db69ce667	31	
+decl	317	batch_install_ingress.go	type	BatchWorkIngress	35			requalified	4c3959283f6b064d	45	
+decl	318	batch_install_ingress.go	iface_method	BatchWorkIngress.Invoke	37			present	43d476d3d3ff10bf	37	
+decl	319	batch_install_ingress.go	iface_method	BatchWorkIngress.PinLeafRegistry	40			requalified	7dc06593f4ef5e53	40	
+decl	320	batch_install_ingress.go	iface_method	BatchWorkIngress.ResolveLeaf	42			present	14b1e2dbe2d62d3e	42	
+decl	321	batch_install_ingress.go	iface_method	BatchWorkIngress.Registry	44			requalified	2a3c7fb4214d25ea	44	
+decl	322	batch_install_ingress.go	type	batchWorkIngress	49			present	1bc8099da98432cd	56	
+decl	323	batch_install_ingress.go	field	batchWorkIngress.rt	50			present	b4fd20c49e8c7f47	50	
+decl	324	batch_install_ingress.go	field	batchWorkIngress.registries	51			present	b22325fb414dadaf	51	
+decl	325	batch_install_ingress.go	field	batchWorkIngress.diskBindings	52			present	bd6582c07036e46f	52	
+decl	326	batch_install_ingress.go	field	batchWorkIngress.caps	55			present	567834c142b29e43	55	
+decl	327	batch_install_ingress.go	var	errBatchWorkIngressDeps	58	internal/agent/runtime/batch/batchinst/installwire/ingress.go	ErrIngressDeps	retired	2897077576592cc2	58	destination symbol installwire.ErrIngressDeps declared in internal/agent/runtime/batch/batchinst/installwire/ingress.go (pre-existing)
+decl	328	batch_install_ingress.go	func	NewBatchWorkIngress	61			present	351510cc0b89c0e5	67	
+decl	329	batch_install_ingress.go	func	NewBatchWorkIngressWithDiskBindings	70			present	b3ec237368ccf607	72	
+decl	330	batch_install_ingress.go	func	newBatchWorkIngress	74			present	092c4d832a27c575	88	
+decl	331	batch_install_ingress.go	method	wire	92			present	305939bea8f5ec6d	94	
+decl	332	batch_install_ingress.go	method	Invoke	96			present	47c2e50dfcb1763f	98	
+decl	333	batch_install_ingress.go	method	PinLeafRegistry	100			requalified	97c1fa51d2d65b40	102	
+decl	334	batch_install_ingress.go	method	ResolveLeaf	104			present	0692f175c6ff1e65	106	
+decl	335	batch_install_ingress.go	method	Registry	108			requalified	ae8e5a893e183185	110	
+decl	336	batch_install_ingress.go	method	InstallDiskBindings	112			present	735fba8e98137333	112	
+decl	337	batch_install_ingress.go	func	registryForIngress	114			present	f123974e862da211	116	
+decl	338	batch_install_ingress.go	type	batchCoordinatorBinding	123			present	2637b45b1eecf8af	133	
+decl	339	batch_install_ingress.go	field	batchCoordinatorBinding.ingress	124			present	af7cfa3ea670e7b8	124	
+decl	340	batch_install_ingress.go	field	batchCoordinatorBinding.controls	125			present	347e0f7d577f329c	125	
+decl	341	batch_install_ingress.go	field	batchCoordinatorBinding.live	126			present	7dd25812615c9e93	126	
+decl	342	batch_install_ingress.go	field	batchCoordinatorBinding.diskBindings	127			present	bd6582c07036e46f	127	
+decl	343	batch_install_ingress.go	field	batchCoordinatorBinding.coord	132			present	dba20d22fbb731c4	132	
+decl	344	batch_install_ingress.go	method	pin	135			requalified	87818b6b1e0ad862	137	
+decl	345	batch_install_ingress.go	type	batchCoordinatorBindingIndex	139			present	596999c938cb01f7	142	
+decl	346	batch_install_ingress.go	iface_method	batchCoordinatorBindingIndex.Store	140			present	121db8f909d9533b	140	
+decl	347	batch_install_ingress.go	iface_method	batchCoordinatorBindingIndex.Load	141			present	f6f14b5a35c1bc88	141	
+decl	348	batch_install_ingress.go	var	installedBatchBindings	145			present	b92c392910d4e86d	145	
+decl	349	batch_install_ingress.go	var	coordinatorBatchBindings	146			present	f9946dd5cdceaeb6	146	
+decl	350	batch_install_ingress.go	var	processBatchBinding	147			present	e4bed3eed3df6fa5	147	
+decl	351	batch_install_ingress.go	func	BindCoordinatorBatchRuntime	154			present	ff83aa9e1618235f	158	
+decl	352	batch_install_ingress.go	func	BindCoordinatorBatchControls	160			present	76d8ac9c3d9ea87f	162	
+decl	353	batch_install_ingress.go	func	coordinatorBatchBindingFor	165			present	55afb8e8dc1d1fca	171	
+decl	354	batch_install_ingress.go	func	coordinatorPrivateFetchIngress	179			present	473bfda839ab9a7a	181	
+decl	355	batch_install_ingress.go	func	processCoordinatorBatchBinding	184	internal/agent/runtime/batch/batchinst/installwire/ingress.go	ProcessBinding	retired_adapter	99675a3f341a671d	186	destination symbol installwire.ProcessBinding declared in internal/agent/runtime/batch/batchinst/installwire/ingress.go (pre-existing); curried wrapper inlined with the same arguments at every call site
+decl	356	batch_install_ingress.go	func	BindRuntimeIngress	193			present	5e387846290c0b2b	198	
+decl	357	batch_install_ingress.go	func	invokeBatchWithCallContext	210			requalified	38a351c5e80d0543	256	
+decl	358	batch_install_ingress.go	func	batchPinnedInvoke	261			present	2b71630aa232dcff	263	
+decl	359	batch_install_ingress.go	type	BatchAgentDeps	268			present	2a0c304b994fe203	268	
+decl	360	batch_install_ingress.go	type	BatchAgentRunFactory	269			present	b3cc5d3921931b69	269	
+decl	361	batch_install_ingress.go	type	BatchAgentDescendantReader	270			present	3707e6701f69bc6b	270	
+decl	362	batch_install_ingress.go	func	BatchNonReentrantMCPResolver	277			present	cefa5fc58febab58	279	
+decl	363	batch_install_ingress.go	type	BatchLeafRegistryStore	285			present	fb61d1a8f86527d3	287	
+decl	364	batch_install_ingress.go	field	BatchLeafRegistryStore.store	286			present	87fef472ec1e05a2	286	
+decl	365	batch_install_ingress.go	method	credentialEscrow	289			present	07c0a157d8ec0a95	291	
+decl	366	batch_install_ingress.go	func	NewBatchLeafRegistryStore	293			present	0f8f106eb9a9200e	295	
+decl	367	batch_install_ingress.go	method	Register	297			requalified	e952694f971939a8	301	
+decl	368	batch_install_ingress.go	method	Resolve	303			requalified	4a7cb1d189d88c5c	305	
+decl	369	batch_install_ingress.go	method	Delete	307			present	f71dd9e91bd87474	307	
+decl	370	batch_install_ingress.go	method	Count	308			present	dbda0aad52998420	308	
+decl	371	batch_install_policy.go	func	CoordinatorBatchAgentDepsWithLive	14			present	9368ae8531a0f2ad	19	
+decl	372	batch_install_policy.go	func	CoordinatorBatchAgentDepsWithChildScope	26			requalified	4ef991de133b8b4c	33	
+decl	373	batch_install_policy.go	type	batchAgentLifecycle	36	internal/agent/runtime/batch/batchexec/childagent/state/context.go	Lifecycle	retired	77b718253936138d	36	destination symbol state.Lifecycle declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	374	batch_install_policy.go	type	batchAgentLifecycleContextKey	37	internal/agent/runtime/batch/batchexec/childagent/state/context.go	LifecycleContextKey	retired	d15db49d43bf1076	37	destination symbol state.LifecycleContextKey declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	375	batch_install_policy.go	type	batchAgentQuestionContext	38	internal/agent/runtime/batch/batchexec/childagent/state/context.go	QuestionContext	retired	256817c74ed38829	38	destination symbol state.QuestionContext declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	376	batch_install_policy.go	type	batchAgentQuestionContextKey	39	internal/agent/runtime/batch/batchexec/childagent/state/context.go	QuestionContextKey	retired	270a7408cf630db8	39	destination symbol state.QuestionContextKey declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	377	batch_install_policy.go	type	batchAgentQuestionBindingKey	40	internal/agent/runtime/batch/batchexec/childagent/state/context.go	QuestionBindingKey	retired	f7075751a4d0d644	40	destination symbol state.QuestionBindingKey declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	378	batch_install_policy.go	type	batchBridgeInvocation	41	internal/agent/runtime/batch/batchexec/childagent/bridge_fallback.go	BridgeInvocation	retired	bd8081acb5d541aa	41	destination symbol state.BridgeInvocation declared in internal/agent/runtime/batch/batchexec/childagent/bridge_fallback.go (pre-existing)
+decl	379	batch_install_policy.go	type	batchBridgeInvocationKey	42	internal/agent/runtime/batch/batchexec/childagent/state/context.go	BridgeInvocationKey	retired	24c35529290f1433	42	destination symbol state.BridgeInvocationKey declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	380	batch_install_policy.go	type	BatchChildReactionFacts	43	internal/agent/runtime/batch/batchexec/childagent/state/policy.go	BatchChildReactionFacts	retired	e3757cd0a5265215	43	destination symbol state.BatchChildReactionFacts declared in internal/agent/runtime/batch/batchexec/childagent/state/policy.go (pre-existing)
+decl	381	batch_install_policy.go	func	withBatchAgentLifecycle	46	internal/agent/runtime/batch/batchexec/childagent/state/context.go	WithLifecycle	retired	7b19f3de13434f5d	48	destination symbol state.WithLifecycle declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	382	batch_install_policy.go	func	withBatchAgentQuestionContext	50	internal/agent/runtime/batch/batchexec/childagent/state/context.go	WithQuestionContext	retired	9dfb812bd85f1504	52	destination symbol state.WithQuestionContext declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	383	batch_install_policy.go	func	batchAgentQuestionDepth	53	internal/agent/runtime/batch/batchexec/childagent/state/context.go	QuestionDepth	retired	a251f3c12c55668d	53	destination symbol state.QuestionDepth declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	384	batch_install_policy.go	func	withBatchAgentQuestionBinding	54			present	028dba125341753e	56	
+decl	385	batch_install_policy.go	func	batchAgentQuestionBindingFrom	58			present	e9df22ab6bbccdee	60	
+decl	386	batch_install_policy.go	func	withBatchBridgeInvocation	62	internal/agent/runtime/batch/batchexec/childagent/state/context.go	WithBridgeInvocation	retired	1807f81a1870bbe0	64	destination symbol state.WithBridgeInvocation declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	387	batch_install_policy.go	func	batchBridgeInvocationFrom	66	internal/agent/runtime/batch/batchexec/childagent/state/context.go	BridgeInvocationFrom	retired	68562effeb0abf8c	68	destination symbol state.BridgeInvocationFrom declared in internal/agent/runtime/batch/batchexec/childagent/state/context.go (pre-existing)
+decl	388	batch_install_policy.go	const	batchArmingPolicyNote	70	internal/agent/runtime/batch/batchexec/childagent/state/policy.go	ArmingPolicyNote	retired	814c568bb6729339	70	destination symbol state.ArmingPolicyNote declared in internal/agent/runtime/batch/batchexec/childagent/state/policy.go (pre-existing)
+decl	389	batch_install_policy.go	var	errPscChildScopeUnavailable	72	internal/agent/runtime/batch/batchexec/childagent/state/policy.go	ErrChildScopeUnavailable	retired	8862a8a1121732d5	72	destination symbol state.ErrChildScopeUnavailable declared in internal/agent/runtime/batch/batchexec/childagent/state/policy.go (pre-existing)
+decl	390	batch_install_policy.go	type	batchCoordinatorDescendants	74			requalified	8f0f938ba3e8e99b	77	
+decl	391	batch_install_policy.go	field	batchCoordinatorDescendants.live	75			present	7dd25812615c9e93	75	
+decl	392	batch_install_policy.go	field	batchCoordinatorDescendants.child	76			requalified	b2829f1f1a42af59	76	
+decl	393	batch_install_policy.go	method	DescendantsLive	79			present	73cafe52929706cc	81	
+decl	394	batch_install_policy.go	func	pscCombineDescendantFacts	83	internal/agent/runtime/batch/batchexec/childagent/state/policy.go	CombineDescendantFacts	retired	3c5ee5febee96bc7	85	destination symbol state.CombineDescendantFacts declared in internal/agent/runtime/batch/batchexec/childagent/state/policy.go (pre-existing)
+decl	395	batch_install_policy.go	type	pscChildReactionFacts	87			present	a6d5f97bcabbba8c	90	
+decl	396	batch_install_policy.go	field	pscChildReactionFacts.scope	88			present	3d43b1e978e64e52	88	
+decl	397	batch_install_policy.go	field	pscChildReactionFacts.outcome	89			present	6ae2b58842d7acdd	89	
+decl	398	batch_install_policy.go	func	projectChildScope	92			present	e2e3d71b5878af52	94	
+decl	399	batch_install_policy.go	func	pscChildScopeOpen	96			present	7a576d17502c001c	96	
+decl	400	batch_install_policy.go	method	ChildReactionScopeOpen	98			present	1c31268a43f238ae	107	
+decl	401	batch_install_policy.go	method	ChildFinalOutcome	109			present	f66db40c5091bc24	111	
+decl	402	batch_install_question.go	type	batchChildQuestionNotice	13	internal/agent/runtime/batch/batchexec/childagent/question.go	QuestionNotice	retired	27d5ccb3adf63f49	13	destination symbol childagent.QuestionNotice declared in internal/agent/runtime/batch/batchexec/childagent/question.go (pre-existing)
+decl	403	batch_install_question.go	type	batchChildQuestionPublisher	14	internal/agent/runtime/batch/batchexec/childagent/question.go	QuestionPublisher	retired	c23b21c962ab7c84	14	destination symbol childagent.QuestionPublisher declared in internal/agent/runtime/batch/batchexec/childagent/question.go (pre-existing)
+decl	404	batch_install_question.go	type	batchAgentAskQuestionTool	15			port	a5bc58400ab511a9	15	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	405	batch_install_question.go	type	batchCoordinatorQuestionPublisher	20			present	be05123d266463fa	23	
+decl	406	batch_install_question.go	field	batchCoordinatorQuestionPublisher.store	21			present	97472721421b1ef6	21	
+decl	407	batch_install_question.go	field	batchCoordinatorQuestionPublisher.wake	22			present	c0a32090ce5f23de	22	
+decl	408	batch_install_question.go	method	PublishChildQuestion	25			requalified	28fac22ab654d86a	27	
+decl	409	batch_install_question.go	func	newBatchQuestionPublisher	29			requalified	ba5b07bc985ae203	34	
+decl	410	batch_install_question.go	type	batchStoreQuestionResolver	36			present	324c348892100633	36	
+decl	411	batch_install_question.go	field	batchStoreQuestionResolver.store	36			present	324c348892100633	36	
+decl	412	batch_install_question.go	method	ResolveChildQuestions	38			present	abf16340dd9eee04	40	
+decl	413	batch_install_question.go	func	buildBatchQuestionTools	42			present	2146860009b29f7f	44	
+decl	414	batch_install_question.go	type	batchQuestionContextPort	46			present	2faffe036d909bf6	46	
+decl	415	batch_install_question.go	method	AskFrom	48			present	c06ffad78c87c325	51	
+decl	416	batch_install_question.go	method	Depth	53			requalified	f63251aaf5da2871	53	
+decl	417	batch_install_question.go	method	NoRouteError	54			port	7bb33ac0a4f95436	54	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	418	batch_install_tools.go	type	batchIngressTool	18	internal/agent/runtime/policy/toolwrap/ingress.go	BatchIngressTool	retired	e028fa9e2b9ca068	18	destination symbol toolwrap.BatchIngressTool declared in internal/agent/runtime/policy/toolwrap/ingress.go (pre-existing)
+decl	419	batch_install_tools.go	type	batchInvocationSpec	24			present	d010af93de0ec36b	24	
+decl	420	batch_install_tools.go	field	batchInvocationSpec.inv	24			present	d010af93de0ec36b	24	
+decl	421	batch_install_tools.go	method	RegistryID	26			present	c40f6183078919d2	26	
+decl	422	batch_install_tools.go	method	DispatchContext	28			present	64b924f767a9c4a0	30	
+decl	423	batch_install_tools.go	method	ForIdentity	35			present	467d6a7090907401	43	
+decl	424	batch_install_tools.go	method	ForLiveIdentity	47			present	ef67715be1adca8d	52	
+decl	425	batch_install_tools.go	func	batchIngressInvoke	62			present	68e0cdee143aba9f	67	
+decl	426	batch_install_tools.go	type	diskConstructionOwners	76			present	efb71af008f4bc11	78	
+decl	427	batch_install_tools.go	field	diskConstructionOwners.bind	77			present	4494d3e58fa3317b	77	
+decl	428	batch_install_tools.go	method	Acquire	80			present	4c2fd69865c00289	82	
+decl	429	batch_install_tools.go	method	AcquireConstruction	84			present	7c00512fbdd4df9a	86	
+decl	430	batch_install_tools.go	method	Release	88			present	53e37a46b7a1a8b1	90	
+decl	431	batch_install_tools.go	func	newBatchIngressShell	97			present	3be6352e0fc4ce55	124	
+decl	432	batch_install_tools.go	func	batchWorkTarget	165			present	baddac7c60257d3c	167	
+decl	433	batch_install_tools.go	func	batchFamilyDelivery	175			present	e4e5ffa0800a2798	177	
+decl	434	batch_install_tools.go	type	errBatchIngressTool	181			present	361e5593333413b1	184	
+decl	435	batch_install_tools.go	field	errBatchIngressTool.<embedded>	182			present	cce5b9917655b123	182	
+decl	436	batch_install_tools.go	field	errBatchIngressTool.err	183			present	8acbd2961eb1de1c	183	
+decl	437	batch_install_tools.go	method	Run	186			present	a222fd9c75f6ee43	188	
+decl	438	batch_install_tools.go	func	newBatchWorkToolBuild	191			present	bc1c3700075a584b	193	
+decl	439	batch_install_tools.go	func	newBatchWorkToolBuildForContext	195			requalified	344584bc96bba4b7	233	
+decl	440	batch_install_tools.go	func	batchToolsetFingerprint	238	internal/agent/runtime/batch/batchinst/installwire/tools.go	ToolsetFingerprint	retired	152c3da3decc3610	240	destination symbol installwire.ToolsetFingerprint declared in internal/agent/runtime/batch/batchinst/installwire/tools.go (pre-existing)
+decl	441	batch_invocation.go	const	batchDeliverySync	25			present	84f8f3e30212ea91	25	
+decl	442	batch_invocation.go	const	batchDeliveryInline	26			present	86134ea599c7a2a8	26	
+decl	443	batch_invocation.go	const	batchDeliveryDetached	27			present	93a85405f279f34e	27	
+decl	444	batch_invocation.go	const	batchEscapeNever	33			present	7a04854902f99c72	33	
+decl	445	batch_invocation.go	const	batchEscapeAuto	34			present	3a657cb0ed08eafb	34	
+decl	446	batch_invocation.go	var	errBatchMissingSessionID	39			present	0f65b1378e357799	39	
+decl	447	batch_invocation.go	var	errBatchMissingMessageID	40			present	1439aa98f454a9dd	40	
+decl	448	batch_invocation.go	var	errBatchMissingCallID	41			present	11a16ab490c64cdc	41	
+decl	449	batch_invocation.go	var	errBatchMissingRegistryID	42			present	62014e01ca8d5cd2	42	
+decl	450	batch_invocation.go	var	errBatchMissingOrigin	43			present	1d8ad06905bfd14b	43	
+decl	451	batch_invocation.go	var	errBatchMissingPolicy	44			present	dcd07265f9b93d6d	44	
+decl	452	batch_invocation.go	var	errBatchBadDeliveryMode	45			present	dc896c1448fcbb6c	45	
+decl	453	batch_invocation.go	var	errBatchBadEscapePolicy	46			present	d9bd6381bc98e0cc	46	
+decl	454	batch_invocation.go	var	errBatchBadWaiterRank	47			present	6b8415daacedcf32	47	
+decl	455	batch_invocation.go	var	errBatchBadDiskBinding	48			present	db9079bc4e136f4f	48	
+decl	456	batch_invocation.go	var	errBatchNilLeaf	49			present	e54b505c8fec1100	49	
+decl	457	batch_invocation.go	var	errBatchNilInput	50			present	de1f88c34a503b6f	50	
+decl	458	batch_invocation.go	var	errBatchInvocationMismatch	51			present	5f1e272776791484	51	
+decl	459	batch_invocation.go	var	errBatchDeliveryNotWired	52			present	5f760578119b4991	52	
+decl	460	batch_invocation.go	var	errBatchRunnerNotWired	53			present	603cc2fb4b36ddaf	53	
+decl	461	batch_invocation.go	var	errBatchAttachNotWired	54			present	72d65898adec2a5a	54	
+decl	462	batch_invocation.go	var	errBatchLeavesNotWired	55			present	ef405b63403123a5	55	
+decl	463	batch_invocation.go	var	errBatchProfileNotWired	56			present	afddd32ea28f552d	56	
+decl	464	batch_invocation.go	var	errBatchSubmitBeforeInvalid	57			present	ea17191d512f767d	57	
+decl	465	batch_invocation.go	type	batchLeafPolicyContext	68			present	69a02adc0edceb11	87	
+decl	466	batch_invocation.go	field	batchLeafPolicyContext.RegistryID	69			present	c5d3253421be2c7a	69	
+decl	467	batch_invocation.go	field	batchLeafPolicyContext.MessageID	70			present	b011514ba05fe20d	70	
+decl	468	batch_invocation.go	field	batchLeafPolicyContext.SupportsImages	71			present	43696c10443da7bb	71	
+decl	469	batch_invocation.go	field	batchLeafPolicyContext.ModelName	72			present	a5a3bd8c252d4847	72	
+decl	470	batch_invocation.go	field	batchLeafPolicyContext.FolderScope	73			present	33e72988e9d9f5c1	73	
+decl	471	batch_invocation.go	field	batchLeafPolicyContext.RunAllowlist	74			present	68c83c8b2a0195ba	74	
+decl	472	batch_invocation.go	field	batchLeafPolicyContext.CustomDisk	75			present	c073fc69b33ebdac	75	
+decl	473	batch_invocation.go	field	batchLeafPolicyContext.DiskProvider	76			present	130daa4e99a160e6	76	
+decl	474	batch_invocation.go	field	batchLeafPolicyContext.DiskBindingID	81			present	b72784026ddabdc7	81	
+decl	475	batch_invocation.go	field	batchLeafPolicyContext.RestrictedToolset	82			present	dfd3d59a8112c218	82	
+decl	476	batch_invocation.go	field	batchLeafPolicyContext.RoleContract	86			present	7223fbca7fa33720	86	
+decl	477	batch_invocation.go	type	batchDeliveryChoice	90			present	dd0c912a97fc0bbb	93	
+decl	478	batch_invocation.go	field	batchDeliveryChoice.Mode	91			present	814076f2a3cc5932	91	
+decl	479	batch_invocation.go	field	batchDeliveryChoice.Window	92			present	a49abf6cf9b49676	92	
+decl	480	batch_invocation.go	type	BatchInvocation	99			present	4aa1426b352fd7af	138	
+decl	481	batch_invocation.go	field	BatchInvocation.SessionID	101			present	4f0568d423519890	101	
+decl	482	batch_invocation.go	field	BatchInvocation.MessageID	103			present	ebebb883baf4b407	103	
+decl	483	batch_invocation.go	field	BatchInvocation.RegistryID	107			present	c5d3253421be2c7a	107	
+decl	484	batch_invocation.go	field	BatchInvocation.Origin	110			present	ff3fab1d506d926b	110	
+decl	485	batch_invocation.go	field	BatchInvocation.CallID	111			present	8328c88ee211a2f8	111	
+decl	486	batch_invocation.go	field	BatchInvocation.AgentDepth	112			present	5280f2cf3844e1b3	112	
+decl	487	batch_invocation.go	field	BatchInvocation.AgentDepthSet	113			present	77ce43f797095374	113	
+decl	488	batch_invocation.go	field	BatchInvocation.Delivery	115			present	9f9fb7fb82c16d14	115	
+decl	489	batch_invocation.go	field	BatchInvocation.BackgroundEscape	116			present	0212d3adcc5d0a4e	116	
+decl	490	batch_invocation.go	field	BatchInvocation.WaiterNode	120			present	93755f71c5598fcf	120	
+decl	491	batch_invocation.go	field	BatchInvocation.WaiterRank	121			present	1b9f1ae7b9c40dd7	121	
+decl	492	batch_invocation.go	field	BatchInvocation.Policy	125			present	965540766caeb84c	125	
+decl	493	batch_invocation.go	field	BatchInvocation.WorkerStopScope	127			present	12d16eae278e3c4f	127	
+decl	494	batch_invocation.go	field	BatchInvocation.QuestionRoute	135			present	7dcee265d1f3dd8a	135	
+decl	495	batch_invocation.go	field	BatchInvocation.roleConfig	137			present	456c9e4ad8bbc9db	137	
+decl	496	batch_invocation.go	func	batchCallIdentity	142			present	e5996762bf521064	144	
+decl	497	batch_invocation.go	func	batchCanonicalInput	148			present	be16f6d106b8f216	157	
+decl	498	batch_invocation.go	func	batchInvocationHash	162			present	b3ceb65871821667	169	
+decl	499	batch_invocation.go	method	Validate	174			present	459ce1c1675b0cda	237	
+decl	500	batch_invocation.go	func	batchWellFormedBindingID	241			present	12b891839fdf8dd4	251	
+decl	501	batch_invocation.go	func	batchLeafRunContext	253			present	08831cf202cb06c9	265	
+decl	502	batch_invocation.go	type	batchFolderScopeContextKey	268	internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go	FolderScopeContextKey	retired	0d348b09a298977b	268	destination symbol batchdispatch.FolderScopeContextKey declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go (pre-existing)
+decl	503	batch_invocation.go	type	batchRunAllowlistContextKey	269	internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go	RunAllowlistContextKey	retired	ec839e143da1ee99	269	destination symbol batchdispatch.RunAllowlistContextKey declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go (pre-existing)
+decl	504	batch_invocation.go	type	batchCustomDiskContextKey	270	internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go	CustomDiskContextKey	retired	bd331a8213f7e7ab	270	destination symbol batchdispatch.CustomDiskContextKey declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go (pre-existing)
+decl	505	batch_invocation.go	type	batchAgentDepthInvalidContextKey	271	internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go	AgentDepthInvalidContextKey	retired	b401520ac797bafa	271	destination symbol batchdispatch.AgentDepthInvalidContextKey declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go (pre-existing)
+decl	506	batch_invocation.go	type	batchDiskProviderContextKey	272	internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go	DiskProviderContextKey	retired	79273d52c449c13e	272	destination symbol batchdispatch.DiskProviderContextKey declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go (pre-existing)
+decl	507	batch_invocation.go	func	batchDiskProviderFrom	275	internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go	DiskProviderFrom	retired	8e77cdbd824996e7	277	destination symbol batchdispatch.DiskProviderFrom declared in internal/agent/runtime/batch/batchexec/batchdispatch/batch_invocation.go (pre-existing)
+decl	508	batch_managed_call.go	func	withBatchManagedCall	9	internal/agent/runtime/batch/batchlife/managed_call.go	WithBatchManagedCall	retired	9591dc37f26dc5c0	11	destination symbol batchlife.WithBatchManagedCall declared in internal/agent/runtime/batch/batchlife/managed_call.go (pre-existing)
+decl	509	batch_managed_call.go	func	isBatchManagedCall	13	internal/agent/runtime/batch/batchlife/managed_call.go	IsBatchManagedCall	retired	edfc4eaca64e0913	15	destination symbol batchlife.IsBatchManagedCall declared in internal/agent/runtime/batch/batchlife/managed_call.go (pre-existing)
+decl	510	batch_model_control.go	type	batchModelDelivery	17			present	b4b7aa99a52b80e0	19	
+decl	511	batch_model_control.go	iface_method	batchModelDelivery.DeliverBatch	18			present	c3d108f0e95b701c	18	
+decl	512	batch_model_control.go	type	installedBatchModelControl	21			requalified	fe1693122a46e354	34	
+decl	513	batch_model_control.go	field	installedBatchModelControl.outputCache	22			present	403e92aff9fc8c73	22	
+decl	514	batch_model_control.go	field	installedBatchModelControl.runner	23			present	0f52f5b06c6caea9	23	
+decl	515	batch_model_control.go	field	installedBatchModelControl.delivery	24			present	b2f0f3a2c387c9ef	24	
+decl	516	batch_model_control.go	field	installedBatchModelControl.store	25			present	97472721421b1ef6	25	
+decl	517	batch_model_control.go	field	installedBatchModelControl.live	26			present	7dd25812615c9e93	26	
+decl	518	batch_model_control.go	field	installedBatchModelControl.sessions	27			present	1185e77e8dd4c338	27	
+decl	519	batch_model_control.go	field	installedBatchModelControl.host	28			present	f8d93f07a7ef0bf5	28	
+decl	520	batch_model_control.go	field	installedBatchModelControl.runnerID	28			present	f8d93f07a7ef0bf5	28	
+decl	521	batch_model_control.go	field	installedBatchModelControl.profile	29			present	97806ae21049e3dd	29	
+decl	522	batch_model_control.go	field	installedBatchModelControl.resolver	30			requalified	60673920076d3560	30	
+decl	523	batch_model_control.go	field	installedBatchModelControl.rootLeases	31			present	d71e723c8ce20d3f	31	
+decl	524	batch_model_control.go	field	installedBatchModelControl.runMu	32			present	b2ad86addf1d2735	32	
+decl	525	batch_model_control.go	field	installedBatchModelControl.maxDepth	33			present	695302e6e1a48fff	33	
+decl	526	batch_model_control.go	field	installedBatchModelControl.maxNodes	33			present	695302e6e1a48fff	33	
+decl	527	batch_model_control.go	var	_	36			blank	66c66429208450be	36	blank identifier assertion; 1 in this file at HEAD
+decl	528	batch_model_control.go	func	NewInstalledBatchModelControl	38			requalified	8e030aaa4a09897a	47	
+decl	529	batch_model_control.go	method	InstallBatchModelControls	49			requalified	e2f4af67b6824634	54	
+decl	530	batch_model_control.go	method	Run	56			requalified	1bd3e48c1bbe565a	58	
+decl	531	batch_model_control.go	method	Add	60			requalified	741235959151fbaa	62	
+decl	532	batch_model_control.go	method	modelMutations	64			requalified	862ff41ee33f4b24	103	
+decl	533	batch_model_control.go	method	modelAccess	107			present	bedc60a8bc585e63	117	
+decl	534	batch_model_control.go	method	StatusNode	119			present	042e6d8f25fab00e	122	
+decl	535	batch_model_control.go	method	Output	124			present	b101c34254e3dc19	127	
+decl	536	batch_model_control.go	method	Stop	129			present	420b453b8b57c782	132	
+decl	537	batch_model_tools.go	type	batchModelSpec	19	internal/agent/runtime/batch/batchcore/batch_ingress.go	Spec	retired	1bd050f9342fbbb7	19	destination symbol modelcontrol.Spec declared in internal/agent/runtime/batch/batchcore/batch_ingress.go (pre-existing)
+decl	538	batch_model_tools.go	type	batchModelItem	20	internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go	Item	retired	0c2b645f553e4181	20	destination symbol modelcontrol.Item declared in internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go (pre-existing)
+decl	539	batch_model_tools.go	type	batchModelControl	21			present	0dba5d73da32f0f8	21	
+decl	540	batch_model_tools.go	type	batchModelParams	22	internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go	Params	retired	c324a33a4afb5781	22	destination symbol modelcontrol.Params declared in internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go (pre-existing)
+decl	541	batch_model_tools.go	func	modelInvocationAtCall	25			requalified	8763b4720bf6485a	69	
+decl	542	batch_model_tools.go	func	withoutBatchControlPlaceholders	71	internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go	WithoutPlaceholders	retired	a0c77a8556e7ce1c	73	destination symbol modelcontrol.WithoutPlaceholders declared in internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go (pre-existing)
+decl	543	batch_model_tools.go	func	newBatchControlPlaceholder	75	internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go	NewPlaceholder	retired	cc2244e8997522a5	77	destination symbol modelcontrol.NewPlaceholder declared in internal/agent/runtime/batch/batchcore/modelcontrol/batch_model_tools.go (pre-existing)
+decl	544	batch_model_tools.go	func	newBatchModelTools	79			present	a1c67404e4adf9b4	84	
+decl	545	batch_model_tools.go	func	modelBatchSpec	86			requalified	2b743a1552e15ce1	88	
+decl	546	batch_model_tools.go	func	modelBatchSpecForAdmission	90			requalified	a024c4e29b43639b	92	
+decl	547	batch_model_tools.go	func	buildModelBatchSpec	94			requalified	d8301fef7defb5ca	106	
+decl	548	batch_model_tools.go	func	measureModelBatchSpecs	108			port	d62e8deece2b6229	111	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	549	batch_model_tools.go	func	batchModelSpecNodes	113			requalified	bab1e89f06212259	119	
+decl	550	batch_model_tools.go	func	rewriteModelBatchLeaf	122			present	a96fe3aa0514880e	137	
+decl	551	batch_model_tools.go	func	buildModelBatchLeaf	139			port	b6615044852b2e6d	233	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	552	batch_profile.go	const	batchGroupIO	13			present	426929a54118e1dc	13	
+decl	553	batch_profile.go	const	batchGroupCLIDriver	14			present	69fd8525239f691c	14	
+decl	554	batch_profile.go	const	batchGroupAgentDriver	15			present	90b6b66303097523	15	
+decl	555	batch_profile.go	const	batchGroupDefault	16			present	76b4f188d8bc6e5c	16	
+decl	556	batch_profile.go	var	batchGroupRanks	23			present	657c0971b4fb48e0	28	
+decl	557	batch_profile.go	var	errBatchCapInvalid	33			present	b34f53122333021a	33	
+decl	558	batch_profile.go	var	errBatchGlobalTooSmall	34			present	3d424d3a6111b695	34	
+decl	559	batch_profile.go	var	errBatchMissingGroup	35			present	9aef7ae0ba93662b	35	
+decl	560	batch_profile.go	var	errBatchUnknownGroupName	36			present	36d4da77b1258e15	36	
+decl	561	batch_profile.go	var	errBatchRankConflict	37			present	9df4eb5b585234e9	37	
+decl	562	batch_profile.go	type	BatchProfileCaps	42			present	1045104d809dbe15	48	
+decl	563	batch_profile.go	field	BatchProfileCaps.IO	43			present	bba56aa935d27529	43	
+decl	564	batch_profile.go	field	BatchProfileCaps.CLIDriver	44			present	c7ae1597236c9168	44	
+decl	565	batch_profile.go	field	BatchProfileCaps.AgentDriver	45			present	3b92d3c8fdb89335	45	
+decl	566	batch_profile.go	field	BatchProfileCaps.Default	46			present	8cdfac27ee54289c	46	
+decl	567	batch_profile.go	field	BatchProfileCaps.Global	47			present	5ec1778a38cad0ae	47	
+decl	568	batch_profile.go	type	BatchProfile	53			present	20ea2763fd258f47	57	
+decl	569	batch_profile.go	field	BatchProfile.caps	54			present	303d56933ec50494	54	
+decl	570	batch_profile.go	field	BatchProfile.ranks	55			present	831a2deebfc2ded1	55	
+decl	571	batch_profile.go	field	BatchProfile.global	56			present	a49072bc27402bc8	56	
+decl	572	batch_profile.go	func	validateBatchRanks	63			present	ec3bbe8581aaea3b	77	
+decl	573	batch_profile.go	func	NewBatchProfile	80			present	bccaea951c33360b	88	
+decl	574	batch_profile.go	func	NewBatchProfileFromMap	92			present	992fbfd4020bd181	108	
+decl	575	batch_profile.go	func	newBatchProfileFromGroups	111			present	a7342207d7783bbd	140	
+decl	576	batch_profile.go	func	NewBatchProfileDefault	149			present	b2499fea17fe3ce8	151	
+decl	577	batch_profile.go	method	Limits	155			present	f0d8c4e7953fd591	161	
+decl	578	batch_profile.go	method	GroupCap	164			present	f6c4359fbdad7b7d	167	
+decl	579	batch_profile.go	method	GroupRank	170			present	2af8a512ef6405ed	173	
+decl	580	batch_profile.go	method	Groups	176			present	cf50702475df50ed	178	
+decl	581	batch_profile.go	func	batchProfileGroups	181			present	61e866669d079a02	188	
+decl	582	batch_question_rebuild.go	method	rebuiltChildQuestionState	9			present	abec995c469ad3ae	11	
+decl	583	batch_question_rebuild.go	type	batchQuestionRebuildHost	13			present	74911712111af74c	15	
+decl	584	batch_question_rebuild.go	iface_method	batchQuestionRebuildHost.isDurableDelegationChild	14			present	b2b71da2dcaddb5d	14	
+decl	585	batch_question_rebuild.go	type	batchQuestionRebuildComponent	17			present	0f15fc2f1b81fb3f	17	
+decl	586	batch_question_rebuild.go	field	batchQuestionRebuildComponent.host	17			present	0f15fc2f1b81fb3f	17	
+decl	587	batch_question_rebuild.go	method	rebuiltChildQuestionState	19			present	e93b87b7315e6be3	28	
+decl	588	batch_question_route.go	type	batchQuestionRouteContextKey	12	internal/agent/runtime/batch/batchmeta/batch_question_route.go	QuestionRouteContextKey	retired	582214c7c3bba534	12	destination symbol batchmeta.QuestionRouteContextKey declared in internal/agent/runtime/batch/batchmeta/batch_question_route.go (pre-existing)
+decl	589	batch_question_route.go	func	withBatchQuestionRoute	14	internal/agent/runtime/batch/batchmeta/batch_question_route.go	WithBatchQuestionRoute	retired	cc3f775a578a2091	16	destination symbol batchmeta.WithBatchQuestionRoute declared in internal/agent/runtime/batch/batchmeta/batch_question_route.go (pre-existing)
+decl	590	batch_question_route.go	func	batchQuestionRouteFrom	18	internal/agent/runtime/batch/batchmeta/batch_question_route.go	BatchQuestionRouteFrom	retired	a1a6c3e427049ef5	20	destination symbol batchmeta.BatchQuestionRouteFrom declared in internal/agent/runtime/batch/batchmeta/batch_question_route.go (pre-existing)
+decl	591	batch_question_route.go	func	applyBatchQuestionRouteFloor	22	internal/agent/runtime/batch/batchmeta/batch_question_route.go	ApplyBatchQuestionRouteFloor	retired	1f02a911cea4f060	24	destination symbol batchmeta.ApplyBatchQuestionRouteFloor declared in internal/agent/runtime/batch/batchmeta/batch_question_route.go (pre-existing)
+decl	592	batch_question_route.go	func	stripAskQuestionTools	26	internal/agent/runtime/batch/batchmeta/batch_question_route.go	StripAskQuestionTools	retired	3cce536ff4ecc0ff	28	destination symbol batchmeta.StripAskQuestionTools declared in internal/agent/runtime/batch/batchmeta/batch_question_route.go (pre-existing)
+decl	593	batch_question_route.go	func	armBatchQuestionTurnContext	30			requalified	7a092a1e52a64d62	32	
+decl	594	batch_rehome_async_completion.go	type	AsyncCompletion	6			present	7cb859e9fd770b78	6	
+decl	595	batch_rehome_coord_runtime.go	method	foreignLiveDriver	27			present	a8051569ac8bea34	29	
+decl	596	batch_rehome_coord_runtime.go	method	sessionNoticeStore	32			present	16163ab1a930d2a0	34	
+decl	597	batch_rehome_coord_runtime.go	type	batchRehomeCoordRuntimeHost	36			present	ede7a5462fc47e24	39	
+decl	598	batch_rehome_coord_runtime.go	iface_method	batchRehomeCoordRuntimeHost.foreignDriverClaimHostStore	37			present	e2cf1dc2f19388f8	37	
+decl	599	batch_rehome_coord_runtime.go	iface_method	batchRehomeCoordRuntimeHost.boundSessionNoticeStore	38			present	72acbac546b88f3f	38	
+decl	600	batch_rehome_coord_runtime.go	type	batchRehomeCoordRuntimeComponent	41			present	498e68bc6bb04352	41	
+decl	601	batch_rehome_coord_runtime.go	field	batchRehomeCoordRuntimeComponent.host	41			present	498e68bc6bb04352	41	
+decl	602	batch_rehome_coord_runtime.go	method	foreignLiveDriver	43			present	1394a9265f22a0fb	50	
+decl	603	batch_rehome_coord_runtime.go	method	sessionNoticeStore	52			present	0623fa4c4c268f1e	54	
+decl	604	batch_rehome_coord_runtime.go	method	foreignDriverClaimHostStore	56			present	a2e0f471bf801645	65	
+decl	605	batch_rehome_coord_runtime.go	method	boundSessionNoticeStore	67			present	893fe277165a96b6	72	
+decl	606	batch_rehome_drain_pace.go	type	drainPace	11	internal/agent/runtime/exec/drainctl/drain_attempt.go	Pace	retired	2c3c90d58d4e1372	11	destination symbol drainctl.Pace declared in internal/agent/runtime/exec/drainctl/drain_attempt.go (pre-existing)
+decl	607	batch_rehome_drain_pace.go	const	paceUncounted	14	internal/agent/runtime/batch/batchlife/drain_pace.go	PaceUncounted	retired	ec7d92051633698a	14	destination symbol batchlife.PaceUncounted declared in internal/agent/runtime/batch/batchlife/drain_pace.go (pre-existing)
+decl	608	batch_rehome_drain_pace.go	const	paceFreeNoTurn	15	internal/agent/runtime/exec/drainctl/turn_arbiter_state.go	PaceFreeNoTurn	retired	ffdfaa3154027871	15	destination symbol drainctl.PaceFreeNoTurn declared in internal/agent/runtime/exec/drainctl/turn_arbiter_state.go (pre-existing)
+decl	609	batch_rehome_drain_pace.go	const	pacePaidUnreacted	16	internal/agent/runtime/exec/drainctl/turn_arbiter_state.go	PacePaidUnreacted	retired	5a546d4b0112c9b9	16	destination symbol drainctl.PacePaidUnreacted declared in internal/agent/runtime/exec/drainctl/turn_arbiter_state.go (pre-existing)
+decl	610	batch_rehome_runtime.go	func	awaitTaskSummary	17	internal/agent/runtime/batch/batchlife/lifecycle.go	AwaitTaskSummary	retired	74da7da9124b8f90	17	destination symbol batchlife.AwaitTaskSummary declared in internal/agent/runtime/batch/batchlife/lifecycle.go (pre-existing)
+decl	611	batch_rehome_runtime.go	method	clearSleepAll	24			present	fba0c5a350cec3b7	26	
+decl	612	batch_rehome_runtime.go	method	cancelAwaitTimer	28			present	a02b9d78d28793f8	30	
+decl	613	batch_rehome_runtime.go	method	bgShellRowCancelled	50			present	6185510eb6b382c9	52	
+decl	614	batch_rehome_runtime.go	type	batchRehomeRuntimeHost	54			present	648bf9fdff7be645	58	
+decl	615	batch_rehome_runtime.go	iface_method	batchRehomeRuntimeHost.arbClearSleepAll	55			present	9ae5388318d33940	55	
+decl	616	batch_rehome_runtime.go	iface_method	batchRehomeRuntimeHost.wakeSchedulerFor	56			present	44311a03ad6c4888	56	
+decl	617	batch_rehome_runtime.go	iface_method	batchRehomeRuntimeHost.bgShellManager	57			present	76ca4d57e8fd8c90	57	
+decl	618	batch_rehome_runtime.go	type	batchRehomeRuntimeComponent	60			present	3646d2287beb1913	60	
+decl	619	batch_rehome_runtime.go	field	batchRehomeRuntimeComponent.host	60			present	3646d2287beb1913	60	
+decl	620	batch_rehome_runtime.go	method	clearSleepAll	62			present	e60894a49f1a6b45	64	
+decl	621	batch_rehome_runtime.go	method	cancelAwaitTimer	66			present	a9a3e196028c6ca9	84	
+decl	622	batch_rehome_runtime.go	method	bgShellRowCancelled	86			present	1c5fba6f420bc83f	92	
+decl	623	batch_rehome_runtime.go	method	arbClearSleepAll	94			present	f16850854d1af703	96	
+decl	624	batch_rehome_runtime.go	method	bgShellManager	98			present	36bdebaf1178c06e	100	
+decl	625	batch_rehome_runtime.go	func	stallToolStalled	102	internal/agent/runtime/batch/batchlife/lifecycle.go	StallToolStalled	retired	9cb118736b5c50f7	104	destination symbol batchlife.StallToolStalled declared in internal/agent/runtime/batch/batchlife/lifecycle.go (pre-existing)
+decl	626	batch_rehome_tool_metadata.go	type	asyncToolMetadata	5	internal/agent/runtime/batch/batchmeta/batch_rehome_tool_metadata.go	AsyncToolMetadata	retired	58f550ad00b94262	5	destination symbol batchmeta.AsyncToolMetadata declared in internal/agent/runtime/batch/batchmeta/batch_rehome_tool_metadata.go (pre-existing)
+decl	627	batch_role_admission.go	func	WithAdmittedBatchRoleContracts	13			present	11c9a3bef1842a11	15	
+decl	628	batch_role_admission.go	func	batchRoleContractsWereAdmitted	17	internal/agent/runtime/batch/batchinst/batch_role_admission.go	RoleContractsWereAdmitted	retired	d7f9ef0fcedfec38	19	destination symbol batchinst.RoleContractsWereAdmitted declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	629	batch_role_admission.go	func	configForBatchInvocation	21			present	238f72cb43fb8f7a	23	
+decl	630	batch_role_admission.go	func	batchSpecHasCustomRole	25	internal/agent/runtime/batch/batchinst/batch_role_admission.go	SpecHasCustomRole	retired	a326dcfa0739c994	27	destination symbol batchinst.SpecHasCustomRole declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	631	batch_role_admission.go	func	validateBatchSpecShapeForRoleAdmission	29	internal/agent/runtime/batch/batchinst/batch_role_admission.go	ValidateSpecShapeForRoleAdmission	retired	b8c99e33ab1e5642	31	destination symbol batchinst.ValidateSpecShapeForRoleAdmission declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	632	batch_role_admission.go	func	admitBatchRoleContracts	33			present	ccfeae934391658d	41	
+decl	633	batch_role_admission.go	func	validateSelectedBatchRole	43	internal/agent/runtime/batch/batchinst/batch_role_admission.go	ValidateSelectedRole	retired	8297547bd3a42395	45	destination symbol batchinst.ValidateSelectedRole declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	634	batch_role_admission.go	func	roleContractInherits	47	internal/agent/runtime/batch/batchinst/batch_role_admission.go	RoleContractInherits	retired	b29c511d13e088fd	49	destination symbol batchinst.RoleContractInherits declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	635	batch_role_admission.go	func	validateBatchRolePayloads	51			present	7fd0c96786ede3db	63	
+decl	636	batch_role_admission.go	func	BatchRoleSnapshotHash	65			present	80d0e24bd5c350e8	65	
+decl	637	batch_root_lease.go	type	batchRootLeaseStore	14			present	01eb9f7a7f310d2a	18	
+decl	638	batch_root_lease.go	field	batchRootLeaseStore.caps	15			present	567834c142b29e43	15	
+decl	639	batch_root_lease.go	field	batchRootLeaseStore.<embedded>	17			present	484e452dab55217e	17	
+decl	640	batch_root_lease.go	func	newBatchRootLeaseStore	20			present	8218b946dd9963d2	41	
+decl	641	batch_root_lease.go	func	rootOwnerKey	46			present	9dbb6858c4524d26	48	
+decl	642	batch_root_lease.go	type	BatchRootLeaseStore	53			present	275d1b2ddadf1b30	53	
+decl	643	batch_root_lease.go	func	NewBatchRootLeaseStore	58			present	c54ae7567a29805b	60	
+decl	644	batch_root_lease.go	method	acquire	68			present	abde580d4ecb304a	73	
+decl	645	batch_runtime.go	type	batchRunnerHandle	12	internal/agent/runtime/batch/batchcore/batch_runtime.go	RunnerHandle	retired	ff1c7df2fe6a0c7d	12	destination symbol batchcore.RunnerHandle declared in internal/agent/runtime/batch/batchcore/batch_runtime.go (pre-existing)
+decl	646	batch_runtime.go	type	batchBoundRunnerHandle	14			present	f39cc912cdf2594b	16	
+decl	647	batch_runtime.go	iface_method	batchBoundRunnerHandle.SubmitBound	15			present	6f562aa306a6b3c8	15	
+decl	648	batch_runtime.go	type	batchReleaseHandle	18			present	2736c2cc844b2ab2	20	
+decl	649	batch_runtime.go	iface_method	batchReleaseHandle.Release	19			present	069c9924d848510c	19	
+decl	650	batch_runtime.go	type	batchModelRunner	22			present	65a8bffee931fb5e	29	
+decl	651	batch_runtime.go	iface_method	batchModelRunner.Submit	23			present	930f2ddf0fd16fcf	23	
+decl	652	batch_runtime.go	iface_method	batchModelRunner.Add	24			present	b8f25035c1d0218c	24	
+decl	653	batch_runtime.go	iface_method	batchModelRunner.Snapshot	25			present	15318e92647146dc	25	
+decl	654	batch_runtime.go	iface_method	batchModelRunner.View	26			present	89832404735a55e8	26	
+decl	655	batch_runtime.go	iface_method	batchModelRunner.Output	27			present	41857a7b633bf75a	27	
+decl	656	batch_runtime.go	iface_method	batchModelRunner.Stop	28			present	20ebe3789804edd3	28	
+decl	657	batch_runtime.go	type	batchDelivery	34			present	4f9d2eeb93ae08d8	36	
+decl	658	batch_runtime.go	iface_method	batchDelivery.DeliverBatch	35			present	b467ffe939ff0fcf	35	
+decl	659	batch_runtime.go	type	batchAttachProbe	39	internal/agent/runtime/batch/batchcore/batch_runtime.go	AttachProbe	retired	33bd50698d9eb9a3	39	destination symbol batchcore.AttachProbe declared in internal/agent/runtime/batch/batchcore/batch_runtime.go (pre-existing)
+decl	660	batch_runtime.go	type	batchAttachStore	40	internal/agent/runtime/batch/batchcore/batch_runtime.go	AttachStore	retired	61ab81546dd23278	40	destination symbol batchcore.AttachStore declared in internal/agent/runtime/batch/batchcore/batch_runtime.go (pre-existing)
+decl	661	batch_runtime.go	type	batchRuntimeConfig	44			present	01051ec2ff49c7ef	44	
+decl	662	batch_runtime.go	const	batchDefaultMaxDepth	47	internal/agent/runtime/batch/batchcore/batch_runtime.go	DefaultMaxDepth	retired	fe405a61c2690887	47	destination symbol batchcore.DefaultMaxDepth declared in internal/agent/runtime/batch/batchcore/batch_runtime.go (pre-existing)
+decl	663	batch_runtime.go	const	batchDefaultMaxNodes	48	internal/agent/runtime/batch/batchcore/batch_runtime.go	DefaultMaxNodes	retired	af330be1923331ef	48	destination symbol batchcore.DefaultMaxNodes declared in internal/agent/runtime/batch/batchcore/batch_runtime.go (pre-existing)
+decl	664	batch_runtime.go	type	batchRuntime	54			present	06a7ae12a09a209a	59	
+decl	665	batch_runtime.go	field	batchRuntime.cfg	55			present	e64475382b935ee0	55	
+decl	666	batch_runtime.go	field	batchRuntime.mu	57			present	9828eed58ec6f9c7	57	
+decl	667	batch_runtime.go	field	batchRuntime.core	58			present	4837aaf7f71e4b03	58	
+decl	668	batch_runtime.go	func	newBatchRuntime	61			present	7b399efa052d5685	69	
+decl	669	batch_runtime.go	method	bindRunner	72			requalified	5f8b3f6a4c28262c	74	
+decl	670	batch_runtime.go	method	setIngress	79			present	c2e88222a1ea511a	83	
+decl	671	batch_runtime.go	method	ingress	88			present	f5e807f503a96e1f	92	
+decl	672	batch_runtime.go	method	LeafEnv	97			present	d4bd46c6b3732f39	99	
+decl	673	batch_runtime.go	method	RegistryCount	101			present	85aab286d7a51f82	109	
+decl	674	batch_runtime.go	func	batchRootID	111			present	df5351ef7a0786a8	111	
+decl	675	batch_runtime.go	method	inFlightCalls	113			present	0b3897ff67dd07e0	113	
+decl	676	batch_runtime.go	type	batchCallEntryView	116			present	d302592071aad529	116	
+decl	677	batch_runtime.go	field	batchCallEntryView.joined	116			present	d302592071aad529	116	
+decl	678	batch_runtime.go	method	entryFor	118			present	18cbc66b7942326f	124	
+decl	679	batch_scope.go	type	batchAgentScope	9			present	c275fb6fb20614fc	11	
+decl	680	batch_scope.go	field	batchAgentScope.state	10			present	c531123359a43719	10	
+decl	681	batch_scope.go	type	batchAgentInjectMessage	13	internal/agent/runtime/batch/batchinst/batch_role_admission.go	AgentInjectMessage	retired	4b93097f8a2e73e7	13	destination symbol batchinst.AgentInjectMessage declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	682	batch_scope.go	var	ErrBatchAgentNotHeld	16			port	f2cfef0f4c931afc	16	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	683	batch_scope.go	var	ErrBatchAgentStopped	17			port	32d41fb1add67996	17	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	684	batch_scope.go	var	ErrBatchAgentStaleGeneration	18			port	55b9e40eed116293	18	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	685	batch_scope.go	var	ErrBatchAgentQuestionHeld	19	internal/agent/runtime/batch/batchinst/batch_role_admission.go	ErrBatchAgentQuestionHeld	retired	fe445b6fb0425816	19	destination symbol batchinst.ErrBatchAgentQuestionHeld declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	686	batch_scope.go	var	ErrBatchQuestionNoRoute	20	internal/agent/runtime/batch/batchinst/batch_role_admission.go	ErrBatchQuestionNoRoute	retired	2948b868f91f8d67	20	destination symbol batchinst.ErrBatchQuestionNoRoute declared in internal/agent/runtime/batch/batchinst/batch_role_admission.go (pre-existing)
+decl	687	batch_scope.go	var	ErrBatchQuestionCapabilityNotDurable	21			present	f6f9b3c34e611848	21	
+decl	688	batch_scope.go	func	newBatchAgentScope	24			present	c9342b770644b73f	26	
+decl	689	batch_scope.go	method	HeldDepth	28			present	6554dafd06fa9440	28	
+decl	690	batch_scope.go	method	PublishQuestion	29			present	66cf51f35d0e122c	31	
+decl	691	batch_scope.go	method	beginStop	33			present	eb1b3b91aace54b5	33	
+decl	692	batch_scope.go	method	stop	34			present	8370d8babd55afbe	34	
+decl	693	batch_scope.go	method	hold	35			present	937a197b5b00ad18	37	
+decl	694	batch_scope.go	method	discardHold	38			present	1a77e56b6a38e7c7	38	
+decl	695	batch_scope.go	method	deliverWithCommit	39			requalified	28cab0ac172e4246	41	
+decl	696	batch_terminal_output.go	const	batchOutputTTL	11			port	debe28a4c8da9282	11	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	697	batch_terminal_output.go	const	batchOutputTaskLimit	12	internal/agent/runtime/batch/batchmeta/batch_terminal_output.go	OutputTaskLimit	retired	cb3b71321d81ad51	12	destination symbol batchmeta.OutputTaskLimit declared in internal/agent/runtime/batch/batchmeta/batch_terminal_output.go (pre-existing)
+decl	698	batch_terminal_output.go	const	batchOutputCursorClamp	13	internal/agent/runtime/batch/batchmeta/batch_terminal_output.go	OutputCursorClamp	retired	632633b93a2c2d88	13	destination symbol batchmeta.OutputCursorClamp declared in internal/agent/runtime/batch/batchmeta/batch_terminal_output.go (pre-existing)
+decl	699	batch_terminal_output.go	const	batchOutputCursorArgvRestart	14	internal/agent/runtime/batch/batchmeta/batch_terminal_output.go	OutputCursorArgvRestart	retired	d9aa8e471c2136e8	14	destination symbol batchmeta.OutputCursorArgvRestart declared in internal/agent/runtime/batch/batchmeta/batch_terminal_output.go (pre-existing)
+decl	700	batch_terminal_output.go	type	batchOutputCursorContract	17	internal/agent/runtime/batch/batchmeta/batch_terminal_output.go	OutputCursorContract	retired	0ada367e6ebedcc6	17	destination symbol batchmeta.OutputCursorContract declared in internal/agent/runtime/batch/batchmeta/batch_terminal_output.go (pre-existing)
+decl	701	batch_terminal_output.go	type	batchOutputCache	20			requalified	0ffb514d64561cb1	24	
+decl	702	batch_terminal_output.go	field	batchOutputCache.storage	21			present	da9ba0d82655a662	21	
+decl	703	batch_terminal_output.go	field	batchOutputCache.retain	23			requalified	6622977c16181f69	23	
+decl	704	batch_terminal_output.go	func	newBatchOutputCache	26			present	038c21fcac0ecb3a	28	
+decl	705	batch_terminal_output.go	method	leaf	30			present	0c7673745453010e	35	
+decl	706	batch_terminal_output.go	method	putFor	37			requalified	98920190d316dcc2	39	
+decl	707	batch_terminal_output.go	method	putForContract	41			requalified	a0853c409d739c5f	49	
+decl	708	batch_terminal_output.go	method	readWithMetadata	51			present	99fbc7bab88b4777	53	
+decl	709	batch_terminal_output.go	type	batchArgvOutputReader	55			requalified	d706ff4ee5444f9d	55	
+decl	710	batch_terminal_output.go	field	batchArgvOutputReader.process	55			requalified	d706ff4ee5444f9d	55	
+decl	711	batch_terminal_output.go	method	ReadOutput	57			present	53f0c1117f5ed02b	59	
+decl	712	batch_terminal_output.go	func	batchOutputRoot	61	internal/agent/runtime/batch/batchmeta/batch_terminal_output.go	OutputRoot	retired	cb4c665ff62d9272	61	destination symbol batchmeta.OutputRoot declared in internal/agent/runtime/batch/batchmeta/batch_terminal_output.go (pre-existing)
+decl	713	batch_terminal_output.go	func	batchOutputCapture	63			requalified	d667f7a57f0d6d95	68	
+decl	714	batch_timeout_parse.go	const	batchTimeoutWakeOnly	8	internal/agent/runtime/batch/batchinst/batch_external_spec.go	TimeoutWakeOnly	retired	d4b1f411e59173fb	8	destination symbol batchinst.TimeoutWakeOnly declared in internal/agent/runtime/batch/batchinst/batch_external_spec.go (pre-existing)
+decl	715	batch_timeout_parse.go	const	batchTimeoutTerminateAndWake	9	internal/agent/runtime/batch/batchinst/batch_external_spec.go	TimeoutTerminateAndWake	retired	ee5473a7d70a9ff1	9	destination symbol batchinst.TimeoutTerminateAndWake declared in internal/agent/runtime/batch/batchinst/batch_external_spec.go (pre-existing)
+decl	716	batch_timeout_parse.go	func	batchParseTimeoutParam	12	internal/agent/runtime/batch/batchinst/batch_external_spec.go	ParseTimeoutParam	retired	2c6d8ba0d5cd9eb9	14	destination symbol batchinst.ParseTimeoutParam declared in internal/agent/runtime/batch/batchinst/batch_external_spec.go (pre-existing)
+decl	717	batch_worker_hints.go	type	batchDriverHints	11			present	def9a3d7913f0964	11	
+decl	718	batch_worker_hints.go	func	newBatchDriverHints	13			present	f130f6249161846d	13	
+decl	719	batch_worker_hints.go	method	bumpHint	15			present	62623481036203bc	17	
+decl	720	batch_worker_hints.go	method	hintSeqOf	19			present	36380acfaa7be9dd	21	
+decl	721	batch_worker_hints.go	method	waitForHint	23			present	75a39d4d9669192b	25	
+decl	722	batch_worker_hints.go	method	claimExternalDriver	27			present	9c4fcab2c8260685	29	
+decl	723	batch_worker_hints.go	method	releaseExternalDriver	31			present	7cc6f62eb14c0157	33	
+decl	724	batch_worker_hints.go	method	isExternalDriver	35			present	6a1272c6afa1bcd5	37	
+decl	725	batch_worker_hints.go	method	idleCandidates	39			present	fe17423df8f25952	41	
+decl	726	batch_worker_hints.go	method	dropIfIdle	43			present	660012b67c012ee6	45	
+decl	727	batch_worker_hints.go	method	subscribe	47			present	ca5dca68b70d71c5	49	
+decl	728	disk_provider_binding.go	type	diskBindingID	25			present	69358b1605328b95	25	
+decl	729	disk_provider_binding.go	type	diskBindingEntry	31			present	cc2c581739d91606	37	
+decl	730	disk_provider_binding.go	field	diskBindingEntry.id	32			present	4bdff52c2f2d1b09	32	
+decl	731	disk_provider_binding.go	field	diskBindingEntry.provider	33			present	3f9f94c6d5445708	33	
+decl	732	disk_provider_binding.go	field	diskBindingEntry.owner	34			present	e7090b2d008012b2	34	
+decl	733	disk_provider_binding.go	field	diskBindingEntry.processBound	35			present	3b7a29d31c996605	35	
+decl	734	disk_provider_binding.go	field	diskBindingEntry.owners	36			present	ee728d297ee7df70	36	
+decl	735	disk_provider_binding.go	type	DiskProviderRegistry	43			present	d3c8de71b8cea5f0	43	
+decl	736	disk_provider_binding.go	func	NewDiskProviderRegistry	47			present	effbe71948f69538	49	
+decl	737	disk_provider_binding.go	method	OwnerDiagnostics	51			present	941ce1705d6c9d6b	58	
+decl	738	disk_provider_binding.go	var	ErrNilDiskProviderRegistry	61			present	f547e6de0217e6fb	61	
+decl	739	disk_provider_binding.go	method	Register	67			present	42e980b6e18bc4bf	69	
+decl	740	disk_provider_binding.go	method	RegisterProvider	74			present	c46f554224721498	76	
+decl	741	disk_provider_binding.go	method	RegisterForOwner	79			present	55d3c056bf702af2	97	
+decl	742	disk_provider_binding.go	func	EnsureUsableDiskProvider	106			present	6835010d490817ee	114	
+decl	743	disk_provider_binding.go	func	isNilDiskProvider	116			present	0466486db0ad16b5	124	
+decl	744	disk_provider_binding.go	method	Lookup	128			present	b0231b2f718a01d6	139	
+decl	745	disk_provider_binding.go	type	diskBindingRegistryContextKey	141			present	d88417fd0b68aa1f	141	
+decl	746	disk_provider_binding.go	func	withDiskProviderRegistry	145			present	c44317e669141e8f	147	
+decl	747	disk_provider_binding.go	func	batchDiskRegistryFromContext	149			present	c535532cd9d7138a	151	
+decl	748	disk_provider_binding.go	func	registerDiskBinding	156			present	a21579878d48f12d	164	
+decl	749	disk_provider_call.go	method	DiskCapabilityAnchor	9			present	0fdd6fc0f833861a	9	
+decl	750	disk_provider_call.go	func	diskBindingOwners	11			present	498fa5bd4b7db9a0	21	
+decl	751	disk_provider_call.go	func	boundCallOptions	23			present	e72505e0fc506b23	25	
+decl	752	disk_provider_call.go	func	BindCallDiskProvider	28			present	fcb4fd7350eab763	34	
+decl	753	disk_provider_call.go	func	bindExistingCallDiskBinding	36			present	68f3fa7757b3e0c8	38	
+decl	754	disk_provider_capability.go	type	diskOwnerKind	22			present	5841ca9f03ef84c0	22	
+decl	755	disk_provider_capability.go	const	diskOwnerCall	27			present	0c74d69d24c2ac48	27	
+decl	756	disk_provider_capability.go	const	diskOwnerConstruction	31			present	28acf182d99699d6	31	
+decl	757	disk_provider_capability.go	const	diskOwnerRoot	33			present	6ac030aa2d36d27c	33	
+decl	758	disk_provider_capability.go	const	diskOwnerExecution	36			present	1a1de296b07c2bf4	36	
+decl	759	disk_provider_capability.go	const	diskOwnerContinuation	39			present	1dc20a3c1b238d24	39	
+decl	760	disk_provider_capability.go	type	diskOwnerKey	43			present	40ecfa824cc86c5c	50	
+decl	761	disk_provider_capability.go	field	diskOwnerKey.kind	44			present	0723c4355c9739d4	44	
+decl	762	disk_provider_capability.go	field	diskOwnerKey.instance	45			present	c00cbe9662b85b0a	45	
+decl	763	disk_provider_capability.go	field	diskOwnerKey.bindingID	46			present	c7f07935c4cf4a33	46	
+decl	764	disk_provider_capability.go	field	diskOwnerKey.registryID	49			present	84b56b9f53160d77	49	
+decl	765	disk_provider_capability.go	type	diskCapabilityManager	55			present	35ce1500253fc89d	64	
+decl	766	disk_provider_capability.go	field	diskCapabilityManager.mu	56			present	9828eed58ec6f9c7	56	
+decl	767	disk_provider_capability.go	field	diskCapabilityManager.bindings	57			present	0b9cc65f251c7749	57	
+decl	768	disk_provider_capability.go	field	diskCapabilityManager.constructions	58			present	d509e068ba69d591	58	
+decl	769	disk_provider_capability.go	field	diskCapabilityManager.owners	59			present	ee728d297ee7df70	59	
+decl	770	disk_provider_capability.go	field	diskCapabilityManager.dropRegistry	63			present	493b87844bb42060	63	
+decl	771	disk_provider_capability.go	method	ownerCounts	66			present	83e9becff0bc163e	73	
+decl	772	disk_provider_capability.go	type	diskConstructionRecord	77			present	2f8c8660b1b689f9	80	
+decl	773	disk_provider_capability.go	field	diskConstructionRecord.registryID	78			present	84b56b9f53160d77	78	
+decl	774	disk_provider_capability.go	field	diskConstructionRecord.bindingID	79			present	c7f07935c4cf4a33	79	
+decl	775	disk_provider_capability.go	func	newDiskCapabilityManager	82			present	ce9c74c7193eb284	88	
+decl	776	disk_provider_capability.go	method	setRegistryDrop	92			present	6cbdc27ed26a3f92	99	
+decl	777	disk_provider_capability.go	method	acquire	103			present	3a80ca2694c66c77	130	
+decl	778	disk_provider_capability.go	method	acquireConstruction	137			present	82821bce7ed12398	154	
+decl	779	disk_provider_capability.go	method	release	159			present	43c87937679436f8	167	
+decl	780	disk_provider_capability.go	method	releaseResidualConstructions	177			present	88867c857c272c08	189	
+decl	781	disk_provider_capability.go	method	releaseResidualContinuations	197			present	4ea1a18d101af0c7	209	
+decl	782	disk_provider_capability.go	method	pruneLocked	212			present	fc187df9c3650369	231	
+decl	783	disk_provider_capability.go	method	registryNamedLocked	233			present	9f43d465620c9fcf	240	
+decl	784	disk_provider_capability.go	method	bindingRetainedLocked	242			present	79a1d56ccdc3f21a	249	
+decl	785	disk_provider_capability.go	method	ownerCount	252			present	e44f1058347522fc	259	
+decl	786	disk_provider_capability.go	func	withDiskCapabilityManager	263			present	b10bc24e23b13df8	265	
+decl	787	disk_provider_capability.go	type	diskCapabilityManagerContextKey	267			present	22661f8845777a29	267	
+decl	788	disk_provider_capability.go	func	diskCapabilityManagerFrom	269			present	78cf9ac8757e9860	272	
+decl	789	disk_provider_continuation.go	type	preparedContinuation	14			present	665a31ecfc9971f9	19	
+decl	790	disk_provider_continuation.go	field	preparedContinuation.port	15			present	27594c51fe355cd4	15	
+decl	791	disk_provider_continuation.go	field	preparedContinuation.requirement	16			present	c4e92dd30a22000e	16	
+decl	792	disk_provider_continuation.go	field	preparedContinuation.provider	17			present	3f9f94c6d5445708	17	
+decl	793	disk_provider_continuation.go	field	preparedContinuation.release	18			present	767ee1b9e0ce8581	18	
+decl	794	disk_provider_continuation.go	method	PrepareContinuation	21			present	df448ef7fa91b911	36	
+decl	795	disk_provider_continuation.go	method	restorePolicyBaseline	38			present	83d4e2ba988d0ac4	40	
+decl	796	disk_provider_continuation.go	method	applyToOptions	42			present	5443cc21e71bb3d4	42	
+decl	797	disk_provider_continuation.go	method	applyTo	44			present	30ccf0ecf024d2e1	48	
+decl	798	disk_provider_continuation.go	func	continuationOwners	50			present	9981986bf9299eab	55	
+decl	799	disk_provider_continuation.go	func	holdDurableContinuationOwner	57			present	aab70873814d7c85	59	
+decl	800	disk_provider_continuation.go	func	releaseDurableContinuationOwner	61			present	a9b1001c81c8887c	63	
+decl	801	disk_provider_continuation.go	func	HoldDurableContinuationOwnerForTest	66			present	0cfc03e0032dcba0	68	
+decl	802	disk_provider_continuation.go	method	guardTurnDiskFence	78			requalified	fa8f5b4345cac8db	106	
+decl	803	disk_provider_continuation.go	func	requirementFromCall	108			present	48b8225454d0995c	110	
+decl	804	disk_provider_durable.go	var	ErrDiskProviderNotDurable	10			port	a4ec7a3da7786eb5	10	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	805	disk_provider_durable.go	var	ErrCredentialBindingUnavailable	11	internal/agent/runtime/batch/batchinst/diskport/disk_provider_durable.go	ErrCredentialBindingUnavailable	retired	5b8b287fe1e34731	11	destination symbol diskport.ErrCredentialBindingUnavailable declared in internal/agent/runtime/batch/batchinst/diskport/disk_provider_durable.go (pre-existing)
+decl	806	disk_provider_durable.go	var	ErrCredentialSetNotDurable	12			port	8dccb690155fc993	12	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	807	disk_provider_durable.go	var	ErrDiskProviderUnavailable	18			present	4e5764de26e02771	19	
+decl	808	disk_provider_durable.go	func	callCarriesDiskProvider	21			present	e05c9f73a650d00b	23	
+decl	809	disk_provider_durable.go	func	callCarriesNonDurableDependency	25			present	cc607e5c97cf4d53	27	
+decl	810	disk_provider_durable.go	func	callCarriesBatchQuestionCapability	29			present	0f40b333fe68f1d0	31	
+decl	811	disk_provider_intent.go	type	ExecutionProviderIntent	9			present	3e22cae917385254	9	
+decl	812	disk_provider_intent.go	const	ExecutionProviderOmitted	12	internal/agent/runtime/batch/batchlife/disk_provider_intent.go	ExecutionProviderOmitted	retired	413a84e1fdcd09b7	12	destination symbol batchlife.ExecutionProviderOmitted declared in internal/agent/runtime/batch/batchlife/disk_provider_intent.go (pre-existing)
+decl	813	disk_provider_intent.go	const	ExecutionProviderCustom	13	internal/agent/runtime/batch/batchlife/disk_provider_intent.go	ExecutionProviderCustom	retired	e7671c1d678f9e55	13	destination symbol batchlife.ExecutionProviderCustom declared in internal/agent/runtime/batch/batchlife/disk_provider_intent.go (pre-existing)
+decl	814	disk_provider_intent.go	const	ExecutionProviderOS	14	internal/agent/runtime/batch/batchlife/disk_provider_intent.go	ExecutionProviderOS	retired	380ffb9de0a1622c	14	destination symbol batchlife.ExecutionProviderOS declared in internal/agent/runtime/batch/batchlife/disk_provider_intent.go (pre-existing)
+decl	815	disk_provider_intent.go	func	WithExecutionProviderIntent	17			present	93e35d6d11d48f16	19	
+decl	816	disk_provider_intent.go	func	executionProviderIntentFrom	21	internal/agent/runtime/batch/batchlife/disk_provider_intent.go	ExecutionProviderIntentFrom	retired	958c3dd021994028	23	destination symbol batchlife.ExecutionProviderIntentFrom declared in internal/agent/runtime/batch/batchlife/disk_provider_intent.go (pre-existing)
+decl	817	finalization_call_context.go	method	restoreFinalizationCallContext	13			requalified	c405e184416e6d83	26	
+decl	818	finalization_call_context.go	method	beginFinalizationStep	34			requalified	b90777af4a788a7d	45	
+decl	819	finalization_call_context.go	method	markFinalizationStep	48			requalified	a5b4af4ab983251a	61	
+decl	820	finalization_call_context.go	func	sealFinalizationCandidate	68			requalified	61500cf62c1f834b	97	
+decl	821	finalization_call_context.go	method	persistFinalizationCandidate	102			requalified	c6b0499fe83894ef	117	
+decl	822	finalization_driver_binding.go	method	bindFinalizationIdentity	9			present	0f3a561ab2236d3a	53	
+decl	823	finalization_driver_binding.go	method	bindFinalizationDriverCall	55			present	45024be79dc21536	76	
+decl	824	finalization_gate.go	type	finalizationFacts	16	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	Facts	retired	5a5266ae4f862069	16	destination symbol gate.Facts declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	825	finalization_gate.go	type	finalizationStamp	17	internal/agent/runtime/batch/batchadapter/runner.go	Stamp	retired	f16a283622053a39	17	destination symbol gate.Stamp declared in internal/agent/runtime/batch/batchadapter/runner.go (pre-existing)
+decl	826	finalization_gate.go	type	finalizationCandidate	18	internal/agent/runtime/batch/batchcore/finalize/publish.go	Candidate	retired	669af5b71781385c	18	destination symbol gate.Candidate declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	827	finalization_gate.go	type	finalizationGate	19	internal/agent/runtime/batch/batchcore/finalize/execution.go	Gate	retired	f520757d57e5816a	19	destination symbol gate.Gate declared in internal/agent/runtime/batch/batchcore/finalize/execution.go (pre-existing)
+decl	828	finalization_gate.go	type	finalizationExecution	21	internal/agent/runtime/batch/batchcore/finalize/execution.go	FinalizationExecution	retired	108540aae82345b4	21	destination symbol finalize.FinalizationExecution declared in internal/agent/runtime/batch/batchcore/finalize/execution.go (pre-existing)
+decl	829	finalization_gate.go	type	finalizationPublicationScope	22	internal/agent/runtime/batch/batchcore/finalize/publish.go	FinalizationPublicationScope	retired	9c9a62aa3b0d4bc8	22	destination symbol finalize.FinalizationPublicationScope declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	830	finalization_gate.go	type	persistedFinalizationCandidate	23	internal/agent/runtime/batch/batchcore/finalize/publish.go	PersistedFinalizationCandidate	retired	530c057fc98b40ca	23	destination symbol finalize.PersistedFinalizationCandidate declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	831	finalization_gate.go	type	finalizationCancelRegistry	24	internal/agent/runtime/batch/batchcore/finalize/registry.go	FinalizationCancelRegistry	retired	2a534996afdd8eee	24	destination symbol finalize.FinalizationCancelRegistry declared in internal/agent/runtime/batch/batchcore/finalize/registry.go (pre-existing)
+decl	832	finalization_gate.go	type	FinalizationCancelLookup	25	internal/agent/runtime/batch/batchcore/finalize/registry.go	FinalizationCancelLookup	retired	0b0fdad1fd97ede9	25	destination symbol finalize.FinalizationCancelLookup declared in internal/agent/runtime/batch/batchcore/finalize/registry.go (pre-existing)
+decl	833	finalization_gate.go	type	FinalizationAuthorityRegistry	26			port	e04f079a496801fd	26	port: inlined curried adapter (the wrapper supplied the missing arguments) or promoted embedded-field selector following its type alias
+decl	834	finalization_gate.go	const	finalizationWaitWork	30	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	WaitWork	retired	3a325f3f484c19e0	30	destination symbol gate.WaitWork declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	835	finalization_gate.go	const	finalizationPauseQuestion	31	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	PauseQuestion	retired	c558c8d930ba57c5	31	destination symbol gate.PauseQuestion declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	836	finalization_gate.go	const	finalizationCompose	32	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	Compose	retired	1959e3931f5a6b49	32	destination symbol gate.Compose declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	837	finalization_gate.go	const	finalizationAccepted	33	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	Accepted	retired	15cb2c720cd82dc6	33	destination symbol gate.Accepted declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	838	finalization_gate.go	var	ErrFinalizationFactsUnavailable	37	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	ErrFinalizationFactsUnavailable	retired	33bb6aed88240501	37	destination symbol gate.ErrFinalizationFactsUnavailable declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	839	finalization_gate.go	var	ErrFinalizationSealed	38	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	ErrFinalizationSealed	retired	de8484915c99087b	38	destination symbol gate.ErrFinalizationSealed declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	840	finalization_gate.go	var	ErrFinalizationScopeChanged	39	internal/agent/runtime/batch/batchinst/gate/gate_contract.go	ErrFinalizationScopeChanged	retired	713506cb7b371213	39	destination symbol gate.ErrFinalizationScopeChanged declared in internal/agent/runtime/batch/batchinst/gate/gate_contract.go (pre-existing)
+decl	841	finalization_gate.go	var	ErrFinalizationSettlerUnavailable	41	internal/agent/runtime/batch/batchcore/finalize/publish.go	ErrFinalizationSettlerUnavailable	retired	afc1e1174302ed8b	41	destination symbol finalize.ErrFinalizationSettlerUnavailable declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	842	finalization_gate.go	func	finalizationLogicalIdentity	44	internal/agent/runtime/batch/batchcore/finalize/execution.go	FinalizationLogicalIdentity	retired	20595496023a92e0	46	destination symbol finalize.FinalizationLogicalIdentity declared in internal/agent/runtime/batch/batchcore/finalize/execution.go (pre-existing)
+decl	843	finalization_gate.go	func	NewFinalizationAuthorityRegistry	48			present	9f4e65639162e357	50	
+decl	844	finalization_gate.go	func	persistFinalizationCandidate	52	internal/agent/runtime/batch/batchcore/finalize/publish.go	PersistFinalizationCandidate	retired	dd5efbe6bab3b0df	54	destination symbol finalize.PersistFinalizationCandidate declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	845	finalization_gate.go	func	publishFinalizationCandidate	56	internal/agent/runtime/batch/batchcore/finalize/publish.go	PublishFinalizationCandidate	retired	5a36ff9792016a6f	58	destination symbol finalize.PublishFinalizationCandidate declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	846	finalization_gate.go	func	settleFinalizationDebts	60	internal/agent/runtime/batch/batchcore/finalize/publish.go	SettleFinalizationDebts	retired	0a2ee9cd98428ed1	62	destination symbol finalize.SettleFinalizationDebts declared in internal/agent/runtime/batch/batchcore/finalize/publish.go (pre-existing)
+decl	847	finalization_gate.go	func	withFinalizationExecution	64	internal/agent/runtime/batch/batchcore/finalize/execution.go	WithFinalizationExecution	retired	6169d3dcd389a075	66	destination symbol finalize.WithFinalizationExecution declared in internal/agent/runtime/batch/batchcore/finalize/execution.go (pre-existing)
+decl	848	finalization_gate.go	func	finalizationExecutionFor	68			requalified	65a1ffb32ac397e6	70	
+decl	849	finalization_gate.go	func	isFinalizationCandidate	72			present	16e802eb68017094	74	
+decl	850	finalization_gate.go	func	newFinalizationCancelRegistry	76	internal/agent/runtime/batch/batchcore/finalize/registry.go	NewFinalizationCancelRegistry	retired	6f2be013016ecf16	78	destination symbol finalize.NewFinalizationCancelRegistry declared in internal/agent/runtime/batch/batchcore/finalize/registry.go (pre-existing)
+decl	851	finalization_gate.go	func	NewFinalizationOnCancelHook	80	internal/agent/runtime/batch/batchcore/finalize/registry.go	NewFinalizationOnCancelHook	retired	855e4fd421b7d412	82	destination symbol finalize.NewFinalizationOnCancelHook declared in internal/agent/runtime/batch/batchcore/finalize/registry.go (pre-existing)
+decl	852	finalization_gate.go	func	NewFinalizationRecoverScopeHook	84	internal/agent/runtime/batch/batchcore/finalize/execution.go	NewFinalizationRecoverScopeHook	retired	695c9c16ea9407d0	86	destination symbol finalize.NewFinalizationRecoverScopeHook declared in internal/agent/runtime/batch/batchcore/finalize/execution.go (pre-existing)
+decl	853	finalization_gate.go	func	newFinalizationGate	88	internal/agent/runtime/batch/batchinst/gate/finalization_gate.go	New	retired	9a1bd9cf54b7ac9f	88	destination symbol gate.New declared in internal/agent/runtime/batch/batchinst/gate/finalization_gate.go (pre-existing)
+decl	854	finalization_holds_assembly.go	func	newFinalizationPhysicalHoldsFacts	18			present	bf387bf33c36c354	32	
+decl	855	finalization_holds_providers.go	var	ErrFinalizationHoldsUnattributable	15			present	50dc7f6753e8d9fb	17	
+decl	856	finalization_holds_providers.go	var	ErrFinalizationHoldsRegistryUnreadable	21			present	4e50becbed347fdd	22	
+decl	857	finalization_holds_providers.go	func	diskOwnerKeysOfKind	26			present	ce72c3e297c28e0b	43	
+decl	858	finalization_holds_providers.go	func	batchRootLeaseRoots	49			present	b2b43421f2bceb28	54	
+decl	859	finalization_holds_providers.go	func	NewFinalizationBatchRootHoldsProvider	94			present	a2fc3c62351349ff	150	
+decl	860	finalization_holds_providers.go	func	NewFinalizationBatchRootHoldsProviderForInstall	159			present	bcb3de142c6e7ad7	166	
+decl	861	finalization_holds_providers.go	func	NewFinalizationTrackedProcessHoldsProvider	190			present	b34760cbcff789e7	201	
+decl	862	finalization_queue_call.go	method	restoreFinalizationQueuedCall	12			present	ab0dd5941ea8a17a	14	
+decl	863	finalization_queue_call.go	method	finalizationQueueDriver	16			present	a6645239d882deb9	18	
+decl	864	finalization_queue_call.go	method	selectFinalizationQueueDriver	20			present	159f8acd2d21397f	22	
+decl	865	finalization_queue_call.go	method	finalizationQueueDriver	25			present	5d306db9562d0421	28	
+decl	866	finalization_queue_call.go	method	selectFinalizationQueueDriver	30			present	89979bc851a11ec3	50	
+decl	867	finalization_queue_call.go	method	restoreFinalizationQueuedCall	52			present	c7d4155be47d27cc	74	
+decl	868	finalization_queue_call.go	type	finalizationQueueComponentHost	76			present	30f5e21e5acd71bb	83	
+decl	869	finalization_queue_call.go	iface_method	finalizationQueueComponentHost.sessionsService	77			present	02516396655d5494	77	
+decl	870	finalization_queue_call.go	iface_method	finalizationQueueComponentHost.currentAgent	78			present	f0fab49f5b3c3144	78	
+decl	871	finalization_queue_call.go	iface_method	finalizationQueueComponentHost.subAgentDrivers	79			present	24af40410aa1caac	79	
+decl	872	finalization_queue_call.go	iface_method	finalizationQueueComponentHost.readyWait	80			present	7052d8bbfa4b33c6	80	
+decl	873	finalization_queue_call.go	iface_method	finalizationQueueComponentHost.rebuildSessionAgentCall	81			present	513a9b8903cf8cd9	81	
+decl	874	finalization_queue_call.go	iface_method	finalizationQueueComponentHost.runSessionAgentCall	82			present	6b3989de6ce2dfc1	82	
+decl	875	finalization_queue_call.go	func	newFinalizationQueueComponent	85			present	f84f95d2a3888205	87	
+decl	876	finalization_queue_call.go	func	enqueueFinalizationCall	89			present	6d388f06f95c4c14	95	
+decl	877	inline_window.go	const	inlineWindowSeconds	10	internal/agent/runtime/batch/batchinst/installwire/window.go	InlineWindowSeconds	retired	09b4980b116d891b	10	destination symbol installwire.InlineWindowSeconds declared in internal/agent/runtime/batch/batchinst/installwire/window.go (pre-existing)
+decl	878	inline_window.go	const	inlineWindow	11	internal/agent/runtime/batch/batchinst/installwire/window.go	InlineWindow	retired	364f1fb5a3739ff1	11	destination symbol installwire.InlineWindow declared in internal/agent/runtime/batch/batchinst/installwire/window.go (pre-existing)
+decl	879	inline_window.go	func	SetInlineWindowForTest	20			present	615f135b26ecbc49	26	
+decl	880	inline_window.go	type	inlineWindowSetter	28			present	6e3e3220c0541bb3	30	
+decl	881	inline_window.go	iface_method	inlineWindowSetter.setInlineWindowForTest	29			present	b38b337760c18968	29	
+decl	882	inline_window.go	method	setInlineWindowForTest	36			present	957de18e77d7918f	38	
+decl	883	inline_window.go	func	inlineWindowDisabledFor	43			present	4f6de687b0e484a0	45	
+scope	s1	batch_admission.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s2	batch_allowed_controls.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s3	batch_cancel.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchflow)
+scope	s4	batch_cli_runtime.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchflow)
+scope	s5	batch_credentials_escrow.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s6	batch_credentials_marker.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s7	batch_cutover_driver.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchflow)
+scope	s8	batch_delivery.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s9	batch_delivery_doc.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchflow)
+scope	s10	batch_delivery_drain.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s11	batch_depth_payload.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s12	batch_exec.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s13	batch_exec_agent.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s14	batch_exec_agent_doc.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s15	batch_exec_argv.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s16	batch_exec_binding.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s17	batch_exec_generic.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s18	batch_exec_shell.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s19	batch_external_spec.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s20	batch_held_question_route.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s21	batch_ingress.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s22	batch_install_adapters.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s23	batch_install_agent_driver.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s24	batch_install_bridge.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s25	batch_install_ingress.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s26	batch_install_policy.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s27	batch_install_question.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s28	batch_install_tools.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s29	batch_invocation.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s30	batch_managed_call.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s31	batch_model_control.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s32	batch_model_tools.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s33	batch_profile.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s34	batch_question_rebuild.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchflow)
+scope	s35	batch_question_route.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s36	batch_rehome_async_completion.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s37	batch_rehome_coord_runtime.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s38	batch_rehome_drain_pace.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s39	batch_rehome_runtime.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s40	batch_rehome_tool_metadata.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s41	batch_role_admission.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s42	batch_root_lease.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s43	batch_runtime.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s44	batch_scope.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s45	batch_terminal_output.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s46	batch_timeout_parse.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s47	batch_worker_hints.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s48	disk_provider_binding.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s49	disk_provider_call.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s50	disk_provider_capability.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s51	disk_provider_continuation.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s52	disk_provider_durable.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s53	disk_provider_intent.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s54	finalization_call_context.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (finalize)
+scope	s55	finalization_driver_binding.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (finalize)
+scope	s56	finalization_gate.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)
+scope	s57	finalization_holds_assembly.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchassemble)
+scope	s58	finalization_holds_providers.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchassemble)
+scope	s59	finalization_queue_call.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (finalize)
+scope	s60	inline_window.go	-	-	0	-	-	present	-	0	file in the L3 batch-family scope (batchinst)

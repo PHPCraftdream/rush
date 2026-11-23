@@ -9,8 +9,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
-type batchRunnerHandle = batchcore.RunnerHandle
-
 type batchBoundRunnerHandle interface {
 	SubmitBound(ctx context.Context, req jobbatch.SubmitRequest) (jobbatch.ID, *jobbatch.Batch, error)
 }
@@ -35,18 +33,8 @@ type batchDelivery interface {
 	DeliverBatch(ctx context.Context, root jobbatch.ID, inv BatchInvocation) (fantasy.ToolResponse, error)
 }
 
-type (
-	batchAttachProbe = batchcore.AttachProbe
-	batchAttachStore = batchcore.AttachStore
-)
-
 // batchRuntimeConfig specializes the core wiring for root compatibility types.
 type batchRuntimeConfig = batchcore.RuntimeConfig[*BatchProfile, batchDelivery, BatchWorkIngress, *DiskProviderRegistry, *batchRootLeaseStore]
-
-const (
-	batchDefaultMaxDepth = batchcore.DefaultMaxDepth
-	batchDefaultMaxNodes = batchcore.DefaultMaxNodes
-)
 
 // batchRuntime is the dormant R11C ingress core. Construction has NO side
 // effects: no goroutine, no executor, no global registration; R11F owns every
@@ -69,7 +57,7 @@ func newBatchRuntime(cfg batchRuntimeConfig) (*batchRuntime, error) {
 }
 
 // bindRunner attaches the engine handle (R11F). Safe to call once.
-func (r *batchRuntime) bindRunner(runner batchRunnerHandle) error {
+func (r *batchRuntime) bindRunner(runner batchcore.RunnerHandle) error {
 	return r.cfg.BindRunner(&r.mu, runner, errBatchRunnerNotWired)
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
@@ -170,7 +171,7 @@ func TestShadow_PacedGate(t *testing.T) {
 	ctx := context.Background()
 	f := newShadowFixture(t, "shadow-paced")
 	f.seedDebt(ctx, "shadow-paced-1", true)
-	f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, true, pacePaidUnreacted)
+	f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, true, drainctl.PacePaidUnreacted)
 	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "paced gate", true)
 	require.Equal(t, VDefer, rep.arbiter.Kind)
 	require.Contains(t, shadowArbiterWord(rep.arbiter), "paced")
@@ -185,7 +186,7 @@ func TestShadow_PaidDormantGate(t *testing.T) {
 	f := newShadowFixture(t, "shadow-paid-dormant")
 	f.seedDebt(ctx, "shadow-paid-dormant-1", true)
 	for range turnDormantStreak {
-		f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, false, pacePaidUnreacted)
+		f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, false, drainctl.PacePaidUnreacted)
 	}
 	f.coord.driverHints.bumpHint(f.sessID)
 	rep := checkShadow(ctx, t, f, f.sessID, siteFact, "paid-dormant gate", true)
@@ -201,7 +202,7 @@ func TestShadow_FreeDormantGateHintOpens(t *testing.T) {
 	f := newShadowFixture(t, "shadow-free-dormant")
 	f.seedDebt(ctx, "shadow-free-dormant-1", true)
 	for range turnDormantStreak {
-		f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, true, paceFreeNoTurn)
+		f.coord.arb.pace(f.sessID, f.coord.driverHints.hintSeqOf(f.sessID), time.Minute, true, drainctl.PaceFreeNoTurn)
 	}
 	// Without a newer fact: stuck on both sides.
 	rep := checkShadow(ctx, t, f, f.sessID, siteTick, "free-dormant, no hint", true)

@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -179,7 +180,7 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 		}
 		node, token, ok := parseBatchQuestionMarker(notice.text)
 		depth := batchQuestionMarkerDepth(notice.text)
-		seq := batchQuestionMarkerSequence(notice.text)
+		seq := batchlife.QuestionMarkerSequence(notice.text)
 		if !ok || depth <= 0 || seq <= 0 {
 			continue
 		}
@@ -216,7 +217,7 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 	// the answer addresses (deliver refuses any other depth or sequence) and
 	// the text is the JSON-encoded answer string
 	// (batchAgentAskQuestionTool unmarshals it back).
-	raw, err := json.Marshal(batchAgentInjectMessage{Depth: hit.Depth, Sequence: hitSeq, Text: mustJSONString(text)})
+	raw, err := json.Marshal(batchinst.AgentInjectMessage{Depth: hit.Depth, Sequence: hitSeq, Text: mustJSONString(text)})
 	if err != nil {
 		return *hit, err
 	}
@@ -238,7 +239,7 @@ func (s *batchHeldAnswerStoreSink) DeliverHeldAnswer(ctx context.Context, owner,
 	var matchedNotices []int64
 	for _, notice := range notices {
 		node, token, ok := parseBatchQuestionMarker(notice.text)
-		seq := batchQuestionMarkerSequence(notice.text)
+		seq := batchlife.QuestionMarkerSequence(notice.text)
 		if ok && node == hit.NodeID && token == hit.Token && seq > 0 && uint64(seq) <= hitSeq &&
 			batchQuestionMarkerChild(notice.text) == childSessionID {
 			matchedNotices = append(matchedNotices, notice.id)

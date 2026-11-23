@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -51,7 +53,7 @@ func TestResumeOfHeldQuestionChildRefusedBeforeBind(t *testing.T) {
 	// before any model/driver use), so the zero-value stub only needs to
 	// satisfy the SessionAgent interface.
 	bindCalls := 0
-	resumeCtx := context.WithValue(ctx, batchAgentLifecycleContextKey{}, batchAgentLifecycle{
+	resumeCtx := context.WithValue(ctx, state.LifecycleContextKey{}, state.Lifecycle{
 		BindChildSession: func(context.Context, string) error {
 			bindCalls++
 			return errors.New("unexpected bind behind held-question guard")
@@ -79,7 +81,7 @@ func TestResumeOfHeldQuestionChildRefusedBeforeBind(t *testing.T) {
 		`SELECT state FROM batch_nodes WHERE node_id = ?1 AND owner_session_id = ?2`,
 		node, env.sessionID).Scan(&state))
 	require.NotEqual(t, "completed", state, "the held node is still live")
-	src, srcOK := coordinatorBatchCutoverFacts(coord).(BatchHeldQuestionSource)
+	src, srcOK := coordinatorBatchCutoverFacts(coord).(batchlife.BatchHeldQuestionSource)
 	require.True(t, srcOK)
 	routes, rerr := src.ActionableHeldQuestions(ctx, env.sessionID)
 	require.NoError(t, rerr)

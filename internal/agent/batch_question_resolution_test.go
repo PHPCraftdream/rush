@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -60,9 +61,9 @@ func (r *recordingQuestionResolver) recorded() []string {
 // end so the scope watcher can close after the answer/cancel.
 func resolutionRig(t *testing.T, tl *questionTestTimeline) (*batchAgentExecution, *batchAgentTestFactory, *recordingQuestionResolver, *batchAgentTestReader) {
 	t.Helper()
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		// Production binds the child session inside the agent run before
 		// any ask (batch_exec_agent.go launches with BindChildSession:
 		// e.bindChildSession); the fixture mirrors that. The resolver guard
@@ -138,20 +139,20 @@ func TestBatchAgentInjectResolvesDespiteCancelledCallerCtx(t *testing.T) {
 
 func TestBatchAgentAskCancelResolvesNotice(t *testing.T) {
 	tl := newQuestionTestTimeline(t)
-	turn := newBatchAgentTestTurn(batchAgentTurnResult{}, nil)
+	turn := newBatchAgentTestTurn(childagent.TurnResult{}, nil)
 	factory := newBatchAgentTestFactory(turn)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	factory.useTurn = func(t2 *batchAgentTestTurn, host batchAgentHost) {
+	factory.useTurn = func(t2 *batchAgentTestTurn, host childagent.Host) {
 		go func() {
 			err := host.BindChildSession(context.Background(), "sess-child-res")
 			if err == nil {
 				_, err = host.Ask(ctx, 1, "why?")
 			}
 			if err == nil {
-				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextResponse("unexpected answer")}, nil)
+				t2.setRes(childagent.TurnResult{Response: fantasy.NewTextResponse("unexpected answer")}, nil)
 			} else {
-				t2.setRes(batchAgentTurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
+				t2.setRes(childagent.TurnResult{Response: fantasy.NewTextErrorResponse(err.Error())}, nil)
 			}
 			t2.finish()
 			t2.exitNow()

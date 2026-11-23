@@ -10,6 +10,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
@@ -370,7 +371,7 @@ func (n nodeBatchCutoverFacts) LiveHeldQuestions(ctx context.Context, owner stri
 // and the await refusal share this fence. A nil writer is conservative:
 // one unknown route plus errBatchFactsUnavailable, mirroring
 // LiveHeldQuestions.
-func (n nodeBatchCutoverFacts) ActionableHeldQuestions(ctx context.Context, owner string) ([]BatchHeldQuestionRoute, error) {
+func (n nodeBatchCutoverFacts) ActionableHeldQuestions(ctx context.Context, owner string) ([]batchlife.BatchHeldQuestionRoute, error) {
 	return batchActionableHeldQuestionRoutes(ctx, n.writer, owner)
 }
 

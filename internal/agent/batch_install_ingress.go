@@ -7,7 +7,10 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -19,14 +22,9 @@ import (
 // until BindCoordinatorBatchRuntime is called (flag-on wiring only); with no
 // binding the construction code takes the old branch untouched.
 
-// BatchLeafRegistry is the exported alias of the pinned policy-leaf registry
-// (toolwrap.PolicyLeafRegistry). Hosts never build one; they only pin resolved
-// builds.
-type BatchLeafRegistry = toolwrap.PolicyLeafRegistry
+type BatchModelControl = installwire.ModelControl[BatchInvocation, modelcontrol.Spec, modelcontrol.Item]
 
-type BatchModelControl = installwire.ModelControl[BatchInvocation, batchModelSpec, batchModelItem]
-
-func NewBatchModelControl(runner batchModelRunner, delivery batchDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions coresession.Service, host, runnerID string, profile *BatchProfile, resolver batchMCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
+func NewBatchModelControl(runner batchModelRunner, delivery batchDelivery, store *session.BatchStore, live *session.BatchLiveReader, sessions coresession.Service, host, runnerID string, profile *BatchProfile, resolver batchinst.MCPCapabilityResolver, leases ...*batchRootLeaseStore) BatchModelControl {
 	return NewInstalledBatchModelControl(runner, delivery, store, live, sessions, host, runnerID, profile, resolver, leases...)
 }
 
@@ -37,11 +35,11 @@ type BatchWorkIngress interface {
 	Invoke(ctx context.Context, inv BatchInvocation, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error)
 	// PinLeafRegistry pins one construction's leaf registry under a fresh
 	// identity (pinned-once: an identity is never replaced).
-	PinLeafRegistry(registry *BatchLeafRegistry) (string, error)
+	PinLeafRegistry(registry *toolwrap.PolicyLeafRegistry) (string, error)
 	// ResolveLeaf resolves one pinned leaf by registry identity and name.
 	ResolveLeaf(registryID, name string) (fantasy.AgentTool, error)
 	// Registry returns the pinned registry of an identity (bridge wiring).
-	Registry(registryID string) (*BatchLeafRegistry, error)
+	Registry(registryID string) (*toolwrap.PolicyLeafRegistry, error)
 }
 
 // batchWorkIngress adapts the unexported R11C runtime plus the M1 registry
@@ -54,8 +52,6 @@ type batchWorkIngress struct {
 	// construction records and the owner set (R12-H2 §1).
 	caps *diskCapabilityManager
 }
-
-var errBatchWorkIngressDeps = installwire.ErrIngressDeps
 
 // NewBatchWorkIngress builds the exported ingress over a dormant runtime.
 func NewBatchWorkIngress(rt *batchRuntime, registries *BatchLeafRegistryStore) (BatchWorkIngress, error) {
@@ -97,7 +93,7 @@ func (b *batchWorkIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf
 	return b.wire().Invoke(ctx, inv, leaf, call)
 }
 
-func (b *batchWorkIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string, error) {
+func (b *batchWorkIngress) PinLeafRegistry(registry *toolwrap.PolicyLeafRegistry) (string, error) {
 	return b.wire().PinLeafRegistry(registry)
 }
 
@@ -105,7 +101,7 @@ func (b *batchWorkIngress) ResolveLeaf(registryID, name string) (fantasy.AgentTo
 	return b.wire().ResolveLeaf(registryID, name)
 }
 
-func (b *batchWorkIngress) Registry(registryID string) (*BatchLeafRegistry, error) {
+func (b *batchWorkIngress) Registry(registryID string) (*toolwrap.PolicyLeafRegistry, error) {
 	return b.wire().Registry(registryID)
 }
 
@@ -132,7 +128,7 @@ type batchCoordinatorBinding struct {
 	coord *coordinator
 }
 
-func (b *batchCoordinatorBinding) pin(registry *BatchLeafRegistry) (string, error) {
+func (b *batchCoordinatorBinding) pin(registry *toolwrap.PolicyLeafRegistry) (string, error) {
 	return b.ingress.PinLeafRegistry(registry)
 }
 
@@ -178,11 +174,6 @@ func coordinatorBatchBindingFor(c *coordinator) *batchCoordinatorBinding {
 // the ONE per-App authority.
 func coordinatorPrivateFetchIngress(c *coordinator) BatchWorkIngress {
 	return installwire.CoordinatorIngress(coordinatorBatchBindingFor(c), func(bind *batchCoordinatorBinding) BatchWorkIngress { return bind.ingress })
-}
-
-// processCoordinatorBatchBinding returns the process-wide binding or nil.
-func processCoordinatorBatchBinding() *batchCoordinatorBinding {
-	return installwire.ProcessBinding(processBatchBinding)
 }
 
 // BindRuntimeIngress attaches the App-owned ingress to one install's
@@ -249,7 +240,7 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	// parent-owned `agent` delegation would silently lose the route and a
 	// no-route child could mint route-ful leaves.
 	inv.QuestionRoute = true
-	if route, ok := batchQuestionRouteFrom(ctx); ok {
+	if route, ok := batchmeta.BatchQuestionRouteFrom(ctx); ok {
 		inv.QuestionRoute = route
 	}
 	return ingress.Invoke(ctx, inv, leaf, call)
@@ -294,13 +285,13 @@ func NewBatchLeafRegistryStore() *BatchLeafRegistryStore {
 	return &BatchLeafRegistryStore{store: installwire.NewRegistryStore(newBatchCredentialEscrow)}
 }
 
-func (s *BatchLeafRegistryStore) Register(registryID string, registry *BatchLeafRegistry) error {
+func (s *BatchLeafRegistryStore) Register(registryID string, registry *toolwrap.PolicyLeafRegistry) error {
 	return s.store.Register(registryID, registry, newBatchCredentialEscrow, func(tool fantasy.AgentTool, escrow *batchCredentialEscrow) fantasy.AgentTool {
 		return &batchCredentialLeaf{AgentTool: tool, escrow: escrow}
 	})
 }
 
-func (s *BatchLeafRegistryStore) Resolve(id string) (*BatchLeafRegistry, error) {
+func (s *BatchLeafRegistryStore) Resolve(id string) (*toolwrap.PolicyLeafRegistry, error) {
 	return s.store.Resolve(id)
 }
 

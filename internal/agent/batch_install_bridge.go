@@ -5,6 +5,9 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -14,13 +17,13 @@ import (
 func coordinatorBridgeFallback(ctx context.Context) cliprovider.ToolBridge {
 	return childagent.CoordinatorBridgeFallback(ctx,
 		func(ctx context.Context) (childagent.BridgeInvocation, bool) {
-			inv, ok := batchBridgeInvocationFrom(ctx)
+			inv, ok := state.BridgeInvocationFrom(ctx)
 			return childagent.BridgeInvocation{
 				RegistryID: inv.RegistryID, AgentDepth: inv.AgentDepth, AgentDepthSet: inv.AgentDepthSet,
 			}, ok
 		},
-		func(inv childagent.BridgeInvocation) (*BatchLeafRegistry, func(*session.RoleContract) childagent.PinnedInvoke, error) {
-			bind := processCoordinatorBatchBinding()
+		func(inv childagent.BridgeInvocation) (*toolwrap.PolicyLeafRegistry, func(*session.RoleContract) childagent.PinnedInvoke, error) {
+			bind := installwire.ProcessBinding(processBatchBinding)
 			if bind == nil {
 				return nil, nil, nil
 			}

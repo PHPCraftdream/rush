@@ -7,19 +7,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
-type (
-	batchMCPCapability         = batchinst.MCPCapability
-	batchMCPCapabilityResolver = batchinst.MCPCapabilityResolver
-	batchRankContext           = batchinst.RankContext
-	batchDependencyEdge        = batchinst.DependencyEdge
-)
-
-var (
-	errBatchControlPlaneLeaf     = batchinst.ErrBatchControlPlaneLeaf
-	errBatchUnknownTool          = batchinst.ErrBatchUnknownTool
-	errBatchMCPCapabilityUnknown = batchinst.ErrBatchMCPCapabilityUnknown
-)
-
 // Temporary integration bridges for callers still owned by package agent.
 func batchAdmissionPolicy() batchinst.AdmissionPolicy {
 	return batchinst.AdmissionPolicy{
@@ -42,22 +29,14 @@ func batchAdmissionProfile(profile *BatchProfile) batchinst.AdmissionProfile {
 	return batchinst.AdmissionProfile{GroupCap: profile.GroupCap, GroupRank: profile.GroupRank}
 }
 
-func classifyBatchLeaf(kind, tool string, mcp batchMCPCapability) (string, int, error) {
-	return batchinst.ClassifyLeaf(kind, tool, mcp, batchAdmissionPolicy())
-}
-
-func batchSpecNodes(specs []jobbatch.Spec) (int, int, []batchinst.LeafRef, error) {
-	return batchinst.SpecNodes(specs, batchAdmissionTool)
-}
-
-func ValidateSubmit(profile *BatchProfile, waiter batchRankContext, edges []batchDependencyEdge, spec jobbatch.Spec, maxDepth, maxNodes int, resolver batchMCPCapabilityResolver) error {
+func ValidateSubmit(profile *BatchProfile, waiter batchinst.RankContext, edges []batchinst.DependencyEdge, spec jobbatch.Spec, maxDepth, maxNodes int, resolver batchinst.MCPCapabilityResolver) error {
 	return batchinst.ValidateSubmit(batchAdmissionProfile(profile), waiter, edges, spec, maxDepth, maxNodes, resolver, batchAdmissionPolicy())
 }
 
-func ValidateAdd(profile *BatchProfile, waiter batchRankContext, edges []batchDependencyEdge, spec jobbatch.Spec, existingDepth, existingNodes, maxDepth, maxNodes int, resolver batchMCPCapabilityResolver) error {
+func ValidateAdd(profile *BatchProfile, waiter batchinst.RankContext, edges []batchinst.DependencyEdge, spec jobbatch.Spec, existingDepth, existingNodes, maxDepth, maxNodes int, resolver batchinst.MCPCapabilityResolver) error {
 	return batchinst.ValidateAdd(batchAdmissionProfile(profile), waiter, edges, spec, existingDepth, existingNodes, maxDepth, maxNodes, resolver, batchAdmissionPolicy())
 }
 
-func validateBatch(profile *BatchProfile, waiter batchRankContext, edges []batchDependencyEdge, specs []jobbatch.Spec, depthBudget, nodeBudget int, resolver batchMCPCapabilityResolver) error {
+func validateBatch(profile *BatchProfile, waiter batchinst.RankContext, edges []batchinst.DependencyEdge, specs []jobbatch.Spec, depthBudget, nodeBudget int, resolver batchinst.MCPCapabilityResolver) error {
 	return batchinst.ValidateBatch(batchAdmissionProfile(profile), waiter, edges, specs, depthBudget, nodeBudget, resolver, batchAdmissionPolicy())
 }

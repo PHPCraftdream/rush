@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func TestDeferredRepinAfterPruneReconstructsIndexEntry(t *testing.T) {
 		}
 	}
 	require.NotNil(t, armed, "the shared build must arm its work tool")
-	ingressTool, ok := armed.(*batchIngressTool)
+	ingressTool, ok := armed.(*toolwrap.BatchIngressTool)
 	require.True(t, ok, "the armed tool must be a batchIngressTool")
 	require.NotNil(t, ingressTool.Bind, "the deferred build must carry the binding")
 
@@ -121,7 +122,7 @@ type pinRecordingIngress struct {
 	ids *[]string
 }
 
-func (r pinRecordingIngress) PinLeafRegistry(registry *BatchLeafRegistry) (string, error) {
+func (r pinRecordingIngress) PinLeafRegistry(registry *toolwrap.PolicyLeafRegistry) (string, error) {
 	id, err := r.BatchWorkIngress.PinLeafRegistry(registry)
 	if err == nil {
 		r.mu.Lock()

@@ -35,11 +35,11 @@ func newQueuedCallScopeFixture(t *testing.T) (*DiskProviderRegistry, *sessionAge
 
 // pinnedIngressTool models a PINNED batch tool: a zero batchIngressTool with
 // a populated inv identity (bind == nil is the pinned build's marker).
-func pinnedIngressTool(registryID string) *batchIngressTool {
+func pinnedIngressTool(registryID string) *toolwrap.BatchIngressTool {
 	// The embedded AgentTool carries a real Info(): the real-turn test hands
 	// this tool to a live Run, whose step preparation reads Info().Name
 	// (stepToolCapabilities); a nil embedded interface would panic there.
-	return &batchIngressTool{AgentTool: fantasy.NewAgentTool("pinned_probe", "pinned ingress probe",
+	return &toolwrap.BatchIngressTool{AgentTool: fantasy.NewAgentTool("pinned_probe", "pinned ingress probe",
 		func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.ToolResponse{}, nil
 		}), Inv: batchInvocationSpec{BatchInvocation{
@@ -271,7 +271,7 @@ func TestQueuedCallScope_NoRetentionGuards(t *testing.T) {
 	// A separate agent with no bound capability manager (no-caps case).
 	bare := &sessionAgent{}
 
-	deferredTool := &batchIngressTool{Bind: &toolwrap.DeferredBuild{}}
+	deferredTool := &toolwrap.BatchIngressTool{Bind: &toolwrap.DeferredBuild{}}
 
 	cases := []struct {
 		name string

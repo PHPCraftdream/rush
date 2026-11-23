@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -58,7 +59,7 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 		payload, err := json.Marshal(batchLeafPayload{Tool: leaf.name, ToolCallID: "detached-child", SessionID: child, Input: json.RawMessage(`{}`), RegistryID: env.registryID})
 		require.NoError(t, err)
 		root := batchRootID()
-		_, err = env.install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchKindGeneric, Payload: payload}}, Ref: "detached-child"})
+		_, err = env.install.RunnerHandle.Submit(ctx, jobbatch.SubmitRequest{Root: root, Spec: jobbatch.Spec{Task: &jobbatch.TaskSpec{Kind: batchdispatch.KindGeneric, Payload: payload}}, Ref: "detached-child"})
 		require.NoError(t, err)
 		rootID := string(root)
 		won, err := env.install.Elector.ElectStarted(ctx, child, root)

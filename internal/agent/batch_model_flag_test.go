@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +54,7 @@ type modelControlInventory struct {
 	tools []fantasy.AgentTool
 }
 
-func (m modelControlInventory) InstallBatchModelControls(*BatchLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error) {
+func (m modelControlInventory) InstallBatchModelControls(*toolwrap.PolicyLeafRegistry, BatchInvocation) ([]fantasy.AgentTool, error) {
 	return m.tools, nil
 }
 
@@ -60,7 +62,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	c := newBatchRuntimeCoordinator()
 	controls := make([]fantasy.AgentTool, 0, 5)
 	for _, name := range []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"} {
-		controls = append(controls, fantasy.NewAgentTool(name, "control", func(context.Context, batchModelParams, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		controls = append(controls, fantasy.NewAgentTool(name, "control", func(context.Context, modelcontrol.Params, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.NewTextResponse("ok"), nil
 		}))
 	}
@@ -71,7 +73,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	granted := batchControlAvailability(tools, allowedBatchReadControls)
 	for _, name := range granted {
 		if name != "await_tasks" {
-			tools = append(tools, newBatchControlPlaceholder(name))
+			tools = append(tools, modelcontrol.NewPlaceholder(name))
 		}
 	}
 	// Round-2 construction ownership: a build with trusted call state runs

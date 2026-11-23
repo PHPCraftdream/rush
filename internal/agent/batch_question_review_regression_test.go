@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -26,7 +28,7 @@ func TestQuestionRouteWakeWithoutDriverUsesDurableDelegationFacts(t *testing.T) 
 	require.False(t, call.BatchQuestion.Route)
 	require.False(t, call.BatchQuestion.BindingOK)
 	ctx := armBatchQuestionTurnContext(t.Context(), call)
-	route, known := batchQuestionRouteFrom(ctx)
+	route, known := batchmeta.BatchQuestionRouteFrom(ctx)
 	require.True(t, known)
 	require.False(t, route)
 }
@@ -69,18 +71,18 @@ func TestUpdateModelsDoesNotPublishOneChildQuestionRoute(t *testing.T) {
 			t.Logf("global question refresh: tool_publications=%v model_publications=%d", published, models)
 		}
 	})
-	ctx := withBatchQuestionRoute(t.Context(), false)
-	ctx = withBatchAgentQuestionContext(ctx, 2)
+	ctx := batchmeta.WithBatchQuestionRoute(t.Context(), false)
+	ctx = state.WithQuestionContext(ctx, 2)
 	ctx = withBatchAgentQuestionBinding(ctx, batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) {
 		return nil, nil
 	}})
-	ctx = withBatchAgentLifecycle(ctx, batchAgentLifecycle{})
+	ctx = state.WithLifecycle(ctx, state.Lifecycle{})
 	require.NoError(t, coord.UpdateModels(ctx))
 	published, _ := recorder.snapshot()
 	require.Len(t, published, 1)
 	require.Contains(t, published[0], tools.AskQuestionToolName,
 		"global refresh must preserve ordinary sessions' question tool")
-	route, known := batchQuestionRouteFrom(ctx)
+	route, known := batchmeta.BatchQuestionRouteFrom(ctx)
 	require.True(t, known)
 	require.False(t, route, "the caller's own deny marker must remain unchanged")
 }
@@ -88,19 +90,19 @@ func TestUpdateModelsDoesNotPublishOneChildQuestionRoute(t *testing.T) {
 func TestGlobalQuestionContextDropsBindingsWithoutChangingCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	ctx = withBatchQuestionRoute(ctx, false)
-	ctx = withBatchAgentQuestionContext(ctx, 2)
+	ctx = batchmeta.WithBatchQuestionRoute(ctx, false)
+	ctx = state.WithQuestionContext(ctx, 2)
 	ctx = withBatchAgentQuestionBinding(ctx, batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) {
 		return nil, nil
 	}})
-	ctx = withBatchAgentLifecycle(ctx, batchAgentLifecycle{})
+	ctx = state.WithLifecycle(ctx, state.Lifecycle{})
 	masked := withoutCallOptions(ctx)
-	_, known := batchQuestionRouteFrom(masked)
+	_, known := batchmeta.BatchQuestionRouteFrom(masked)
 	require.False(t, known)
 	_, bound := batchAgentQuestionBindingFrom(masked)
 	require.False(t, bound)
-	require.Zero(t, batchAgentQuestionDepth(masked))
-	require.Nil(t, masked.Value(batchAgentLifecycleContextKey{}))
+	require.Zero(t, state.QuestionDepth(masked))
+	require.Nil(t, masked.Value(state.LifecycleContextKey{}))
 	cancel()
 	require.ErrorIs(t, masked.Err(), context.Canceled)
 }

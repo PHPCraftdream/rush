@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -85,7 +86,7 @@ func TestBatchTerminalOutputHandoffBeforeReport(t *testing.T) {
 	const root jobbatch.ID = "handoff-root"
 	retained := make(map[jobbatch.ID][]terminalHandoffRetention)
 	store := cache.leaf().PutForContract
-	cache.retain = func(id, root jobbatch.ID, chunk jobbatch.OutputChunk, contract batchOutputCursorContract) {
+	cache.retain = func(id, root jobbatch.ID, chunk jobbatch.OutputChunk, contract batchmeta.OutputCursorContract) {
 		store(id, root, chunk, contract)
 		retained[id] = append(retained[id], terminalHandoffRetention{root: root, data: string(chunk.Data)})
 	}
@@ -248,7 +249,7 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 		{
 			name: "generic", id: "cap.generic", cursors: batchParityCursors(14),
 			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
-				e := &batchGenericExecution{cache: cache, nodeID: "cap.generic", rootID: batchOutputRoot("cap.generic"), cancel: func() {}, done: make(chan struct{})}
+				e := &batchGenericExecution{cache: cache, nodeID: "cap.generic", rootID: batchmeta.OutputRoot("cap.generic"), cancel: func() {}, done: make(chan struct{})}
 				cursors := batchParityCursors(14)
 				chunks := map[uint64]jobbatch.OutputChunk{}
 				e.run(ctx, terminalHandoffLeaf{content: "generic-result"}, fantasy.ToolCall{}, func(r jobbatch.Result) {
@@ -266,7 +267,7 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 		{
 			name: "agent", id: "cap.agent", cursors: batchParityCursors(13),
 			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
-				e := &batchAgentExecution{cache: cache, nodeID: "cap.agent", rootID: batchOutputRoot("cap.agent"), finished: make(chan struct{}), driverDone: make(chan struct{}), watcherDone: make(chan struct{}), cancel: func() {}}
+				e := &batchAgentExecution{cache: cache, nodeID: "cap.agent", rootID: batchmeta.OutputRoot("cap.agent"), finished: make(chan struct{}), driverDone: make(chan struct{}), watcherDone: make(chan struct{}), cancel: func() {}}
 				e.scope = newBatchAgentScope()
 				close(e.driverDone)
 				close(e.watcherDone)
@@ -289,7 +290,7 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
 				h := &captureShellHandle{done: make(chan struct{}), content: []byte("shell-bytes")}
 				close(h.done)
-				e := &batchShellExecution{cache: cache, nodeID: "cap.shell", rootID: batchOutputRoot("cap.shell"), handle: h, cancel: func() {}, finished: make(chan struct{})}
+				e := &batchShellExecution{cache: cache, nodeID: "cap.shell", rootID: batchmeta.OutputRoot("cap.shell"), handle: h, cancel: func() {}, finished: make(chan struct{})}
 				cursors := batchParityCursors(11)
 				chunks := map[uint64]jobbatch.OutputChunk{}
 				e.run(ctx, terminalHandoffLeaf{content: "response-not-process-output"}, fantasy.ToolCall{}, func(r jobbatch.Result) {
@@ -309,7 +310,7 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
 				p := &captureArgvHandle{done: make(chan struct{}), content: []byte("argv-bytes")}
 				close(p.done)
-				e := &batchArgvExecution{cache: cache, nodeID: "cap.argv", rootID: batchOutputRoot("cap.argv"), process: p, changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
+				e := &batchArgvExecution{cache: cache, nodeID: "cap.argv", rootID: batchmeta.OutputRoot("cap.argv"), process: p, changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
 				leaf := &batchGenericTestTool{name: tools.RunCommandToolName, run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 					return fantasy.NewTextResponse("response-not-process-output"), nil
 				}}
@@ -336,7 +337,7 @@ func TestBatchTerminalCaptureLiveCacheParity(t *testing.T) {
 			// row above.
 			name: "argv-no-process", id: "cap.argvnopro", cursors: batchParityCursors(0),
 			run: func(t *testing.T, report func(jobbatch.Result)) map[uint64]jobbatch.OutputChunk {
-				e := &batchArgvExecution{cache: cache, nodeID: "cap.argvnopro", rootID: batchOutputRoot("cap.argvnopro"), changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
+				e := &batchArgvExecution{cache: cache, nodeID: "cap.argvnopro", rootID: batchmeta.OutputRoot("cap.argvnopro"), changed: make(chan struct{}), finished: make(chan struct{}), cancel: func() {}}
 				leaf := &batchGenericTestTool{name: tools.RunCommandToolName, run: func(context.Context, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 					return fantasy.NewTextResponse("rejected-content"), nil
 				}}

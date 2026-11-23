@@ -6,16 +6,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
 func TestFinalizationSettleNilSettlerFailsClosed(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.Debt = 1 })
+	f.facts.set(func(x *gate.Facts) { x.Debt = 1 })
 	hook := f.hook(func(d *FinalizationWaitDeps) { d.Settler = nil })
 	err := hook(t.Context(), f.ts)
-	require.ErrorIs(t, err, ErrFinalizationSettlerUnavailable)
+	require.ErrorIs(t, err, finalize.ErrFinalizationSettlerUnavailable)
 	record, err := f.env.scope.Store.Snapshot(t.Context(), f.env.scope.Identity)
 	require.NoError(t, err)
 	require.Equal(t, "executing", record.Phase, "an unsettled debt must not seal")
@@ -23,9 +25,9 @@ func TestFinalizationSettleNilSettlerFailsClosed(t *testing.T) {
 
 func TestFinalizationSettleReceivesOwnerSessionID(t *testing.T) {
 	f := newFinalizationWaitFixture(t)
-	f.facts.set(func(x *finalizationFacts) { x.Debt = 1 })
+	f.facts.set(func(x *gate.Facts) { x.Debt = 1 })
 	settler := &finalizationSettlerStub{onCall: func() {
-		f.facts.set(func(x *finalizationFacts) { x.Debt = 0 })
+		f.facts.set(func(x *gate.Facts) { x.Debt = 0 })
 	}}
 	hook := f.hook(func(d *FinalizationWaitDeps) {
 		d.Compose = f.composeStub(t)

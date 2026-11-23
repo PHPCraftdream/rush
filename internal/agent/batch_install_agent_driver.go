@@ -6,7 +6,13 @@ import (
 	"fmt"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 )
 
@@ -28,7 +34,7 @@ type batchCoordinatorAgentRuns struct{}
 // the RECORDED tool name (req.Tool) — an "agentic_fetch" payload resolves
 // its own pinned leaf and names the call agentic_fetch; an empty name fails
 // closed.
-func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost) (batchAgentTurn, error) {
+func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAgentRunRequest, host childagent.Host) (childagent.Turn, error) {
 	// R12-H2 P1-4: resolve the pinned leaf through the App-owned ingress
 	// carried on the request (the invocation's own authority). The
 	// process-global binding is only a fallback for flag-off-adjacent
@@ -39,7 +45,7 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 		if req.DiskBindingID != "" {
 			return nil, ErrDiskProviderUnavailable
 		}
-		if bind := processCoordinatorBatchBinding(); bind != nil {
+		if bind := installwire.ProcessBinding(processBatchBinding); bind != nil {
 			ingress = bind.ingress
 		}
 	}
@@ -51,7 +57,7 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	}
 	if req.Tool == "" {
 		// P1-3: fail closed rather than silently dispatching "agent".
-		return nil, fmt.Errorf("%w: batch agent incarnation without a recorded tool name", errBatchUnknownTool)
+		return nil, fmt.Errorf("%w: batch agent incarnation without a recorded tool name", batchinst.ErrBatchUnknownTool)
 	}
 	leaf, err := ingress.ResolveLeaf(req.RegistryID, req.Tool)
 	if err != nil {
@@ -62,7 +68,7 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 			credentialEscrow() *batchCredentialEscrow
 		})
 		if !ok {
-			return nil, errBatchCredentialEscrowMissing
+			return nil, batchadapter.ErrCredentialEscrowMissing
 		}
 		creds, releaseCredentials, err := credentialLeaf.credentialEscrow().consume(batchCredentialKey{
 			registryID: req.RegistryID, sessionID: req.SessionID, messageID: req.MessageID,
@@ -76,15 +82,15 @@ func (batchCoordinatorAgentRuns) StartAgentTurn(ctx context.Context, req batchAg
 	return startBatchAgentTurn(ctx, req, host, leaf, nil, func() {})
 }
 
-func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host batchAgentHost, leaf fantasy.AgentTool, creds *CredentialSet, releaseCredentials func()) (batchAgentTurn, error) {
-	if req.DiskBindingID != "" && batchDiskProviderFrom(ctx) == nil {
+func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host childagent.Host, leaf fantasy.AgentTool, creds *CredentialSet, releaseCredentials func()) (childagent.Turn, error) {
+	if req.DiskBindingID != "" && batchdispatch.DiskProviderFrom(ctx) == nil {
 		releaseCredentials()
 		return nil, ErrDiskProviderUnavailable
 	}
 	if req.AgentDepth < 0 || req.AgentDepth > 32 {
 		return nil, errors.New("batch agent depth must be between 0 and 32")
 	}
-	depth := batchAgentQuestionDepth(ctx) + 1
+	depth := state.QuestionDepth(ctx) + 1
 	if depth <= 0 {
 		depth = 1
 	}
@@ -98,24 +104,24 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 	if req.CallCredentials {
 		runCtx = withCallCredentials(runCtx, creds)
 	}
-	runCtx = withBatchAgentQuestionContext(runCtx, depth)
+	runCtx = state.WithQuestionContext(runCtx, depth)
 	// The question marker travels on EVERY batch incarnation's run context
 	// (both values), so the per-call child toolset shaping can tell a
 	// no-route incarnation from a non-batch one. The held-answer bridge
 	// itself is armed ONLY for route-ful incarnations: an unattended
 	// batch child never gets a working-looking ask.
-	runCtx = withBatchQuestionRoute(runCtx, req.QuestionRoute)
+	runCtx = batchmeta.WithBatchQuestionRoute(runCtx, req.QuestionRoute)
 	if req.QuestionRoute {
 		runCtx = withBatchAgentQuestionBinding(runCtx, batchAgentQuestionBinding{Ask: host.Ask})
 	}
 	tracked := childagent.TrackChild(host, req.ChildSessionID != "")
-	lifecycle := batchAgentLifecycle{NoChildSelected: tracked.NoChildSelected, BindChildSession: tracked.BindChildSession}
-	runCtx = withBatchAgentLifecycle(runCtx, lifecycle)
+	lifecycle := state.Lifecycle{NoChildSelected: tracked.NoChildSelected, BindChildSession: tracked.BindChildSession}
+	runCtx = state.WithLifecycle(runCtx, lifecycle)
 	runCtx = context.WithValue(runCtx, tools.SessionIDContextKey, req.SessionID)
 	runCtx = context.WithValue(runCtx, tools.MessageIDContextKey, req.MessageID)
 	// P1-4: stamp the TRUSTED enclosing invocation so the CLI bridge binds
 	// to THIS invocation's pinned registry (never the latest one).
-	runCtx = withBatchBridgeInvocation(runCtx, batchBridgeInvocation{RegistryID: req.RegistryID, MessageID: req.MessageID, AgentDepth: req.AgentDepth, AgentDepthSet: true})
+	runCtx = state.WithBridgeInvocation(runCtx, state.BridgeInvocation{RegistryID: req.RegistryID, MessageID: req.MessageID, AgentDepth: req.AgentDepth, AgentDepthSet: true})
 	callOptions, err := WithAgentDepth(runCtx, req.AgentDepth)
 	if err != nil {
 		cancel()
@@ -126,7 +132,7 @@ func startBatchAgentTurn(ctx context.Context, req batchAgentRunRequest, host bat
 	var childScope *buildResourceScope
 	var provider tools.DiskProvider
 	if req.DiskBindingID != "" {
-		provider = batchDiskProviderFrom(ctx)
+		provider = batchdispatch.DiskProviderFrom(ctx)
 		if provider == nil {
 			cancel()
 			releaseCredentials()

@@ -7,6 +7,8 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
@@ -20,10 +22,10 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.
 		return nil, err
 	}
 	if p.Tool != tools.BashToolName {
-		return nil, newBatchStartError(batchCodeBadPayload, errors.New("shell kind requires bash"))
+		return nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, errors.New("shell kind requires bash"))
 	}
 	if p.Policy != nil && p.Policy.RoleContract != nil && !roleContractAllowsTool(p.Policy.RoleContract, p.Tool) {
-		return nil, newBatchStartError(batchCodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
+		return nil, batchdispatch.NewStartError(batchdispatch.CodeNoLeaf, fmt.Errorf("role tool denied: %s", p.Tool))
 	}
 	leaf, err := env.resolveLeaf(p)
 	if err != nil {
@@ -42,18 +44,18 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.
 	if p.SelectedRoleContract != nil {
 		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)
 	}
-	e := newRetainedShell(cancel, env.OutputCache, l.ID, batchOutputRoot(l.ID))
+	e := newRetainedShell(cancel, env.OutputCache, l.ID, batchmeta.OutputRoot(l.ID))
 	runCtx = e.WithShellHandle(runCtx)
 	go e.Run(runCtx, leaf, fantasy.ToolCall{ID: p.ToolCallID, Name: p.Tool, Input: string(p.Input)}, report)
 	return e, nil
 }
 
 func newRetainedShell(cancel context.CancelFunc, cache *batchOutputCache, id, root jobbatch.ID) *batchexec.ShellExecution {
-	output := batchExecutionOutput(cache, id, root, batchOutputCursorClamp)
+	output := batchExecutionOutput(cache, id, root, batchmeta.OutputCursorClamp)
 	var capture func(jobbatch.OutputReader)
 	if cache != nil {
 		capture = func(reader jobbatch.OutputReader) {
-			_ = batchOutputCapture(cache, id, root, reader, batchOutputCursorClamp)
+			_ = batchOutputCapture(cache, id, root, reader, batchmeta.OutputCursorClamp)
 		}
 	}
 	return batchexec.NewShell(cancel, output, capture)

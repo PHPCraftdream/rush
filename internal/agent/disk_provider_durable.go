@@ -7,9 +7,9 @@ import (
 )
 
 var (
-	ErrDiskProviderNotDurable       = diskport.ErrDiskProviderNotDurable
-	ErrCredentialBindingUnavailable = diskport.ErrCredentialBindingUnavailable
-	ErrCredentialSetNotDurable      = diskport.ErrCredentialSetNotDurable
+	ErrDiskProviderNotDurable = diskport.ErrDiskProviderNotDurable
+
+	ErrCredentialSetNotDurable = diskport.ErrCredentialSetNotDurable
 )
 
 // ErrDiskProviderUnavailable is returned when batch work requires a
