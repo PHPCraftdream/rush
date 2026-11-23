@@ -10,7 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +29,7 @@ func batchShellResult(t *testing.T, ch <-chan jobbatch.Result) jobbatch.Result {
 type batchShellHeld struct {
 	done      chan struct{}
 	observed  chan struct{}
-	output    shell.ExecutionOutput
+	output    shellbg.ExecutionOutput
 	disposals int
 	stopErr   error
 	entered   chan struct{}
@@ -51,7 +51,7 @@ func (h *batchShellHeld) Stop(context.Context) error {
 	return h.stopErr
 }
 func (h *batchShellHeld) GetOutput() (string, string, bool, error) { return "", "", false, nil }
-func (h *batchShellHeld) ReadOutput(_ context.Context, cursor uint64) (shell.ExecutionOutput, error) {
+func (h *batchShellHeld) ReadOutput(_ context.Context, cursor uint64) (shellbg.ExecutionOutput, error) {
 	c := h.output
 	if cursor > c.Next {
 		cursor = c.Next
@@ -66,7 +66,7 @@ func (h *batchShellHeld) ReadOutput(_ context.Context, cursor uint64) (shell.Exe
 	}
 	c.Data = append([]byte(nil), c.Data[offset:]...)
 	c.Truncated = c.Truncated || cursor < c.Oldest
-	return shell.ExecutionOutput{Data: c.Data, Oldest: c.Oldest, Next: c.Next, EOF: c.EOF, Truncated: c.Truncated}, nil
+	return shellbg.ExecutionOutput{Data: c.Data, Oldest: c.Oldest, Next: c.Next, EOF: c.EOF, Truncated: c.Truncated}, nil
 }
 func (h *batchShellHeld) Dispose(context.Context) error { h.disposals++; return nil }
 
@@ -77,7 +77,7 @@ func TestBatchShellStopFeedbackDoesNotSettle(t *testing.T) {
 		e := NewShell(cancel, Output{Result: batchdispatch.ResultFromResponse}, nil)
 		e.Publish(h)
 		require.ErrorIs(t, e.Stop(t.Context()), stopErr)
-		require.ErrorIs(t, e.Dispose(t.Context()), shell.ErrExecutionNotDone)
+		require.ErrorIs(t, e.Dispose(t.Context()), shellbg.ErrExecutionNotDone)
 		select {
 		case <-e.finished:
 			t.Fatal("Stop settled")
@@ -151,7 +151,7 @@ func TestBatchShellEarlyStopAndStreamFields(t *testing.T) {
 	e := NewShell(cancel, Output{Result: batchdispatch.ResultFromResponse}, nil)
 	require.NoError(t, e.Stop(t.Context()))
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
-	require.ErrorIs(t, e.Dispose(t.Context()), shell.ErrExecutionNotDone)
+	require.ErrorIs(t, e.Dispose(t.Context()), shellbg.ErrExecutionNotDone)
 	require.NotNil(t, e.published)
 	select {
 	case <-e.published:
@@ -161,7 +161,7 @@ func TestBatchShellEarlyStopAndStreamFields(t *testing.T) {
 	_, err := e.ReadOutput(t.Context(), 0)
 	require.ErrorIs(t, err, jobbatch.ErrNotStarted)
 
-	h := &batchShellHeld{output: shell.ExecutionOutput{Data: []byte("tail"), Oldest: 12, Next: 16, Truncated: true, EOF: false}}
+	h := &batchShellHeld{output: shellbg.ExecutionOutput{Data: []byte("tail"), Oldest: 12, Next: 16, Truncated: true, EOF: false}}
 	e.Publish(h)
 	select {
 	case _, ok := <-e.published:

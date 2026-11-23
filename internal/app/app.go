@@ -19,7 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
@@ -105,7 +105,7 @@ type App struct {
 	History                history.Service
 	Permissions            permission.Service
 	FileTracker            filetracker.Service
-	BackgroundShellManager *shell.BackgroundShellManager
+	BackgroundShellManager *shellbg.BackgroundShellManager
 
 	AgentCoordinator agent.Coordinator
 
@@ -410,7 +410,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 		History:                files,
 		Permissions:            permission.NewPermissionService(ctx, store.WorkingDir(), skipPermissionsRequests, allowedTools, q),
 		FileTracker:            filetracker.NewService(q),
-		BackgroundShellManager: shell.NewBackgroundShellManager(),
+		BackgroundShellManager: shellbg.NewBackgroundShellManager(),
 
 		DB:      func() *sql.DB { return conn },
 		readDB:  readConn,

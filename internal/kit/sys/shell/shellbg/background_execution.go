@@ -1,10 +1,13 @@
-package shell
+package shellbg
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shexec"
 )
 
 var (
@@ -26,12 +29,12 @@ type BackgroundExecution struct {
 
 // StartRetainedOwned starts opt-in retained execution. Legacy launches keep
 // their existing output retention and manager-control behavior.
-func (m *BackgroundShellManager) StartRetainedOwned(ctx context.Context, sessionID, workingDir string, blockFuncs []BlockFunc, command, description string) (*BackgroundExecution, error) {
+func (m *BackgroundShellManager) StartRetainedOwned(ctx context.Context, sessionID, workingDir string, blockFuncs []shell.BlockFunc, command, description string) (*BackgroundExecution, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID is required for background shell ownership")
 	}
 	physical := &retainedStops{entries: make(map[*retainedProcess]struct{}), output: newRetainedOutput(maxStreamBufferBytes)}
-	ctx = context.WithValue(ctx, retainedStopKey{}, physical)
+	ctx = shexec.WithRetainedLauncher(ctx, physical)
 	bs, err := m.startWithRetention(ctx, sessionID, workingDir, blockFuncs, command, description, true)
 	if err != nil {
 		return nil, err

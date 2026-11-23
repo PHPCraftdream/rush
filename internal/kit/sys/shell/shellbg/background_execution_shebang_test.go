@@ -1,10 +1,11 @@
-package shell
+package shellbg
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -12,8 +13,22 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/procinfo"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/stretchr/testify/require"
 )
+
+// writeScript is a small helper that drops a file with the given contents
+// and executable mode into dir. Tests that need exec semantics rely on the
+// 0o755 mode on Unix; Windows ignores file modes but doesn't need them
+// because dispatch decides what to do from file contents, not permissions.
+func writeScript(t *testing.T, dir, name, contents string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return filepath.ToSlash(path)
+}
 
 func TestRetainedShebangHelper(t *testing.T) {
 	if os.Getenv("RUSH_SHEBANG_RETAINED_HELPER") != "1" {
@@ -26,7 +41,7 @@ func TestRetainedShebangHelper(t *testing.T) {
 
 func retainedShebangReady(t *testing.T) (*BackgroundExecution, int) {
 	t.Helper()
-	if _, err := resolveInterpreter("bash"); err != nil {
+	if _, err := shell.LookPathSkippingWSL("bash"); err != nil {
 		t.Skipf("bash unavailable: %v", err)
 	}
 	self, err := os.Executable()
@@ -121,7 +136,7 @@ func TestRetainedShebangPhysicalKillError(t *testing.T) {
 }
 
 func TestRetainedShebangNonzeroExit(t *testing.T) {
-	if _, err := resolveInterpreter("bash"); err != nil {
+	if _, err := shell.LookPathSkippingWSL("bash"); err != nil {
 		t.Skipf("bash unavailable: %v", err)
 	}
 	dir := t.TempDir()
@@ -137,7 +152,7 @@ func TestRetainedShebangNonzeroExit(t *testing.T) {
 		t.Fatal("shebang exit did not complete")
 	}
 	_, _, _, err = e.GetOutput()
-	require.Equal(t, 7, ExitCode(err))
+	require.Equal(t, 7, shell.ExitCode(err))
 	require.NoError(t, e.Dispose(context.Background()))
 	manager.Close(context.Background())
 }

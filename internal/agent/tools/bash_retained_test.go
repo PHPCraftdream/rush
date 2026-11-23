@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/stretchr/testify/require"
 )
 
 func TestBashRetainedLaunchSeam(t *testing.T) {
-	manager := shell.NewBackgroundShellManager()
+	manager := shellbg.NewBackgroundShellManager()
 	execution, err := startRetainedBashShell(t.Context(), manager, "owner", t.TempDir(), BashParams{Command: "echo retained-seam"})
 	require.NoError(t, err)
 	select {

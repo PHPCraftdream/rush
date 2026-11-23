@@ -14,7 +14,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -72,7 +72,7 @@ func TestBatchDenyExecPolicyHelper(t *testing.T) {
 	}
 	perms := &denyExecBatchPerms{allow: true}
 	wd := t.TempDir()
-	bash := tools.NewBashTool(perms, wd, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
+	bash := tools.NewBashTool(perms, wd, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shellbg.NewBackgroundShellManager())
 	argv := tools.NewRunCommandTool(perms, wd)
 	registry := newPolicyToolBuild([]fantasy.AgentTool{bash, argv}).Leaves
 	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}

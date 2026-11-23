@@ -7,7 +7,7 @@
 //     `LastOutputAt` on *BackgroundShell (later-of-both-streams logic).
 //   - TestLastWriteAt_ConcurrentReadWrite:
 //     same atomic Store/Load pair — proves no data race under -race.
-package shell
+package shellbg
 
 import (
 	"sync"

@@ -14,16 +14,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
 // finishedBackgroundShell runs a trivial real background shell owned by
 // sessionID to completion.
-func finishedBackgroundShell(t *testing.T, workDir, sessionID string) *shell.BackgroundShell {
+func finishedBackgroundShell(t *testing.T, workDir, sessionID string) *shellbg.BackgroundShell {
 	t.Helper()
-	mgr := shell.NewBackgroundShellManager()
+	mgr := shellbg.NewBackgroundShellManager()
 	sh, err := mgr.StartOwned(t.Context(), sessionID, workDir, nil, "echo done", "cap test")
 	require.NoError(t, err)
 	require.True(t, sh.WaitContext(t.Context()))

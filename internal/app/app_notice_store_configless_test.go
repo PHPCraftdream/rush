@@ -8,7 +8,7 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
 
 type noticeConfiglessDiag struct {
@@ -122,7 +122,7 @@ func TestInitCoderAgent_PropagatesCoordinatorConstructionError(t *testing.T) {
 	isolateAppNewTestEnv(t)
 
 	app := newNoticeConfiglessApp(t, false)
-	app.BackgroundShellManager = shell.NewBackgroundShellManager()
+	app.BackgroundShellManager = shellbg.NewBackgroundShellManager()
 	t.Cleanup(func() { cleanupNoticeConfiglessApp(app) })
 	diag.configured = app.config.Config().IsConfigured()
 	diag.coordinator = app.AgentCoordinator != nil

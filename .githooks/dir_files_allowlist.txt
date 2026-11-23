@@ -42,7 +42,6 @@ internal/app 265
 # pre-move value was 201 (31 production + 170 test files), and 197 is that exactly.
 internal/config 197
 # internal/config/discover 27 -> 19: same D2-3 tail merge (5 production + 14 test files); row retired.
-internal/kit/sys/shell 46
 # internal/serve/server/server is born over the 21-file limit: the composer moves down with the 133
 # cross-cutting test files that lanes L5/L6/L7 have not re-homed yet (5 production files + 133 tests = 138).
 # The count falls as those tests move to their subject packages; no other change in this lane.
