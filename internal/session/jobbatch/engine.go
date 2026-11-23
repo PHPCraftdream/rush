@@ -408,3 +408,404 @@ func (e *Engine) validate(ev Event) ([]*treeNode, *treeNode, error) {
 	}
 	return nil, n, nil
 }
+
+type treeNode struct {
+	view               NodeView
+	task               *TaskSpec
+	parent             *treeNode
+	children           []*treeNode
+	depth              int
+	authorized         uint64
+	accepted, released bool
+}
+
+func (e *Engine) build(s Spec, id ID, parent *treeNode, ordinal, depth int, count *int) (*treeNode, error) {
+	bad := func() (*treeNode, error) { return nil, fmt.Errorf("%w: subtree", ErrInvalidSpec) }
+	*count++
+	if depth > e.limits.MaxDepth || *count > e.limits.MaxNodes || (s.Task == nil) == (s.Batch == nil) {
+		return bad()
+	}
+	n := &treeNode{parent: parent, depth: depth, view: NodeView{ID: id, Root: id, Ordinal: ordinal, State: StatePending}}
+	if parent != nil {
+		n.view.Parent = parent.view.ID
+		n.view.Root = parent.view.Root
+	}
+	if s.Task != nil {
+		if s.Task.Kind == "" || s.Task.Timeout < 0 {
+			return bad()
+		}
+		task := *s.Task
+		n.task = &task
+		n.view.Kind = KindTask
+		n.view.Group = task.Group
+		n.view.Control = ControlNone
+		return n, nil
+	}
+	b := *s.Batch
+	if b.Mode != ModeParallel && b.Mode != ModeSequential {
+		return bad()
+	}
+	if b.Notify == "" {
+		b.Notify = NotifyAll
+	}
+	if b.Notify != NotifyAll && b.Notify != NotifyEach {
+		return bad()
+	}
+	if b.MaxParallel < 0 {
+		return bad()
+	}
+	if b.Mode == ModeParallel {
+		if b.OnFail != "" {
+			return nil, fmt.Errorf("%w: on_fail is only valid for sequential batches", ErrInvalidSpec)
+		}
+	} else {
+		if b.OnFail == "" {
+			b.OnFail = OnFailStop
+		}
+		if b.OnFail != OnFailStop && b.OnFail != OnFailContinue || b.MaxParallel > 1 {
+			return bad()
+		}
+	}
+	n.view.Kind = KindBatch
+	n.view.Mode = b.Mode
+	n.view.OnFail = b.OnFail
+	n.view.Notify = b.Notify
+	n.view.MaxParallel = b.MaxParallel
+	for i, child := range b.Items {
+		c, err := e.build(child, ID(fmt.Sprintf("%s.%d", id, i+1)), n, i+1, depth+1, count)
+		if err != nil {
+			return nil, err
+		}
+		n.children = append(n.children, c)
+	}
+	return n, nil
+}
+
+func (e *Engine) install(n *treeNode, t *coreTransition) {
+	e.nodes[n.view.ID] = n
+	t.created[n.view.ID] = true
+	t.change(n)
+	for _, c := range n.children {
+		e.install(c, t)
+	}
+}
+
+func (e *Engine) remove(n *treeNode) {
+	delete(e.nodes, n.view.ID)
+	for _, c := range n.children {
+		e.remove(c)
+	}
+	n.task = nil
+	n.children = nil
+}
+
+func (e *Engine) nodeCount(n *treeNode) int {
+	total := 1
+	for _, c := range n.children {
+		total += e.nodeCount(c)
+	}
+	return total
+}
+
+func causeState(c Cause) State {
+	switch c {
+	case CauseStop:
+		return StateCancelled
+	case CauseTimeout:
+		return StateTimedOut
+	case CauseHostClosing:
+		return StateInterrupted
+	case CauseStopOnFail:
+		return StateSkipped
+	}
+	return StateFailed
+}
+
+func (e *Engine) terminal(n *treeNode, s State, t *coreTransition) {
+	n.view.State = s
+	if n.task != nil {
+		n.view.Control = ControlNone
+		n.view.ControlPending = false
+		n.view.ControlError = ""
+	}
+	t.settled[n.view.ID] = true
+	t.change(n)
+}
+
+func (e *Engine) cancel(n *treeNode, c Cause, retry bool, t *coreTransition) {
+	if n.view.State.Terminal() {
+		return
+	}
+	fresh := n.view.Cause == CauseNone
+	if fresh {
+		n.view.Cause = c
+		t.change(n)
+	}
+	if n.task == nil {
+		if n.view.State == StateRunning {
+			n.view.State = StateCancelling
+			t.change(n)
+		}
+		for _, child := range n.children {
+			e.cancel(child, c, retry, t)
+		}
+		return
+	}
+	if n.view.State == StatePending {
+		e.terminal(n, causeState(n.view.Cause), t)
+		return
+	}
+	if n.view.State != StateCancelling {
+		n.view.State = StateCancelling
+		t.change(n)
+	}
+	if fresh || retry && n.view.Control == ControlFailed {
+		n.view.Control = ControlPending
+		n.view.ControlPending = true
+		t.change(n)
+		t.Commands = append(t.Commands, Command{Type: CommandStopLeaf, Node: n.view.ID, Token: n.view.Token, Cause: n.view.Cause})
+	}
+}
+
+func (e *Engine) settle(n *treeNode, t *coreTransition) {
+	if n.task != nil || n.view.State.Terminal() {
+		return
+	}
+	ready := true
+	for i, c := range n.children {
+		e.settle(c, t)
+		if !c.view.State.Terminal() {
+			ready = false
+		}
+		if c.view.State.Terminal() && n.view.Mode == ModeSequential && n.view.OnFail == OnFailStop && (c.view.State == StateFailed || c.view.State == StateTimedOut || c.view.State == StateInterrupted) {
+			for _, successor := range n.children[i+1:] {
+				e.cancel(successor, CauseStopOnFail, false, t)
+				e.settle(successor, t)
+			}
+		}
+	}
+	if !ready {
+		return
+	}
+	state := StateCompleted
+	if n.view.Cause != CauseNone {
+		state = causeState(n.view.Cause)
+	} else {
+		counts := e.counts(n)
+		if counts.Failed+counts.TimedOut+counts.Interrupted > 0 {
+			state = StateFailed
+		} else if counts.Cancelled > 0 {
+			state = StateCancelled
+		}
+	}
+	e.terminal(n, state, t)
+	if n.parent == nil {
+		t.SettledRoots = append(t.SettledRoots, Summary{Root: n.view.ID, State: state, Counts: e.counts(n), Sequence: e.sequence})
+	}
+}
+
+func (e *Engine) releaseUnit(n *treeNode) { e.active--; e.groups[n.task.Group]-- }
+
+func (e *Engine) subtreeActive(n *treeNode) int {
+	if n.task != nil {
+		if n.view.State.Active() {
+			return 1
+		}
+		return 0
+	}
+	total := 0
+	for _, c := range n.children {
+		total += e.subtreeActive(c)
+	}
+	return total
+}
+
+func (e *Engine) eligible(n *treeNode) bool {
+	if n.task == nil || n.view.State != StatePending || n.view.Cause != CauseNone || e.closing || e.active >= e.limits.MaxConcurrent {
+		return false
+	}
+	g := n.task.Group
+	if cap, ok := e.limits.ByGroup[g]; ok && e.groups[g] >= cap {
+		return false
+	}
+	if gen, ok := e.blocked[g]; ok && gen == e.generation[g] {
+		return false
+	}
+	child := n
+	for p := n.parent; p != nil; p = p.parent {
+		if p.released || p.view.State.Terminal() || p.view.Cause != CauseNone {
+			return false
+		}
+		if p.view.MaxParallel > 0 && e.subtreeActive(p) >= p.view.MaxParallel {
+			return false
+		}
+		if p.view.Mode == ModeSequential {
+			for _, c := range p.children {
+				if !c.view.State.Terminal() {
+					if c != child {
+						return false
+					}
+					break
+				}
+			}
+		}
+		child = p
+	}
+	return true
+}
+
+func (e *Engine) candidate(n *treeNode) *treeNode {
+	if n.released || n.view.State.Terminal() || n.view.Cause != CauseNone {
+		return nil
+	}
+	if n.task != nil {
+		if e.eligible(n) {
+			return n
+		}
+		return nil
+	}
+	for _, c := range n.children {
+		if leaf := e.candidate(c); leaf != nil {
+			return leaf
+		}
+	}
+	return nil
+}
+
+func (e *Engine) admit(t *coreTransition) {
+	if e.closing || len(e.live) == 0 {
+		return
+	}
+	visited := 0
+	for e.active < e.limits.MaxConcurrent {
+		var leaf *treeNode
+		for scanned := 0; scanned < len(e.live); scanned++ {
+			visited++
+			index := (e.cursor + scanned) % len(e.live)
+			if leaf = e.candidate(e.live[index]); leaf != nil {
+				e.cursor = index + 1
+				break
+			}
+		}
+		if leaf == nil {
+			break
+		}
+		e.token++
+		leaf.view.Token = e.token
+		leaf.view.Attempts++
+		leaf.view.State = StateStarting
+		leaf.accepted = false
+		leaf.authorized = e.generation[leaf.task.Group]
+		leaf.view.Control = ControlNone
+		leaf.view.ControlPending = false
+		leaf.view.ControlError = ""
+		e.active++
+		e.groups[leaf.task.Group]++
+		t.change(leaf)
+		for p := leaf.parent; p != nil; p = p.parent {
+			if p.view.State == StatePending {
+				p.view.State = StateRunning
+				t.change(p)
+			}
+		}
+		t.Commands = append(t.Commands, Command{Type: CommandStartLeaf, Node: leaf.view.ID, Token: leaf.view.Token, Launch: Launch{ID: leaf.view.ID, Token: leaf.view.Token, Task: *leaf.task}})
+	}
+	if e.walkInstrument != nil {
+		e.walkInstrument("admit", visited)
+	}
+}
+
+func (e *Engine) selectNotices(t *coreTransition) {
+	var walk func(*treeNode)
+	walk = func(n *treeNode) {
+		for _, c := range n.children {
+			walk(c)
+		}
+		if !t.settled[n.view.ID] {
+			return
+		}
+		kind := n.view.Kind
+		if n.parent == nil {
+			kind = KindRoot
+		} else {
+			if n.parent.view.Notify != NotifyEach {
+				return
+			}
+			for p := n.parent; p != nil; p = p.parent {
+				if p.view.Notify == NotifyAll {
+					return
+				}
+			}
+			if len(n.parent.children) == 1 && t.settled[n.parent.view.ID] {
+				return
+			}
+		}
+		t.Notices = append(t.Notices, Notice{Root: n.view.Root, Node: n.view.ID, Kind: kind, State: n.view.State, Cause: n.view.Cause, Counts: e.counts(n)})
+	}
+	if e.walkInstrument != nil {
+		e.walkInstrument("notices", len(e.live))
+	}
+	for _, root := range e.live {
+		walk(root)
+	}
+}
+
+// View returns a detached view of an unreleased node.
+func (e *Engine) View(id ID) (NodeView, bool) {
+	n, ok := e.nodes[id]
+	if !ok {
+		return NodeView{}, false
+	}
+	return n.view, true
+}
+
+// Snapshot returns an immutable pre-order snapshot of any unreleased batch.
+func (e *Engine) Snapshot(id ID) (BatchView, bool) {
+	n, ok := e.nodes[id]
+	if !ok || n.task != nil {
+		return BatchView{}, false
+	}
+	v := BatchView{Sequence: e.sequence, Node: n.view, Counts: e.counts(n)}
+	var walk func(*treeNode)
+	walk = func(p *treeNode) {
+		for _, c := range p.children {
+			v.Descendants = append(v.Descendants, c.view)
+			walk(c)
+		}
+	}
+	walk(n)
+	return v, true
+}
+
+func (e *Engine) counts(n *treeNode) Counts {
+	var counts Counts
+	var walk func(*treeNode)
+	walk = func(p *treeNode) {
+		if p.task == nil {
+			for _, c := range p.children {
+				walk(c)
+			}
+			return
+		}
+		switch p.view.State {
+		case StatePending:
+			counts.Pending++
+		case StateStarting, StateRunning, StateCancelling:
+			counts.Active++
+		case StateCompleted:
+			counts.Completed++
+		case StateFailed:
+			counts.Failed++
+		case StateCancelled:
+			counts.Cancelled++
+		case StateTimedOut:
+			counts.TimedOut++
+		case StateInterrupted:
+			counts.Interrupted++
+		case StateSkipped:
+			counts.Skipped++
+		}
+	}
+	walk(n)
+	return counts
+}

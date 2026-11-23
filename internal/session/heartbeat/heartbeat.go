@@ -722,3 +722,26 @@ func RedactError(err error) string {
 	s = userinfoRE.ReplaceAllString(s, "[REDACTED]@")
 	return boundedRunes(s, 200)
 }
+
+// SetRateLimitedUntilFor stamps a session's row with the pending
+// rate-limit wait deadline; a zero time clears it. No row for the
+// session is a silent no-op.
+func SetRateLimitedUntilFor(sessionID string, until time.Time) {
+	registry.Lock()
+	defer registry.Unlock()
+	stamp := ""
+	if !until.IsZero() {
+		stamp = until.UTC().Format(time.RFC3339)
+	}
+	for _, r := range registry.rows {
+		if r.Session != sessionID {
+			continue
+		}
+		r.RateLimitedUntil = stamp
+		r.dirty = true
+		r.generation++
+	}
+}
+
+// This file documents lifecycle ownership: workerOnce guarantees a single
+// long-lived worker (workerStarts counts starts); hooks stay RWMutex-guarded.

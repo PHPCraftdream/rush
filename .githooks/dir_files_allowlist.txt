@@ -42,11 +42,11 @@ internal/kit/sys/shell 46
 # The count falls as those tests move to their subject packages; no other change in this lane.
 internal/serve/server/server 138
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
-internal/session 37
+internal/session 33
 # MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.
 # The design's MV3/EX satellite splits reduce this count per docs/plans/2026-11-15-sprint0-split-session.md §2.2.
 internal/session/service 58
-internal/session/jobbatch 57
+internal/session/jobbatch 43
 internal/session/jobbatch/lab 45
 internal/store/message 26
 # 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
