@@ -1,6 +1,6 @@
 //go:build !windows
 
-package mcp
+package mcpdial
 
 import (
 	"os/exec"
@@ -29,7 +29,7 @@ func TestCreateTransport_StdioProcessGroup(t *testing.T) {
 	t.Parallel()
 
 	m := config.MCPConfig{Type: config.MCPStdio, Command: "echo", Args: []string{"hi"}}
-	tr, err := createTransport(t.Context(), m, shellResolverWithPath(t, nil))
+	tr, err := CreateTransport(t.Context(), m, shellResolverWithPath(t, nil))
 	require.NoError(t, err)
 
 	ct, ok := tr.(*mcp.CommandTransport)

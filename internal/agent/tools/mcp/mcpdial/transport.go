@@ -1,4 +1,4 @@
-package mcp
+package mcpdial
 
 import (
 	"cmp"
@@ -45,7 +45,7 @@ func (e *StdioDiagnosticOutputLimitError) Unwrap() error {
 	return ErrStdioDiagnosticTooLarge
 }
 
-func transportCleanup(transport mcp.Transport) func() {
+func Cleanup(transport mcp.Transport) func() {
 	var roundTripper http.RoundTripper
 	switch transport := transport.(type) {
 	case *mcp.StreamableClientTransport:
@@ -69,7 +69,7 @@ func transportCleanup(transport mcp.Transport) func() {
 // error.
 // this happens particularly when starting things with npx, e.g. if node can't
 // be found or some other error like that.
-func maybeStdioErr(err error, transport mcp.Transport) error {
+func MaybeStdioErr(err error, transport mcp.Transport) error {
 	if !errors.Is(err, io.EOF) {
 		return err
 	}
@@ -83,7 +83,7 @@ func maybeStdioErr(err error, transport mcp.Transport) error {
 	return err
 }
 
-func createTransport(ctx context.Context, m config.MCPConfig, resolver config.VariableResolver) (mcp.Transport, error) {
+func CreateTransport(ctx context.Context, m config.MCPConfig, resolver config.VariableResolver) (mcp.Transport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -331,7 +331,7 @@ func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return rt.transport.RoundTrip(req)
 }
 
-func mcpTimeout(m config.MCPConfig) time.Duration {
+func Timeout(m config.MCPConfig) time.Duration {
 	return time.Duration(cmp.Or(m.Timeout, 15)) * time.Second
 }
 

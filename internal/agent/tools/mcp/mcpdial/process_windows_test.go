@@ -1,6 +1,6 @@
 //go:build windows
 
-package mcp
+package mcpdial
 
 import (
 	"bufio"

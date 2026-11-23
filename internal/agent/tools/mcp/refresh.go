@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp/mcpdial"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 )
@@ -227,7 +228,7 @@ func (o *Owner) runRefresh(request refreshRequest) {
 	// read lease and performs the SDK list call.
 	refreshTimeout := refreshRequestTimeout
 	if mcpConfig, ok := request.cfg.MCPConfig(request.name); ok && mcpConfig.Timeout > 0 {
-		refreshTimeout = mcpTimeout(mcpConfig)
+		refreshTimeout = mcpdial.Timeout(mcpConfig)
 	}
 	refreshCtx, cancelRefresh := context.WithTimeout(o.lifecycleCtx, refreshTimeout)
 	defer cancelRefresh()
@@ -377,5 +378,5 @@ func listChangedEventType(kind refreshKind) EventType {
 	}
 }
 
-// maybeStdioErr if a stdio mcp prints an error in non-json format, it'll fail
+// MaybeStdioErr if a stdio mcp prints an error in non-json format, it'll fail
 // to parse, and the cli will then close it, causing the EOF error.
