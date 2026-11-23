@@ -44,7 +44,7 @@ func (l *cliLoop) cancelError() error {
 }
 
 func (l *cliLoop) cancelRequestedError() error {
-	return &runIncompleteError{reason: "canceled", detail: fmt.Sprintf("session %s cancelled by user", l.sessionID)}
+	return &runIncompleteError{Reason: "canceled", Detail: fmt.Sprintf("session %s cancelled by user", l.sessionID)}
 }
 
 // capError reports the run's --max-cost/--max-tokens as exceeded, comparing
@@ -66,14 +66,14 @@ func (l *cliLoop) capError() error {
 func (l *cliLoop) capExceeded(sess session.Session) error {
 	if l.overrides.MaxCost > 0 {
 		if budget, err := l.env.Sessions().SubtreeBudget(l.ctx, l.sessionID); err == nil && budget > l.overrides.MaxCost {
-			return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
+			return &runIncompleteError{Reason: "error", Detail: fmt.Sprintf(
 				"session %s aborted: cost $%.4f exceeds max $%.4f", l.sessionID, budget, l.overrides.MaxCost)}
 		}
 		// A failed budget read is not an abort: like stopError's snapshot
 		// read, a transient DB error is no evidence the cap is crossed.
 	}
 	if total := sess.PromptTokens + sess.CompletionTokens; l.overrides.MaxTokens > 0 && total > l.overrides.MaxTokens {
-		return &runIncompleteError{reason: "error", detail: fmt.Sprintf(
+		return &runIncompleteError{Reason: "error", Detail: fmt.Sprintf(
 			"session %s aborted: %d tokens exceeds max %d", l.sessionID, total, l.overrides.MaxTokens)}
 	}
 	return nil
@@ -86,7 +86,7 @@ func exitedCanceled(final *RunResult, err error) bool {
 		return true
 	}
 	var inc *runIncompleteError
-	if errors.As(err, &inc) && (inc.reason == "canceled" || inc.reason == "cancelled") {
+	if errors.As(err, &inc) && (inc.Reason == "canceled" || inc.Reason == "cancelled") {
 		return true
 	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)

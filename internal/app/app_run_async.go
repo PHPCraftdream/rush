@@ -118,7 +118,7 @@ func (t *loopTotals) add(r *RunResult) {
 	t.turns = append(t.turns, loopTurn{
 		result:       r,
 		warnings:     slices.Clone(r.Warnings),
-		textWarnings: slices.Clone(r.finalTextWarnings),
+		textWarnings: slices.Clone(r.FinalTextWarnings),
 	})
 	for _, out := range r.SubAgentOutputs {
 		if i, ok := t.subAgentIndex[out.SessionID]; ok {
@@ -641,7 +641,7 @@ func (l *cliLoop) decidePhase() cliStepResult {
 		return cliStepResult{ev: evScopeWaitErr, final: final, err: err}
 	case step == stepStuck:
 		fmt.Fprintf(l.errOut(), "rush run: session %q has a notice the loop stopped reacting to after repeated failed attempts (%s); it stays pending -- see `rush sessions why %s`\n", l.sessionID, why, l.sessionID)
-		final, err := l.exit(&runIncompleteError{reason: "error", detail: "a notice could not be reacted to: " + why}, "error")
+		final, err := l.exit(&runIncompleteError{Reason: "error", Detail: "a notice could not be reacted to: " + why}, "error")
 		return cliStepResult{ev: evScopeStuck, final: final, err: err}
 	case step == stepExit:
 		// Stage 5a: the close is the one exit that cancels the session's loop
