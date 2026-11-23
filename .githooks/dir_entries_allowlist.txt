@@ -17,7 +17,10 @@
 # finalization_batch_root_owner_reader.go now live under
 # internal/agent/runtime/batch/batchflow); the batchinst/gate move changes
 # no root count and is recorded by its own rows.
-internal/agent 208
+# 208 -> 207: lane L2 (DM0b mailbox) moved queued_call_resolution.go whole
+# into internal/agent/runtime/exec/mailbox; the other seven mailbox files stay
+# because their state machine is read white-box by root tests.
+internal/agent 207
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
 internal/agent/tools 81

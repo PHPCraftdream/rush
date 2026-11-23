@@ -17,6 +17,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -35,9 +36,9 @@ func TestMergeQueuedCall_AtMostOneDrainInQueue(t *testing.T) {
 	drain1 := SessionAgentCall{SessionID: "s1", IsDrain: true}
 	drain2 := SessionAgentCall{SessionID: "s1", IsDrain: true}
 
-	queued := mergeQueuedCall(nil, drain1)
+	queued := mailboxpkg.MergeQueuedCall(nil, drain1)
 	require.Len(t, queued, 1)
-	queued = mergeQueuedCall(queued, drain2)
+	queued = mailboxpkg.MergeQueuedCall(queued, drain2)
 	require.Len(t, queued, 1, "a second Drain must not grow the queue past one")
 }
 
@@ -48,9 +49,9 @@ func TestMergeQueuedCall_UserCallDropsQueuedDrain(t *testing.T) {
 	drain := SessionAgentCall{SessionID: "s1", IsDrain: true}
 	user := SessionAgentCall{SessionID: "s1", Prompt: "hello"}
 
-	queued := mergeQueuedCall(nil, drain)
+	queued := mailboxpkg.MergeQueuedCall(nil, drain)
 	require.Len(t, queued, 1)
-	queued = mergeQueuedCall(queued, user)
+	queued = mailboxpkg.MergeQueuedCall(queued, user)
 	require.Len(t, queued, 1)
 	require.False(t, queued[0].IsDrain)
 	require.Equal(t, "hello", queued[0].Prompt)
@@ -63,8 +64,8 @@ func TestMergeQueuedCall_DrainDroppedWhenQueueNonEmpty(t *testing.T) {
 	user := SessionAgentCall{SessionID: "s1", Prompt: "hello"}
 	drain := SessionAgentCall{SessionID: "s1", IsDrain: true}
 
-	queued := mergeQueuedCall(nil, user)
-	queued = mergeQueuedCall(queued, drain)
+	queued := mailboxpkg.MergeQueuedCall(nil, user)
+	queued = mailboxpkg.MergeQueuedCall(queued, drain)
 	require.Len(t, queued, 1)
 	require.False(t, queued[0].IsDrain, "a Drain must never be queued behind an existing call")
 }

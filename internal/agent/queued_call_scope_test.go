@@ -14,6 +14,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -126,7 +127,7 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	// dispatcher's origin IS the retained copy. The retained-marker rule
 	// must close the scope and clear the marker.
 	ownersRoot, _ := caps.ownerCounts()
-	releaseTurnEndBuildScope(&next, next.CallOptions)
+	mailboxpkg.ReleaseTurnEndBuildScope(&next, next.CallOptions)
 	require.False(t, next.CallOptions.BuildScopeRetained)
 	ownersAfterTurnEnd, _ := caps.ownerCounts()
 	require.Equal(t, ownersRoot-1, ownersAfterTurnEnd)
@@ -139,7 +140,7 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	require.Equal(t, 0, con2)
 
 	// Exactly once: a second release stays at the baseline.
-	releaseQueuedBuildOwnership(&next)
+	mailboxpkg.ReleaseQueuedBuildOwnership(&next)
 	owners3, con3 := caps.ownerCounts()
 	require.Equal(t, 0, owners3)
 	require.Equal(t, 0, con3)
@@ -248,13 +249,13 @@ func TestQueuedCallScope_RetentionSurvivesSenderScopeClose(t *testing.T) {
 	require.Equal(t, 1, conMid)
 
 	// The queue-exit release closes the retained scope: back to EMPTY.
-	releaseQueuedBuildOwnership(&call)
+	mailboxpkg.ReleaseQueuedBuildOwnership(&call)
 	owners2, con2 := caps.ownerCounts()
 	require.Equal(t, 0, owners2)
 	require.Equal(t, 0, con2)
 
 	// Calling the release again is exactly-once: still empty.
-	releaseQueuedBuildOwnership(&call)
+	mailboxpkg.ReleaseQueuedBuildOwnership(&call)
 	owners3, con3 := caps.ownerCounts()
 	require.Equal(t, 0, owners3)
 	require.Equal(t, 0, con3)
@@ -449,7 +450,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		require.Equal(t, 2, owners0)
 		require.Equal(t, 1, con0)
 
-		releaseTurnEndBuildScope(&call, call.CallOptions)
+		mailboxpkg.ReleaseTurnEndBuildScope(&call, call.CallOptions)
 		require.False(t, call.CallOptions.BuildScopeRetained)
 		owners1, con1 := caps.ownerCounts()
 		require.Equal(t, owners0-1, owners1)
@@ -462,7 +463,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		call := newMarkedCall(t, a, "s-ter2", "reg-ter2")
 		origin := &CallOptions{}
 
-		releaseTurnEndBuildScope(&call, origin)
+		mailboxpkg.ReleaseTurnEndBuildScope(&call, origin)
 		require.False(t, call.CallOptions.BuildScopeRetained)
 		_, con1 := caps.ownerCounts()
 		require.Equal(t, 1, con1) // the pin only
@@ -481,7 +482,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		owners0, _ := caps.ownerCounts()
 		require.Equal(t, 1, owners0)
 
-		releaseTurnEndBuildScope(&call, call.CallOptions)
+		mailboxpkg.ReleaseTurnEndBuildScope(&call, call.CallOptions)
 		require.False(t, call.CallOptions.BuildScopeRetained) // already false
 		require.NotNil(t, call.CallOptions)                   // same options untouched
 		owners1, _ := caps.ownerCounts()
@@ -495,7 +496,7 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		call.OnQueueResolved = func(*fantasy.AgentResult, error) {}
 		owners0, _ := caps.ownerCounts()
 
-		releaseTurnEndBuildScope(&call, &CallOptions{})
+		mailboxpkg.ReleaseTurnEndBuildScope(&call, &CallOptions{})
 		require.True(t, call.CallOptions.BuildScopeRetained) // untouched
 		owners1, _ := caps.ownerCounts()
 		require.Equal(t, owners0, owners1)
@@ -506,9 +507,9 @@ func TestQueuedCallScope_TurnEndReleaseRule(t *testing.T) {
 		caps, a := newQueuedCallScopeFixture(t)
 		call := newMarkedCall(t, a, "s-ter5", "reg-ter5")
 
-		releaseTurnEndBuildScope(&call, call.CallOptions)
+		mailboxpkg.ReleaseTurnEndBuildScope(&call, call.CallOptions)
 		owners1, _ := caps.ownerCounts()
-		releaseTurnEndBuildScope(&call, call.CallOptions)
+		mailboxpkg.ReleaseTurnEndBuildScope(&call, call.CallOptions)
 		require.False(t, call.CallOptions.BuildScopeRetained)
 		owners2, _ := caps.ownerCounts()
 		require.Equal(t, owners1, owners2)
@@ -668,7 +669,7 @@ func TestQueuedCallScope_DispatcherSiteFiresOnRealTurn(t *testing.T) {
 	var fired int32
 	turnEndRelease = func(call *SessionAgentCall, origin *CallOptions) {
 		atomic.AddInt32(&fired, 1)
-		releaseTurnEndBuildScope(call, origin)
+		mailboxpkg.ReleaseTurnEndBuildScope(call, origin)
 	}
 	t.Cleanup(func() { turnEndRelease = prev })
 
