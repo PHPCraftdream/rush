@@ -91,8 +91,8 @@ func (l *cliLoop) endedReasonFor(final *RunResult, err error) string {
 		return "canceled"
 	}
 	var inc *runIncompleteError
-	if errors.As(err, &inc) && inc.reason != "" {
-		return inc.reason
+	if errors.As(err, &inc) && inc.Reason != "" {
+		return inc.Reason
 	}
 	return "error"
 }

@@ -2,7 +2,7 @@
 // runIncompleteError, the runFailed predicate, session-busy guidance,
 // and cancelledRunError, which preserves the richer abort reason.
 
-package app
+package review
 
 import (
 	"context"
@@ -81,7 +81,7 @@ const sqliteConstraintCode = 19
 // TestIsSessionsIDConstraintError_MessagesIDNotMatched for the regression
 // coverage proving a constraint violation on a DIFFERENT column (e.g.
 // messages.id) is never swallowed by either layer.
-func isSessionsIDConstraintError(err error) bool {
+func IsSessionsIDConstraintError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -106,9 +106,9 @@ func isSessionsIDConstraintError(err error) bool {
 // timeout, or a max_tokens truncation). The envelope / final text was already
 // emitted to stdout; this error exists only to drive a non-zero process exit
 // so orchestrators and CI can branch on success without parsing stdout.
-type runIncompleteError struct {
-	reason string
-	detail string
+type RunIncompleteError struct {
+	Reason string
+	Detail string
 	// cause, when non-nil, is the underlying run error this envelope
 	// failure was built from (R1-4). Unwrapping it keeps errors.Is-based
 	// classification working on the ENVELOPE path, not just the
@@ -117,17 +117,13 @@ type runIncompleteError struct {
 	// errors.Is(err, agent.ErrSessionBusy) for SDK consumers and
 	// orchestrators, the same way sessionBusyGuidance classifies it.
 	// Error()'s text is unchanged.
-	cause error
+	Cause error
 }
-
-// RunIncompleteError is the exit-code error returned when a run did not
-// complete its work cleanly.
-type RunIncompleteError = runIncompleteError
 
 // NewRunIncompleteError creates the non-zero-exit error used when work ran
 // but did not complete cleanly.
 func NewRunIncompleteError(reason, detail string) *RunIncompleteError {
-	return &runIncompleteError{reason: reason, detail: detail}
+	return &RunIncompleteError{Reason: reason, Detail: detail}
 }
 
 // ErrRunQueued marks a legacy mailbox admission that was accepted for a
@@ -135,33 +131,33 @@ func NewRunIncompleteError(reason, detail string) *RunIncompleteError {
 // invocation must not claim a completed result.
 var ErrRunQueued = errors.New("run queued behind an active session")
 
-type runQueuedError struct {
-	sessionID string
+type RunQueuedError struct {
+	SessionID string
 }
 
-func (e *runQueuedError) Error() string {
-	return fmt.Sprintf("run for session %q was queued behind an active run; this invocation did not execute it", e.sessionID)
+func (e *RunQueuedError) Error() string {
+	return fmt.Sprintf("run for session %q was queued behind an active run; this invocation did not execute it", e.SessionID)
 }
 
-func (e *runQueuedError) Unwrap() error {
+func (e *RunQueuedError) Unwrap() error {
 	return errors.Join(ErrRunQueued, agent.ErrSessionBusy)
 }
 
-func (e *runIncompleteError) Error() string {
-	if e.detail != "" {
-		return fmt.Sprintf("run did not complete cleanly (%s): %s", e.reason, e.detail)
+func (e *RunIncompleteError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("run did not complete cleanly (%s): %s", e.Reason, e.Detail)
 	}
-	return fmt.Sprintf("run did not complete cleanly (%s)", e.reason)
+	return fmt.Sprintf("run did not complete cleanly (%s)", e.Reason)
 }
 
-func (e *runIncompleteError) Unwrap() error { return e.cause }
+func (e *RunIncompleteError) Unwrap() error { return e.Cause }
 
 // runFailed reports whether a finished non-interactive turn should map to a
 // non-zero exit code. A clean end_turn (or a bare finish with no captured
 // reason) is success; a hard error, a cancellation/timeout, an in-band error
 // finish (stall / provider error / empty stream), or a max_tokens truncation
 // are all "did not finish the work".
-func runFailed(finalReason string, runErr error, isCanceled bool) bool {
+func RunFailed(finalReason string, runErr error, isCanceled bool) bool {
 	if runErr != nil || isCanceled {
 		return true
 	}
@@ -179,7 +175,7 @@ func runFailed(finalReason string, runErr error, isCanceled bool) bool {
 // fire. errors.As-based so every wrap shape (DrainNotAttemptedError,
 // ErrCallAlreadyAttempted, "failed to start agent processing stream: %w")
 // keeps it identifiable.
-func isPeakHoursStop(err error) bool {
+func IsPeakHoursStop(err error) bool {
 	var peak *agent.PeakHoursError
 	return errors.As(err, &peak)
 }
@@ -187,7 +183,7 @@ func isPeakHoursStop(err error) bool {
 // sessionBusyGuidance turns a "session already in use" failure into the
 // sentence an operator can act on: who holds it, why a second `rush run`
 // cannot attach, and the inject command that can.
-func sessionBusyGuidance(sessionID string, err error) string {
+func SessionBusyGuidance(sessionID string, err error) string {
 	var busyErr *sessionlock.SessionLockBusyError
 	holder := ""
 	switch {
@@ -222,7 +218,7 @@ func sessionBusyGuidance(sessionID string, err error) string {
 // genuine, unrecorded Ctrl+C never runs AddFinish first, so finalErrTitle
 // stays empty and this falls through to the original bare behavior
 // unchanged.
-func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails string) *runIncompleteError {
+func CancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails string) *RunIncompleteError {
 	// 1. Check the raw runErr first: a forced mid-turn abort (peak-hours,
 	//    max-cost, max-tokens) returns a specific error via OnStepFinish
 	//    and THEN calls cancel(). Because cancel() races the event-loop
@@ -233,7 +229,7 @@ func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails
 	if runErr != nil {
 		errText := runErr.Error()
 		if !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) && errText != "" {
-			return &runIncompleteError{reason: "cancelled", detail: errText}
+			return &RunIncompleteError{Reason: "cancelled", Detail: errText}
 		}
 	}
 	// 2. Fallback: check the finish detail from the event-loop (works when
@@ -248,15 +244,15 @@ func cancelledRunError(runErr error, finalReason, finalErrTitle, finalErrDetails
 			}
 			detail += finalErrDetails
 		}
-		return &runIncompleteError{reason: "cancelled", detail: detail}
+		return &RunIncompleteError{Reason: "cancelled", Detail: detail}
 	}
-	return &runIncompleteError{reason: "cancelled"}
+	return &RunIncompleteError{Reason: "cancelled"}
 }
 
 // turnRefusedByOwner reports that a turn never started because another owner
 // holds the session: a lock held by another process (a web tab's human turn,
 // `sessions inject`) or an in-process owner. Such a turn ran nothing.
-func turnRefusedByOwner(err error) bool {
+func TurnRefusedByOwner(err error) bool {
 	var busy *sessionlock.SessionLockBusyError
 	return errors.As(err, &busy) || errors.Is(err, agent.ErrSessionBusy)
 }

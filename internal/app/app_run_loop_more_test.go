@@ -109,7 +109,7 @@ func TestNextStep_CancelRequestedEndsTheWait(t *testing.T) {
 			if tc.want == stepCanceled {
 				var inc *runIncompleteError
 				require.ErrorAs(t, err, &inc)
-				require.Equal(t, "canceled", inc.reason)
+				require.Equal(t, "canceled", inc.Reason)
 			} else {
 				require.NoError(t, err)
 			}

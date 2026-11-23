@@ -69,7 +69,7 @@ func TestRunLoop_CancelWhileWaitingOnRunningWorkEndsCanceled(t *testing.T) {
 			require.Error(t, err)
 			var inc *runIncompleteError
 			require.ErrorAs(t, err, &inc)
-			require.Equal(t, "canceled", inc.reason)
+			require.Equal(t, "canceled", inc.Reason)
 			require.NotNil(t, res)
 			require.Equal(t, "canceled", res.ExitReason)
 			require.Contains(t, res.Error, "cancelled by user")
@@ -111,7 +111,7 @@ func TestRunLoop_CancelWhilePacedEndsCanceled(t *testing.T) {
 
 	var inc *runIncompleteError
 	require.ErrorAs(t, err, &inc)
-	require.Equal(t, "canceled", inc.reason)
+	require.Equal(t, "canceled", inc.Reason)
 	require.NotNil(t, res)
 	require.Equal(t, "canceled", res.ExitReason)
 	require.EqualValues(t, 1, h.requests.Load())

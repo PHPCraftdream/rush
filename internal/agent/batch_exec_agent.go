@@ -386,7 +386,7 @@ func pctClaimCapturedHandoffViaIngress(env batchLeafEnv, p batchLeafPayload) *to
 		if err != nil {
 			return nil, nil
 		}
-		captured := pctCapturedAgentToolFromTool(leaf)
+		captured := childagent.CapturedAgentToolFrom(leaf)
 		if captured == nil {
 			// explicit nil: a typed-nil *pctCapturedAgentTool must not become
 			// a non-nil CapturedClaimer interface value.

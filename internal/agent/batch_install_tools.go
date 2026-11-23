@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -103,7 +104,7 @@ func newBatchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, bi
 			// typed-nil normalization: a nil *pctCapturedAgentTool must not
 			// arm the registrar interface (the ingress checks nil to pick
 			// the no-captured path).
-			if captured := pctCapturedAgentToolFromTool(leaf); captured != nil {
+			if captured := childagent.CapturedAgentToolFrom(leaf); captured != nil {
 				return captured
 			}
 			return nil

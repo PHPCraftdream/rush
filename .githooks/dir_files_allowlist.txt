@@ -20,16 +20,18 @@
 # finalization_batch_root_owner_reader.go now live under
 # internal/agent/runtime/batch/batchflow); the batchinst/gate move changes
 # no root count and is recorded by its own rows.
-internal/agent 739
+internal/agent 738
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
 internal/agent/tools/mcp 63
 # 287 -> 288: the same app_bridge.go of the 0b-5 lane 0b-a (deliberate, temporary; only down from here).
-internal/app 272
+# 272 -> 265: lane D2-3 bottom plane moves 7 Go files out to internal/app/apprun/review
+# (app_run_result, app_run_errors, strip_json, app_run_turn, app_run_reviewer_stall/prompt/timeout).
+internal/app 265
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
 internal/config 213
-internal/config/discover 27
+# internal/config/discover 27 -> 19: same D2-3 tail merge (5 production + 14 test files); row retired.
 internal/kit/sys/shell 46
 # internal/serve/server/server is born over the 21-file limit: the composer moves down with the 133
 # cross-cutting test files that lanes L5/L6/L7 have not re-homed yet (5 production files + 133 tests = 138).

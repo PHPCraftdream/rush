@@ -1,0 +1,95 @@
+# Lane L1 ledger (docs/plans/2026-11-22-dm0b-scc-cut.md section 5, row L1 "leaf tails").
+# One row per declaration of every file this lane touched at HEAD, plus one row per
+# declaration the lane introduced. Columns:
+#   record row_id source_file kind symbol source_line target_file target_symbol
+#   disposition hit line_end proof
+# hit = sha256_16 of the whitespace-normalised HEAD body after the rename map below;
+# line_end = last line of the declaration in target_file today.
+# Verifier: .rush/tmp/sprint0/l1/oracle.py (scratch, not checked in); with this ledger
+# it must report 0 diagnostics. proof-renames (the only permitted differences between
+# a HEAD body and its destination body):
+#   pctCapturedAgentToolFromTool -> CapturedAgentToolFrom
+#   childagent. -> 
+#   sessionPromptComponent -> PromptComponent
+#   getCacheControlOptions -> GetCacheControlOptions
+#   createUserMessage -> CreateUserMessage
+#   preparePrompt -> PreparePrompt
+#   getSessionMessages -> GetSessionMessages
+#   convertToToolResult -> ConvertToToolResult
+#   workaroundProviderMediaLimitations -> WorkaroundProviderMediaLimitations
+#   messages message.Service -> Messages message.Service
+#   isSubAgent bool -> IsSubAgent bool
+#   p.messages -> p.Messages
+#   p.isSubAgent -> p.IsSubAgent
+#   SessionAgentCall -> agentcall.SessionAgentCall
+#   smartModel Model -> smartModel agentcall.Model
+#   filterOrphanedToolResults -> FilterOrphanedToolResults
+#   syntheticToolResultsForOrphanedCalls -> SyntheticToolResultsForOrphanedCalls
+#   dropSupersededSupervisionNotices -> DropSupersededSupervisionNotices
+#   sessionprompt.DeferUserMessagesPastToolRound -> DeferUserMessagesPastToolRound
+#   codexWebSocketPolicyHost -> CodexWebSocketPolicyHost
+#   codexWebSocketPolicyManager -> CodexWebSocketPolicyManager
+#   codexWebSocketOptions -> CodexWebSocketOptions
+#   currentCodexWebSocketPolicy -> CurrentCodexWebSocketPolicy
+#   buildPublicResponsesProvider -> BuildPublicResponsesProvider
+#   responsesWSManager -> ResponsesWSManager
+#   responsesWSSnapshot -> ResponsesWSSnapshot
+#   responsesWSResolveHTTPClient -> ResponsesWSResolveHTTPClient
+#   responsesWSFallbackOpenaiProvider -> ResponsesWSFallbackOpenaiProvider
+#   responsesws.NewCodexTransport -> NewCodexTransport
+#   responsesws.NewPublicResponsesProvider -> NewPublicResponsesProvider
+#   responsesws.PublicResponsesPolicy -> PublicResponsesPolicy
+#
+record	row_id	source_file	kind	symbol	source_line	target_file	target_symbol	disposition	hit	line_end	proof
+scope	internal/agent/agent_prompt.go										
+scope	internal/agent/coordinator_responses_ws.go										
+scope	internal/agent/batch_child_tool_scope.go										
+scope	internal/agent/runtime/exec/sessionprompt/prompt_component.go										
+scope	internal/agent/runtime/exec/responsesws/codex_ws_policy.go										
+scope	internal/agent/runtime/batch/batchexec/childagent/captured_tool.go										
+declaration	L1-001	internal/agent/batch_child_tool_scope.go	func	pctCapturedAgentToolFromTool	10	internal/agent/runtime/batch/batchexec/childagent/captured_tool.go	CapturedAgentToolFrom	moved	191f54dd5932adee	100	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-002	internal/agent/agent_prompt.go	func	sessionAgent.getCacheControlOptions	28	internal/agent/agent_prompt.go	sessionAgent.getCacheControlOptions	adapter	4495c40693282e1f	21	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-003	internal/agent/agent_prompt.go	func	sessionAgent.createUserMessage	32	internal/agent/agent_prompt.go	sessionAgent.createUserMessage	adapter	ad1f9365823fdd7b	25	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-004	internal/agent/agent_prompt.go	func	sessionAgent.preparePrompt	36	internal/agent/agent_prompt.go	sessionAgent.preparePrompt	adapter	88c333e04313141e	29	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-005	internal/agent/agent_prompt.go	func	sessionAgent.getSessionMessages	40	internal/agent/agent_prompt.go	sessionAgent.getSessionMessages	adapter	57b69c50e29f1973	33	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-006	internal/agent/agent_prompt.go	func	sessionAgent.convertToToolResult	44	internal/agent/agent_prompt.go	sessionAgent.convertToToolResult	adapter	f42ea193bfab94fb	37	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-007	internal/agent/agent_prompt.go	func	sessionAgent.workaroundProviderMediaLimitations	48	internal/agent/agent_prompt.go	sessionAgent.workaroundProviderMediaLimitations	adapter	4905fe61f5250763	41	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-008	internal/agent/agent_prompt.go	func	sessionHeaders	57	internal/agent/agent_prompt.go	sessionHeaders	present	617424de409240ba	50	unchanged in place
+declaration	L1-009	internal/agent/agent_prompt.go	func	WithBackgroundJobNotice	62	internal/agent/agent_prompt.go	WithBackgroundJobNotice	present	c788c193a2d58dbd	55	unchanged in place
+declaration	L1-010	internal/agent/agent_prompt.go	func	noticeFlagsFrom	66	internal/agent/agent_prompt.go	noticeFlagsFrom	present	ada6a522e8d735fe	59	unchanged in place
+declaration	L1-011	internal/agent/agent_prompt.go	func	WithDrainCall	74	internal/agent/agent_prompt.go	WithDrainCall	present	b8e406452c575b05	67	unchanged in place
+declaration	L1-012	internal/agent/agent_prompt.go	func	isDrainCallFrom	78	internal/agent/agent_prompt.go	isDrainCallFrom	present	a7b6541a1956ff69	71	unchanged in place
+declaration	L1-013	internal/agent/agent_prompt.go	func	WithCallOrigin	85	internal/agent/agent_prompt.go	WithCallOrigin	present	9ae7f2f89bc60250	78	unchanged in place
+declaration	L1-014	internal/agent/agent_prompt.go	func	CallOriginFrom	91	internal/agent/agent_prompt.go	CallOriginFrom	present	d16861989a155ea3	84	unchanged in place
+declaration	L1-015	internal/agent/agent_prompt.go	func	filterOrphanedToolResults	95	internal/agent/agent_prompt.go	filterOrphanedToolResults	present	b1e7bf3e8a63f1b4	88	unchanged in place
+declaration	L1-016	internal/agent/agent_prompt.go	func	syntheticToolResultsForOrphanedCalls	99	internal/agent/agent_prompt.go	syntheticToolResultsForOrphanedCalls	present	50f29c7aadf4b4df	92	unchanged in place
+declaration	L1-017	internal/agent/agent_prompt.go	func	dropSupersededSupervisionNotices	103	internal/agent/agent_prompt.go	dropSupersededSupervisionNotices	present	b261a83ccdafe4a8	96	unchanged in place
+declaration	L1-018	internal/agent/agent_prompt.go	func	trimMessagesToWindow	107	internal/agent/agent_prompt.go	trimMessagesToWindow	present	7955b2466c1e6932	100	unchanged in place
+declaration	L1-019	internal/agent/agent_prompt.go	func	estimateMsgChars	111	internal/agent/agent_prompt.go	estimateMsgChars	present	57ed1ee825e2d043	104	unchanged in place
+declaration	L1-020	internal/agent/agent_prompt.go	func	providerRetryLogFields	115	internal/agent/agent_prompt.go	providerRetryLogFields	present	1fc2a5951039bf0f	108	unchanged in place
+declaration	L1-021	internal/agent/agent_prompt.go	func	sanitizeToolInput	119	internal/agent/agent_prompt.go	sanitizeToolInput	present	4c2d1e9105595771	112	unchanged in place
+declaration	L1-022	internal/agent/agent_prompt.go	type	sessionPromptComponent	123	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent	moved	2491b288b6f021ec	29	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-023	internal/agent/agent_prompt.go	func	sessionPromptComponent.getCacheControlOptions	128	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent.GetCacheControlOptions	moved	ec39ef87de00534f	42	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-024	internal/agent/agent_prompt.go	func	sessionPromptComponent.createUserMessage	141	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent.CreateUserMessage	moved	461c7f9c65384e8a	63	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-025	internal/agent/agent_prompt.go	func	sessionPromptComponent.preparePrompt	162	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent.PreparePrompt	moved	d12c99da1957027e	165	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-026	internal/agent/agent_prompt.go	func	sessionPromptComponent.getSessionMessages	264	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent.GetSessionMessages	moved	cd8d016a1643411c	199	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-027	internal/agent/agent_prompt.go	func	sessionPromptComponent.convertToToolResult	299	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent.ConvertToToolResult	moved	aa0e1c78ab85f3cf	242	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-028	internal/agent/agent_prompt.go	func	sessionPromptComponent.workaroundProviderMediaLimitations	362	internal/agent/runtime/exec/sessionprompt/prompt_component.go	PromptComponent.WorkaroundProviderMediaLimitations	moved	aae9369cc437e43e	348	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-029	internal/agent/coordinator_responses_ws.go	func	coordinator.codexWebSocketOptions	24	internal/agent/coordinator_responses_ws.go	coordinator.codexWebSocketOptions	adapter	b9afae9c09dab815	18	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-030	internal/agent/coordinator_responses_ws.go	func	coordinator.currentCodexWebSocketPolicy	28	internal/agent/coordinator_responses_ws.go	coordinator.currentCodexWebSocketPolicy	adapter	49990968bc614077	22	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-031	internal/agent/coordinator_responses_ws.go	type	codexWebSocketPolicyHost	32	internal/agent/runtime/exec/responsesws/codex_ws_policy.go	CodexWebSocketPolicyHost	moved	9b1c4a44b1e0dfeb	27	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-032	internal/agent/coordinator_responses_ws.go	type	codexWebSocketPolicyManager	39	internal/agent/runtime/exec/responsesws/codex_ws_policy.go	CodexWebSocketPolicyManager	moved	da89a34ffb982e5b	31	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-033	internal/agent/coordinator_responses_ws.go	func	codexWebSocketPolicyManager.codexWebSocketOptions	43	internal/agent/runtime/exec/responsesws/codex_ws_policy.go	CodexWebSocketPolicyManager.CodexWebSocketOptions	moved	a432100ac8df1f2c	53	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-034	internal/agent/coordinator_responses_ws.go	func	codexWebSocketPolicyManager.currentCodexWebSocketPolicy	61	internal/agent/runtime/exec/responsesws/codex_ws_policy.go	CodexWebSocketPolicyManager.CurrentCodexWebSocketPolicy	moved	b674e0936775085b	75	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-035	internal/agent/coordinator_responses_ws.go	func	coordinator.responsesWSManager	83	internal/agent/coordinator_responses_ws.go	coordinator.responsesWSManager	present	a6c26879818f45e1	49	unchanged in place
+declaration	L1-036	internal/agent/coordinator_responses_ws.go	func	coordinator.responsesWSSnapshot	87	internal/agent/coordinator_responses_ws.go	coordinator.responsesWSSnapshot	present	6c8344f81420af08	53	unchanged in place
+declaration	L1-037	internal/agent/coordinator_responses_ws.go	func	coordinator.responsesWSResolveHTTPClient	91	internal/agent/coordinator_responses_ws.go	coordinator.responsesWSResolveHTTPClient	present	1795f620eeec3f0f	57	unchanged in place
+declaration	L1-038	internal/agent/coordinator_responses_ws.go	func	coordinator.responsesWSFallbackOpenaiProvider	95	internal/agent/coordinator_responses_ws.go	coordinator.responsesWSFallbackOpenaiProvider	present	82caa1e88af84781	61	unchanged in place
+declaration	L1-039	internal/agent/coordinator_responses_ws.go	func	coordinator.buildPublicResponsesProvider	99	internal/agent/coordinator_responses_ws.go	coordinator.buildPublicResponsesProvider	adapter	fafb3a894c4849e7	65	thin one-statement delegate into the destination package (root-side port)
+declaration	L1-040	internal/agent/coordinator_responses_ws.go	func	codexWebSocketPolicyManager.buildPublicResponsesProvider	103	internal/agent/runtime/exec/responsesws/codex_ws_policy.go	CodexWebSocketPolicyManager.BuildPublicResponsesProvider	moved	75eaff00b343567b	121	body identical to HEAD modulo the rename map (see proof-renames)
+declaration	L1-041	internal/agent/coordinator_responses_ws.go	type	coordinatorCodexWebSocketPolicyHost	0	internal/agent/coordinator_responses_ws.go	coordinatorCodexWebSocketPolicyHost	added		29	introduced by this lane: root-side port adapter / merged destination helper
+declaration	L1-042	internal/agent/coordinator_responses_ws.go	func	coordinatorCodexWebSocketPolicyHost.ResponsesWSManager	0	internal/agent/coordinator_responses_ws.go	coordinatorCodexWebSocketPolicyHost.ResponsesWSManager	added		33	introduced by this lane: root-side port adapter / merged destination helper
+declaration	L1-043	internal/agent/coordinator_responses_ws.go	func	coordinatorCodexWebSocketPolicyHost.ResponsesWSSnapshot	0	internal/agent/coordinator_responses_ws.go	coordinatorCodexWebSocketPolicyHost.ResponsesWSSnapshot	added		37	introduced by this lane: root-side port adapter / merged destination helper
+declaration	L1-044	internal/agent/coordinator_responses_ws.go	func	coordinatorCodexWebSocketPolicyHost.ResponsesWSResolveHTTPClient	0	internal/agent/coordinator_responses_ws.go	coordinatorCodexWebSocketPolicyHost.ResponsesWSResolveHTTPClient	added		41	introduced by this lane: root-side port adapter / merged destination helper
+declaration	L1-045	internal/agent/coordinator_responses_ws.go	func	coordinatorCodexWebSocketPolicyHost.ResponsesWSFallbackOpenaiProvider	0	internal/agent/coordinator_responses_ws.go	coordinatorCodexWebSocketPolicyHost.ResponsesWSFallbackOpenaiProvider	added		45	introduced by this lane: root-side port adapter / merged destination helper
+declaration	L1-046	internal/agent/runtime/batch/batchexec/childagent/captured_tool.go	func	CapturedAgentToolFrom	0	internal/agent/runtime/batch/batchexec/childagent/captured_tool.go	CapturedAgentToolFrom	added		100	introduced by this lane: root-side port adapter / merged destination helper

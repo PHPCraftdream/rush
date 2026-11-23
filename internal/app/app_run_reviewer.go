@@ -171,10 +171,10 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 			if err := s.drainMessageEvents(); err != nil {
 				return nil, err
 			}
-			if result.queued {
-				return s.finish(&runQueuedError{sessionID: s.sess.ID})
+			if result.Queued {
+				return s.finish(&runQueuedError{SessionID: s.sess.ID})
 			}
-			runErr := result.err
+			runErr := result.Err
 			isCanceled := runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, agent.ErrRequestCancelled))
 
 			// P0-1 fix (task #421): a cross-process interrupt landing on a
@@ -285,10 +285,10 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 				if err := s.drainMessageEvents(); err != nil {
 					return nil, err
 				}
-				if result.queued {
-					return s.finish(&runQueuedError{sessionID: s.sess.ID})
+				if result.Queued {
+					return s.finish(&runQueuedError{SessionID: s.sess.ID})
 				}
-				if result.err != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, agent.ErrRequestCancelled)) && s.env.Pump() != nil {
+				if result.Err != nil && (errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, agent.ErrRequestCancelled)) && s.env.Pump() != nil {
 					originalOwner := s.eventOwner
 					recorder := agent.NewCallResultRecorder()
 					assistantIDs := make(map[string]struct{})
@@ -322,10 +322,10 @@ func (s *executeRunLoop) runTurnPhase(prompt string, runFn turnRunFunc) (*RunRes
 						confirmedTerminalID := terminalAssistantID
 						assistantIDsMu.Unlock()
 						drainDone <- drainCompletion{result: queuedResult, err: drainOutcomeError(s.sess.ID, queuedResult, drainErr, originalErr), recorder: recorder, originalOwner: originalOwner, assistantIDs: confirmedIDs, terminalAssistantID: confirmedTerminalID}
-					}(result.err, recorder, originalOwner)
+					}(result.Err, recorder, originalOwner)
 					continue
 				}
-				return s.finish(result.err)
+				return s.finish(result.Err)
 			default:
 				s.stopSpinner()
 				*s.hookExitReason = "cancelled"
@@ -733,7 +733,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		}
 		*s.hookExitReason = summary.ExitReason
 		if runFailed(s.finalReason, runErr, isCanceled) {
-			return &summary, &runIncompleteError{reason: summary.ExitReason, detail: summary.Error, cause: runErr}
+			return &summary, &runIncompleteError{Reason: summary.ExitReason, Detail: summary.Error, Cause: runErr}
 		}
 		return &summary, nil
 	}
@@ -782,7 +782,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			}
 			detail += s.finalErrDetails
 		}
-		return nil, &runIncompleteError{reason: reason, detail: detail}
+		return nil, &runIncompleteError{Reason: reason, Detail: detail}
 	}
 	*s.hookExitReason = "stop"
 	return nil, nil
