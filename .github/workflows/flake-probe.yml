@@ -20,8 +20,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            package: ./internal/serve/server
-            tests: '^TestHandleRerunMessage_PanicBeforeHandoff(ReleasesReservation|RecreatesPrompt)$'
+            package: ./internal/serve/server/server
+            tests: '^Test(PanicTimelineReportsOnlyOnFailure|ListenerReportOnlyOnFailure|ListenerSnapshotCountsConnectionStates)$'
             race: '-race'
           - os: windows-latest
             package: ./internal/session

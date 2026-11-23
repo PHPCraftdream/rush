@@ -18,7 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
 	cliproc "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/proc"
-	"github.com/PHPCraftdream/rush/internal/serve/server"
+	"github.com/PHPCraftdream/rush/internal/serve/server/server"
 	"github.com/spf13/cobra"
 )
 

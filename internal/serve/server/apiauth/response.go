@@ -49,6 +49,11 @@ func WriteAPIProblem(w http.ResponseWriter, r *http.Request, status int, title, 
 	}
 }
 
+// SetAPIResponseHeaders exports setAPIResponseHeaders for the rest-api package
+// (internal/serve/server/rest/api/compat.go); callers inside apiauth keep the
+// unexported name.
+func SetAPIResponseHeaders(w http.ResponseWriter, r *http.Request) { setAPIResponseHeaders(w, r) }
+
 func setAPIResponseHeaders(w http.ResponseWriter, r *http.Request) {
 	id := w.Header().Get("X-Request-Id")
 	if !requestIDPattern.MatchString(id) {

@@ -34,7 +34,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/run"
 	wtree "github.com/PHPCraftdream/rush/internal/serve/cmd/run/wtree"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions"
-	"github.com/PHPCraftdream/rush/internal/serve/server"
+	"github.com/PHPCraftdream/rush/internal/serve/server/server"
 	rushweb "github.com/PHPCraftdream/rush/web"
 	"github.com/atotto/clipboard"
 	"github.com/pkg/browser"

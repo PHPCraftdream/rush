@@ -337,16 +337,32 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 		t.Fatal("dispatch blocked its caller instead of rejecting once the queue was full — admission must always be non-blocking")
 	}
 
-	require.Eventually(t, func() bool {
-		select {
-		case raw := <-c.send:
-			var m wire.WSMessage
-			if err := json.Unmarshal(raw, &m); err == nil && m.ID == "one-more-id" && m.Type == wire.EventError {
-				return true
-			}
-		default:
+	var drained []string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("frames drained while waiting for the one-more-id overload reply: %q", drained)
 		}
-		return false
+	})
+	require.Eventually(t, func() bool {
+		// Drain every pending frame per tick: replies of earlier fillers can
+		// land after the saturation loop stopped reading, and one frame per
+		// tick would push this reply past the polling budget on a slow runner.
+		for {
+			select {
+			case raw := <-c.send:
+				var m wire.WSMessage
+				if err := json.Unmarshal(raw, &m); err == nil {
+					drained = append(drained, string(m.Type)+":"+m.ID)
+					if m.ID == "one-more-id" && m.Type == wire.EventError {
+						return true
+					}
+				} else {
+					drained = append(drained, "undecodable")
+				}
+			default:
+				return false
+			}
+		}
 	}, time.Second, 10*time.Millisecond, "work dispatch sent while saturated must be rejected with overload, not silently admitted")
 
 	// Release the held handlers so the pool can drain.

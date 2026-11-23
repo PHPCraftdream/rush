@@ -57,7 +57,7 @@ func Dispatch(ctx context.Context, a *appPkg.App, c *hub.Client, msg wire.WSMess
 		c.Dispatch("handleRemoveProviderKey", msg.ID, func() { handleRemoveProviderKey(a, c, msg) })
 		return true
 	case wire.CmdSetMCPDisabled:
-		c.Dispatch("handleSetMCPDisabled", msg.ID, func() { handleSetMCPDisabled(ctx, a, c, msg) })
+		c.Dispatch("handleSetMCPDisabled", msg.ID, func() { SetMCPDisabled(ctx, a, c, msg) })
 		return true
 	case wire.CmdAddMCPServer:
 		c.Dispatch("handleAddMCPServer", msg.ID, func() { handleAddMCPServer(ctx, a, c, msg) })
