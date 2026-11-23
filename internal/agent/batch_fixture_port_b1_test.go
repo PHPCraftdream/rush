@@ -10,7 +10,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -22,13 +22,13 @@ import (
 // The bg-shell row store of the deleted legacy fixture is gone; callers that
 // need notice rows use the coordinator's notice store
 // (session.NewSessionNoticeStore(conn) over the returned conn).
-func b1BGShellFixture(t *testing.T) (*coordinator, *sql.DB, *shell.BackgroundShellManager, string) {
+func b1BGShellFixture(t *testing.T) (*coordinator, *sql.DB, *shellbg.BackgroundShellManager, string) {
 	t.Helper()
 	conn, dataDir := batchFixtureConn(t)
 	// Callers start shells owned by the literal id "session"; its bg_shell_done
 	// notices FK-anchor on sessions (id).
 	ensureFixtureSession(t, conn, "session")
-	mgr := shell.NewBackgroundShellManager()
+	mgr := shellbg.NewBackgroundShellManager()
 	t.Cleanup(func() { mgr.KillAll(context.Background()) })
 	coord := newBatchRuntimeCoordinator()
 	coord.noticeStore = session.NewSessionNoticeStore(conn)

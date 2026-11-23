@@ -1,4 +1,4 @@
-package shell
+package shellbg
 
 // The per-job handle: output snapshots, buffer lifetime and release timers, completion callbacks and the wait/observe surface. Split out of background.go when the 1000-line file limit landed; background.go keeps the manager that owns the job table.
 

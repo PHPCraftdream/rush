@@ -11,7 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
 
 func awaitTaskSummary(refs []tools.AwaitTaskRef) string { return batchlife.AwaitTaskSummary(refs) }
@@ -54,7 +54,7 @@ func (c *coordinator) bgShellRowCancelled(sessionID, shellID string) bool {
 type batchRehomeRuntimeHost interface {
 	arbClearSleepAll(sessionID string) string
 	wakeSchedulerFor() (*wakeScheduler, error)
-	bgShellManager() *shell.BackgroundShellManager
+	bgShellManager() *shellbg.BackgroundShellManager
 }
 
 type batchRehomeRuntimeComponent struct{ host batchRehomeRuntimeHost }
@@ -95,7 +95,7 @@ func (c *coordinator) arbClearSleepAll(sessionID string) string {
 	return c.arb.clearSleepAll(sessionID)
 }
 
-func (c *coordinator) bgShellManager() *shell.BackgroundShellManager {
+func (c *coordinator) bgShellManager() *shellbg.BackgroundShellManager {
 	return c.background
 }
 

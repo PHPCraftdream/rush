@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
 
 type shellLeafKey struct{}
@@ -16,7 +17,7 @@ type shellLeafKey struct{}
 // policy boundary. OnStart transfers the handle to its caller before waiting;
 // the caller owns disposal after Run and real Done. It must not block or panic.
 type ShellLeaf struct {
-	OnStart func(*shell.BackgroundExecution)
+	OnStart func(*shellbg.BackgroundExecution)
 }
 
 // WithShellLeaf marks a policy-leaf Run, not a raw launch or policy bypass.
@@ -24,7 +25,7 @@ func WithShellLeaf(ctx context.Context, leaf ShellLeaf) context.Context {
 	return context.WithValue(ctx, shellLeafKey{}, leaf)
 }
 
-func runBashLeaf(ctx context.Context, leaf ShellLeaf, manager *shell.BackgroundShellManager, sessionID, workingDir string, params BashParams) (fantasy.ToolResponse, error) {
+func runBashLeaf(ctx context.Context, leaf ShellLeaf, manager *shellbg.BackgroundShellManager, sessionID, workingDir string, params BashParams) (fantasy.ToolResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return fantasy.ToolResponse{}, err
 	}

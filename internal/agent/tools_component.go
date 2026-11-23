@@ -24,7 +24,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/filetracker"
 	"github.com/PHPCraftdream/rush/internal/store/history"
@@ -41,7 +41,7 @@ type toolsHost interface {
 	filetracker() filetracker.Service
 	notify() pubsub.Publisher[notify.Notification]
 	diskCaps() *DiskProviderRegistry
-	background() *shell.BackgroundShellManager
+	background() *shellbg.BackgroundShellManager
 	allSkills() []*skills.Skill
 	activeSkills() []*skills.Skill
 	skillTracker() *skills.Tracker
@@ -51,7 +51,7 @@ type toolsHost interface {
 	readyWg() *readyGate
 	agentTool(ctx context.Context) (fantasy.AgentTool, error)
 	agenticFetchTool(ctx context.Context, client *http.Client) (fantasy.AgentTool, error)
-	notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell)
+	notifyBackgroundJobDone(sessionID string, sh *shellbg.BackgroundShell)
 	buildAgentModelsFromCfg(ctx context.Context, cfg *config.Config, isSubAgent bool) (Model, Model, error)
 	workerSubAgentActiveForCall(ctx context.Context, cfg *config.Config) bool
 	workerSubAgentActive(cfg *config.Config) bool
@@ -81,7 +81,7 @@ func (h coordinatorToolsHost) notify() pubsub.Publisher[notify.Notification] {
 	return h.coordinator.notify
 }
 func (h coordinatorToolsHost) diskCaps() *DiskProviderRegistry { return h.coordinator.diskCaps }
-func (h coordinatorToolsHost) background() *shell.BackgroundShellManager {
+func (h coordinatorToolsHost) background() *shellbg.BackgroundShellManager {
 	return h.coordinator.background
 }
 func (h coordinatorToolsHost) allSkills() []*skills.Skill    { return h.coordinator.allSkills }
@@ -104,7 +104,7 @@ func (h coordinatorToolsHost) agenticFetchTool(ctx context.Context, client *http
 	return h.coordinator.agenticFetchTool(ctx, client)
 }
 
-func (h coordinatorToolsHost) notifyBackgroundJobDone(sessionID string, sh *shell.BackgroundShell) {
+func (h coordinatorToolsHost) notifyBackgroundJobDone(sessionID string, sh *shellbg.BackgroundShell) {
 	h.coordinator.notifyBackgroundJobDone(sessionID, sh)
 }
 
@@ -568,11 +568,11 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 	notifyDone := opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
 	backgroundManager := p.host.background()
 	if backgroundManager == nil {
-		backgroundManager = shell.NewBackgroundShellManager()
+		backgroundManager = shellbg.NewBackgroundShellManager()
 	}
-	var onBgDone func(string, *shell.BackgroundShell)
+	var onBgDone func(string, *shellbg.BackgroundShell)
 	if notifyDone {
-		onBgDone = func(sessionID string, sh *shell.BackgroundShell) {
+		onBgDone = func(sessionID string, sh *shellbg.BackgroundShell) {
 			p.host.notifyBackgroundJobDone(sessionID, sh)
 		}
 	}

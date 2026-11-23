@@ -1,6 +1,6 @@
 // MaxBackgroundJobs limit semantics: the concurrent Start race, the cap
 // when all jobs are active, and slot reuse once jobs complete.
-package shell
+package shellbg
 
 import (
 	"sync"

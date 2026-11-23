@@ -58,7 +58,6 @@ internal/session 9
 # MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
 internal/session/service 37
-internal/kit/sys/shell 17
 # internal/config/domains/datadir 9 -> 7: the D2-6 tail merged export.go into datadir.go and global_testguard.go into global_dir.go; row retired.
 # born over the limit (MV3, plan D3); falls at EX lanes
 internal/session/batch/sessionbatch 28

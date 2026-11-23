@@ -11,7 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +88,7 @@ func TestDenyExecPolicyHelper(t *testing.T) {
 		}
 		switch surface {
 		case "bash":
-			tool := NewBashTool(probe, dir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shell.NewBackgroundShellManager())
+			tool := NewBashTool(probe, dir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shellbg.NewBackgroundShellManager())
 			switch mode {
 			case "denied":
 				resp := runBashTool(t, tool, ctx, BashParams{Command: "go test ./..."})
