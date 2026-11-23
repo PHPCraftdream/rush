@@ -11,11 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
@@ -27,7 +24,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -733,146 +729,3 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 // #1130: updateParentSessionCost/chargeChildToParent are gone with the
 // transfer ledger. A child charges its own cost_self as it runs; every
 // reader of "including children" sums the delegation subtree at read time.
-
-// discoverSkills runs skill discovery for this coordinator at session
-// start. Fork note: upstream threads a pre-built skills.Manager through
-// from app.New; we rejected that abstraction (see CHANGELOG.fork.md
-// Section 2) and keep the simple inline discovery here.
-func discoverSkills(cfg *config.ConfigStore) (allSkills, activeSkills []*skills.Skill) {
-	builtin, builtinStates := skills.DiscoverBuiltinWithStates()
-	discovered := append([]*skills.Skill(nil), builtin...)
-
-	var userStates []*skills.SkillState
-	var userPaths []string
-
-	opts := cfg.Config().Options
-	if opts != nil && len(opts.SkillsPaths) > 0 {
-		userPaths = make([]string, 0, len(opts.SkillsPaths))
-		for _, pth := range opts.SkillsPaths {
-			expanded := home.Long(pth)
-			if strings.HasPrefix(expanded, "$") {
-				if resolved, err := cfg.Resolver().ResolveValue(expanded); err == nil {
-					expanded = resolved
-				}
-			}
-			userPaths = append(userPaths, expanded)
-		}
-		var userSkills []*skills.Skill
-		userSkills, userStates = skills.DiscoverWithStates(userPaths)
-		discovered = append(discovered, userSkills...)
-	}
-
-	allSkills = skills.Deduplicate(discovered)
-	var disabledSkills []string
-	if opts != nil {
-		disabledSkills = opts.DisabledSkills
-	}
-	activeSkills = skills.Filter(allSkills, disabledSkills)
-
-	allStates := append([]*skills.SkillState(nil), builtinStates...)
-	allStates = append(allStates, userStates...)
-
-	allStates = skills.DeduplicateStates(allStates)
-
-	slices.SortStableFunc(allStates, func(a, b *skills.SkillState) int {
-		return strings.Compare(strings.ToLower(a.Path), strings.ToLower(b.Path))
-	})
-	skills.SetLatestStates(allStates)
-	skills.PublishStates(allStates)
-
-	logDiscoveryStats(builtin, builtinStates, userStates, userPaths, allSkills, activeSkills, disabledSkills)
-	return allSkills, activeSkills
-}
-
-// logTurnSkillUsage emits a per-turn diagnostic line showing which skills
-// (if any) were loaded during this turn and which looked relevant based on
-// a cheap keyword match against the user prompt. The goal is to surface
-// "should-have-loaded but didn't" situations for later analysis.
-//
-// Logged at Info level under component=skills; heavy fields are elided when
-// there is nothing interesting to report.
-func logTurnSkillUsage(
-	sessionID string,
-	prompt string,
-	activeSkills []*skills.Skill,
-	tracker *skills.Tracker,
-	before []string,
-) {
-	if tracker == nil || len(activeSkills) == 0 {
-		return
-	}
-
-	after := tracker.LoadedNames()
-
-	beforeSet := make(map[string]bool, len(before))
-	for _, n := range before {
-		beforeSet[n] = true
-	}
-	var loadedThisTurn []string
-	for _, n := range after {
-		if !beforeSet[n] {
-			loadedThisTurn = append(loadedThisTurn, n)
-		}
-	}
-
-	slog.Info(
-		"Skill turn summary",
-		"component", "skills",
-		"session_id", sessionID,
-		"prompt_len", len(prompt),
-		"active_total", len(activeSkills),
-		"loaded_total", len(after),
-		"loaded_this_turn", loadedThisTurn,
-	)
-}
-
-// logDiscoveryStats emits a single structured log line summarising skill
-// discovery for the current session. It is intentionally low-volume: one
-// line per session start.
-func logDiscoveryStats(
-	builtin []*skills.Skill,
-	builtinStates, userStates []*skills.SkillState,
-	userPaths []string,
-	allSkills, activeSkills []*skills.Skill,
-	disabled []string,
-) {
-	countErrors := func(states []*skills.SkillState) int {
-		n := 0
-		for _, s := range states {
-			if s.State == skills.StateError {
-				n++
-			}
-		}
-		return n
-	}
-
-	userOK := 0
-	for _, s := range userStates {
-		if s.State == skills.StateNormal {
-			userOK++
-		}
-	}
-
-	activeNames := make([]string, 0, len(activeSkills))
-	for _, s := range activeSkills {
-		activeNames = append(activeNames, s.Name)
-	}
-
-	xml := skills.ToPromptXML(activeSkills)
-
-	slog.Info(
-		"Skill discovery complete",
-		"component", "skills",
-		"builtin_ok", len(builtin),
-		"builtin_errors", countErrors(builtinStates),
-		"user_ok", userOK,
-		"user_errors", countErrors(userStates),
-		"user_paths", len(userPaths),
-		"deduped_total", len(allSkills),
-		"active", len(activeSkills),
-		"disabled", len(disabled),
-		"prompt_bytes", len(xml),
-		"prompt_tok_est", skills.ApproxTokenCount(xml),
-		"active_names", activeNames,
-	)
-}
