@@ -1,4 +1,4 @@
-package server
+package api
 
 import (
 	"net/http"
@@ -11,17 +11,17 @@ import (
 // one that capacity pressure would evict.
 func TestIdempotencyInsertSweepsAllExpiredEntries(t *testing.T) {
 	now := time.Unix(1, 0)
-	store := newIdempotencyStore(func() time.Time { return now })
-	for i := range idempotencyMaxEntries {
+	store := NewIdempotencyStore(func() time.Time { return now })
+	for i := range IdempotencyMaxEntries {
 		key := "k" + strconv.Itoa(i)
 		_, _, generation := store.Begin("token", key, "hash")
 		store.Complete("token", key, "hash", generation, http.StatusOK, nil, nil)
 	}
-	if got := len(store.Entries); got != idempotencyMaxEntries {
-		t.Fatalf("entries before expiry = %d, want %d", got, idempotencyMaxEntries)
+	if got := len(store.Entries); got != IdempotencyMaxEntries {
+		t.Fatalf("entries before expiry = %d, want %d", got, IdempotencyMaxEntries)
 	}
-	now = now.Add(idempotencyTTL)
-	if outcome, _, _ := store.Begin("token", "fresh", "hash"); outcome != idempotencyStarted {
+	now = now.Add(IdempotencyTTL)
+	if outcome, _, _ := store.Begin("token", "fresh", "hash"); outcome != IdempotencyStarted {
 		t.Fatalf("insertion outcome = %q", outcome)
 	}
 	if got := len(store.Entries); got != 1 {

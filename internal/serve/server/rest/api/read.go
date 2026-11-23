@@ -85,7 +85,7 @@ func APIRoutesWithDeps(deps APIReadStore) []APIRoute {
 			routes[i].Handler = apiListModelsHandler(deps)
 		}
 	}
-	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), append(apiRunRoutesWithPlaceholders(), append(apiPermissionRouteDeclarations(), BatchRoutePlaceholders()...)...)...)...)
+	return append(append(apiCoreRoutes(), routes...), append(apiSessionRoutes(), append(apiRunRoutesWithPlaceholders(), append(apiPermissionRouteDeclarations(), batchRoutePlaceholders()...)...)...)...)
 }
 
 // APIRoutesWithBroker also returns the event log and run registry the routes share.
@@ -96,7 +96,7 @@ func APIRoutesWithBroker(a *appPkg.App, broker *APIPermissionBroker, allowAutoAp
 	writeRoutes := APISessionWriteRoutes(APIAppWriteStore{App: a})
 	runRoutes := apiRunWriteRoutesWithRegistry(APIAppWriteStore{App: a}, NewAPIRunBackendWithPolicy(a, broker, allowAutoApprove), registry)
 	permissionRoutes := APIPermissionRoutes(broker)
-	batchRoutes := BatchRoutePlaceholders()
+	batchRoutes := batchRoutePlaceholders()
 	if a != nil && wiredBatchRoutes != nil {
 		batchRoutes = wiredBatchRoutes(a)
 	}

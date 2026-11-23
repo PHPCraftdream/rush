@@ -1,4 +1,4 @@
-package server
+package api
 
 import (
 	"encoding/json"
@@ -38,10 +38,10 @@ func normalizeOpenAPIVersion(document any) any {
 
 // TestOpenAPIDocsSnapshotMatchesServedDocument pins docs/api/openapi.json to
 // the document the server serves: a route added, removed or changed without
-// regenerating the file (go test ./internal/server -run OpenAPIDocsSnapshot
+// regenerating the file (go test ./internal/serve/server/rest/api -run OpenAPIDocsSnapshot
 // -args -update-openapi-docs) fails here.
 func TestOpenAPIDocsSnapshotMatchesServedDocument(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "..", "docs", "api", "openapi.json")
+	path := filepath.Join("..", "..", "..", "..", "..", "docs", "api", "openapi.json")
 	served := servedOpenAPIDocument(t)
 	if *updateOpenAPIDocs {
 		data, err := json.MarshalIndent(served, "", "  ")
