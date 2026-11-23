@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -117,7 +118,7 @@ func TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases(t *testing.T) {
 	// Exactly once: a second release stays at the baseline (the real
 	// service's idempotency key would refuse a duplicate row, so the
 	// double-restart variant is not exercised).
-	releaseQueuedBuildOwnership(&popped[0])
+	mailboxpkg.ReleaseQueuedBuildOwnership(&popped[0])
 	owners3, con3 := caps.ownerCounts()
 	require.Equal(t, owners0, owners3)
 	require.Equal(t, con0, con3)

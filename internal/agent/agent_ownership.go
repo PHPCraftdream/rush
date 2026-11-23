@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -479,14 +480,14 @@ func (a *sessionAgent) restartOrphanedWithRetry(calls []SessionAgentCall) error 
 }
 
 func (a *sessionOwnership) restartOrphanedWithRetry(calls []SessionAgentCall) error {
-	calls = splitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
+	calls = mailboxpkg.SplitCallsWithoutWaiters(calls, "the sub-agent session's previous turn ended with an error before this queued turn could run; resume it again")
 	// Package L round 2: a retained queued call is NOT a waiter (its
 	// OnQueueResolved is nil), so splitCallsWithoutWaiters above correctly
 	// KEPT it for durable re-enqueue -- the pump rebuilds a fresh call with
 	// its own build scope, so the in-process retention must be released at
 	// the handoff, exactly once. This is the waiters-classification-preserving
 	// release point (round-1 flaw B fixed: the hook is never touched).
-	releaseQueuedCallsBuildOwnership(calls)
+	mailboxpkg.ReleaseQueuedCallsBuildOwnership(calls)
 	if len(calls) == 0 {
 		return nil
 	}

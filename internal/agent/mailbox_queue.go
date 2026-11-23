@@ -4,6 +4,8 @@
 
 package agent
 
+import mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 // clearAll implements design §4's "ClearQueue is the one intentional
 // drop-everything operation": clears submitted, replacement, and injects
 // together under mu. It does NOT release ownership (state/current/
@@ -29,11 +31,11 @@ func (mb *mailbox) clearAll() {
 	const reason = "the session's queue was explicitly cleared"
 	// Package L round 2: close any retained queued-call build scope on the
 	// way out (release is idempotent; no-op for unmarked calls).
-	releaseQueuedCallsBuildOwnership(dropped)
-	resolveCallsWithError(dropped, reason)
+	mailboxpkg.ReleaseQueuedCallsBuildOwnership(dropped)
+	mailboxpkg.ResolveCallsWithError(dropped, reason)
 	if replacement != nil {
-		releaseQueuedBuildOwnership(replacement)
-		resolveCallWithError(*replacement, reason)
+		mailboxpkg.ReleaseQueuedBuildOwnership(replacement)
+		mailboxpkg.ResolveCallWithError(*replacement, reason)
 	}
 }
 
@@ -46,80 +48,7 @@ func (mb *mailbox) clearAll() {
 func (mb *mailbox) queue(call SessionAgentCall) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-	mb.submitted = mergeQueuedCall(mb.submitted, call)
-}
-
-// mergeQueuedCall appends call to queued, applying phase-4 step 3's Drain
-// merge rule (doc sec.3.4): "at most one Drain call in a session's queue;
-// when it merges with a regular user call, the user call runs and the
-// Drain disappears — every turn pulls anyway." A no-op pass-through
-// (plain append) for every non-Drain call arriving with no Drain already
-// queued, which is every call before step 3 ever produced.
-//
-//   - An incoming Drain is dropped outright if the queue is already
-//     non-empty: whatever runs next (Drain or not) already pulls at its own
-//     turn start, so a second Drain call would only buy a redundant turn.
-//   - An incoming non-Drain call drops any Drain already sitting in the
-//     queue: the stronger policy (a real turn) wins, and the real turn's
-//     own turn-start pull makes the dropped Drain's job redundant.
-func mergeQueuedCall(queued []SessionAgentCall, call SessionAgentCall) []SessionAgentCall {
-	if call.IsDrain {
-		if len(queued) > 0 {
-			return queued
-		}
-		return append(queued, call)
-	}
-	if !hasQueuedDrain(queued) {
-		return append(queued, call)
-	}
-	filtered := make([]SessionAgentCall, 0, len(queued))
-	for _, q := range queued {
-		if !q.IsDrain {
-			filtered = append(filtered, q)
-		}
-	}
-	return append(filtered, call)
-}
-
-// mergeQueuedCallAtHead applies mergeQueuedCall's SAME Drain-merge rule
-// (doc sec.3.4: "at most one Drain call in a session's queue ... on ANY
-// insertion path, including returning a displaced call to the head of the
-// queue") for a call that must be reinserted at the HEAD rather than
-// appended to the tail -- reclaimReplacementOrKeep's own case (B17 fix,
-// docs/reviews/2026-09-29-async-phase4-round1.md): a call already committed
-// as "next to run" before an interrupt's replacement preempted it goes back
-// in front of whatever was already queued, not behind it, but must still
-// never let two Drains coexist in the queue, and must still let an
-// incoming real call drop an already-queued Drain.
-func mergeQueuedCallAtHead(queued []SessionAgentCall, call SessionAgentCall) []SessionAgentCall {
-	if call.IsDrain {
-		if len(queued) > 0 {
-			// Whatever is already queued already pulls at its own turn
-			// start; the displaced Drain would only buy a redundant turn.
-			return queued
-		}
-		return append([]SessionAgentCall{call}, queued...)
-	}
-	if !hasQueuedDrain(queued) {
-		return append([]SessionAgentCall{call}, queued...)
-	}
-	filtered := make([]SessionAgentCall, 0, len(queued))
-	for _, q := range queued {
-		if !q.IsDrain {
-			filtered = append(filtered, q)
-		}
-	}
-	return append([]SessionAgentCall{call}, filtered...)
-}
-
-// hasQueuedDrain reports whether queued already holds a Drain call.
-func hasQueuedDrain(queued []SessionAgentCall) bool {
-	for _, q := range queued {
-		if q.IsDrain {
-			return true
-		}
-	}
-	return false
+	mb.submitted = mailboxpkg.MergeQueuedCall(mb.submitted, call)
 }
 
 // popFirstSubmitted removes and returns the first entry from the submitted
