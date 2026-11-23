@@ -22,7 +22,8 @@
 # no root count and is recorded by its own rows.
 # 738 -> 737: the same single-file move as dir_entries (queued_call_resolution.go
 # left the root; no root file was added or split).
-internal/agent 737
+# 737 -> 736: the same single-file move as dir_entries (turn_effort.go left the root).
+internal/agent 736
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
 # 63 -> 58: same lane: 4 test files moved whole to mcpdial, one core
