@@ -1,3 +1,8 @@
+// session_bridge.go consolidates the root-package facade re-exports that used
+// to live in five separate files (batch read, finalization debt, finalization
+// facts, finalization holds, notice/host aliases). Declarations are unchanged:
+// external packages keep referring to them as session.<Name>.
+
 package session
 
 import (
@@ -5,10 +10,18 @@ import (
 	"database/sql"
 	"time"
 
+	findebt "github.com/PHPCraftdream/rush/internal/session/batch/findebt"
+	finfacts "github.com/PHPCraftdream/rush/internal/session/batch/finfacts"
+	finholds "github.com/PHPCraftdream/rush/internal/session/batch/finholds"
+	finterm "github.com/PHPCraftdream/rush/internal/session/batch/finterm"
 	"github.com/PHPCraftdream/rush/internal/session/batch/sessionbatch"
 	"github.com/PHPCraftdream/rush/internal/session/batch/sessionbatchread"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
+	sessionfacts "github.com/PHPCraftdream/rush/internal/session/state/sessionfacts"
+	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
+	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
+	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 )
 
 type (
@@ -145,3 +158,115 @@ func BatchRetentionCutoff(now time.Time) int64 {
 func BatchRerunVoidedRoots(res BatchRerunTruncation) []BatchRerunVoidedNode {
 	return sessionbatch.BatchRerunVoidedRoots(res)
 }
+
+type FinalizationDebtStore = findebt.FinalizationDebtStore
+
+type AgentFinalizationDebtSettler = findebt.AgentFinalizationDebtSettler
+
+func NewFinalizationDebtStore(sqlDB *sql.DB) *FinalizationDebtStore {
+	return findebt.NewFinalizationDebtStore(sqlDB)
+}
+
+type FinalizationDescendantsFacts = finfacts.FinalizationDescendantsFacts
+
+type FinalizationQueuedCallsFacts = finfacts.FinalizationQueuedCallsFacts
+
+type FinalizationPhysicalHoldsFacts = finfacts.FinalizationPhysicalHoldsFacts
+
+type FinalizationReactionDebtFacts = finfacts.FinalizationReactionDebtFacts
+
+type FinalizationDescendantsReader = finfacts.FinalizationDescendantsReader
+
+func NewFinalizationDescendantsReader() FinalizationDescendantsReader {
+	return finfacts.NewFinalizationDescendantsReader()
+}
+
+func NewFinalizationQueuedCallsFacts() FinalizationQueuedCallsFacts {
+	return finfacts.NewFinalizationQueuedCallsFacts()
+}
+
+func NewAgentFinalizationScopeReader(
+	ownerSessionID string,
+	descendants FinalizationDescendantsFacts,
+	queued FinalizationQueuedCallsFacts,
+	holds FinalizationPhysicalHoldsFacts,
+	debt FinalizationReactionDebtFacts,
+) finterm.AgentFinalizationScopeReader {
+	return finfacts.NewAgentFinalizationScopeReader(ownerSessionID, descendants, queued, holds, debt)
+}
+
+var ErrFinalizationPhysicalHoldsUnreadable = finholds.ErrFinalizationPhysicalHoldsUnreadable
+
+func NewFinalizationPhysicalHoldsFacts() FinalizationPhysicalHoldsFacts {
+	return finholds.NewFinalizationPhysicalHoldsFacts()
+}
+
+func NewFinalizationHostDriverHoldsFacts(dataDir string) FinalizationPhysicalHoldsFacts {
+	return finholds.NewFinalizationHostDriverHoldsFacts(dataDir)
+}
+
+type FinalizationHoldsProvider = finholds.FinalizationHoldsProvider
+
+func NewFinalizationPhysicalHoldsFactsFromProviders(providers ...FinalizationHoldsProvider) FinalizationPhysicalHoldsFacts {
+	return finholds.NewFinalizationPhysicalHoldsFactsFromProviders(providers...)
+}
+
+func NewFinalizationPhysicalHoldsFactsSum(a, b FinalizationPhysicalHoldsFacts) FinalizationPhysicalHoldsFacts {
+	return finholds.NewFinalizationPhysicalHoldsFactsSum(a, b)
+}
+
+func CountFinalizationTrackedProcessHolds() int {
+	return finholds.CountFinalizationTrackedProcessHolds()
+}
+
+// Notice-kind vocabulary (moved to sessionnotice / sessionwake).
+const (
+	NoticeKindWakeOnly         = sessionnotice.NoticeKindWakeOnly
+	NoticeKindSupervision      = sessionnotice.NoticeKindSupervision
+	NoticeKindWakeFailed       = sessionnotice.NoticeKindWakeFailed
+	NoticeKindBGShellDone      = sessionnotice.NoticeKindBGShellDone
+	NoticeKindChildQuestion    = sessionnotice.NoticeKindChildQuestion
+	NoticeKindReactionChain    = sessionnotice.NoticeKindReactionChain
+	NoticeKindWakeFired        = sessionwake.NoticeKindWakeFired
+	AwaitingAnswerStoppedTitle = sessionnotice.AwaitingAnswerStoppedTitle
+)
+
+// Host probe statuses (moved to sessionhosts).
+const (
+	HostStatusUnknown = sessionhosts.HostStatusUnknown
+	HostStatusAlive   = sessionhosts.HostStatusAlive
+	HostStatusDead    = sessionhosts.HostStatusDead
+)
+
+// WakeLeaseTTL is the moved sessionwake claim-lease TTL.
+const WakeLeaseTTL = sessionwake.WakeLeaseTTL
+
+// Host-store / probe helpers and types (moved to sessionhosts).
+type (
+	HostStore = sessionhosts.HostStore
+)
+
+var ProbeHostLock = sessionhosts.ProbeHostLock
+
+// Wake schedule store type (moved to sessionwake).
+type WakeScheduleStore = sessionwake.WakeScheduleStore
+
+// WaitSchedule is the moved sessionfacts wait-reason constant.
+const WaitSchedule = sessionfacts.WaitSchedule
+
+// Session activity / lock-fact kinds (moved to sessionfacts).
+const (
+	ActivityIdle         = sessionfacts.ActivityIdle
+	ActivityInTurn       = sessionfacts.ActivityInTurn
+	ActivityBetweenTurns = sessionfacts.ActivityBetweenTurns
+	ActivityEnded        = sessionfacts.ActivityEnded
+	ActivityCrashed      = sessionfacts.ActivityCrashed
+	ActivityDelegating   = sessionfacts.ActivityDelegating
+	LockUnknown          = sessionfacts.LockUnknown
+	LockHeld             = sessionfacts.LockHeld
+	LockReleased         = sessionfacts.LockReleased
+	LockDead             = sessionfacts.LockDead
+)
+
+// HostLockStatus keeps its root-package name for external callers.
+type HostLockStatus = sessionhosts.HostLockStatus

@@ -1,6 +1,12 @@
 package heartbeat
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // cloneModel deep-copies a model entry.
 func cloneModel(m *model) *model {
@@ -139,3 +145,63 @@ func boundList(in []string, n, sz int) []string {
 	}
 	return out
 }
+
+// RecordFailure counts one failed provider call on the model and totals
+// WITHOUT incrementing Requests. Unknown models create their entry.
+// Redaction and the 200-rune bound are applied here, as everywhere.
+func RecordFailure(ctx context.Context, provider, modelName string, err error) {
+	if err == nil {
+		return
+	}
+	c := FromContext(ctx)
+	ensureProcessMeta()
+	registry.Lock()
+	defer registry.Unlock()
+	ensureWorker()
+	k := keyFor(c)
+	r := registry.rows[k]
+	if r == nil {
+		r = fresh(c)
+		registry.rows[k] = r
+	}
+	r.State = "running"
+	m := getModel(r, provider, modelName)
+	m.Errors++
+	r.Totals.Errors++
+	m.LastError = RedactError(err)
+	if isLimit(err.Error()) {
+		m.LimitHits++
+		r.Totals.LimitHits++
+	}
+	r.dirty = true
+	r.generation++
+}
+
+// DefaultDir is the global heartbeat directory: RUSH_HEARTBEAT_DIR wins,
+// else heartbeat/ next to the global settings file — derived from
+// workspaceDir, the caller's global workspace directory (a func so it is
+// resolved only when the old code resolved it). An active
+// --global-dir root (globalDirActive) pins the directory to the workspace,
+// so RUSH_HEARTBEAT_DIR cannot override it. A test binary without an
+// isolated global dir returns "" so tests never write the real registry.
+func DefaultDir(workspaceDir func() string, globalDirActive bool) string {
+	// An isolated global dir (RUSH_GLOBAL_DIR) does not lift the test guard
+	// below: the process-wide writer follows the environment of whichever test
+	// runs now and would keep writing into that test's TempDir while it is
+	// being removed.
+	if globalDirActive && !skipDefaultDirInTests {
+		return filepath.Join(workspaceDir(), "heartbeat")
+	}
+	if d := os.Getenv("RUSH_HEARTBEAT_DIR"); d != "" {
+		return d
+	}
+	// A test binary writes snapshots only into an explicit RUSH_HEARTBEAT_DIR:
+	// the process-wide writer outlives each test and would race its TempDir.
+	if skipDefaultDirInTests {
+		return ""
+	}
+	return filepath.Join(workspaceDir(), "heartbeat")
+}
+
+// skipDefaultDirInTests is true in a test binary; the dir test turns it off.
+var skipDefaultDirInTests = testing.Testing()

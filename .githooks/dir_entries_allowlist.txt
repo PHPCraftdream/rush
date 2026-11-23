@@ -46,10 +46,8 @@ internal/app 46
 internal/config 43
 # 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
 # internal/config/discover 13 -> 5: the D2-3 tail merged probe/enricher files in-package (the planned discover+local subpackage split is blocked: the local probe files call the parent package's unexported doRequest/Config plumbing, which a sub-package may not import); row retired.
-internal/session/heartbeat 10
-internal/session/jobbatch 21
 internal/session/jobbatch/lab 24
-internal/session 13
+internal/session 9
 # MV1 adds the moved service subtree as live temporary debt. MV3/EX splits the batch/run satellites out;
 # per docs/plans/2026-11-15-sprint0-split-session.md §2.2, service drops to 4 elements.
 internal/session/service 37
