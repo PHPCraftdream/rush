@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 )
 
 // hardStop implements the shutdown half of P0-C: it latches the mailbox
@@ -173,8 +175,8 @@ func (mb *mailbox) interruptAndReplaceLocked(call SessionAgentCall) (context.Can
 			// (InterruptAndSend calls own their scope and are skipped by
 			// the arm guard), so this is a no-op unless that invariant
 			// ever breaks.
-			releaseQueuedBuildOwnership(mb.replacement)
-			resolveCallWithError(*mb.replacement, "this queued turn was superseded by a newer interrupt-and-replace before it could run")
+			mailboxpkg.ReleaseQueuedBuildOwnership(mb.replacement)
+			mailboxpkg.ResolveCallWithError(*mb.replacement, "this queued turn was superseded by a newer interrupt-and-replace before it could run")
 		}
 		mb.replacement = &call
 	}
@@ -303,7 +305,7 @@ func (mb *mailbox) reclaimReplacementOrKeep(call SessionAgentCall) SessionAgentC
 		// let a displaced Drain sit alongside an already-queued Drain (or
 		// an already-queued real call), and let a displaced real call leave
 		// a stale queued Drain in place instead of dropping it.
-		mb.submitted = mergeQueuedCallAtHead(mb.submitted, call)
+		mb.submitted = mailboxpkg.MergeQueuedCallAtHead(mb.submitted, call)
 		return next
 	}
 	return call

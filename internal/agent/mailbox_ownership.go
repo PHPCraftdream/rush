@@ -6,7 +6,8 @@ package agent
 
 import (
 	"context"
-	"fmt"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 )
 
 // submit implements design §3: replaces both tryReserveSession +
@@ -79,7 +80,7 @@ func (mb *mailbox) submit(call SessionAgentCall, dispatcherCancel context.Cancel
 		if !call.IsDrain && mb.armQueuedBuild != nil {
 			mb.armQueuedBuild(&call)
 		}
-		mb.submitted = mergeQueuedCall(mb.submitted, call)
+		mb.submitted = mailboxpkg.MergeQueuedCall(mb.submitted, call)
 	}
 	return false, 0 // caller queues and returns nil, exactly like today
 }
@@ -326,7 +327,7 @@ func (mb *mailbox) drainOrReleaseFinal(
 	// error so the finalize step below always runs — the mailbox must never
 	// get stuck in mbReleasing, whether release() errors or panics.
 	if release != nil {
-		releaseErr = callReleaseRecoveringPanic(release)
+		releaseErr = mailboxpkg.CallReleaseRecoveringPanic(release)
 	}
 
 	mb.mu.Lock()
@@ -399,26 +400,6 @@ func (mb *mailbox) drainOrReleaseFinal(
 	// submitted them against an idle mailbox — because that is, at this
 	// instant, genuinely what they are.
 	return SessionAgentCall{}, false, orphaned, releaseErr
-}
-
-// callReleaseRecoveringPanic invokes release and recovers any panic it
-// raises, folding it into the returned error instead of letting it unwind
-// through drainOrReleaseFinal. #296/P1-C moved release() (real disk I/O:
-// Truncate/Seek/Sync/sidecar-unlink/unlock/Close) outside mb.mu specifically
-// so a slow filesystem cannot stall the control plane; a panic escaping
-// uncaught would be worse than the stall it replaces — it would leave
-// mb.state stuck at mbReleasing forever (mb.mu is not even held at the panic
-// site to recover under), permanently reporting the session busy with no
-// path back to mbIdle. Isolated into its own function (rather than an
-// inline func(){}() in the caller) so the defer/recover pair has a single,
-// obviously-correct home.
-func callReleaseRecoveringPanic(release func() error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("mailbox release callback panicked: %v", r)
-		}
-	}()
-	return release()
 }
 
 // abandonOwnership implements Run's cleanup-defer release path (round 9
