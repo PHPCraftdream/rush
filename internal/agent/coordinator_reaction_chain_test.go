@@ -25,14 +25,14 @@ import (
 // reacts to the completions that arrived before it) and the leg's own
 // idle-launch identity.
 // The snapshot is captured BEFORE this leg's own row is seeded, batchCaptured
-// set so accountDrainAttempt resolves batchDebtCallIDs itself, and the
-// launched root's call id recorded into chainBatchRoots (batch launches carry
+// set so accountDrainAttempt resolves BatchDebtCallIDs itself, and the
+// launched root's call id recorded into ChainBatchRoots (batch launches carry
 // no claim ids).
 func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapCalls []string, idle, progress bool) string {
 	f.t.Helper()
-	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted, chainProgress: progress}
-	att.batchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
-	att.batchCaptured = true
+	att := &drainAttempt{SessionID: f.sessID, Outcome: drainAttempted, ChainProgress: progress}
+	att.BatchSnapshot = a3BatchDebtSnapshotForCalls(f.t, ctx, f.env.conn, f.sessID, snapCalls)
+	att.BatchCaptured = true
 	// The leg models a link whose model actually REACTED to the rows it
 	// saw: in production the reaction marks the acted-on rows reacted=1
 	// during the turn, BEFORE closeDrainAttempt accounts the leg -- so
@@ -46,7 +46,7 @@ func (f *attemptFixture) chainLink(ctx context.Context, toolCallID string, snapC
 	f.seedDebt(ctx, toolCallID, true)
 	identity := f.row(ctx, toolCallID).ToolCallID
 	if idle {
-		att.chainBatchRoots = []string{identity}
+		att.ChainBatchRoots = []string{identity}
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)
 	return identity
@@ -72,8 +72,8 @@ func TestReactionChain_ThreeLinksDefer(t *testing.T) {
 	require.Equal(t, 3, f.chainCount())
 
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
-	require.Equal(t, drainDeferred, v.kind)
-	require.Equal(t, reactionChainReason, v.reason)
+	require.Equal(t, drainDeferred, v.Kind)
+	require.Equal(t, reactionChainReason, v.Reason)
 
 	state, err := f.coord.CLIScope(ctx, f.sessID)
 	require.NoError(t, err)
@@ -98,7 +98,7 @@ func TestReactionChain_SuccessfulReactionDoesNotReset(t *testing.T) {
 	f.chainLink(ctx, "chain1", nil, true, false)
 	require.Equal(t, 1, f.chainCount())
 
-	att := &drainAttempt{sessionID: f.sessID, outcome: drainAttempted}
+	att := &drainAttempt{SessionID: f.sessID, Outcome: drainAttempted}
 	f.coord.accountDrainAttempt(ctx, att, nil) // empty snapshot: rows.open == 0
 	require.Equal(t, 1, f.chainCount())
 }
@@ -132,7 +132,7 @@ func TestReactionChain_Resets(t *testing.T) {
 	// set) rightly keep the policy out of the way.
 	a3MarkRowsReacted(f.t, ctx, f.env.conn, f.sessID, "chain1", "chain2", "chain3")
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
-	require.Equal(t, drainDeferred, v.kind)
+	require.Equal(t, drainDeferred, v.Kind)
 	f.coord.ResetAutoResumeCounter(f.sessID)
 	require.Zero(t, f.chainCount())
 	state, err := f.coord.CLIScope(ctx, f.sessID)
@@ -149,7 +149,7 @@ func TestReactionChain_SurvivesIdleSweep(t *testing.T) {
 	c1 := f.chainLink(ctx, "chain1", nil, true, false)
 	c2 := f.chainLink(ctx, "chain2", []string{c1}, true, false)
 	f.chainLink(ctx, "chain3", []string{c1, c2}, true, false)
-	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
+	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).Kind)
 
 	// Give the session an expired pause (an otherwise idle arbiter entry)
 	// and run the 60s pass's sweeps. The guard's state (chainLinks) must
@@ -159,7 +159,7 @@ func TestReactionChain_SurvivesIdleSweep(t *testing.T) {
 	})
 	f.coord.sweepArbiterEntries()
 	require.Equal(t, 3, f.coord.reactionChainCount(f.sessID), "the sweep must not free the guard's state")
-	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
+	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).Kind)
 }
 
 // Web parity: only wakeSession drives the session -- the guard still stops it
@@ -252,8 +252,8 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"echo tick","run_in_background":true}`), call("c2", "edit", `{}`)},
 		[]fantasy.ToolResultContent{res("c1", startedTag), res("c2", "")},
 	))
-	require.Equal(t, []string{"claim-A"}, ts.att.chainIdleClaims)
-	require.True(t, ts.att.chainProgress)
+	require.Equal(t, []string{"claim-A"}, ts.att.ChainIdleClaims)
+	require.True(t, ts.att.ChainProgress)
 
 	// A real bash command's claim is NOT idle.
 	ts.att = &drainAttempt{}
@@ -261,8 +261,8 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 90; gh run view"}`)},
 		[]fantasy.ToolResultContent{res("c1", startedTag)},
 	))
-	require.Empty(t, ts.att.chainIdleClaims)
-	require.True(t, ts.att.chainProgress)
+	require.Empty(t, ts.att.ChainIdleClaims)
+	require.True(t, ts.att.ChainProgress)
 
 	// sleep 5 && echo done IS idle; run_command sleep is; batch_output and
 	// todos are neutral; a text-only step is nothing.
@@ -271,13 +271,13 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 		[]fantasy.ToolCallContent{call("c1", "bash", `{"command":"sleep 5 && echo done"}`), call("c2", "run_command", `{"program":"sleep","args":["90"]}`), call("c3", "batch_output", `{}`), call("c4", "todos", `{}`)},
 		[]fantasy.ToolResultContent{res("c1", startedTag), res("c2", startedTag)},
 	))
-	require.Equal(t, []string{"claim-A", "claim-A"}, ts.att.chainIdleClaims)
-	require.False(t, ts.att.chainProgress)
+	require.Equal(t, []string{"claim-A", "claim-A"}, ts.att.ChainIdleClaims)
+	require.False(t, ts.att.ChainProgress)
 
 	ts.att = &drainAttempt{}
 	ts.recordChainEvidence(mk(nil, nil))
-	require.Empty(t, ts.att.chainIdleClaims)
-	require.False(t, ts.att.chainProgress)
+	require.Empty(t, ts.att.ChainIdleClaims)
+	require.False(t, ts.att.ChainProgress)
 }
 
 // T2 (plan step 1): a step whose result carries the in-turn guard's refusal
@@ -285,7 +285,7 @@ func TestRecordChainEvidence_ClassifiesSteps(t *testing.T) {
 // it started nothing. Without the refused case in classifyStepCall the guard's
 // own refusals would read as progress and reset the chain.
 //
-// Revert-check: dropping the refused case (or setting chainProgress there)
+// Revert-check: dropping the refused case (or setting ChainProgress there)
 // turns this red.
 func TestRecordChainEvidence_RefusedIsNeutral(t *testing.T) {
 	ts := &turnStream{att: &drainAttempt{}}
@@ -296,6 +296,6 @@ func TestRecordChainEvidence_RefusedIsNeutral(t *testing.T) {
 	}
 	ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: content}})
 
-	require.Empty(t, ts.att.chainIdleClaims, "a refused wait launched nothing")
-	require.False(t, ts.att.chainProgress, "a refusal is not progress: it started nothing")
+	require.Empty(t, ts.att.ChainIdleClaims, "a refused wait launched nothing")
+	require.False(t, ts.att.ChainProgress, "a refusal is not progress: it started nothing")
 }

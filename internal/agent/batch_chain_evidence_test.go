@@ -51,9 +51,9 @@ func TestBatchChainEvidenceCollectorAndGuardON(t *testing.T) {
 		fantasy.ToolCallContent{ToolCallID: "call-chain-b", ToolName: "bash", Input: `{"command":"sleep 90"}`},
 		batchStartedToolResult("call-chain-b"),
 	}}})
-	require.Equal(t, []string{"call-chain-b"}, ts.att.chainBatchRoots,
+	require.Equal(t, []string{"call-chain-b"}, ts.att.ChainBatchRoots,
 		"the started response's call id is the recorded chain identity")
-	require.False(t, ts.att.chainProgress, "a pure-wait batch launch is not progress")
+	require.False(t, ts.att.ChainProgress, "a pure-wait batch launch is not progress")
 
 	// A REAL batch action (substantial command, wait-unclassified) is
 	// progress and records no identity.
@@ -62,8 +62,8 @@ func TestBatchChainEvidenceCollectorAndGuardON(t *testing.T) {
 		fantasy.ToolCallContent{ToolCallID: "call-chain-act", ToolName: "bash", Input: `{"command":"gh run view","run_in_background":true}`},
 		batchStartedToolResult("call-chain-act"),
 	}}})
-	require.Empty(t, tsAct.att.chainBatchRoots, "a real batch action records no chain identity")
-	require.True(t, tsAct.att.chainProgress, "a real batch action is progress")
+	require.Empty(t, tsAct.att.ChainBatchRoots, "a real batch action records no chain identity")
+	require.True(t, tsAct.att.ChainProgress, "a real batch action is progress")
 
 	// Guard: three link legs with the REAL debt rows whose root
 	// tool_call_ids match the recorded identity -> rule 5 defers.
@@ -71,9 +71,9 @@ func TestBatchChainEvidenceCollectorAndGuardON(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, debtRows.Nodes, 1)
 	att := &drainAttempt{
-		chainBatchRoots:  ts.att.chainBatchRoots,
-		batchSnapshot:    session.BatchDebtSnapshot{Owner: env.sessionID, Nodes: debtRows.Nodes},
-		batchDebtCallIDs: []string{"call-chain-b"},
+		ChainBatchRoots:  ts.att.ChainBatchRoots,
+		BatchSnapshot:    session.BatchDebtSnapshot{Owner: env.sessionID, Nodes: debtRows.Nodes},
+		BatchDebtCallIDs: []string{"call-chain-b"},
 	}
 	for i := 0; i < 3; i++ {
 		// The legacy snapshot half is empty: the batch branch keys on
@@ -82,9 +82,9 @@ func TestBatchChainEvidenceCollectorAndGuardON(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 3)
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, reactionChainReason, pv.reason,
+	require.Equal(t, reactionChainReason, pv.Reason,
 		"the chain guard defers on the batch debt the chain itself launched")
-	t.Logf("BatchChain defer reason=%q", pv.reason)
+	t.Logf("BatchChain defer reason=%q", pv.Reason)
 
 	// An UNRELATED settled root (a tool_call_id the chain never launched)
 	// joins the debt rows: the ownership predicate fails and the defer
@@ -95,7 +95,7 @@ func TestBatchChainEvidenceCollectorAndGuardON(t *testing.T) {
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "the unrelated root's debt committed")
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.NotEqual(t, reactionChainReason, pv.reason,
+	require.NotEqual(t, reactionChainReason, pv.Reason,
 		"an unrelated completion is not chain-owned: no defer")
 	env.logDebtRows(t)
 	env.logNodeRows(t, rootID, unrelID)

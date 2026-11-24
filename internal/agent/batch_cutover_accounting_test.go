@@ -46,8 +46,8 @@ func TestBatchCutoverAccountingFunnelON(t *testing.T) {
 	// Account the leg with the RETAINED post-pull snapshot and a terminal
 	// provider failure: decideAccount yields VClose over att.batchSnapshot.
 	att := &drainAttempt{
-		sessionID: env.sessionID, outcome: drainAttempted,
-		batchSnapshot: snapA, batchCaptured: true,
+		SessionID: env.sessionID, Outcome: drainAttempted,
+		BatchSnapshot: snapA, BatchCaptured: true,
 	}
 	terminal := &fantasy.ProviderError{StatusCode: 402, Message: "quota exhausted"}
 	coord.accountDrainAttempt(context.Background(), att, terminal)

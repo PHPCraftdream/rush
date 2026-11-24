@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -52,7 +53,7 @@ func TestBatchRoleAdmissionRejectsUnknownInvalidAndForgedSnapshots(t *testing.T)
 		{"forged snapshot", `{"role":"known"}`, &session.RoleContract{Version: session.RoleContractVersion, Name: "known", Model: session.ModelCfg{Provider: "p", Model: "forged"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw, err := json.Marshal(batchLeafPayload{Tool: AgentToolName, Input: json.RawMessage(tc.input), SelectedRoleContract: tc.contract})
+			raw, err := json.Marshal(batchLeafPayload{Tool: modelkit.AgentToolName, Input: json.RawMessage(tc.input), SelectedRoleContract: tc.contract})
 			require.NoError(t, err)
 			_, err = admitBatchRoleContracts(cfg, nil, jobbatch.Spec{Task: &jobbatch.TaskSpec{Payload: raw}})
 			switch tc.name {
@@ -68,7 +69,7 @@ func TestBatchRoleAdmissionRejectsUnknownInvalidAndForgedSnapshots(t *testing.T)
 func TestBatchRoleAdmissionRequiresValidRoleInputBeforeResources(t *testing.T) {
 	for _, input := range []string{`{"role":null}`, `{"role":""}`, `{"role":"custom/name"}`, `{"role":7}`} {
 		t.Run(input, func(t *testing.T) {
-			spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{{Task: batchCLITaskSpec(AgentToolName, json.RawMessage(input))}}}}
+			spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{{Task: batchCLITaskSpec(modelkit.AgentToolName, json.RawMessage(input))}}}}
 			_, err := AdmitBatchRoleContracts(context.Background(), nil, spec)
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
 		})
@@ -76,7 +77,7 @@ func TestBatchRoleAdmissionRequiresValidRoleInputBeforeResources(t *testing.T) {
 }
 
 func batchCustomRoleTask(name string) *jobbatch.TaskSpec {
-	return batchCLITaskSpec(AgentToolName, json.RawMessage(`{"role":`+batchRoleJSONString(name)+`,"prompt":"work"}`))
+	return batchCLITaskSpec(modelkit.AgentToolName, json.RawMessage(`{"role":`+batchRoleJSONString(name)+`,"prompt":"work"}`))
 }
 
 func batchCLITaskSpec(tool string, input json.RawMessage) *jobbatch.TaskSpec {

@@ -295,7 +295,7 @@ declaration	agent_tool.go::AgentParams.Role	agent_tool.go	19	AgentParams.Role	fi
 declaration	agent_tool.go::AgentParams.Prompt	agent_tool.go	20	AgentParams.Prompt	field	coord	coord	agent_tool.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	agent_tool.go::AgentParams.ResumeSessionID	agent_tool.go	28	AgentParams.ResumeSessionID	field	coord	coord	agent_tool.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	agent_tool.go::AgentParams.Timeout	agent_tool.go	31	AgentParams.Timeout	field	coord	coord	agent_tool.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	agent_tool.go::AgentToolName	agent_tool.go	35	AgentToolName	const	coord	modelkit	tool_names.go	runtime/modelkit	DM-W-gated	not receiver inventory row	-	-
+declaration	agent_tool.go::AgentToolName	agent_tool.go	35	AgentToolName	const	coord	modelkit	tool_names.go	runtime/modelkit	DM7-C1	retired root alias	-	Root alias retired; original historical source retained; declaration remains owned by modelkit at runtime/modelkit/tool_names.go.
 declaration	agent_tool.go::coordinator.agentTool	agent_tool.go	38	coordinator.agentTool	method	coord	coord	tool_glue.go	runtime/coord	DM7-gated	c		runtime/coord/tool_glue.go
 declaration	agent_turn.go::runTurnToolsSnapshotSeam	agent_turn.go	29	runTurnToolsSnapshotSeam	var	agentrun	agentrun	agent_turn.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	agent_turn.go::sessionAgent.runTurn	agent_turn.go	49	sessionAgent.runTurn	method	agentrun	agentrun	agent_turn.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
@@ -327,7 +327,7 @@ declaration	agent_turn_step.go::turnStream.prepareStep	agent_turn_step.go	26	tur
 declaration	agent_turn_step.go::turnStream.onStepFinish	agent_turn_step.go	273	turnStream.onStepFinish	method	agentrun	agentrun	agent_turn_step.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	agent_turn_step.go::turnStream.recordStepHistory	agent_turn_step.go	315	turnStream.recordStepHistory	method	agentrun	agentrun	agent_turn_step.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	agent_turn_step.go::turnStream.armProgressGuard	agent_turn_step.go	327	turnStream.armProgressGuard	method	agentrun	agentrun	agent_turn_step.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
-declaration	agent_turn_step.go::stepToolCapabilities	agent_turn_step.go	355	stepToolCapabilities	func	agentrun	agentrun	agent_turn_step.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
+declaration	agent_turn_helpers.go::stepToolCapabilities	agent_turn_helpers.go	26	stepToolCapabilities	func	agentrun	agentrun	agent_turn_helpers.go	runtime/exec/agentrun	DM7-C1	not receiver inventory row	-	-
 declaration	agent_turn_step.go::turnStream.recordStepProgress	agent_turn_step.go	375	turnStream.recordStepProgress	method	agentrun	agentrun	agent_turn_step.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	agent_turn_step.go::chainNeutralTools	agent_turn_step.go	421	chainNeutralTools	var	agentrun	turnstep	context_limits.go	runtime/exec/turnstep	DM2-gated	not receiver inventory row	-	-
 declaration	agent_turn_step.go::turnStream.recordChainEvidence	agent_turn_step.go	435	turnStream.recordChainEvidence	method	agentrun	agentrun	agent_turn_step.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
@@ -2087,15 +2087,15 @@ declaration	coordinator.go::errFastModelNotSelected	coordinator.go	51	errFastMod
 declaration	coordinator.go::errSmartModelProviderNotConfigured	coordinator.go	52	errSmartModelProviderNotConfigured	var	coord	coord	coordinator.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	coordinator.go::errFastModelProviderNotConfigured	coordinator.go	53	errFastModelProviderNotConfigured	var	coord	coord	coordinator.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	coordinator.go::errProviderPeakHours	coordinator.go	60	errProviderPeakHours	var	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError	coordinator.go	70	PeakHoursError	type	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.ProviderID	coordinator.go	71	PeakHoursError.ProviderID	field	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.End	coordinator.go	72	PeakHoursError.End	field	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.Start	coordinator.go	72	PeakHoursError.Start	field	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.ReopensAt	coordinator.go	73	PeakHoursError.ReopensAt	field	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.Message	coordinator.go	76	PeakHoursError.Message	field	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.Timezone	coordinator.go	79	PeakHoursError.Timezone	field	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.Error	coordinator.go	82	PeakHoursError.Error	method	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
-declaration	coordinator.go::PeakHoursError.Unwrap	coordinator.go	97	PeakHoursError.Unwrap	method	coord	usage	quota_limits.go	runtime/policy/usage	DM3	not receiver inventory row	-	-
+declaration	coordinator.go::PeakHoursError	coordinator.go	70	PeakHoursError	type alias	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	retired root alias	-	Root alias retired; canonical usage.PeakHoursError in quota_peak_hours.go.
+declaration	coordinator.go::PeakHoursError.ProviderID	coordinator.go	71	PeakHoursError.ProviderID	field	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.End	coordinator.go	72	PeakHoursError.End	field	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.Start	coordinator.go	72	PeakHoursError.Start	field	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.ReopensAt	coordinator.go	73	PeakHoursError.ReopensAt	field	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.Message	coordinator.go	76	PeakHoursError.Message	field	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.Timezone	coordinator.go	79	PeakHoursError.Timezone	field	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.Error	coordinator.go	82	PeakHoursError.Error	method	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
+declaration	coordinator.go::PeakHoursError.Unwrap	coordinator.go	97	PeakHoursError.Unwrap	method	coord	usage	quota_peak_hours.go	runtime/policy/usage	DM7-C1	historical selector	-	-
 declaration	coordinator.go::maxConsecutiveAutoResumes	coordinator.go	102	maxConsecutiveAutoResumes	const	coord	drainctl	drain_pacing.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
 declaration	coordinator.go::coordinator	coordinator.go	104	coordinator	type	coord	coord	coordinator_core.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	coordinator.go::coordinator.cfg	coordinator.go	105	coordinator.cfg	field	coord	coord	coordinator_core.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
@@ -2302,12 +2302,7 @@ declaration	coordinator_drain_policy.go::drainAllow	coordinator_drain_policy.go	
 declaration	coordinator_drain_policy.go::drainDeferred	coordinator_drain_policy.go	24	drainDeferred	const	coord	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	coordinator_drain_policy.go::drainPaced	coordinator_drain_policy.go	27	drainPaced	const	coord	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	coordinator_drain_policy.go::drainStuck	coordinator_drain_policy.go	30	drainStuck	const	coord	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
-declaration	coordinator_drain_policy.go::drainVerdict	coordinator_drain_policy.go	35	drainVerdict	type	coord	drainctl	drain_glue.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	coordinator_drain_policy.go::drainVerdict.kind	coordinator_drain_policy.go	36	drainVerdict.kind	field	coord	drainctl	drain_glue.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	coordinator_drain_policy.go::drainVerdict.retryAt	coordinator_drain_policy.go	37	drainVerdict.retryAt	field	coord	drainctl	drain_glue.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	coordinator_drain_policy.go::drainVerdict.recheck	coordinator_drain_policy.go	38	drainVerdict.recheck	field	coord	drainctl	drain_glue.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	coordinator_drain_policy.go::drainVerdict.reason	coordinator_drain_policy.go	39	drainVerdict.reason	field	coord	drainctl	drain_glue.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	coordinator_drain_policy.go::drainVerdict.err	coordinator_drain_policy.go	41	drainVerdict.err	field	coord	drainctl	drain_glue.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
+declaration	drain_policy_component.go::drainVerdict	drain_policy_component.go	29	drainVerdict	type alias	coord	drainctl	turn_arbiter.go	runtime/exec/drainctl	DM7-C1	retained/root alias to existing drainctl.DrainVerdict	-	Root private carrier removed; alias points to pre-existing drainctl.DrainVerdict; no duplicate leaf declaration.
 declaration	coordinator_drain_policy.go::coordinator.arbiterVerdict	coordinator_drain_policy.go	54	coordinator.arbiterVerdict	method	coord	coord	drain_glue.go	runtime/coord	DM7-gated	c		runtime/coord/drain_glue.go
 declaration	coordinator_drain_policy.go::drainVerdictOf	coordinator_drain_policy.go	70	drainVerdictOf	func	coord	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
 declaration	coordinator_drain_policy.go::unreadablePolicyInput	coordinator_drain_policy.go	89	unreadablePolicyInput	func	coord	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
@@ -2904,26 +2899,26 @@ declaration	drain_attempt.go::DrainNotAttemptedError.Unwrap	drain_attempt.go	84	
 declaration	drain_attempt.go::DrainNotAttemptedError.Is	drain_attempt.go	85	DrainNotAttemptedError.Is	method	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
 declaration	drain_attempt.go::IsDrainNotAttempted	drain_attempt.go	91	IsDrainNotAttempted	func	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
 declaration	drain_attempt.go::notAttempted	drain_attempt.go	95	notAttempted	func	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt	drain_attempt.go	103	drainAttempt	type	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.sessionID	drain_attempt.go	104	drainAttempt.sessionID	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.hintAt	drain_attempt.go	107	drainAttempt.hintAt	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.snapshot	drain_attempt.go	110	drainAttempt.snapshot	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.outcome	drain_attempt.go	111	drainAttempt.outcome	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.pendingLeft	drain_attempt.go	113	drainAttempt.pendingLeft	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.commitNo	drain_attempt.go	115	drainAttempt.commitNo	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.stalled	drain_attempt.go	117	drainAttempt.stalled	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.capAbort	drain_attempt.go	119	drainAttempt.capAbort	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.turnCtxDone	drain_attempt.go	124	drainAttempt.turnCtxDone	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.streamErr	drain_attempt.go	128	drainAttempt.streamErr	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.provider	drain_attempt.go	133	drainAttempt.provider	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.credentialed	drain_attempt.go	134	drainAttempt.credentialed	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.chainIdleClaims	drain_attempt.go	141	drainAttempt.chainIdleClaims	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.chainProgress	drain_attempt.go	142	drainAttempt.chainProgress	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.chainBatchRoots	drain_attempt.go	149	drainAttempt.chainBatchRoots	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.batchSnapshot	drain_attempt.go	156	drainAttempt.batchSnapshot	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.batchCaptured	drain_attempt.go	157	drainAttempt.batchCaptured	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.batchDebtCallIDs	drain_attempt.go	161	drainAttempt.batchDebtCallIDs	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
-declaration	drain_attempt.go::drainAttempt.closed	drain_attempt.go	162	drainAttempt.closed	field	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
+declaration	drain_component.go::drainAttempt	drain_component.go	185	drainAttempt	type alias	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	retained alias; leaf canonical owner	-	Root drainAttempt alias in drain_component.go:185 targets the existing drainctl.DrainAttempt declaration in runtime/exec/drainctl/drain_attempt_record.go; not a separate moved field declaration.
+declaration	drain_component.go::drainAttempt.sessionID	drain_component.go	188	DrainAttempt.SessionID	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.hintAt	drain_component.go	191	DrainAttempt.HintAt	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.snapshot	drain_component.go	194	DrainAttempt.Snapshot	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.outcome	drain_component.go	195	DrainAttempt.Outcome	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.pendingLeft	drain_component.go	197	DrainAttempt.PendingLeft	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.commitNo	drain_component.go	199	DrainAttempt.CommitNo	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.stalled	drain_component.go	201	DrainAttempt.Stalled	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.capAbort	drain_component.go	203	DrainAttempt.CapAbort	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.turnCtxDone	drain_component.go	208	DrainAttempt.TurnCtxDone	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.streamErr	drain_component.go	212	DrainAttempt.StreamErr	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.provider	drain_component.go	217	DrainAttempt.Provider	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.credentialed	drain_component.go	218	DrainAttempt.Credentialed	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.chainIdleClaims	drain_component.go	225	DrainAttempt.ChainIdleClaims	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.chainProgress	drain_component.go	226	DrainAttempt.ChainProgress	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.chainBatchRoots	drain_component.go	233	DrainAttempt.ChainBatchRoots	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.batchSnapshot	drain_component.go	240	DrainAttempt.BatchSnapshot	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.batchCaptured	drain_component.go	241	DrainAttempt.BatchCaptured	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.batchDebtCallIDs	drain_component.go	245	DrainAttempt.BatchDebtCallIDs	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
+declaration	drain_component.go::drainAttempt.closed	drain_component.go	246	DrainAttempt.Closed	field	agentrun	drainctl	drain_attempt_record.go	runtime/exec/drainctl	DM7-C1	moved	-	-
 declaration	drain_attempt.go::sessionAgent.newDrainAttempt	drain_attempt.go	167	sessionAgent.newDrainAttempt	method	drainctl	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	c		runtime/exec/agentrun/drain_methods.go
 declaration	drain_attempt.go::sessionAgent.closeDrainAttempt	drain_attempt.go	181	sessionAgent.closeDrainAttempt	method	drainctl	agentrun	drain_methods.go	runtime/exec/agentrun	DM7-gated	c		runtime/exec/agentrun/drain_methods.go
 declaration	drain_attempt.go::drainAttempt.failure	drain_attempt.go	197	drainAttempt.failure	method	drainctl	drainctl	drain_attempt.go	runtime/exec/drainctl	DM2-gated	not receiver inventory row	-	-
@@ -3603,7 +3598,7 @@ declaration	stream_watchdog.go::startStreamWatchdog	stream_watchdog.go	195	start
 declaration	stream_watchdog.go::watchdogFinishMessage	stream_watchdog.go	519	watchdogFinishMessage	func	watchdog	watchdog	stream_watchdog.go	runtime/exec/watchdog	DM1	not receiver inventory row	-	-
 declaration	stream_watchdog.go::composeWatchdogFinishBody	stream_watchdog.go	544	composeWatchdogFinishBody	func	watchdog	watchdog	stream_watchdog.go	runtime/exec/watchdog	DM1	not receiver inventory row	-	-
 declaration	stream_watchdog.go::watchdogToolResultMessage	stream_watchdog.go	566	watchdogToolResultMessage	func	watchdog	watchdog	stream_watchdog.go	runtime/exec/watchdog	DM1	not receiver inventory row	-	-
-declaration	supervision.go::noticeKindSupervision	supervision.go	34	noticeKindSupervision	const	coord	sessionprompt	notice_kinds.go	runtime/exec/sessionprompt	DM1	not receiver inventory row	-	-
+declaration	supervision.go::noticeKindSupervision	supervision.go	34	noticeKindSupervision	const	coord	sessionprompt	notice_kinds.go	runtime/exec/sessionprompt	DM1	retired root alias	-	-
 declaration	supervision.go::supervisionDefaultInterval	supervision.go	43	supervisionDefaultInterval	const	coord	coord	supervision.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	supervision.go::supervisionMaxInterval	supervision.go	44	supervisionMaxInterval	const	coord	coord	supervision.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
 declaration	supervision.go::supervisionMaxNoProgress	supervision.go	45	supervisionMaxNoProgress	const	coord	coord	supervision.go	runtime/coord	DM7-gated	not receiver inventory row	-	-

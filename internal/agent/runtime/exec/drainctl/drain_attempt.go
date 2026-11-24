@@ -337,8 +337,6 @@ type AttemptGovernor interface {
 	// Pace writes the launch gate (arbiter pace); it reports whether the
 	// write turned the gate dormant.
 	Pace(sid string, hintAt uint64, wait time.Duration, hintOpens bool, kind Pace) (becameDormant bool)
-	// ChainLink records the reaction-chain link of the attempt's leg; the
-	// governor side reads the attempt record itself.
 	ChainLink(sid string, snap session.BatchDebtSnapshot)
 	// ResetGate opens the launch gate.
 	ResetGate(sid string)
@@ -369,7 +367,7 @@ type AttemptRecord struct {
 	Outcome     DrainOutcome
 	PendingLeft bool
 	// CommitNoRecheck is the no-turn commit verdict's recheck question
-	// (att.commitNo.recheck).
+	// (att.CommitNo.Recheck).
 	CommitNoRecheck bool
 	// StreamErr is the error agent.Stream returned (read once, up front,
 	// as the leg's failure when the turn loop reported none).

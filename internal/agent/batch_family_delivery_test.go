@@ -17,6 +17,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -189,7 +190,7 @@ func newTestDelivery(done batchDoneSource) (*batchDeliveryImpl, *countingElector
 // delegated child turn completes.
 func TestBatchWorkFamilyDeliveryArming(t *testing.T) {
 	t.Parallel()
-	names := []string{tools.BashToolName, AgentToolName, tools.AgenticFetchToolName, "view"}
+	names := []string{tools.BashToolName, modelkit.AgentToolName, tools.AgenticFetchToolName, "view"}
 	for _, deferred := range []bool{true, false} {
 		t.Run(fmt.Sprintf("deferred=%v", deferred), func(t *testing.T) {
 			t.Parallel()
@@ -213,7 +214,7 @@ func TestBatchWorkFamilyDeliveryArming(t *testing.T) {
 			require.Equal(t, installwire.InlineWindow.String(), bashInv.Delivery.Window)
 
 			// FIRST assertion: the delegation families are DETACHED.
-			for _, name := range []string{AgentToolName, tools.AgenticFetchToolName} {
+			for _, name := range []string{modelkit.AgentToolName, tools.AgenticFetchToolName} {
 				ing := armed[name]
 				require.NotNil(t, ing, "%s must be armed", name)
 				inv := ing.Inv.(batchInvocationSpec).inv

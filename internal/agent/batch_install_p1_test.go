@@ -24,6 +24,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -338,7 +339,7 @@ func TestBatchLoadDoneWithoutLiveHandle(t *testing.T) {
 // the pre-fix driver named every call "agent", so the agentic_fetch leaf
 // never ran.
 func TestBatchAgentRouterDispatchesByRecordedTool(t *testing.T) {
-	agentLeaf := &countingTool{name: AgentToolName}
+	agentLeaf := &countingTool{name: modelkit.AgentToolName}
 	fetchLeaf := &countingTool{name: "agentic_fetch"}
 	env := newBatchP1Env(t, agentLeaf, fetchLeaf)
 
@@ -356,7 +357,7 @@ func TestBatchAgentRouterDispatchesByRecordedTool(t *testing.T) {
 	deps := CoordinatorBatchAgentDeps()
 	deps.Descendants = batchCompleteDescendantsReader{}
 	executor := newBatchExecutor(batchLeafEnv{Leaves: env.registries.Resolve, DiskBindings: env.install.DiskBindings}, newBatchExecutorFamilies(deps))
-	for _, name := range []string{AgentToolName, "agentic_fetch"} {
+	for _, name := range []string{modelkit.AgentToolName, "agentic_fetch"} {
 		payload, err := json.Marshal(batchLeafPayload{
 			Tool: name, ToolCallID: "call-" + name, SessionID: env.sessionID,
 			Input: json.RawMessage(`{"prompt":"hi"}`), RegistryID: env.registryID,

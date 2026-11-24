@@ -9,6 +9,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -39,7 +40,7 @@ var reviewerLeakedToolNames = []string{
 	tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName,
 	tools.DownloadToolName, tools.FetchToolName,
 	tools.TodosToolName, tools.AskQuestionToolName,
-	AgentToolName, "job_output", "job_kill", // deleted legacy controls must stay absent
+	modelkit.AgentToolName, "job_output", "job_kill", // deleted legacy controls must stay absent
 	tools.FSWriteToolName, tools.FSReplaceToolName, tools.FSWriteLinesToolName, tools.FSDeleteToolName,
 	tools.InspectAgentToolName, tools.InjectAgentToolName, tools.StopAgentToolName,
 	tools.SourcegraphToolName, tools.RushLogsToolName, tools.RushInfoToolName,

@@ -9,6 +9,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy/providers/openai"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -228,7 +229,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 		for _, name := range readOnlyTools {
 			assert.Contains(t, names, name, "read-only tool %q must still be present", name)
 		}
-		assert.NotContains(t, names, AgentToolName, "sub-agent must never get the agent tool")
+		assert.NotContains(t, names, modelkit.AgentToolName, "sub-agent must never get the agent tool")
 	})
 
 	activeSmartRoles := []config.SelectedModelType{"", config.SelectedModelTypeSmart}
@@ -250,7 +251,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 			for _, name := range readOnlyTools {
 				assert.Contains(t, names, name, "read-only tool %q must still be present for the worker", name)
 			}
-			assert.NotContains(t, names, AgentToolName, "worker must not get the agent tool: recursion guard against sub-workers spawning sub-workers")
+			assert.NotContains(t, names, modelkit.AgentToolName, "worker must not get the agent tool: recursion guard against sub-workers spawning sub-workers")
 			assert.Contains(t, names, tools.AskQuestionToolName, "worker must get ask_question now that runSubAgent frames a sub-agent question as a successful, resumable tool result instead of a generic error (see subAgentQuestionText in question_stop.go and the resume_session_id path in runSubAgent)")
 		})
 	}
@@ -293,7 +294,7 @@ func TestBuildTools_WorkerToolset(t *testing.T) {
 // non-smart role (fast/worker/reviewer), keeps the edit tools.
 func TestBuildTools_OrchestratorEditToolsStripped(t *testing.T) {
 	editTools := []string{"edit", "multiedit", "write"}
-	keptTools := []string{"bash", "glob", "grep", "ls", "sourcegraph", "view", AgentToolName}
+	keptTools := []string{"bash", "glob", "grep", "ls", "sourcegraph", "view", modelkit.AgentToolName}
 
 	buildCoderToolNames := func(t *testing.T, coord *coordinator) []string {
 		t.Helper()
@@ -410,7 +411,7 @@ func TestBuildTools_WorkerResolvedToolsetByName(t *testing.T) {
 	for _, name := range expected {
 		assert.Contains(t, names, name, "worker must have %q in its resolved toolset", name)
 	}
-	assert.NotContains(t, names, AgentToolName, "worker must never get the agent tool (recursion guard)")
+	assert.NotContains(t, names, modelkit.AgentToolName, "worker must never get the agent tool (recursion guard)")
 }
 
 // TestBuildToolsAgentConfig_UnconditionalApplicationWouldBreakBackwardCompat

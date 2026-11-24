@@ -10,6 +10,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
@@ -159,7 +160,7 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 	// the no-progress pause after 6 ticks never arrives.
 	coord := a.coord
 	for i, m := range pulled {
-		if m.NoticeKind == noticeKindSupervision {
+		if m.NoticeKind == sessionprompt.NoticeKindSupervision {
 			continue
 		}
 		if claims[i] != "" && coord != nil && coord.reactionChainHasClaim(sessionID, claims[i]) {

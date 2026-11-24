@@ -63,8 +63,8 @@ func (a *arbiter) resetGate(sid string) { a.ResetGate(sid) }
 
 func (a *arbiter) resetForHumanMessage(sid string) string { return a.ResetForHumanMessage(sid) }
 
-func (a *arbiter) chainLink(sid string, att *drainAttempt, snap session.BatchDebtSnapshot) {
-	a.ChainLink(sid, att.chainProgress, att.chainIdleClaims, att.chainBatchRoots, att.batchDebtCallIDs, att.batchSnapshot)
+func (a *arbiter) chainLink(sid string, att *drainctl.DrainAttempt, snap session.BatchDebtSnapshot) {
+	a.ChainLink(sid, att.ChainProgress, att.ChainIdleClaims, att.ChainBatchRoots, att.BatchDebtCallIDs, att.BatchSnapshot)
 }
 
 func (a *arbiter) chainLastLaunch(sid, command string) bool {

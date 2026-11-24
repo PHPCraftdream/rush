@@ -2,7 +2,7 @@ package agent
 
 // Regression coverage for the operator's peak-hours message
 // (config.PeakHoursWindow.Message) along the refusal chain: config window →
-// checkPeakHours / checkLivePeakHours → *PeakHoursError → guidance text.
+// checkPeakHours / checkLivePeakHours → *usage.PeakHoursError → guidance text.
 // The mid-turn watcher leg was removed in task #56: the gate is pre-flight
 // only, and a window opening mid-turn never aborts a running stream.
 
@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -24,8 +25,8 @@ func TestCheckPeakHours_CarriesOperatorMessage(t *testing.T) {
 	w.Message = regressionPeakMessage
 
 	err := checkPeakHours(config.ProviderConfig{ID: "zai", PeakHours: &config.ProviderPeakHours{Legacy: w}})
-	var pe *PeakHoursError
-	require.True(t, errors.As(err, &pe), "refusal must be a *PeakHoursError")
+	var pe *usage.PeakHoursError
+	require.True(t, errors.As(err, &pe), "refusal must be a *usage.PeakHoursError")
 	require.Equal(t, regressionPeakMessage, pe.Message, "the window's message must reach the error")
 	require.Contains(t, PeakHoursGuidance(err), regressionPeakMessage, "guidance must append the operator message")
 }
@@ -55,7 +56,7 @@ func TestCheckLivePeakHours_CarriesMessageFromEditedConfig(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath, []byte(fmt.Sprintf(base, peak)), 0o600))
 
 	err = coord.checkLivePeakHours("custom")
-	var pe *PeakHoursError
-	require.True(t, errors.As(err, &pe), "mid-session window must refuse with *PeakHoursError, got %v", err)
+	var pe *usage.PeakHoursError
+	require.True(t, errors.As(err, &pe), "mid-session window must refuse with *usage.PeakHoursError, got %v", err)
 	require.Equal(t, regressionPeakMessage, pe.Message)
 }

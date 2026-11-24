@@ -12,6 +12,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -128,7 +129,7 @@ func prepareBatchLeaf(ctx context.Context, env batchLeafEnv, raw json.RawMessage
 	if err := json.Unmarshal(raw, &p); err != nil || p.Tool == "" || p.SessionID == "" {
 		return p, nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, errors.New("payload needs tool, session_id and input"))
 	}
-	if p.Tool == AgentToolName {
+	if p.Tool == modelkit.AgentToolName {
 		if err := validateAgentRoleInput(p.Input); err != nil {
 			return p, nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, err)
 		}
@@ -157,7 +158,7 @@ func prepareBatchLeaf(ctx context.Context, env batchLeafEnv, raw json.RawMessage
 		if err := p.SelectedRoleContract.Validate(); err != nil {
 			return p, nil, batchdispatch.NewStartError(batchdispatch.CodeBadPayload, fmt.Errorf("invalid admitted role contract: %w", err))
 		}
-		if p.Tool != AgentToolName || p.SelectedRoleContract.Name == "" || !batchinst.RoleContractInherits(p.SelectedRoleContract, func() *session.RoleContract {
+		if p.Tool != modelkit.AgentToolName || p.SelectedRoleContract.Name == "" || !batchinst.RoleContractInherits(p.SelectedRoleContract, func() *session.RoleContract {
 			if p.Policy == nil {
 				return nil
 			}

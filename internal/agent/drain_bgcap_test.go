@@ -111,8 +111,8 @@ func TestBGShellCap_ExactlyFiveAutoResumes(t *testing.T) {
 	f.pass(ctx)
 	require.EqualValues(t, maxConsecutiveAutoResumes, runs.runs.Load(), "a re-check must not launch an over-cap row")
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
-	require.Equal(t, drainDeferred, v.kind)
-	require.Contains(t, v.reason, "cap reached")
+	require.Equal(t, drainDeferred, v.Kind)
+	require.Contains(t, v.Reason, "cap reached")
 
 	f.coord.ResetAutoResumeCounter(f.sessID)
 	require.Zero(t, f.coord.bgShellOverCapCount(f.sessID), "a human message clears the over-cap ids too")
@@ -139,7 +139,7 @@ func TestBGShellCap_SpentSlotsBehindAPauseAreRetriedAndClosed(t *testing.T) {
 	f.complete() // slot 1: its Drain reaches the provider, nothing reacted
 	require.EqualValues(t, 1, runs.runs.Load())
 	require.EqualValues(t, 1, f.maxNoticeAttempts(ctx))
-	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind)
+	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).Kind)
 
 	for range maxConsecutiveAutoResumes - 1 {
 		f.complete() // slots 2-5: the gate is paced, nothing is submitted
@@ -477,8 +477,8 @@ func TestBGShellCap_OverCapCompletionInTheSeamIsKeptAndDefers(t *testing.T) {
 	require.True(t, deferred, "the debt is entirely over-cap completions: defer, not VRun")
 	require.EqualValues(t, 1, f.coord.bgShellOverCapCount(f.sessID), "the completion's mark is not pruned by the stale read")
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
-	require.Equal(t, drainDeferred, v.kind)
-	require.Contains(t, v.reason, "cap reached")
+	require.Equal(t, drainDeferred, v.Kind)
+	require.Contains(t, v.Reason, "cap reached")
 }
 
 // The completion's row insert and its slot decision are ONE step for the cap
@@ -576,8 +576,8 @@ func TestDrainPolicy_CapStateUnreadableFailsClosed(t *testing.T) {
 
 	v := f.coord.drainPolicy(ctx, f.sessID, false)
 
-	require.Equal(t, drainDeferred, v.kind, "an unreadable cap state must never allow a Drain")
-	require.True(t, v.recheck)
-	require.Error(t, v.err)
-	require.Equal(t, "launch decision input unreadable", v.reason)
+	require.Equal(t, drainDeferred, v.Kind, "an unreadable cap state must never allow a Drain")
+	require.True(t, v.Recheck)
+	require.Error(t, v.Err)
+	require.Equal(t, "launch decision input unreadable", v.Reason)
 }

@@ -28,12 +28,12 @@ func TestHintSweep_KeepsCounterBehindDormantGate(t *testing.T) {
 
 	require.Equal(t, uint64(1), f.coord.driverHints.hintSeqOf(f.sessID),
 		"the sweep must keep the hint counter while the gate records HintSeen")
-	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind,
+	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).Kind,
 		"no newer fact arrived: the dormant gate must stay shut")
 
 	// A genuinely newer fact (a real counter increment past HintSeen) still
 	// reopens the gate: keeping the counter never freezes it.
 	f.coord.driverHints.bumpHint(f.sessID)
-	require.Equal(t, drainAllow, f.coord.drainPermitted(ctx, f.sessID, false).kind,
+	require.Equal(t, drainAllow, f.coord.drainPermitted(ctx, f.sessID, false).Kind,
 		"a genuinely newer fact reopens a free-dormant gate")
 }

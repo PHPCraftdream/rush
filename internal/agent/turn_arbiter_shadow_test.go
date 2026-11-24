@@ -31,15 +31,15 @@ type shadowReport struct {
 }
 
 func shadowVerdictWord(v drainVerdict) string {
-	switch v.kind {
+	switch v.Kind {
 	case drainAllow:
 		return "run"
 	case drainPaced:
-		return "deferred(paced): " + v.reason
+		return "deferred(paced): " + v.Reason
 	case drainDeferred:
-		return "deferred: " + v.reason
+		return "deferred: " + v.Reason
 	default:
-		return "deferred(stuck): " + v.reason
+		return "deferred(stuck): " + v.Reason
 	}
 }
 
@@ -302,7 +302,7 @@ func TestShadow_OverCapBGShellDebt(t *testing.T) {
 	facts := mustFacts(ctx, t, f, f.sessID, siteFact)
 	require.Equal(t, VRun, decide(facts).Kind)
 	cv := f.coord.drainPermitted(ctx, f.sessID, true)
-	require.Equal(t, drainAllow, cv.kind)
+	require.Equal(t, drainAllow, cv.Kind)
 }
 
 // TestShadow_ForeignLiveDriver: a second live host (its own store, its own

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -148,7 +149,7 @@ func (b *BatchCLIBuilder) translate(ctx context.Context, bind batchCLIBinding, s
 			return jobbatch.Spec{}, fmt.Errorf("batch CLI: tool %q is unavailable or control-plane; use a supported work tool", task.Tool)
 		}
 		var selectedRoleContract *session.RoleContract
-		if task.Tool == AgentToolName {
+		if task.Tool == modelkit.AgentToolName {
 			if err := validateAgentRoleInput(task.Input); err != nil {
 				return jobbatch.Spec{}, err
 			}

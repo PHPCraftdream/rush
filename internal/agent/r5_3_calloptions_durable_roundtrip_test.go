@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -121,7 +122,7 @@ func TestRebuildSessionAgentCall_RestoresFullCallOptions(t *testing.T) {
 	for _, tl := range pinnedTools {
 		names = append(names, tl.Info().Name)
 	}
-	assert.NotContains(t, names, AgentToolName,
+	assert.NotContains(t, names, modelkit.AgentToolName,
 		"DisableSubAgents must survive the rebuild and strip the agent tool from the pinned toolset")
 	assert.NotContains(t, names, "agentic_fetch",
 		"DisableSubAgents must survive the rebuild and strip agentic_fetch from the pinned toolset")
@@ -200,6 +201,6 @@ func TestRebuildSessionAgentCall_CallOptionsSpecAloneWithoutFolderScope(t *testi
 	for _, tl := range pinnedTools {
 		names = append(names, tl.Info().Name)
 	}
-	assert.NotContains(t, names, AgentToolName)
+	assert.NotContains(t, names, modelkit.AgentToolName)
 	assert.NotContains(t, names, "agentic_fetch")
 }

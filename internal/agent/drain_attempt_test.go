@@ -261,8 +261,8 @@ func TestSettleDrainDebt_MarkerNamesSnapshotToolCallIDs(t *testing.T) {
 	batchSnap, batchCaptured := a1CaptureDebtSnapshot(t, f, ctx)
 	require.Len(t, batchSnap.Nodes, 2)
 	f.coord.accountDrainAttempt(ctx, &drainAttempt{
-		sessionID: f.sessID, snapshot: batchSnap,
-		batchSnapshot: batchSnap, batchCaptured: batchCaptured, outcome: drainAttempted,
+		SessionID: f.sessID, Snapshot: batchSnap,
+		BatchSnapshot: batchSnap, BatchCaptured: batchCaptured, Outcome: drainAttempted,
 	}, boom)
 
 	notices, err := f.store.ListSessionNotices(ctx, f.sessID)
@@ -298,10 +298,10 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	require.False(t, f.coord.arb.pace(f.sessID, 0, time.Hour, false, drainctl.PacePaidUnreacted))
 
 	att := &drainAttempt{
-		sessionID: f.sessID, snapshot: batchSnap,
-		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
-		outcome:  drainNoTurn,
-		commitNo: drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
+		SessionID: f.sessID, Snapshot: batchSnap,
+		BatchSnapshot: batchSnap, BatchCaptured: batchCaptured,
+		Outcome:  drainNoTurn,
+		CommitNo: drainctl.DrainVerdict{Kind: drainPaced, Recheck: true, Reason: "retry pause after an unreacted attempt"},
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)
 
@@ -316,10 +316,10 @@ func TestDrainAttempt_CommitRefusalKeepsTheGateAndRechecks(t *testing.T) {
 	delete(f.coord.recheckSet, f.sessID)
 	f.coord.recheckMu.Unlock()
 	att = &drainAttempt{
-		sessionID: f.sessID, snapshot: batchSnap,
-		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
-		outcome:  drainNoTurn,
-		commitNo: drainVerdict{kind: drainDeferred, reason: "automatic turns suspended"},
+		SessionID: f.sessID, Snapshot: batchSnap,
+		BatchSnapshot: batchSnap, BatchCaptured: batchCaptured,
+		Outcome:  drainNoTurn,
+		CommitNo: drainctl.DrainVerdict{Kind: drainDeferred, Reason: "automatic turns suspended"},
 	}
 	f.coord.accountDrainAttempt(ctx, att, nil)
 	require.False(t, f.inRecheckSet())

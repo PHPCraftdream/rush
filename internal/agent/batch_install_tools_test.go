@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
@@ -315,7 +316,7 @@ func TestAgentDriverRunsPinnedLeaf(t *testing.T) {
 		NodeID: "n1", Token: 1, SessionID: "child-1", ToolCallID: "call-a",
 		// Round-2 P1-3: the driver fails closed on an empty Tool — dispatch
 		// is by the RECORDED tool name.
-		Tool: AgentToolName, Input: []byte(`{"prompt":"hi"}`),
+		Tool: modelkit.AgentToolName, Input: []byte(`{"prompt":"hi"}`),
 		RegistryID: "reg-1", MessageID: "msg-1",
 	}, childagent.Host{})
 	if err != nil {

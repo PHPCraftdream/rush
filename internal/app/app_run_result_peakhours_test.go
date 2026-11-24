@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,7 +16,7 @@ import (
 // both for a pre-flight refusal and for a mid-turn stop (whose run error is
 // the watcher's *PeakHoursError, wrapped by the run loop).
 func TestBuildRunResult_PeakHoursErrorCarriesOperatorMessage(t *testing.T) {
-	pe := &agent.PeakHoursError{
+	pe := &usage.PeakHoursError{
 		ProviderID: "zai",
 		Start:      "20:00",
 		End:        "23:59",

@@ -22,6 +22,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	agenttools "github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -149,14 +150,14 @@ func TestResolveSessionModels_PinsPerCallDisableSubAgents(t *testing.T) {
 	require.NotNil(t, pinnedBanned.tools, "the banned call must get a pinned toolset")
 
 	namesBanned := pinnedToolNames(pinnedBanned.tools)
-	assert.NotContains(t, namesBanned, AgentToolName, "DisableSubAgents must strip the agent tool from the pinned set")
+	assert.NotContains(t, namesBanned, modelkit.AgentToolName, "DisableSubAgents must strip the agent tool from the pinned set")
 	assert.NotContains(t, namesBanned, "agentic_fetch", "DisableSubAgents must strip agentic_fetch from the pinned set")
 	assert.Contains(t, namesBanned, "bash", "unrelated tools must survive the per-call filter")
 
 	pinnedAllowed, err := coord.resolveSessionModels(ctxAllowed, sess.ID)
 	require.NoError(t, err)
 	namesAllowed := pinnedToolNames(pinnedAllowed.tools)
-	assert.Contains(t, namesAllowed, AgentToolName, "the allowed call keeps the agent tool")
+	assert.Contains(t, namesAllowed, modelkit.AgentToolName, "the allowed call keeps the agent tool")
 	assert.Contains(t, namesAllowed, "agentic_fetch", "the allowed call keeps agentic_fetch")
 
 	// Isolation: resolving for the banned policy again — AFTER the allowed
@@ -164,7 +165,7 @@ func TestResolveSessionModels_PinsPerCallDisableSubAgents(t *testing.T) {
 	pinnedBanned2, err := coord.resolveSessionModels(ctxBanned, sess.ID)
 	require.NoError(t, err)
 	namesBanned2 := pinnedToolNames(pinnedBanned2.tools)
-	assert.NotContains(t, namesBanned2, AgentToolName, "resolving for another policy must not bleed into the banned call")
+	assert.NotContains(t, namesBanned2, modelkit.AgentToolName, "resolving for another policy must not bleed into the banned call")
 	assert.NotContains(t, namesBanned2, "agentic_fetch")
 
 	// THE KEY ASSERTION: resolveSessionModels must never publish to the
@@ -292,7 +293,7 @@ func TestResolveSessionModels_RolePolicyAgreesAcrossPromptModelAndTools(t *testi
 		assert.NotContains(t, names, "edit", "per-call smart + worker configured => orchestrator strip")
 		assert.NotContains(t, names, "multiedit")
 		assert.NotContains(t, names, "write")
-		assert.Contains(t, names, AgentToolName, "the orchestrator keeps the agent tool")
+		assert.Contains(t, names, modelkit.AgentToolName, "the orchestrator keeps the agent tool")
 		assert.Contains(t, pinned.systemPrompt, "Orchestrator mode",
 			"per-call smart prompt IS an orchestrator prompt; tools must agree")
 	})
@@ -355,7 +356,7 @@ func TestUpdateModels_NeverPublishesPerCallToolFilter(t *testing.T) {
 
 	names, _ := rec.snapshot()
 	require.Len(t, names, 1, "UpdateModels must publish exactly one global toolset")
-	assert.Contains(t, names[0], AgentToolName, "the per-call DisableSubAgents filter must NOT be applied to the global publish")
+	assert.Contains(t, names[0], modelkit.AgentToolName, "the per-call DisableSubAgents filter must NOT be applied to the global publish")
 	assert.Contains(t, names[0], "agentic_fetch", "the per-call filter must NOT strip agentic_fetch from the global publish")
 }
 
@@ -646,7 +647,7 @@ func TestRunWithCredentials_PinsPerCallTools(t *testing.T) {
 	})
 	require.NotNil(t, banned, "RunWithCredentials must pin a per-call toolset; nil makes runTurn fall back to the shared slice")
 	namesBanned := pinnedToolNames(banned)
-	assert.NotContains(t, namesBanned, AgentToolName, "DisableSubAgents must strip the agent tool from the pinned set")
+	assert.NotContains(t, namesBanned, modelkit.AgentToolName, "DisableSubAgents must strip the agent tool from the pinned set")
 	assert.NotContains(t, namesBanned, "agentic_fetch", "DisableSubAgents must strip agentic_fetch from the pinned set")
 	assert.Contains(t, namesBanned, "bash", "unrelated tools must survive the per-call filter")
 
@@ -657,7 +658,7 @@ func TestRunWithCredentials_PinsPerCallTools(t *testing.T) {
 		return err
 	})
 	namesAllowed := pinnedToolNames(allowed)
-	assert.Contains(t, namesAllowed, AgentToolName, "the allowed call keeps the agent tool")
+	assert.Contains(t, namesAllowed, modelkit.AgentToolName, "the allowed call keeps the agent tool")
 	assert.Contains(t, namesAllowed, "agentic_fetch", "the allowed call keeps agentic_fetch")
 
 	// Role policy: an explicit smart role with a worker configured is an
@@ -673,7 +674,7 @@ func TestRunWithCredentials_PinsPerCallTools(t *testing.T) {
 	assert.NotContains(t, namesOrchestrator, "edit", "per-call smart + worker configured => orchestrator strip")
 	assert.NotContains(t, namesOrchestrator, "multiedit")
 	assert.NotContains(t, namesOrchestrator, "write")
-	assert.Contains(t, namesOrchestrator, AgentToolName, "the orchestrator keeps the agent tool")
+	assert.Contains(t, namesOrchestrator, modelkit.AgentToolName, "the orchestrator keeps the agent tool")
 }
 
 // ---- per-call folder-scope toolset (T8) ----
@@ -748,7 +749,7 @@ func TestFolderScope_PinsPerCallScopedToolsetWithoutCrossContamination(t *testin
 
 	assertToolsContain(t, namesScoped,
 		"fs_list", "fs_find", "fs_grep", "fs_read",
-		AgentToolName, "todos", "ask_question")
+		modelkit.AgentToolName, "todos", "ask_question")
 	assertToolsOmit(t, namesScoped,
 		// legacy file tools
 		"view", "glob", "grep", "ls", "write", "edit", "multiedit",
@@ -830,7 +831,7 @@ func TestUpdateModels_NeverPublishesFolderScopeFilter(t *testing.T) {
 
 	names, _ := rec.snapshot()
 	require.Len(t, names, 1, "UpdateModels must publish exactly one global toolset")
-	assert.Contains(t, names[0], AgentToolName, "the per-call folder-scope filter must NOT be applied to the global publish")
+	assert.Contains(t, names[0], modelkit.AgentToolName, "the per-call folder-scope filter must NOT be applied to the global publish")
 	assert.Contains(t, names[0], "agentic_fetch")
 	assert.Contains(t, names[0], "view", "legacy file tools must survive the global publish")
 	assert.Contains(t, names[0], "bash")
@@ -989,7 +990,7 @@ func TestFolderScope_StripsAgenticFetchEvenWhenSubAgentsAllowed(t *testing.T) {
 	assert.NotContains(t, names, "agentic_fetch",
 		"the scope filter must strip agentic_fetch even when the sub-agent ban does not")
 	assert.NotContains(t, names, "download")
-	assert.Contains(t, names, AgentToolName,
+	assert.Contains(t, names, modelkit.AgentToolName,
 		"the agent delegation tool stays: the sub-agent inherits the same scoped context")
 	assert.Contains(t, names, "fs_read")
 }

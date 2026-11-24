@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -354,7 +355,7 @@ func TestBatchAgentLeafCarriesParentBudgetWithoutConsumingEdge(t *testing.T) {
 	inv := testInvocation()
 	inv.AgentDepth = 2
 	inv.AgentDepthSet = true
-	call := fantasy.ToolCall{ID: "agent-call", Name: AgentToolName, Input: `{"prompt":"p"}`}
+	call := fantasy.ToolCall{ID: "agent-call", Name: modelkit.AgentToolName, Input: `{"prompt":"p"}`}
 	spec, err := batchOneItemSpec(inv, call, mustCanonical(t, call.Input))
 	require.NoError(t, err)
 	var payload batchLeafPayload

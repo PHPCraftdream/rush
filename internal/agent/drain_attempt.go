@@ -14,9 +14,11 @@ package agent
 
 import (
 	"context"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 )
 
-func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainAttempt, turnErr error) {
+func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainctl.DrainAttempt, turnErr error) {
 	newDrainComponent(c).accountDrainAttempt(ctx, att, turnErr)
 }
 

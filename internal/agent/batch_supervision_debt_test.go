@@ -115,7 +115,7 @@ func TestBatchSupervisionNoticeDebt_EligibleCase(t *testing.T) {
 	hasDebt, dv, err := coord.drainDecision(ctx, owner.ID, false)
 	require.NoError(t, err)
 	require.True(t, hasDebt)
-	require.Equal(t, drainAllow, dv.kind)
+	require.Equal(t, drainAllow, dv.Kind)
 
 	// Pull: exactly one check-in is delivered, once, with its wake bit.
 	pulled, err := coordinatorBatchCutoverFacts(coord).PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
@@ -251,6 +251,6 @@ func TestBatchCutoverUnknownFacts_ConservativeNoRunNoIdle(t *testing.T) {
 	debt2, dv, decErr := coord.drainDecision(ctx, owner.ID, false)
 	require.NoError(t, decErr)
 	require.True(t, debt2, "unknown debt never reads as no debt")
-	require.NotEqual(t, drainAllow, dv.kind,
+	require.NotEqual(t, drainAllow, dv.Kind,
 		"no paid Run: the deferred verdict surfaces instead (PendingInclusiveDebt fails closed)")
 }

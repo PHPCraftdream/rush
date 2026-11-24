@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -87,7 +88,7 @@ func TestBatchModelToolCallsPreserveInvocationAndAddEach(t *testing.T) {
 func TestModelBatchLeavesCarryParentBudgetWithoutDecrement(t *testing.T) {
 	inv := BatchInvocation{
 		SessionID: "owner", CallID: "call", RegistryID: "reg", AgentDepth: 2, AgentDepthSet: true,
-		Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: AgentToolName},
+		Policy: batchLeafPolicyContext{RegistryID: "reg", RestrictedToolset: modelkit.AgentToolName},
 	}
 	for _, tc := range []struct {
 		depth int
@@ -96,8 +97,8 @@ func TestModelBatchLeavesCarryParentBudgetWithoutDecrement(t *testing.T) {
 		requested := tc.depth
 		spec, err := modelBatchSpec(modelcontrol.Spec{
 			Mode: "parallel", MaxAgentDepth: &requested,
-			Items: []modelcontrol.Item{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
-		}, inv, modelRegistry(AgentToolName))
+			Items: []modelcontrol.Item{{Tool: modelkit.AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
+		}, inv, modelRegistry(modelkit.AgentToolName))
 		require.NoError(t, err)
 		var payload batchLeafPayload
 		require.NoError(t, json.Unmarshal(spec.Batch.Items[0].Task.Payload, &payload))
@@ -107,8 +108,8 @@ func TestModelBatchLeavesCarryParentBudgetWithoutDecrement(t *testing.T) {
 	escalate := 3
 	_, err := modelBatchSpec(modelcontrol.Spec{
 		Mode: "parallel", MaxAgentDepth: &escalate,
-		Items: []modelcontrol.Item{{Tool: AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
-	}, inv, modelRegistry(AgentToolName))
+		Items: []modelcontrol.Item{{Tool: modelkit.AgentToolName, Input: json.RawMessage(`{"prompt":"p"}`)}},
+	}, inv, modelRegistry(modelkit.AgentToolName))
 	require.ErrorContains(t, err, "narrow")
 }
 
