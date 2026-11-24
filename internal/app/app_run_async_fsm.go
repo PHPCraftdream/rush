@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -17,7 +19,190 @@ import (
 // belongs to one phase run and is recreated -- not mutated back to zero --
 // when a scope closes, and every exit funnels through one finish function.
 
-// cliPhase is one phase of the loop.
+// loopTotals accumulates usage and diagnostics across all turns in one CLI run.
+type loopTotals struct {
+	tokens int64
+	cost   float64
+	counts map[string]int
+	turns  []loopTurn
+	// subAgentOutputs holds each child once (by session id, in first-seen
+	// order) with its latest text: every turn lists ALL of the parent's
+	// sub-sessions, so concatenating turns would repeat them (R3C-7).
+	subAgentOutputs []SubAgentOutput
+	subAgentIndex   map[string]int
+	// extraWarnings carries run-level diagnostics that belong to no turn
+	// (the reaction chain guard, #1113).
+	extraWarnings []string
+}
+
+// loopTurn is one real turn's warnings, split so the ones that describe its
+// final_text can be dropped once another turn supplies the answer (R3C-7).
+type loopTurn struct {
+	result       *RunResult
+	warnings     []string
+	textWarnings []string
+}
+
+func (t *loopTotals) add(r *RunResult) {
+	if r == nil {
+		return
+	}
+	if t.counts == nil {
+		t.counts = make(map[string]int)
+	}
+	t.tokens += r.Usage.DeltaTokens
+	t.cost += r.Usage.DeltaCostUSD
+	t.turns = append(t.turns, loopTurn{
+		result:       r,
+		warnings:     slices.Clone(r.Warnings),
+		textWarnings: slices.Clone(r.FinalTextWarnings),
+	})
+	for _, out := range r.SubAgentOutputs {
+		if i, ok := t.subAgentIndex[out.SessionID]; ok {
+			t.subAgentOutputs[i] = out
+			continue
+		}
+		if t.subAgentIndex == nil {
+			t.subAgentIndex = make(map[string]int)
+		}
+		t.subAgentIndex[out.SessionID] = len(t.subAgentOutputs)
+		t.subAgentOutputs = append(t.subAgentOutputs, out)
+	}
+	for _, stat := range r.ToolCalls {
+		t.counts[stat.Name] += stat.Count
+	}
+}
+
+// warningsFor is the run's warning list: every turn's diagnostics, but the
+// warnings about a turn's final_text only for the turn that is the answer.
+func (t *loopTotals) warningsFor(final *RunResult) []string {
+	var out []string
+	out = append(out, t.extraWarnings...)
+	for _, turn := range t.turns {
+		for _, w := range turn.warnings {
+			if turn.result != final && slices.Contains(turn.textWarnings, w) {
+				continue
+			}
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func (t *loopTotals) applyTo(final *RunResult, started time.Time) {
+	final.Usage.DeltaTokens = t.tokens
+	final.Usage.DeltaCostUSD = t.cost
+	// Keep warnings appended to final after its snapshot (the loop's reviewer
+	// pass); skip ones the rebuild already has, so re-application stays idempotent.
+	var late []string
+	for i := range t.turns {
+		if t.turns[i].result == final && len(final.Warnings) > len(t.turns[i].warnings) {
+			late = final.Warnings[len(t.turns[i].warnings):]
+			break
+		}
+	}
+	out := t.warningsFor(final)
+	for _, w := range late {
+		if !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	final.Warnings = out
+	final.SubAgentOutputs = t.subAgentOutputs
+	final.DurationMs = time.Since(started).Milliseconds()
+	final.ToolCalls = final.ToolCalls[:0]
+	for name, count := range t.counts {
+		final.ToolCalls = append(final.ToolCalls, ToolCallStat{Name: name, Count: count})
+	}
+	slices.SortFunc(final.ToolCalls, func(a, b ToolCallStat) int { return cmpName(a.Name, b.Name) })
+}
+
+func cmpName(a, b string) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// flushQueuedUsage folds the TOKENS accrued since the first queued
+// iteration into the run's totals. The run's cost needs no folding: the
+// window is a subtree difference (startMark vs the exit reading), so spend
+// between turns — whoever made it — is already inside (#1130).
+func (l *cliLoop) flushQueuedUsage(now usageMark) {
+	if l.queuedMark != nil {
+		l.tot.addSinceTokens(*l.queuedMark, now)
+		l.queuedMark = nil
+	}
+}
+
+// applyTotals writes the run's totals into the envelope about to be flushed.
+func (l *cliLoop) applyTotals(final *RunResult) {
+	if l.queuedMark != nil {
+		// Token folding for queued iterations: their spend needs no folding —
+		// the subtree window below already contains it (#1130).
+		l.flushQueuedUsage(l.sessionUsage())
+	}
+	l.tot.applyTo(final, l.started)
+	// The run's cost is the SUBTREE spend from the claim to now (#1130):
+	// sum of cost_self over the delegation subtree minus nothing else — the
+	// difference covers what happened between turns (a delegated child's
+	// spend, a human turn on the same session), which the turns' own deltas
+	// miss. The per-turn sum stays as the fallback when a read failed.
+	// Tokens are last-snapshot counters, summed per turn.
+	if end := l.sessionUsage(); l.startMark.ok && end.ok {
+		final.Usage.DeltaCostUSD = max(end.cost-l.startMark.cost, 0)
+	}
+}
+
+// usageMark is the session's token and cost totals at one instant.
+type usageMark struct {
+	tokens int64
+	cost   float64
+	ok     bool
+}
+
+// sessionUsage reads the run's usage marks on a context that survives
+// Ctrl-C: tokens are the root row's snapshot counters, cost is the SUBTREE
+// spend (sum of cost_self over the delegation subtree, #1130).
+func (l *cliLoop) sessionUsage() usageMark {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
+	defer cancel()
+	sess, err := l.env.Sessions().Get(ctx, l.sessionID)
+	if err != nil {
+		return usageMark{}
+	}
+	spent, err := l.env.Sessions().SubtreeSpent(ctx, l.sessionID)
+	if err != nil {
+		return usageMark{}
+	}
+	return usageMark{tokens: sess.PromptTokens + sess.CompletionTokens, cost: spent, ok: true}
+}
+
+// addSince adds what the session totals gained between two marks: the
+// interrupted-turn path, whose own deltas never landed anywhere else.
+func (t *loopTotals) addSince(before, after usageMark) {
+	if !before.ok || !after.ok {
+		return
+	}
+	t.tokens += max(after.tokens-before.tokens, 0)
+	t.cost += max(after.cost-before.cost, 0)
+}
+
+// addSinceTokens folds only the token counters between two marks: the
+// queued-iteration path (#1130 — the run's cost is the subtree window, so
+// folding queued spend here would double-count it at the exit).
+func (t *loopTotals) addSinceTokens(before, after usageMark) {
+	if !before.ok || !after.ok {
+		return
+	}
+	t.tokens += max(after.tokens-before.tokens, 0)
+}
+
+// cliPhase names the loop's explicit phase-state transitions.
 type cliPhase int
 
 const (
@@ -318,6 +503,17 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 	if err != nil && reason == "" && errors.Is(err, agent.ErrTurnStalled) {
 		reason = "stalled"
 	}
+	if final != nil && err != nil {
+		if final.ExitReason == "" {
+			final.ExitReason = incompleteExitReason(err)
+			if exitedCanceled(nil, err) || l.ctx.Err() != nil {
+				final.ExitReason = "canceled"
+			}
+		}
+		if final.Error == "" {
+			final.Error = err.Error()
+		}
+	}
 	if final != nil {
 		switch {
 		case err != nil && reason != "":
@@ -339,12 +535,93 @@ func (l *cliLoop) exit(err error, reason string) (*RunResult, error) {
 // ctx cancellation, a wait error, a stuck debt, or the ordinary scope-closed
 // end -- goes through here exactly once.
 func (l *cliLoop) finish(err error) (*RunResult, error) {
+	if l.final == nil && l.lastFailed != nil && errors.Is(err, l.runErr) {
+		// A terminal Drain failure may be the only result produced by the run.
+		// Copy it into the output envelope so recovery can complete the missing
+		// answer without mutating or losing the original failed result.
+		failed := *l.lastFailed
+		if failed.ExitReason == "" && err != nil {
+			failed.ExitReason = incompleteExitReason(err)
+		}
+		if failed.Error == "" && err != nil {
+			failed.Error = err.Error()
+		}
+		l.final = &failed
+	}
 	l.final, err = classifyRunTimeout(l.ctx, l.final, err, l.sessionID, l.resumeRole())
+	if l.final != nil && err != nil {
+		if l.final.ExitReason == "" {
+			l.final.ExitReason = incompleteExitReason(err)
+			if exitedCanceled(nil, err) || l.ctx.Err() != nil {
+				l.final.ExitReason = "canceled"
+			}
+		}
+		if l.final.Error == "" {
+			l.final.Error = err.Error()
+		}
+	}
+	if l.final != nil {
+		failed := l.final
+		if l.lastFailed != nil && errors.Is(err, l.runErr) {
+			failed = l.lastFailed
+		}
+		if l.shouldRecoverEmptyReport(failed, err) {
+			originalErr := err
+			originalReason := l.final.ExitReason
+			originalError := l.final.Error
+			report, buffered, reportErr := l.runReportRecoveryTurn()
+			if reportErr == nil && report != nil && strings.TrimSpace(report.FinalText) != "" {
+				l.tot.add(report)
+				l.final.FinalText = report.FinalText
+				l.lastBuffered = buffered
+				l.recoveredReport = true
+				err = originalErr
+				l.final.ExitReason, l.final.Error = originalReason, originalError
+				// Report recovery completes the missing answer, so honor the
+				// configured automatic reviewer pass just as for a clean answer.
+				if shouldRunReviewerPass(l.overrides.ModelRole, l.env.Config.Config()) {
+					review, _, reviewErr := l.runReviewerTurn()
+					l.tot.add(review)
+					if reviewErr == nil && review != nil && l.final != nil {
+						l.host.attachReview(l.ctx, l.final, l.sessionID, review.FinalText, l.errOut())
+						l.reviewerDone = true
+					} else if reviewErr != nil && l.final != nil {
+						recordReviewFailure(l.final, l.errOut(), reviewErr)
+						l.reviewerDone = true
+					}
+					// Keep the report turn's buffer authoritative; review output is
+					// metadata, not the recovered answer shown in terse/stream mode.
+				}
+			} else {
+				if reportErr == nil {
+					reportErr = errors.New("report recovery turn completed without a final answer")
+				}
+				warning := fmt.Sprintf("report recovery failed: %v", reportErr)
+				fmt.Fprintf(l.errOut(), "rush run: %s\n", warning)
+				if !slices.Contains(l.final.Warnings, warning) {
+					l.final.Warnings = append(l.final.Warnings, warning)
+				}
+				l.reportRecoveryTried = true
+				l.final.ExitReason, l.final.Error = originalReason, originalError
+				err = originalErr
+			}
+		}
+	}
 	if l.lastBuffered == nil {
 		l.lastBuffered = &bytes.Buffer{}
 	}
 	if l.final != nil {
 		l.applyTotals(l.final)
+		if l.reportRecoveryTried && !l.recoveredReport {
+			l.final.Recovered = false
+			if !slices.Contains(l.final.Warnings, "report recovery failed after a non-replayable provider stream failure") {
+				l.final.Warnings = append(l.final.Warnings, "report recovery failed after a non-replayable provider stream failure")
+			}
+		}
+		if l.recoveredReport {
+			l.final.Recovered = true
+			l.final.Warnings = append(l.final.Warnings, "recovered empty final answer with a new report-composition user turn after a non-replayable provider stream failure")
+		}
 		// A18: the budget for unfinished-todos reminders was spent without
 		// the todos moving -- the orchestrator must see why the run ended
 		// with the list still open.

@@ -70,6 +70,7 @@ type RunResult struct {
 	// last assistant message. Lets the orchestrator recover detail
 	// the parent over-summarised away.
 	SubAgentOutputs []SubAgentOutput `json:"sub_agent_outputs,omitempty"`
+	Recovered       bool             `json:"recovered,omitempty"`
 	Error           string           `json:"error,omitempty"`
 	// Warnings are non-fatal observations about the run that an
 	// orchestrator should know about even when exit_reason looks happy.
