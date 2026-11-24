@@ -60,8 +60,6 @@ var (
 	errProviderPeakHours               = usage.PeakHoursSentinel()
 )
 
-type PeakHoursError = usage.PeakHoursError
-
 // maxConsecutiveAutoResumes bounds Phase 4 autonomous idle-resumes per session
 // without human involvement (reset by any human message). Anti-runaway: an
 // agent that keeps backgrounding self-completing jobs cannot loop forever.

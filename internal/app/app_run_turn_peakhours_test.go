@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,7 +17,7 @@ import (
 // operator message via errors.As. A %v wrap silently drops it (the
 // 2026-09-23 smoke failure mode).
 func TestRunAgentTurnRecovered_PeakHoursRefusalReachesEnvelopeWithMessage(t *testing.T) {
-	pe := &agent.PeakHoursError{
+	pe := &usage.PeakHoursError{
 		ProviderID: "zai", Start: "20:00", End: "23:59",
 		ReopensAt: time.Now().Add(time.Hour),
 		Message:   "OPERATOR-NOTE: quota exhausted, resume after midnight",
@@ -28,7 +28,7 @@ func TestRunAgentTurnRecovered_PeakHoursRefusalReachesEnvelopeWithMessage(t *tes
 	}, done)
 	resp := <-done
 
-	var got *agent.PeakHoursError
+	var got *usage.PeakHoursError
 	require.True(t, errors.As(resp.Err, &got), "turn runner must keep the *PeakHoursError reachable, got %v", resp.Err)
 
 	res := buildRunResult("s1", "", "", "", resp.Err, false, nil, 0, 0, time.Second, "", "", 0, "", "", nil, "")

@@ -38,7 +38,7 @@ func (c *coordinator) wakeLaunchPorts() wakectl.LaunchPorts {
 		DecisionBudget:   func() time.Duration { return recheckDebtCheckBudget },
 		Decide: func(ctx context.Context, id string, fact bool) (bool, drainctl.DrainVerdict, error) {
 			debt, verdict, err := c.drainDecision(ctx, id, fact)
-			return debt, drainctl.DrainVerdict{Kind: verdict.kind, Recheck: verdict.recheck}, err
+			return debt, drainctl.DrainVerdict{Kind: verdict.Kind, Recheck: verdict.Recheck}, err
 		},
 		AddToRecheckSet: c.addToRecheckSet,
 		PrepareDrain: func(ctx context.Context, id string) (func(context.Context) error, func(), error) {

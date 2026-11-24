@@ -319,9 +319,9 @@ func (w *drainComponent) CLIScope(ctx context.Context, sessionID string) (CLISco
 		return CLIScopeState{}, err
 	}
 	dv := drainVerdictOf(v)
-	state.RetryAt, state.Reason = dv.retryAt, dv.reason
-	state.ChainGuard = dv.kind == drainDeferred && dv.reason == reactionChainReason
-	switch dv.kind {
+	state.RetryAt, state.Reason = dv.RetryAt, dv.Reason
+	state.ChainGuard = dv.Kind == drainDeferred && dv.Reason == reactionChainReason
+	switch dv.Kind {
 	case drainAllow:
 		state.Drain = DrainOwed
 	case drainPaced:

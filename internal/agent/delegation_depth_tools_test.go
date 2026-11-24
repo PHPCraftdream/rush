@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
@@ -18,7 +19,7 @@ func TestDurableDepthMarkerStripsDelegationWithoutCallOptions(t *testing.T) {
 	ctx, err := WithPersistedSessionAgentDepth(t.Context(), env.sessions, sess.ID)
 	require.NoError(t, err)
 	require.Nil(t, callOptionsFrom(ctx))
-	original := config.Agent{AllowedTools: []string{AgentToolName, tools.AgenticFetchToolName, "view", "edit"}}
+	original := config.Agent{AllowedTools: []string{modelkit.AgentToolName, tools.AgenticFetchToolName, "view", "edit"}}
 	coord := &coordinator{}
 	cfg := &config.Config{Models: map[config.SelectedModelType]config.SelectedModel{
 		config.SelectedModelTypeWorker: {Model: "configured-worker"},
@@ -29,5 +30,5 @@ func TestDurableDepthMarkerStripsDelegationWithoutCallOptions(t *testing.T) {
 	require.Equal(t, []string{"view", "edit"}, built.AllowedTools)
 	filtered := coord.applyCallDisableSubAgents(ctx, cfg, original, false)
 	require.Equal(t, []string{"view", "edit"}, filtered.AllowedTools)
-	require.Equal(t, []string{AgentToolName, tools.AgenticFetchToolName, "view", "edit"}, original.AllowedTools, "per-call filtering cannot change the shared snapshot")
+	require.Equal(t, []string{modelkit.AgentToolName, tools.AgenticFetchToolName, "view", "edit"}, original.AllowedTools, "per-call filtering cannot change the shared snapshot")
 }

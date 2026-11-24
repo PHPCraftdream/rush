@@ -662,8 +662,8 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "R's root debt")
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainDeferred, pv.kind)
-	require.Equal(t, "sleeping until all tasks finish", pv.reason,
+	require.Equal(t, drainDeferred, pv.Kind)
+	require.Equal(t, "sleeping until all tasks finish", pv.Reason,
 		"top-level ALL defers while another root is live")
 
 	select {
@@ -682,8 +682,8 @@ func TestAWa4AllStaysAsleepWhileOtherRootLive(t *testing.T) {
 	argvLeaf.letGo("call-a4-b")
 	require.Equal(t, "completed", env.rootTerminal(rootB))
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainAllow, pv.kind, "the hold lifted with the last live root")
-	t.Logf("AW-a4 both settled r=%s b=%s kind=%v", env.nodeState(rootR), env.nodeState(rootB), pv.kind)
+	require.Equal(t, drainAllow, pv.Kind, "the hold lifted with the last live root")
+	t.Logf("AW-a4 both settled r=%s b=%s kind=%v", env.nodeState(rootR), env.nodeState(rootB), pv.Kind)
 	env.logDebtRows(t)
 	env.logNodeRows(t, rootR, rootB)
 }
@@ -728,8 +728,8 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 	require.True(t, facts.CompletionOnly, "selected completions are completion-class")
 	require.True(t, facts.SleepHolds(true, batchflow.BatchSleepBreakers{}), "rule 4b holds on completions only")
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainDeferred, pv.kind)
-	require.Equal(t, "sleeping until all tasks finish", pv.reason, "the armed sleep defers")
+	require.Equal(t, drainDeferred, pv.Kind)
+	require.Equal(t, "sleeping until all tasks finish", pv.Reason, "the armed sleep defers")
 
 	// Publish the question through the PRODUCTION publisher path: the live
 	// TASK CHILD's token fences the incarnation (admission assigns tokens
@@ -757,7 +757,7 @@ func TestAWa5ChildQuestionBreaksSleepQuestionStillPending(t *testing.T) {
 	// other gate on the fresh fixture the launch is ADMITTED (the answer/
 	// inject path would run).
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainAllow, pv.kind,
+	require.Equal(t, drainAllow, pv.Kind,
 		"the question broke the sleep: one eligible launch (answer admitted)")
 
 	// The question is NOT settled by the wake: still pending and unreacted.

@@ -2,11 +2,11 @@ package agent
 
 // Regression test for task #1050: nested-delegation recursion guard.
 //
-// buildTools' `slices.Contains(agent.AllowedTools, AgentToolName)` branch
+// buildTools' `slices.Contains(agent.AllowedTools, modelkit.AgentToolName)` branch
 // used to call c.agentTool(ctx) unconditionally. If config.AgentTask's
-// AllowedTools ever contained "agent" (AgentToolName), c.agentTool would
+// AllowedTools ever contained "agent" (modelkit.AgentToolName), c.agentTool would
 // build the task agent again via c.buildAgent, whose own buildTools call
-// would see AgentToolName in its AllowedTools too and recurse forever --
+// would see modelkit.AgentToolName in its AllowedTools too and recurse forever --
 // each level registering two more goroutines on the shared c.readyWg that
 // every run entry point blocks on via readyWg.Wait(). This is unreachable
 // today (SetupAgents gives AgentTask a fixed read-only list, and
@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +42,7 @@ func TestBuildTools_TaskAgentNeverGetsAgentTool(t *testing.T) {
 	// how AllowedTools got there.
 	allowed := make([]string, len(taskCfg.AllowedTools), len(taskCfg.AllowedTools)+1)
 	copy(allowed, taskCfg.AllowedTools)
-	allowed = append(allowed, AgentToolName)
+	allowed = append(allowed, modelkit.AgentToolName)
 	taskCfg.AllowedTools = allowed
 
 	tp, err := taskPrompt(prompt.WithWorkingDir(env.workingDir))
@@ -73,7 +74,7 @@ func TestBuildTools_TaskAgentNeverGetsAgentTool(t *testing.T) {
 	require.True(t, ok, "buildAgent must return a *sessionAgent")
 
 	for _, tl := range sa.tools.Copy() {
-		require.NotEqual(t, AgentToolName, tl.Info().Name,
+		require.NotEqual(t, modelkit.AgentToolName, tl.Info().Name,
 			"the task agent must never receive the agent tool, regardless of AllowedTools")
 	}
 }

@@ -82,13 +82,13 @@ func TestBatchDrainTurnDecisionON(t *testing.T) {
 	// provider), reason "no visible debt".
 	commitNo, verdictNo := sa.decideDrainTurn(env.ctx, env.sessionID, false)
 	require.False(t, commitNo)
-	require.Equal(t, drainDeferred, verdictNo.kind)
-	require.Equal(t, "no visible debt", verdictNo.reason)
+	require.Equal(t, drainDeferred, verdictNo.Kind)
+	require.Equal(t, "no visible debt", verdictNo.Reason)
 
 	// Batch-only node refs, no legacy claims: a chainLink over the zero
 	// legacy snapshot is inert (chainIdleClaims empty, batch roots own the
 	// accounting) -- the ON leg passes att.snapshot zero.
-	att := &drainAttempt{chainBatchRoots: []string{"call-dt"}}
+	att := &drainAttempt{ChainBatchRoots: []string{"call-dt"}}
 	coord.arb.chainLink(env.sessionID, att, session.BatchDebtSnapshot{})
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 1,
 		"the batch-only leg accounts through chainBatchRoots with a zero legacy snapshot")
@@ -122,19 +122,19 @@ func TestBatchChainEvidenceRepeatedCommand(t *testing.T) {
 		fantasy.ToolCallContent{ToolCallID: "call-rep-1", ToolName: "bash", Input: `{"command":"gh run view","run_in_background":true}`},
 		batchStartedToolResult("call-rep-1"),
 	}}})
-	require.True(t, ts.att.chainProgress, "the first substantial batch launch is progress")
-	require.Empty(t, ts.att.chainBatchRoots, "the first substantial launch records no chain identity")
+	require.True(t, ts.att.ChainProgress, "the first substantial batch launch is progress")
+	require.Empty(t, ts.att.ChainBatchRoots, "the first substantial launch records no chain identity")
 
 	// The byte-identical repeat: chainLastLaunch matches the recorded
 	// command -> the repeat arm appends the root identity and sets no
 	// progress (legacy idle-claim semantics, batch identity vocabulary).
-	ts.att.chainProgress = false
+	ts.att.ChainProgress = false
 	ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{
 		fantasy.ToolCallContent{ToolCallID: "call-rep-2", ToolName: "bash", Input: `{"command":"gh run view","run_in_background":true}`},
 		batchStartedToolResult("call-rep-2"),
 	}}})
-	require.False(t, ts.att.chainProgress, "the byte-identical repeat is NOT progress")
-	require.Equal(t, []string{"call-rep-2"}, ts.att.chainBatchRoots,
+	require.False(t, ts.att.ChainProgress, "the byte-identical repeat is NOT progress")
+	require.Equal(t, []string{"call-rep-2"}, ts.att.ChainBatchRoots,
 		"the repeated launch is recorded as a batch idle claim (root identity)")
 
 	// A DIFFERENT substantial command is a fresh launch: progress again.
@@ -142,7 +142,7 @@ func TestBatchChainEvidenceRepeatedCommand(t *testing.T) {
 		fantasy.ToolCallContent{ToolCallID: "call-rep-3", ToolName: "bash", Input: `{"command":"gh run list","run_in_background":true}`},
 		batchStartedToolResult("call-rep-3"),
 	}}})
-	require.True(t, ts.att.chainProgress, "a different substantial command is progress again")
-	require.Equal(t, []string{"call-rep-2"}, ts.att.chainBatchRoots,
+	require.True(t, ts.att.ChainProgress, "a different substantial command is progress again")
+	require.Equal(t, []string{"call-rep-2"}, ts.att.ChainBatchRoots,
 		"the fresh launch still adds no identity")
 }

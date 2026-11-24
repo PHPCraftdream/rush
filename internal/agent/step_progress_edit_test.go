@@ -95,8 +95,8 @@ func TestNativeNoWriteEditMetadataSurvivesFantasyAndStopsRereadCycle(t *testing.
 	ts := &turnStream{att: &drainAttempt{}}
 	call.ToolCallID = missing.ToolCallID
 	ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, missing}}})
-	require.False(t, ts.att.chainProgress, "a no-write edit must not reset reaction-chain evidence")
-	require.Empty(t, ts.att.chainIdleClaims)
+	require.False(t, ts.att.ChainProgress, "a no-write edit must not reset reaction-chain evidence")
+	require.Empty(t, ts.att.ChainIdleClaims)
 }
 
 func TestNoWriteEditProofIsNarrowAndConservative(t *testing.T) {

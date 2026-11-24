@@ -19,6 +19,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -43,7 +44,7 @@ func (c *peakRefusingCoordinator) Run(context.Context, string, string, ...messag
 // terminal assistant message, the exact 2026-11-13 final-l2b shape.
 func TestExecuteRun_PeakRefusalEnvelopeIsPeakHoursWithoutFalseWarnings(t *testing.T) {
 	h := newCycle6RunApp(t)
-	pe := &agent.PeakHoursError{
+	pe := &usage.PeakHoursError{
 		ProviderID: "openaicompat", Start: "07:00", End: "11:00",
 		ReopensAt: time.Now().Add(time.Hour),
 	}
@@ -110,7 +111,7 @@ func TestRunLoop_PeakRefusalGiveUpEnvelopeIsPeakHours(t *testing.T) {
 	res, _, err := h.run(ctx, RunOverrides{})
 
 	require.NoError(t, ctx.Err(), "the loop gives up on its own after the refusal budget")
-	var peak *agent.PeakHoursError
+	var peak *usage.PeakHoursError
 	require.ErrorAs(t, err, &peak)
 	require.NotNil(t, res)
 	require.Equal(t, "peak_hours", res.ExitReason)
@@ -153,7 +154,7 @@ func TestRunLoop_PeakRefusedFirstTurnEnvelopeIsPeakHours(t *testing.T) {
 	res, _, err := h.run(ctx, RunOverrides{})
 
 	require.NoError(t, ctx.Err())
-	var peak *agent.PeakHoursError
+	var peak *usage.PeakHoursError
 	require.ErrorAs(t, err, &peak)
 	require.NotNil(t, res)
 	require.Equal(t, "peak_hours", res.ExitReason)
@@ -180,7 +181,7 @@ func TestCLILoopTodoNudgeDue_SkipsDuringPeakHours(t *testing.T) {
 		{Content: "ship it", Status: session.TodoStatusPending},
 	}, nil))
 
-	pe := &agent.PeakHoursError{ProviderID: "openaicompat", Start: "07:00", End: "11:00", ReopensAt: time.Now().Add(time.Hour)}
+	pe := &usage.PeakHoursError{ProviderID: "openaicompat", Start: "07:00", End: "11:00", ReopensAt: time.Now().Add(time.Hour)}
 	peakRunErr := fmt.Errorf("run did not complete cleanly (peak_hours): failed to start agent processing stream: %w", &agent.DrainNotAttemptedError{Err: pe})
 
 	var stderr bytes.Buffer

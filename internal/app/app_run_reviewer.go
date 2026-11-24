@@ -21,6 +21,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
@@ -752,9 +753,8 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		// the guidance to stderr separately BEFORE the ERROR box
 		// so the operator / orchestrator actually sees it.
 		// Reuses agent.PeakHoursGuidance so the stderr text stays
-		// identical to the DB finish-message details recorded by
-		// peakHoursStoppedFinishText (sessions why / diff, etc.).
-		var peakErr *agent.PeakHoursError
+		// identical to the DB finish-message details recorded by peakHoursStoppedFinishText (sessions why / diff, etc.).
+		var peakErr *usage.PeakHoursError
 		if errors.As(runErr, &peakErr) {
 			fmt.Fprintf(s.stderr, "\n%s\n\n", agent.PeakHoursGuidance(peakErr))
 		}
