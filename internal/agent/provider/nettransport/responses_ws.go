@@ -158,6 +158,8 @@ type ResponsesWSConn struct {
 	closeOnce        sync.Once
 	created          time.Time
 	sentAt           time.Time
+	completedAt      time.Time
+	idleBeforeSendMS int64
 	exchanges        int
 	deltaExchanges   int
 	fullBytesTotal   int64
@@ -431,6 +433,10 @@ func (c *ResponsesWSConn) SendRaw(ctx context.Context, frame []byte) error {
 	}
 	c.frameInfo = info
 	c.sentAt = time.Now()
+	c.idleBeforeSendMS = -1
+	if !c.completedAt.IsZero() {
+		c.idleBeforeSendMS = c.sentAt.Sub(c.completedAt).Milliseconds()
+	}
 	c.fullBytesTotal += int64(info.FullBytes)
 	c.wireBytesTotal += int64(info.WireBytes)
 	if info.Mode == ResponsesWSFrameDelta {
@@ -511,6 +517,7 @@ func (c *ResponsesWSConn) MarkCompleted() error {
 	c.state = ResponsesWSCompleted
 	c.active = false
 	c.hasCompleted = true
+	c.completedAt = time.Now()
 	if debugEnabled() {
 		slog.Debug("responses websocket exchange completed", append(c.diagAttrsLocked(), "exchange_ms", time.Since(c.sentAt).Milliseconds())...)
 	}
@@ -552,6 +559,7 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	}
 	attrs := c.diagAttrsLocked()
 	closedBefore := c.closed
+	idleMS := c.idleBeforeSendMS
 	sinceSentMS := int64(-1)
 	if !c.sentAt.IsZero() {
 		sinceSentMS = time.Since(c.sentAt).Milliseconds()
@@ -571,7 +579,7 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 		slog.Debug("responses websocket exchange failed", attrs...)
 	} else {
 		// The returned error hides the cause by design; the log keeps it.
-		slog.Warn("responses websocket exchange failed", append(attrs, "cause", diagCause(cause), "cause_type", fmt.Sprintf("%T", cause), "closed_locally", closedBefore, "since_sent_ms", sinceSentMS)...)
+		slog.Warn("responses websocket exchange failed", append(attrs, "cause", diagCause(cause), "cause_type", fmt.Sprintf("%T", cause), "closed_locally", closedBefore, "since_sent_ms", sinceSentMS, "idle_before_send_ms", idleMS)...)
 	}
 	return &ResponsesWSError{state: state, stage: stage, cause: cause}
 }
