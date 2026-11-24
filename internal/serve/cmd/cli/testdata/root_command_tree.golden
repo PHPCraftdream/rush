@@ -362,6 +362,7 @@ run|--model|m|string|
 run|--no-supervision||bool|false
 run|--on-finish||string|
 run|--quiet|q|bool|false
+run|--report-retry||int|1
 run|--role||string|
 run|--session|s|string|
 run|--stall-timeout||duration|30m0s
