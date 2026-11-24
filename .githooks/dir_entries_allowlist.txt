@@ -59,7 +59,9 @@ internal/agent/tools/mcp 18
 # 34 -> 32: merge app_run_session.go and app_run_drain_pending.go into app_run_gates.go.
 # 32 -> 30: stage B merges app_run_async_ended.go and app_run_async_exit.go into app_run_async_fsm.go.
 # 30 -> 26: stage C merges app_run_async_stop.go, app_run_async_nudge.go, app_run_wake_hold.go, and app_run_wait_interrupt.go into app_run_async_wait.go.
-internal/app 26
+# 26 -> 25: Task #14 third pass merges app_run_reviewer_drain_identity.go into app_run_reviewer_outcome.go.
+# 25 -> 23: Task #14 third pass removes sub_agents.go and app_run_quota.go; together with app_run_reviewer_drain_identity.go, three root production files are removed.
+internal/app 23
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).

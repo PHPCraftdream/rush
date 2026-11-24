@@ -193,7 +193,76 @@ func TestCodexWebSocketAmbiguousDisconnectCannotEnterFantasyRetryOrHTTP(t *testi
 	var terminal *nettransport.ResponsesWSError
 	require.ErrorAs(t, err, &terminal)
 	require.True(t, terminal.NoReplay())
-	require.EqualValues(t, 1, requests.Load())
+	// A provider close before any frame is replayed once on a fresh connection;
+	// when that attempt fails the same way the failure stays terminal and
+	// neither Fantasy's retry nor the HTTP path ever sees it.
+	require.EqualValues(t, 2, requests.Load())
+	require.Zero(t, httpRequests.Load())
+}
+
+func TestCodexWebSocketProviderCloseBeforeAnyFrameRetriesOnceOnFreshConnection(t *testing.T) {
+	var upgrades, requests, httpRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			httpRequests.Add(1)
+			w.WriteHeader(500)
+			return
+		}
+		n := upgrades.Add(1)
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			return
+		}
+		requests.Add(1)
+		if n == 1 {
+			return // a dead connection found at send time: closed before any frame
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(websocketCodexCompletion))
+	}))
+	defer server.Close()
+	model := websocketCodexModel(t, server, newTestSource())
+	call := fantasy.Call{Prompt: fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "question"}}}}}
+	response, err := model.Generate(websocketCodexContext(t), call)
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.EqualValues(t, 2, upgrades.Load(), "the replay opened a fresh connection")
+	require.EqualValues(t, 2, requests.Load())
+	require.Zero(t, httpRequests.Load())
+}
+
+func TestCodexWebSocketCloseAfterAFrameIsNeverReplayed(t *testing.T) {
+	var upgrades, requests, httpRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			httpRequests.Add(1)
+			w.WriteHeader(500)
+			return
+		}
+		upgrades.Add(1)
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			return
+		}
+		requests.Add(1)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(wsFailureLifecycle))
+	}))
+	defer server.Close()
+	model := websocketCodexModel(t, server, newTestSource())
+	call := fantasy.Call{Prompt: fantasy.Prompt{{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "question"}}}}}
+	_, err := model.Generate(websocketCodexContext(t), call)
+	requireNoReplayWithoutMarker(t, err)
+	require.EqualValues(t, 1, upgrades.Load())
+	require.EqualValues(t, 1, requests.Load(), "a connection that already produced a frame is not replayed")
 	require.Zero(t, httpRequests.Load())
 }
 

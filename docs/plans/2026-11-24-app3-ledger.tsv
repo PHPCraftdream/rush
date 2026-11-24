@@ -1,0 +1,28 @@
+# source_symbol	target_symbol	source_file	target_file	status	evidence
+cloneAssistantIDSet	cloneAssistantIDSet	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration/body retained; same-package merge, dependencies added to receiving file.
+drainCompletion	drainCompletion	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration and fields retained; same-package merge.
+drainCompletion.result	drainCompletion.result	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact field retained.
+drainCompletion.err	drainCompletion.err	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact field retained.
+drainCompletion.recorder	drainCompletion.recorder	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact field retained.
+drainCompletion.originalOwner	drainCompletion.originalOwner	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact field retained.
+drainCompletion.assistantIDs	drainCompletion.assistantIDs	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact field retained.
+drainCompletion.terminalAssistantID	drainCompletion.terminalAssistantID	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact field retained.
+recordDrainAssistantIDs	recordDrainAssistantIDs	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration/body retained; lock/defer and guards unchanged.
+(*executeRunLoop).adoptDrainIdentity	(*executeRunLoop).adoptDrainIdentity	internal/app/app_run_reviewer_drain_identity.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration/body retained; state restoration branches unchanged.
+cliQuotaStop	cliQuotaStop	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration and fields retained; same cliLoop async-loop group.
+cliQuotaStop.cause	cliQuotaStop.cause	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact field retained.
+cliQuotaStop.reset	cliQuotaStop.reset	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact field retained.
+cliQuotaStop.terminal	cliQuotaStop.terminal	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact field retained.
+cliQuotaStop.snapshotIncomplete	cliQuotaStop.snapshotIncomplete	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact field retained.
+(*cliLoop).latchQuota	(*cliLoop).latchQuota	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+(*cliLoop).quotaPhase	(*cliLoop).quotaPhase	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+quotaQuestionText	quotaQuestionText	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+cliQuotaActiveWorkSeam	cliQuotaActiveWorkSeam	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration retained.
+(*cliLoop).snapshotQuotaTerminal	(*cliLoop).snapshotQuotaTerminal	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+(*cliLoop).quotaJobsInTree	(*cliLoop).quotaJobsInTree	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+(*cliLoop).quotaTerminalState	(*cliLoop).quotaTerminalState	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+(*cliLoop).resumeRole	(*cliLoop).resumeRole	internal/app/app_run_quota.go	internal/app/app_run_async_wait.go	merged	Exact declaration/body retained.
+maxSubAgentTextChars	maxSubAgentTextChars	internal/app/sub_agents.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration retained with source rationale header; same-package reviewer/sub-agent result and warning group.
+collectSubAgentOutputs	collectSubAgentOutputs	internal/app/sub_agents.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration/body retained; imports reconciled.
+lastAssistantText	lastAssistantText	internal/app/sub_agents.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration/body retained; imports reconciled.
+subAgentSummaryStats	subAgentSummaryStats	internal/app/sub_agents.go	internal/app/app_run_reviewer_outcome.go	merged	Exact declaration/body retained; imports reconciled.
