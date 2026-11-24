@@ -9,7 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"slices"
+	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
@@ -83,103 +83,6 @@ func sleepOrCtxDone(ctx context.Context, d time.Duration) bool {
 // usage without replacing the last completed answer). cost is the sum of the
 // turns' own cost deltas: only the fallback for the run's cost, which is the
 // session's cost window (cliLoop.applyTotals).
-type loopTotals struct {
-	tokens int64
-	cost   float64
-	counts map[string]int
-	turns  []loopTurn
-	// subAgentOutputs holds each child once (by session id, in first-seen
-	// order) with its latest text: every turn lists ALL of the parent's
-	// sub-sessions, so concatenating turns would repeat them (R3C-7).
-	subAgentOutputs []SubAgentOutput
-	subAgentIndex   map[string]int
-	// extraWarnings carries run-level diagnostics that belong to no turn
-	// (the reaction chain guard, #1113).
-	extraWarnings []string
-}
-
-// loopTurn is one real turn's warnings, split so the ones that describe its
-// final_text can be dropped once another turn supplies the answer (R3C-7).
-type loopTurn struct {
-	result       *RunResult
-	warnings     []string
-	textWarnings []string
-}
-
-func (t *loopTotals) add(r *RunResult) {
-	if r == nil {
-		return
-	}
-	if t.counts == nil {
-		t.counts = make(map[string]int)
-	}
-	t.tokens += r.Usage.DeltaTokens
-	t.cost += r.Usage.DeltaCostUSD
-	t.turns = append(t.turns, loopTurn{
-		result:       r,
-		warnings:     slices.Clone(r.Warnings),
-		textWarnings: slices.Clone(r.FinalTextWarnings),
-	})
-	for _, out := range r.SubAgentOutputs {
-		if i, ok := t.subAgentIndex[out.SessionID]; ok {
-			t.subAgentOutputs[i] = out
-			continue
-		}
-		if t.subAgentIndex == nil {
-			t.subAgentIndex = make(map[string]int)
-		}
-		t.subAgentIndex[out.SessionID] = len(t.subAgentOutputs)
-		t.subAgentOutputs = append(t.subAgentOutputs, out)
-	}
-	for _, stat := range r.ToolCalls {
-		t.counts[stat.Name] += stat.Count
-	}
-}
-
-// warningsFor is the run's warning list: every turn's diagnostics, but the
-// warnings about a turn's final_text only for the turn that is the answer.
-func (t *loopTotals) warningsFor(final *RunResult) []string {
-	var out []string
-	out = append(out, t.extraWarnings...)
-	for _, turn := range t.turns {
-		for _, w := range turn.warnings {
-			if turn.result != final && slices.Contains(turn.textWarnings, w) {
-				continue
-			}
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
-func (t *loopTotals) applyTo(final *RunResult, started time.Time) {
-	final.Usage.DeltaTokens = t.tokens
-	final.Usage.DeltaCostUSD = t.cost
-	// Keep warnings appended to final after its snapshot (the loop's reviewer
-	// pass); skip ones the rebuild already has, so re-application stays idempotent.
-	var late []string
-	for i := range t.turns {
-		if t.turns[i].result == final && len(final.Warnings) > len(t.turns[i].warnings) {
-			late = final.Warnings[len(t.turns[i].warnings):]
-			break
-		}
-	}
-	out := t.warningsFor(final)
-	for _, w := range late {
-		if !slices.Contains(out, w) {
-			out = append(out, w)
-		}
-	}
-	final.Warnings = out
-	final.SubAgentOutputs = t.subAgentOutputs
-	final.DurationMs = time.Since(started).Milliseconds()
-	final.ToolCalls = final.ToolCalls[:0]
-	for name, count := range t.counts {
-		final.ToolCalls = append(final.ToolCalls, ToolCallStat{Name: name, Count: count})
-	}
-	slices.SortFunc(final.ToolCalls, func(a, b ToolCallStat) int { return cmpName(a.Name, b.Name) })
-}
-
 // cliLoop is one `rush run` invocation that follows the coordinator's launch
 // decisions: a first turn (the user's request), then Drain turns while the
 // session owes a reaction and work is still running.
@@ -247,11 +150,14 @@ type cliLoop struct {
 	// row without the todos changing, their last (content,status)
 	// fingerprint, whether the budget was spent without progress, and
 	// whether a reminder turn failed and was dropped (C9-4).
-	todoNudges      int
-	todoFingerprint string
-	todosGaveUp     bool
-	nudgeFailed     bool
-	stderr          io.Writer
+	todoNudges           int
+	todoFingerprint      string
+	todosGaveUp          bool
+	nudgeFailed          bool
+	reportRetryRemaining int
+	reportRecoveryTried  bool
+	recoveredReport      bool
+	stderr               io.Writer
 }
 
 // cliLoopStderr, when non-nil, replaces os.Stderr (read at each write, like
@@ -344,7 +250,8 @@ func runNonInteractiveWithAsyncResults(env RunEnv, ctx context.Context, output i
 		hideSpinner: hideSpinner, overrides: overrides, turnOverrides: turnOverrides,
 		prompt: prompt, continueSessionID: continueSessionID, useLast: useLast,
 		started: started, sessionID: continueSessionID, lastBuffered: &bytes.Buffer{},
-		reviewBasis: captureReviewBasis(env, ctx, overrides.ModelRole, prompt, started),
+		reportRetryRemaining: max(overrides.ReportRetries, 0),
+		reviewBasis:          captureReviewBasis(env, ctx, overrides.ModelRole, prompt, started),
 	}
 	// Doc sec.3.4: this loop IS the external driver for its session -- claimed
 	// (durably, so no other process starts a reaction turn for it) as soon as
@@ -431,6 +338,58 @@ func (l *cliLoop) turnSink() (buffered *bytes.Buffer, out io.Writer) {
 func (l *cliLoop) reviewerDue() bool {
 	return !l.reviewerDone && l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
 		shouldRunReviewerPass(l.overrides.ModelRole, l.env.Config.Config())
+}
+
+func hasNoReplay(err error) bool {
+	var marker interface{ NoReplay() bool }
+	return errors.As(err, &marker) && marker.NoReplay()
+}
+
+func (l *cliLoop) shouldRecoverEmptyReport(result *RunResult, err error) bool {
+	if result == nil || err == nil || strings.TrimSpace(result.FinalText) != "" || l.reportRetryRemaining <= 0 || !hasNoReplay(err) {
+		return false
+	}
+	if l.final != nil && strings.TrimSpace(l.final.FinalText) != "" {
+		return false
+	}
+	if resultToolCallCount(result) > 0 {
+		return true
+	}
+	for _, count := range l.tot.counts {
+		if count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func resultToolCallCount(result *RunResult) int {
+	if result == nil {
+		return 0
+	}
+	count := 0
+	for _, call := range result.ToolCalls {
+		count += call.Count
+	}
+	return count
+}
+
+// runReportRecoveryTurn submits a fresh user turn, not a replay or Drain.
+func (l *cliLoop) runReportRecoveryTurn() (*RunResult, *bytes.Buffer, error) {
+	l.reportRetryRemaining--
+	l.reportRecoveryTried = true
+	buffered, turnOutput := l.turnSink()
+	result, err := l.host.executeRun(l.ctx, RunRequest{
+		Prompt:    "The previous provider stream failed after tool calls, and its final answer is empty. Do not repeat or reissue any prior tool calls. Use the completed work and its results already present in this session to compose a concise report of what was done, outcomes, and any remaining issues. This is a new user turn.",
+		Overrides: l.turnOverrides, Mode: l.mode, ContinueSessionID: l.sessionID,
+		Origin: l.overrides.Origin, Stdout: turnOutput, Stderr: l.errOut(),
+		HideSpinner: l.hideSpinner, captureResult: true, loopTurn: true,
+		reportTurn: true, deferReviewer: true, onSessionResolved: l.claim,
+	})
+	if cliLoopTurnDoneSeam != nil {
+		cliLoopTurnDoneSeam()
+	}
+	return result, buffered, err
 }
 
 // runReviewerTurn runs the reviewer pass: a plain turn on the claimed session,
@@ -599,9 +558,9 @@ func (l *cliLoop) firstTurnPhase() cliStepResult {
 		}
 		return cliStepResult{ev: evFirstDead, err: err}
 	}
-	l.final, l.runErr, l.lastBuffered = result, err, buffered
 	l.tot.add(result)
-	if result != nil {
+	l.final, l.runErr, l.lastBuffered = result, err, buffered
+	if result != nil && result.SessionID != "" {
 		l.sessionID = result.SessionID
 	}
 	// Every later turn is a Drain: empty prompt, on the resolved session.
@@ -748,7 +707,8 @@ func (l *cliLoop) afterDrain(result *RunResult, err error, buffered *bytes.Buffe
 		l.streak.failed = nil
 	default:
 		// A failed Drain never replaces the last completed answer; the error
-		// exit carries its classification.
+		// exit carries its classification. With no answer yet, a non-replayable
+		// stream failure may instead get one fresh report-composition turn.
 		l.runErr, l.lastFailed = err, result
 		l.streak.failed = err
 		l.latchQuota(err)
@@ -892,89 +852,4 @@ func (l *cliLoop) noticePaced(state agent.CLIScopeState) {
 	l.streak.pacedNoticeAt = state.RetryAt
 	fmt.Fprintf(l.errOut(), "rush run: session %q: the reaction turn failed (%v); retrying at %s\n",
 		l.sessionID, l.streak.failed, state.RetryAt.Format(time.RFC3339))
-}
-
-func cmpName(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
-}
-
-// flushQueuedUsage folds the TOKENS accrued since the first queued
-// iteration into the run's totals. The run's cost needs no folding: the
-// window is a subtree difference (startMark vs the exit reading), so spend
-// between turns — whoever made it — is already inside (#1130).
-func (l *cliLoop) flushQueuedUsage(now usageMark) {
-	if l.queuedMark != nil {
-		l.tot.addSinceTokens(*l.queuedMark, now)
-		l.queuedMark = nil
-	}
-}
-
-// applyTotals writes the run's totals into the envelope about to be flushed.
-func (l *cliLoop) applyTotals(final *RunResult) {
-	if l.queuedMark != nil {
-		// Token folding for queued iterations: their spend needs no folding —
-		// the subtree window below already contains it (#1130).
-		l.flushQueuedUsage(l.sessionUsage())
-	}
-	l.tot.applyTo(final, l.started)
-	// The run's cost is the SUBTREE spend from the claim to now (#1130):
-	// sum of cost_self over the delegation subtree minus nothing else — the
-	// difference covers what happened between turns (a delegated child's
-	// spend, a human turn on the same session), which the turns' own deltas
-	// miss. The per-turn sum stays as the fallback when a read failed.
-	// Tokens are last-snapshot counters, summed per turn.
-	if end := l.sessionUsage(); l.startMark.ok && end.ok {
-		final.Usage.DeltaCostUSD = max(end.cost-l.startMark.cost, 0)
-	}
-}
-
-// usageMark is the session's token and cost totals at one instant.
-type usageMark struct {
-	tokens int64
-	cost   float64
-	ok     bool
-}
-
-// sessionUsage reads the run's usage marks on a context that survives
-// Ctrl-C: tokens are the root row's snapshot counters, cost is the SUBTREE
-// spend (sum of cost_self over the delegation subtree, #1130).
-func (l *cliLoop) sessionUsage() usageMark {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), cleanupTimeout)
-	defer cancel()
-	sess, err := l.env.Sessions().Get(ctx, l.sessionID)
-	if err != nil {
-		return usageMark{}
-	}
-	spent, err := l.env.Sessions().SubtreeSpent(ctx, l.sessionID)
-	if err != nil {
-		return usageMark{}
-	}
-	return usageMark{tokens: sess.PromptTokens + sess.CompletionTokens, cost: spent, ok: true}
-}
-
-// addSince adds what the session totals gained between two marks: the
-// interrupted-turn path, whose own deltas never landed anywhere else.
-func (t *loopTotals) addSince(before, after usageMark) {
-	if !before.ok || !after.ok {
-		return
-	}
-	t.tokens += max(after.tokens-before.tokens, 0)
-	t.cost += max(after.cost-before.cost, 0)
-}
-
-// addSinceTokens folds only the token counters between two marks: the
-// queued-iteration path (#1130 — the run's cost is the subtree window, so
-// folding queued spend here would double-count it at the exit).
-func (t *loopTotals) addSinceTokens(before, after usageMark) {
-	if !before.ok || !after.ok {
-		return
-	}
-	t.tokens += max(after.tokens-before.tokens, 0)
 }

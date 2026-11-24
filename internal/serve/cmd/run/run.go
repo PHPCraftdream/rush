@@ -373,6 +373,9 @@ var runCmd = &cobra.Command{
 			BackgroundJobDefaultTimeout: jobTimeoutDur,            // Fork patch: default background-job deadline
 			Origin:                      message.OriginCLI,        // Fork patch: entry-channel origin
 		}
+		if err := applyReportRetryOverride(cmd, &overrides); err != nil {
+			return err
+		}
 		// The CLI calls the App's RunNonInteractive directly: the sdk
 		// facade no longer re-exports an internal *app.App wrapper in
 		// its public API (sdk.Wrap and sdk.Client.RunNonInteractive
@@ -396,6 +399,19 @@ var runCmd = &cobra.Command{
 		}
 		return runErr
 	},
+}
+
+// applyReportRetryOverride validates and applies the parsed CLI flag to the run options.
+func applyReportRetryOverride(cmd *cobra.Command, overrides *app.RunOverrides) error {
+	retries, err := cmd.Flags().GetInt("report-retry")
+	if err != nil {
+		return err
+	}
+	if retries < 0 {
+		return fmt.Errorf("--report-retry: must be zero or greater")
+	}
+	overrides.ReportRetries = retries
+	return nil
 }
 
 // NewRunCmd returns the rush runCmd command tree, registering its flags and children
@@ -425,6 +441,7 @@ func NewRunCmd() *cobra.Command {
 		runCmd.Flags().StringP("session", "s", "", "Session ID to continue OR create. If a session with this id exists it is continued; otherwise a new one is created with this id. Accepts a hash prefix for existing sessions only.")
 		runCmd.Flags().String("findings-from", "", "Append a 'Findings from previous review' block (review verdict, review text, warnings) read from another run's envelope to this run's prompt. Value: a session id (resolves <main-checkout>/.rush/stdin/<id>.out, the file 'rush run --worktree' writes; see 'rush result') or a path to an envelope file. Missing or invalid envelope fails the run BEFORE it starts. Example: rush run --role smart --session fix-2 --findings-from fix-1 \"fix every finding\"")
 		runCmd.Flags().Bool("fail-on-review", false, "Exit with code 3 when this run's automatic reviewer verdict is \"fail\". pass and pass_with_notes stay 0; a run with no reviewer pass keeps 0; a run that itself failed keeps its own exit code (1/124). The stdout envelope is unchanged — only the process exit code is affected. Read the review afterwards with 'rush result <session> --review'.")
+		runCmd.Flags().Int("report-retry", 1, "Number of fresh report-composition turns after an empty final answer from a non-replayable provider stream failure (0 disables recovery).")
 		runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 		runCmd.Flags().String("system-prompt", "", "Override the session's system prompt with this string (persisted on the session)")
 		runCmd.Flags().String("system-prompt-file", "", "Read the system prompt from this file (mutually exclusive with --system-prompt)")

@@ -288,6 +288,9 @@ func (l *cliLoop) openTodos() (count int, fingerprint string, err error) {
 // changed since the previous nudge; once the budget is spent without
 // progress the run is allowed to end, with a warning recorded at the exit.
 func (l *cliLoop) todoNudgeDue() bool {
+	if l.reportRecoveryTried || l.shouldRecoverEmptyReport(l.final, l.runErr) {
+		return false
+	}
 	// A reminder turn already failed and was dropped (C9-4): no further
 	// reminders fire.
 	if l.nudgeFailed {
@@ -331,9 +334,10 @@ func (l *cliLoop) todoNudgeDue() bool {
 // nudgePhase runs one unfinished-todos reminder turn (#A18): a plain
 // prompted turn on the executor's model, then back to decide -- the closed
 // scope is re-read there, and the nudge fires again only if todos are still
-// open and the budget allows. A reminder that failed for its own reason is
-// dropped, never the run's outcome (C9-4); cancellation, stop, a queued
-// reminder and a question keep their own paths.
+// open and the budget allows. A reminder failure is dropped when a prior
+// answer exists; an empty run may instead use the configured report recovery
+// after a non-replayable provider failure. Cancellation, stop, queued
+// reminders, and questions keep their own paths.
 func (l *cliLoop) nudgePhase() cliStepResult {
 	if err := l.stopError(); err != nil {
 		final, exitErr := l.exitPrecheck(err)
@@ -363,6 +367,11 @@ func (l *cliLoop) nudgePhase() cliStepResult {
 		l.nudgeFailed = true
 		if l.final != nil {
 			l.final.Warnings = append(l.final.Warnings, fmt.Sprintf("todo reminder turn failed: %v", err))
+		}
+		// Preserve the historical drop behavior for ordinary reminder failures.
+		// Only an eligible empty-answer NoReplay failure may reach report recovery.
+		if l.shouldRecoverEmptyReport(result, err) {
+			l.runErr, l.lastFailed = err, result
 		}
 		fmt.Fprintf(l.errOut(), "rush run: todo reminder turn failed: %v; the run keeps its last answer\n", err)
 		l.streak = drainStreak{}

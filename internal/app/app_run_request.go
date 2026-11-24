@@ -106,6 +106,7 @@ type RunOverrides struct {
 	// when this bit is clear. Not persisted on the session. Fork patch
 	// (F3, 2026-09-01 SDK review).
 	TimeoutOptionsSet bool
+	ReportRetries     int
 	// OnFinishHook is an optional shell command to execute after the run
 	// completes. Environment variables are set with run metadata.
 	// Errors from the hook are printed to stderr but don't affect exit code.
@@ -231,6 +232,9 @@ type RunRequest struct {
 	// nudgeTurn marks the loop's unfinished-todos reminder turn: a follow-up
 	// of the same invocation, so its setup is mutation-free like a Drain's.
 	nudgeTurn bool
+	// reportTurn marks the loop's report-recovery turn: a follow-up of the
+	// same invocation, so its setup is mutation-free like a Drain's.
+	reportTurn bool
 	// deferReviewer tells ExecuteRun not to run the reviewer pass itself: the
 	// `rush run` loop runs it once when its scope closes (reviewerTurn).
 	deferReviewer bool
@@ -278,8 +282,10 @@ type RunRequest struct {
 }
 
 // mutationFree reports a follow-up call of a `rush run` invocation (a Drain
-// iteration, the loop's reviewer pass or its unfinished-todos reminder): the
+// iteration, the loop's reviewer pass, todo reminder or report recovery): the
 // invocation's own session setup --
 // system prompt, reasoning effort, model slots, cancel flag, budget,
 // ended_reason -- ran once with the first turn and is not repeated.
-func (r RunRequest) mutationFree() bool { return r.drainTurn || r.reviewerTurn || r.nudgeTurn }
+func (r RunRequest) mutationFree() bool {
+	return r.drainTurn || r.reviewerTurn || r.nudgeTurn || r.reportTurn
+}
