@@ -330,6 +330,7 @@ qwen-init|--global||bool|false
 qwen-init|--local||bool|false
 qwen-init|qwen-init
 result|--field||string|
+result|--history||bool|false
 result|--json||bool|false
 result|--review||bool|false
 result|result <session-id|path>
@@ -353,6 +354,7 @@ run|--fast-model||string|
 run|--findings-from||string|
 run|--format||string|
 run|--idle-timeout||string|15m
+run|--isolated-store||bool|false
 run|--job-timeout||string|
 run|--json||bool|false
 run|--max-agent-depth||int|2
