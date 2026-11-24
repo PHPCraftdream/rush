@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 
@@ -17,6 +18,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
+
+// RunTimeoutCause remains a compatibility alias for internal/app callers,
+// which still construct timeout causes through the agent package.
+type RunTimeoutCause = watchdog.RunTimeoutCause
 
 // handleStreamFailure is runTurn's error path once agent.Stream returns a
 // non-nil err (already passed through normalizeTurnError by the caller).
@@ -211,7 +216,7 @@ func (ts *turnStream) handleStreamFailure(
 	} else if isCancelErr {
 		ts.currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 	} else if isRunTimeout {
-		title, details := runTimeoutFinishText(context.Cause(ts.genCtx), ts.call.SessionID)
+		title, details := watchdog.RunTimeoutFinishText(context.Cause(ts.genCtx), ts.call.SessionID)
 		ts.currentAssistant.AddFinish(message.FinishReasonError, title, details)
 	} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized {
 		ts.currentAssistant.AddFinish(message.FinishReasonError, "Unauthorized", `Please re-authenticate with Hyper. You can also run "rush auth" to re-authenticate.`)
