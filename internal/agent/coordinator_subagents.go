@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -54,7 +55,7 @@ func (h coordinatorSubAgentHost) notify() pubsub.Publisher[notify.Notification] 
 	return h.coordinator.notify
 }
 
-func (h coordinatorSubAgentHost) subAgentDrivers() *subAgentDriverRegistry {
+func (h coordinatorSubAgentHost) subAgentDrivers() *toolwrap.Registry {
 	return h.coordinator.subAgentDrivers
 }
 

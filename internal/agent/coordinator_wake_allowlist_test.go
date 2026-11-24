@@ -2,7 +2,7 @@ package agent
 
 // §6.2/§6.4: restricted-run allowlist lifetime for a delegated child session
 // must match the DRIVER's lifetime, not the first turn's -- a woken turn
-// re-inherits the baseline from subAgentDriver.parentSessionID on every
+// re-inherits the baseline from toolwrap.Driver.ParentSessionID on every
 // wake, and neither runSubAgent nor the batch delivery clear the child's entry on
 // return anymore.
 
@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -104,12 +105,12 @@ func TestWakeSession_ReArmsChildRunAllowlistBeforeWaking(t *testing.T) {
 			return agentResultWithText("done"), nil
 		},
 	}
-	coord := &coordinator{permissions: spy, subAgentDrivers: newSubAgentDriverRegistry()}
+	coord := &coordinator{permissions: spy, subAgentDrivers: toolwrap.NewRegistry()}
 	conn, dataDir := batchFixtureConn(t)
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
 	bindBatchNodeFacts(t, coord, conn, dataDir)
 	ensureFixtureSession(t, conn, "child-1")
-	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent, parentSessionID: "parent-1"})
+	coord.subAgentDrivers.Register("child-1", toolwrap.Driver{Agent: agent, ParentSessionID: "parent-1"})
 
 	// Simulate the child's allowlist entry having been cleared already
 	// (what the removed `defer Clear` used to do at the end of the first turn).
@@ -138,7 +139,7 @@ func TestRunSubAgent_DoesNotClearChildAllowlistOnReturn(t *testing.T) {
 	spy := newAllowlistSpy(t)
 	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
 	coord.permissions = spy
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 
 	parent, err := env.sessions.Create(t.Context(), "parent")
 	require.NoError(t, err)

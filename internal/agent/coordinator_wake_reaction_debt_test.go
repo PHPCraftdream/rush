@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -140,7 +141,7 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 	}
 	sa := NewSessionAgent(opts)
 	f.sa = sa.(*sessionAgent)
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID}})
 	return f
 }
 
@@ -288,7 +289,7 @@ func TestSessionDrainPolicy_StopSuspendsUntilHumanMessage(t *testing.T) {
 	f.coord.Cancel(f.sessID) // Stop, with no prior work -- just arms the suspension
 	// Stop re-checks the tree and releases this idle session's driver record
 	// (R7B-2); a real root has none, so the fixture puts its agent back.
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID}})
 
 	f.finishAndPullVisible(t, ctx, "call-1")
 

@@ -57,7 +57,7 @@ func newInterruptDrainFixture(t *testing.T, active func(sessionID string) Sessio
 // flags must not ride along -- neither onto the in-process replacement nor
 // into the durable row the pump rebuilds from.
 //
-// Revert-check performed: replaced `callFromActive(activeCall)` with the
+// Revert-check performed: replaced `agentcall.CallFromActive(activeCall)` with the
 // plain `activeCall` copy in handleInterruptTick -- this test FAILED
 // (replacement.IsDrain true, AutoResumed true). Restored; re-ran, passed.
 func TestHandleInterruptTick_DrainActiveCallNotInherited(t *testing.T) {
@@ -88,7 +88,7 @@ func TestHandleInterruptTick_DrainActiveCallNotInherited(t *testing.T) {
 // TestHandleActiveNonDurableInterrupt_DrainActiveCallNotInherited: same rule
 // on the non-durable (credentialed) interrupt path.
 //
-// Revert-check performed: replaced `callFromActive(active)` with `active` in
+// Revert-check performed: replaced `agentcall.CallFromActive(active)` with `active` in
 // handleActiveNonDurableInterrupt -- this test FAILED (replacement.IsDrain
 // true). Restored; re-ran, passed.
 func TestHandleActiveNonDurableInterrupt_DrainActiveCallNotInherited(t *testing.T) {

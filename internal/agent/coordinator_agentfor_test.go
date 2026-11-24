@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/stretchr/testify/require"
@@ -22,8 +23,8 @@ import (
 func TestCoordinatorCancel_RoutesToChildDriverNotCurrentAgent(t *testing.T) {
 	rootAgent := &mockSessionAgent{}
 	driverAgent := &mockSessionAgent{}
-	coord := &coordinator{currentAgent: rootAgent, subAgentDrivers: newSubAgentDriverRegistry()}
-	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: driverAgent})
+	coord := &coordinator{currentAgent: rootAgent, subAgentDrivers: toolwrap.NewRegistry()}
+	coord.subAgentDrivers.Register("child-1", toolwrap.Driver{Agent: driverAgent})
 
 	coord.Cancel("child-1")
 
@@ -35,7 +36,7 @@ func TestCoordinatorCancel_RoutesToChildDriverNotCurrentAgent(t *testing.T) {
 // non-delegated (no registered driver) path is byte-for-byte unchanged.
 func TestCoordinatorCancel_NoDriverFallsBackToCurrentAgent(t *testing.T) {
 	rootAgent := &mockSessionAgent{}
-	coord := &coordinator{currentAgent: rootAgent, subAgentDrivers: newSubAgentDriverRegistry()}
+	coord := &coordinator{currentAgent: rootAgent, subAgentDrivers: toolwrap.NewRegistry()}
 
 	coord.Cancel("root-session")
 
@@ -73,14 +74,14 @@ func TestCoordinatorInjectMessage_RoutesToChildDriverNotCurrentAgent(t *testing.
 		messages:        env.messages,
 		currentAgent:    rootAgent,
 		modelCache:      csync.NewMap[string, cachedModelPair](),
-		subAgentDrivers: newSubAgentDriverRegistry(),
+		subAgentDrivers: toolwrap.NewRegistry(),
 	}
 
 	parent, err := env.sessions.Create(t.Context(), "parent")
 	require.NoError(t, err)
 	child, err := env.sessions.CreateTaskSession(t.Context(), "tool-call-1", parent.ID, "child")
 	require.NoError(t, err)
-	coord.subAgentDrivers.register(child.ID, subAgentDriver{agent: driverAgent})
+	coord.subAgentDrivers.Register(child.ID, toolwrap.Driver{Agent: driverAgent})
 
 	_, err = coord.InjectMessage(context.Background(), child.ID, "notice text")
 	require.NoError(t, err)

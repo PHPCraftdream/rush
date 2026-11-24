@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -196,12 +198,12 @@ func TestStepFinishWriteFailure_DebtStaysThenOneMoreDrainClearsIt(t *testing.T) 
 
 // TestInterruptDuringDrain_OperatorMessageReachesProvider: a REAL interrupt
 // lands on a live Drain (its provider request is in flight). The operator's
-// message, built via callFromActive from the active Drain call exactly like
+// message, built via agentcall.CallFromActive from the active Drain call exactly like
 // handleInterruptTick does, reaches the provider as an ordinary turn -- and is
 // not accounted as a Drain attempt (an empty reply to it is not a counted,
 // paced failure of the notice's debt).
 //
-// REVERT CHECK: changing callFromActive to `return active` unmodified
+// REVERT CHECK: changing agentcall.CallFromActive to `return active` unmodified
 // (inheriting IsDrain/AutoResumed/BackgroundJobNotice) runs the operator's
 // message as a Drain: its empty reply becomes a counted attempt
 // (wake_attempts 1) and this test goes red.
@@ -224,7 +226,7 @@ func TestInterruptDuringDrain_OperatorMessageReachesProvider(t *testing.T) {
 		mu.Unlock()
 		emptyReplyResponse(w, r)
 	})
-	replacement := callFromActive(newDrainCall(SessionAgentCall{SessionID: f.sessID, NoticeKind: "supervision"}))
+	replacement := agentcall.CallFromActive(newDrainCall(SessionAgentCall{SessionID: f.sessID, NoticeKind: "supervision"}))
 	replacement.Prompt = "operator interrupt: please check on this"
 	require.True(t, f.sa.InterruptAndReplace(f.sessID, replacement), "the interrupt reaches the live Drain")
 

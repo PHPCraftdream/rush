@@ -30,6 +30,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/stretchr/testify/require"
 )
 
@@ -132,7 +133,7 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 		// builds the driver without going through buildAgent.
 		OnSessionIdle: coord.noteSubAgentChildRunEnded,
 	})
-	coord.subAgentDrivers.register(childSession, subAgentDriver{agent: driver, parentSessionID: parentSession})
+	coord.subAgentDrivers.Register(childSession, toolwrap.Driver{Agent: driver, ParentSessionID: parentSession})
 
 	// Start the child's real turn -- AutoResumed+BackgroundJobNotice skip
 	// title generation (agent_turn.go's needsTitle), so the blocking model

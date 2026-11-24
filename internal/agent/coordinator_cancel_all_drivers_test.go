@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,10 +38,10 @@ func (c *cancelTrackingAgent) CancelAll() bool {
 func TestCancelAll_ReachesRegisteredDelegationDrivers(t *testing.T) {
 	coord := &coordinator{
 		currentAgent:    &mockSessionAgent{},
-		subAgentDrivers: newSubAgentDriverRegistry(),
+		subAgentDrivers: toolwrap.NewRegistry(),
 	}
 	driver := &cancelTrackingAgent{mockSessionAgent: &mockSessionAgent{}}
-	coord.subAgentDrivers.register("child-session", subAgentDriver{agent: driver})
+	coord.subAgentDrivers.Register("child-session", toolwrap.Driver{Agent: driver})
 
 	coord.CancelAll()
 
@@ -54,10 +55,10 @@ func TestCancelAll_ReachesRegisteredDelegationDrivers(t *testing.T) {
 func TestCancelAll_StillBusyIsTrueIfAnyDriverIsStillBusy(t *testing.T) {
 	coord := &coordinator{
 		currentAgent:    &mockSessionAgent{},
-		subAgentDrivers: newSubAgentDriverRegistry(),
+		subAgentDrivers: toolwrap.NewRegistry(),
 	}
 	driver := &cancelTrackingAgent{mockSessionAgent: &mockSessionAgent{}, stillBusy: true}
-	coord.subAgentDrivers.register("child-session", subAgentDriver{agent: driver})
+	coord.subAgentDrivers.Register("child-session", toolwrap.Driver{Agent: driver})
 
 	require.True(t, coord.CancelAll(), "a still-busy driver must make CancelAll's own aggregate result true")
 }
@@ -68,11 +69,11 @@ func TestCancelAll_StillBusyIsTrueIfAnyDriverIsStillBusy(t *testing.T) {
 func TestCancelAll_DedupesSharedDriverAgent(t *testing.T) {
 	coord := &coordinator{
 		currentAgent:    &mockSessionAgent{},
-		subAgentDrivers: newSubAgentDriverRegistry(),
+		subAgentDrivers: toolwrap.NewRegistry(),
 	}
 	driver := &cancelTrackingAgent{mockSessionAgent: &mockSessionAgent{}}
-	coord.subAgentDrivers.register("child-a", subAgentDriver{agent: driver})
-	coord.subAgentDrivers.register("child-b", subAgentDriver{agent: driver})
+	coord.subAgentDrivers.Register("child-a", toolwrap.Driver{Agent: driver})
+	coord.subAgentDrivers.Register("child-b", toolwrap.Driver{Agent: driver})
 
 	coord.CancelAll()
 

@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,7 @@ func TestTask75BatchLifecycleBindsBeforeProviderAndKeepsChildSelected(t *testing
 	env := testEnv(t)
 	const providerID = "task75-provider"
 	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 	parent, err := env.sessions.Create(t.Context(), "task75 parent")
 	require.NoError(t, err)
 
@@ -51,7 +52,7 @@ func TestTask75ResumeLifecycleCleanupFollowsValidBind(t *testing.T) {
 	env := testEnv(t)
 	const providerID = "task75-provider"
 	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 	parent, err := env.sessions.Create(t.Context(), "task75 resume parent")
 	require.NoError(t, err)
 	child, err := env.sessions.CreateTaskSession(t.Context(), env.sessions.CreateAgentToolSessionID("task75-existing", "task75-child"), parent.ID, "task75 resumed child")
@@ -99,7 +100,7 @@ func TestTask75FailedResumeBindPreservesLifecycleState(t *testing.T) {
 	env := testEnv(t)
 	const providerID = "task75-provider"
 	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 	parent, err := env.sessions.Create(t.Context(), "task75 failed resume parent")
 	require.NoError(t, err)
 	child, err := env.sessions.CreateTaskSession(t.Context(), env.sessions.CreateAgentToolSessionID("task75-failed", "task75-child"), parent.ID, "task75 failed child")

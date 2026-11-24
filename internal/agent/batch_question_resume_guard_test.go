@@ -73,7 +73,7 @@ func TestResumeOfHeldQuestionChildRefusedBeforeBind(t *testing.T) {
 
 	// 4. Nothing happened behind the refusal: no driver registered, no new
 	// run queued, the node is still live and the question still actionable.
-	_, registered := coord.subAgentDrivers.get(childID)
+	_, registered := coord.subAgentDrivers.Get(childID)
 	require.False(t, registered, "no driver was registered behind the refusal")
 	require.Equal(t, 1, env.leaf.runCount(), "no new generation was launched")
 	var state string

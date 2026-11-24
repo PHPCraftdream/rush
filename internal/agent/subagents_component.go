@@ -36,7 +36,7 @@ type subAgentHost interface {
 	cfg() *config.ConfigStore
 	permissions() permission.Service
 	notify() pubsub.Publisher[notify.Notification]
-	subAgentDrivers() *subAgentDriverRegistry
+	subAgentDrivers() *toolwrap.Registry
 	currentAgent() SessionAgent
 	resolveRequestedDelegationModel(ctx context.Context, cfg *config.Config, parentID string, role RequestedModelRole) (delegationRoleModel, error)
 	batchHeldQuestionResumeHint(ctx context.Context, owner string) string
@@ -570,9 +570,9 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	if params.pctHandoff != nil {
 		pctReleases = params.pctHandoff.ClaimDriver()
 	}
-	generation := c.host.subAgentDrivers().register(session.ID, subAgentDriver{
-		agent: params.Agent, call: callTemplate, parentSessionID: params.SessionID,
-		slotRole: driverSlotRole, pctReleases: pctReleases,
+	generation := c.host.subAgentDrivers().Register(session.ID, toolwrap.Driver{
+		Agent: params.Agent, Call: callTemplate, ParentSessionID: params.SessionID,
+		SlotRole: driverSlotRole, PctReleases: pctReleases,
 		FinalizationAuthorities: delegatedFinalization,
 	})
 	pctDriverTransferred = generation != 0
@@ -593,7 +593,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 			// No `defer Clear...` here (phase 2 §6.2, unchanged by phase 3):
 			// the child may still own async jobs/background shells after
 			// THIS turn returns (structural concurrency, #1049) and a woken
-			// turn re-inherits from subAgentDriver.parentSessionID on every
+			// turn re-inherits from toolwrap.Driver.ParentSessionID on every
 			// wake instead. The entry is now cleared by
 			// releaseDriverIfScopeClosed once the child's scope actually
 			// closes (§6.2), not left to grow unbounded (§6.3's diagnosis,
@@ -697,7 +697,7 @@ func (c *subagentsComponent) inheritBatchQuestionState(ctx context.Context, chil
 	if call == nil || call.BatchQuestion != nil {
 		return nil
 	}
-	driver, ok := c.host.subAgentDrivers().get(childSessionID)
+	driver, ok := c.host.subAgentDrivers().Get(childSessionID)
 	if !ok {
 		state, err := c.host.rebuiltChildQuestionState(ctx, childSessionID)
 		if err != nil {
@@ -709,12 +709,12 @@ func (c *subagentsComponent) inheritBatchQuestionState(ctx context.Context, chil
 		}
 		return nil
 	}
-	if driver.call.BatchQuestion == nil {
+	if driver.Call.BatchQuestion == nil {
 		return nil
 	}
-	call.BatchQuestion = driver.call.BatchQuestion
-	if driver.call.Tools != nil {
-		call.Tools = driver.call.Tools
+	call.BatchQuestion = driver.Call.BatchQuestion
+	if driver.Call.Tools != nil {
+		call.Tools = driver.Call.Tools
 	}
 	return nil
 }

@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -438,7 +439,7 @@ func TestBatchInjectBridge_NoHeldQuestionLegacyPath(t *testing.T) {
 	// check and the legacy InjectMessage route through it (task #1054
 	// routing) — its counter is the exactly-once delivery oracle.
 	spy := &bridgeCountingAgent{}
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: spy, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: spy, ParentSessionID: parent})
 
 	out, err := coord.InjectAgent(t.Context(), parent, child, "hello", false)
 	require.NoError(t, err)
@@ -464,7 +465,7 @@ func TestBatchInjectBridge_InjectAgentSurfacesRejection(t *testing.T) {
 	coord, env := newControlCoordinator(t)
 	parent, child := controlChild(t, env, "bridge-reject")
 	spy := &bridgeCountingAgent{}
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: spy, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: spy, ParentSessionID: parent})
 	sink := bridgeErrorSink{err: fmt.Errorf("batch node bridge-n-x: %w", ErrBatchAgentStopped)}
 	SetCoordinatorBatchHeldAnswerSink(coord, sink)
 	t.Cleanup(func() { SetCoordinatorBatchHeldAnswerSink(coord, nil) })

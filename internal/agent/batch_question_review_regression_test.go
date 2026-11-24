@@ -17,7 +17,7 @@ func TestQuestionRouteWakeWithoutDriverUsesDurableDelegationFacts(t *testing.T) 
 	coord, env := newControlCoordinator(t)
 	parentID, childID := controlChild(t, env, "question-wake-no-driver")
 	seedControlDelegation(t, env, coord, parentID, childID)
-	_, registered := coord.subAgentDrivers.get(childID)
+	_, registered := coord.subAgentDrivers.Get(childID)
 	require.False(t, registered, "the fixture must exercise the lost-driver wake branch")
 	call, prep, err := coord.drainCallFor(t.Context(), childID)
 	if prep != nil {

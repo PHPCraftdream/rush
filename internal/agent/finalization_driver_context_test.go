@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -69,13 +70,13 @@ func TestDriverWakePreservesAuthorityAndImmutableCallPolicy(t *testing.T) {
 		Credentials: credentials, CallOptions: options,
 	}
 	agent := &sessionAgent{}
-	registry := newSubAgentDriverRegistry()
-	generation := registry.register("child", subAgentDriver{agent: agent, call: original, FinalizationAuthorities: fixture.capability})
-	driver, ok := registry.get("child")
+	registry := toolwrap.NewRegistry()
+	generation := registry.Register("child", toolwrap.Driver{Agent: agent, Call: original, FinalizationAuthorities: fixture.capability})
+	driver, ok := registry.Get("child")
 	require.True(t, ok)
-	require.Same(t, agent, driver.agent, "wake retains the same driver")
-	require.Equal(t, generation, driver.generation)
-	wake := newDrainCall(driver.callFor("completion"))
+	require.Same(t, agent, driver.Agent, "wake retains the same driver")
+	require.Equal(t, generation, driver.Generation)
+	wake := newDrainCall(driver.CallFor("completion"))
 	require.Equal(t, original.LogicalCallID, wake.LogicalCallID)
 	require.Same(t, credentials, wake.Credentials)
 	require.NotNil(t, wake.Tools, "explicit empty tool baseline remains empty")
@@ -101,8 +102,8 @@ func TestDriverWakeCannotRebindReplacementOrWidenLogicalCall(t *testing.T) {
 	for _, replacement := range []bool{false, true} {
 		t.Run(map[bool]string{false: "logical_call_mismatch", true: "replaced_incarnation"}[replacement], func(t *testing.T) {
 			fixture := newFinalizationDriverFixture(t)
-			driver := subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}
-			wake := driver.callFor("wake")
+			driver := toolwrap.Driver{Call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}
+			wake := driver.CallFor("wake")
 			ctx := context.Background()
 			if replacement {
 				_, err := fixture.conn.ExecContext(ctx, `UPDATE session_agent_finalizations SET phase='failed' WHERE session_id='child'`)
@@ -142,7 +143,7 @@ func TestRunRefusesStaleCarriedAuthorityBeforePreamble(t *testing.T) {
 				require.NoError(t, err)
 			}
 			agent := &sessionAgent{}
-			call := (subAgentDriver{call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}).callFor("")
+			call := (toolwrap.Driver{Call: SessionAgentCall{SessionID: "child", LogicalCallID: "child-call"}, FinalizationAuthorities: fixture.capability}).CallFor("")
 			_, err := agent.Run(context.Background(), call)
 			require.ErrorIs(t, err, coresession.ErrAgentFinalizationChanged, "stale authority is refused before even empty-prompt validation")
 			_, err = agent.Run(context.Background(), SessionAgentCall{SessionID: "child"})

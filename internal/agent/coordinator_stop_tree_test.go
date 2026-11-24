@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/stretchr/testify/require"
 )
 
@@ -103,7 +104,7 @@ func TestStop_NSubAgentsEachOwnBash_NoNewTurnAnywhere(t *testing.T) {
 				return agentResultWithText("should never run"), nil
 			},
 		}}
-		coord.subAgentDrivers.register(childSess.ID, subAgentDriver{agent: children[i].agent, call: SessionAgentCall{SessionID: childSess.ID}})
+		coord.subAgentDrivers.Register(childSess.ID, toolwrap.Driver{Agent: children[i].agent, Call: SessionAgentCall{SessionID: childSess.ID}})
 
 		// Root's live delegation link to this child -- this is what makes
 		// stopTree's batch walk reach the child at all.

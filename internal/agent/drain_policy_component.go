@@ -125,7 +125,7 @@ func (w *drainComponent) drainDecision(ctx context.Context, sessionID string, sp
 
 // isDurableDelegationChild reports whether sessionID was EVER created as a
 // delegation target (session.CreateTaskSession sets ParentSessionID at
-// creation, durably, unlike the in-memory subAgentDriverRegistry which
+// creation, durably, unlike the in-memory toolwrap.Registry which
 // releaseDriverIfScopeClosed tears down the instant scope closes).
 //
 // B3/C6 follow-up fix (docs/reviews/2026-09-29-async-phase4-round1.md, item

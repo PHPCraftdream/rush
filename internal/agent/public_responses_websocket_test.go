@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/gorilla/websocket"
@@ -207,7 +208,7 @@ func TestPublicResponsesWebSocketCancellationAllowsLaterRequest(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithCancel(publicResponsesTestContext(t))
 	defer cancel()
-	coord := &coordinator{currentAgent: &responsesWSCancelAgent{mockSessionAgent: &mockSessionAgent{}, cancel: cancel}, subAgentDrivers: newSubAgentDriverRegistry()}
+	coord := &coordinator{currentAgent: &responsesWSCancelAgent{mockSessionAgent: &mockSessionAgent{}, cancel: cancel}, subAgentDrivers: toolwrap.NewRegistry()}
 	BindCoordinatorBatchCutoverFacts(coord, responsesWSCancelFacts{})
 	t.Cleanup(func() { coordinatorBatchCutoverFactsBindings.Delete(coord) })
 	model := publicResponsesTestModel(t, server, func(context.Context) (publicResponsesPolicy, error) {

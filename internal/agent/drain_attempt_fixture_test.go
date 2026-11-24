@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -151,7 +152,7 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	require.NoError(t, err)
 	f.sessID = sess.ID
 	if !o.noDriver {
-		f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+		f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID}})
 	}
 	return f
 }

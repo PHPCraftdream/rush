@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -207,7 +208,7 @@ func TestInterruptTicker_StopsOnUnavailableBinding(t *testing.T) {
 	// PeekInterruptInject, which the stub refuses.
 	coord := &coordinator{
 		sessions:        &tickRefusingSessions{Service: env.sessions},
-		subAgentDrivers: newSubAgentDriverRegistry(),
+		subAgentDrivers: toolwrap.NewRegistry(),
 	}
 	stub := coord.sessions.(*tickRefusingSessions)
 

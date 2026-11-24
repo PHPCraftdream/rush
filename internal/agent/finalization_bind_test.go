@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -23,7 +24,7 @@ import (
 // fails the frozen-policy assertions.
 func TestFinalizationBindScopeHookCarriesTrustedAuthoritiesIntoDriver(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
-	registry := newSubAgentDriverRegistry()
+	registry := toolwrap.NewRegistry()
 	binder := &sessionAgent{coord: &coordinator{subAgentDrivers: registry}}
 	credentials := &CredentialSet{}
 	options := &CallOptions{MaxAgentDepth: 1, AgentDepthSet: true}
@@ -36,10 +37,10 @@ func TestFinalizationBindScopeHookCarriesTrustedAuthoritiesIntoDriver(t *testing
 		MaxCost:   2, MaxTokens: 100, Credentials: credentials, CallOptions: options,
 		RequestedModelRole: RequestedModelRole("reviewer"),
 	}
-	generation := registry.register(original.SessionID, subAgentDriver{agent: binder, call: original, FinalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx)})
-	pre, ok := registry.get(original.SessionID)
+	generation := registry.Register(original.SessionID, toolwrap.Driver{Agent: binder, Call: original, FinalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx)})
+	pre, ok := registry.Get(original.SessionID)
 	require.True(t, ok)
-	require.Empty(t, pre.call.LogicalCallID, "the driver starts without a logical identity")
+	require.Empty(t, pre.Call.LogicalCallID, "the driver starts without a logical identity")
 	incoming := original
 	incoming.LogicalCallID = fixture.child.LogicalCallID
 	incoming.DriverGeneration = generation
@@ -48,16 +49,16 @@ func TestFinalizationBindScopeHookCarriesTrustedAuthoritiesIntoDriver(t *testing
 	hook := NewFinalizationBindScopeHook(binder)
 	require.NoError(t, hook(fixture.ctx, incoming))
 	require.NoError(t, hook(fixture.ctx, incoming), "rebinding the same trusted identity is idempotent")
-	stored, ok := registry.get(original.SessionID)
+	stored, ok := registry.Get(original.SessionID)
 	require.True(t, ok)
-	require.Equal(t, generation, stored.generation)
-	require.Equal(t, incoming.LogicalCallID, stored.call.LogicalCallID)
+	require.Equal(t, generation, stored.Generation)
+	require.Equal(t, incoming.LogicalCallID, stored.Call.LogicalCallID)
 	require.Equal(t, fixture.capability.Requirement(), stored.FinalizationAuthorities.Requirement())
-	require.Same(t, credentials, stored.call.Credentials, "identity transport keeps the frozen credentials")
-	require.Same(t, options, stored.call.CallOptions)
-	require.Equal(t, original.MaxCost, stored.call.MaxCost)
-	require.Equal(t, original.MaxTokens, stored.call.MaxTokens)
-	require.Equal(t, original.RequestedModelRole, stored.call.RequestedModelRole)
+	require.Same(t, credentials, stored.Call.Credentials, "identity transport keeps the frozen credentials")
+	require.Same(t, options, stored.Call.CallOptions)
+	require.Equal(t, original.MaxCost, stored.Call.MaxCost)
+	require.Equal(t, original.MaxTokens, stored.Call.MaxTokens)
+	require.Equal(t, original.RequestedModelRole, stored.Call.RequestedModelRole)
 }
 
 // TestFinalizationBindScopeHookRefusesForeignIdentity proves every forged or
@@ -72,10 +73,10 @@ func TestFinalizationBindScopeHookCarriesTrustedAuthoritiesIntoDriver(t *testing
 // widened-authority refusals disappearing.
 func TestFinalizationBindScopeHookRefusesForeignIdentity(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
-	registry := newSubAgentDriverRegistry()
+	registry := toolwrap.NewRegistry()
 	binder := &sessionAgent{coord: &coordinator{subAgentDrivers: registry}}
 	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, FinalizationAuthorities: fixture.capability}
-	generation := registry.register(call.SessionID, subAgentDriver{agent: binder, call: call, FinalizationAuthorities: fixture.capability})
+	generation := registry.Register(call.SessionID, toolwrap.Driver{Agent: binder, Call: call, FinalizationAuthorities: fixture.capability})
 	call.DriverGeneration = generation
 	hook := NewFinalizationBindScopeHook(binder)
 
@@ -96,7 +97,7 @@ func TestFinalizationBindScopeHookRefusesForeignIdentity(t *testing.T) {
 		require.ErrorIs(t, hook(fixture.ctx, forged), session.ErrAgentFinalizationChanged)
 	})
 	t.Run("stale driver generation", func(t *testing.T) {
-		registry.register(call.SessionID, subAgentDriver{agent: binder, call: call, FinalizationAuthorities: fixture.capability})
+		registry.Register(call.SessionID, toolwrap.Driver{Agent: binder, Call: call, FinalizationAuthorities: fixture.capability})
 		require.ErrorIs(t, hook(fixture.ctx, call), session.ErrAgentFinalizationDriverUnavailable)
 	})
 	t.Run("bound requirement without driver generation", func(t *testing.T) {
@@ -107,8 +108,8 @@ func TestFinalizationBindScopeHookRefusesForeignIdentity(t *testing.T) {
 	t.Run("no authorities stays inert", func(t *testing.T) {
 		require.NoError(t, hook(fixture.ctx, SessionAgentCall{SessionID: call.SessionID, LogicalCallID: call.LogicalCallID, DriverGeneration: generation}))
 	})
-	stored, ok := registry.get(call.SessionID)
+	stored, ok := registry.Get(call.SessionID)
 	require.True(t, ok)
-	require.Equal(t, fixture.child.LogicalCallID, stored.call.LogicalCallID)
+	require.Equal(t, fixture.child.LogicalCallID, stored.Call.LogicalCallID)
 	require.Equal(t, fixture.capability.Requirement(), stored.FinalizationAuthorities.Requirement())
 }

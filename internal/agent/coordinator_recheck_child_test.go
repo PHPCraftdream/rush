@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +40,7 @@ func newBlockingWakeCoordinator(t *testing.T, ids ...string) (coord *coordinator
 		ensureFixtureSession(t, conn, id)
 		notices := session.NewSessionNoticeStore(conn)
 		require.NoError(t, notices.InsertSessionNotice(context.Background(), id, "manual_test_notice", "owed", true, ""))
-		coord.subAgentDrivers.register(id, subAgentDriver{agent: blocked, call: SessionAgentCall{SessionID: id}})
+		coord.subAgentDrivers.Register(id, toolwrap.Driver{Agent: blocked, Call: SessionAgentCall{SessionID: id}})
 	}
 	return coord, release, entered
 }

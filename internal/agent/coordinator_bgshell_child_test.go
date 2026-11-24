@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/stretchr/testify/require"
 )
@@ -58,8 +59,8 @@ func newChildBGFixture(t *testing.T, m childBGMode) *childBGFixture {
 		f.coord.bumpConsecutiveResume(parentID)
 	}
 	runs := &countingAgent{SessionAgent: f.sa}
-	f.coord.subAgentDrivers.register(childID, subAgentDriver{
-		agent: runs, call: SessionAgentCall{SessionID: childID}, parentSessionID: parentID,
+	f.coord.subAgentDrivers.Register(childID, toolwrap.Driver{
+		Agent: runs, Call: SessionAgentCall{SessionID: childID}, ParentSessionID: parentID,
 	})
 
 	mgr := shellbg.NewBackgroundShellManager()
@@ -223,7 +224,7 @@ func TestDelegatedChildDriven_ReadsTheDurableRow(t *testing.T) {
 	driven, err = f.coord.delegatedChildDriven(cancelled, "other-session")
 	require.Error(t, err)
 	require.False(t, driven, "no delegation readable and no driver: not driven")
-	f.coord.subAgentDrivers.register("other-session", subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: "other-session"}})
+	f.coord.subAgentDrivers.Register("other-session", toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: "other-session"}})
 	driven, err = f.coord.delegatedChildDriven(cancelled, "other-session")
 	require.Error(t, err)
 	require.True(t, driven, "a registered driver stands in for an unreadable read")

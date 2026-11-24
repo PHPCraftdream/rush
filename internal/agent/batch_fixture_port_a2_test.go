@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -136,7 +137,7 @@ func newA2WakeDebtFixture(t *testing.T, title string, wireOnSessionIdle bool) *a
 	}
 	sa := NewSessionAgent(opts)
 	f.sa = sa.(*sessionAgent)
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID}})
 	return f
 }
 

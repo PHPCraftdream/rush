@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/fantasy"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -152,7 +154,7 @@ func (c *coordinator) CancelAll() (stillBusy bool) {
 	// c.currentAgent (task #1049) -- CancelAll must reach it too, or its own
 	// in-flight Drain turn (built on context.Background(), doc sec.3.4)
 	// survives this process's shutdown entirely.
-	for _, driver := range c.subAgentDrivers.allDriverAgents() {
+	for _, driver := range c.subAgentDrivers.AllDriverAgents() {
 		if driver.CancelAll() {
 			stillBusy = true
 		}
@@ -366,9 +368,9 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		// turn. It is not the policy context of that turn, and may already be
 		// stale after the dispatcher has moved to another queued call. Copy the
 		// published call so every policy and pinned value comes from that turn.
-		// callFromActive: the operator's message never inherits the active
+		// agentcall.CallFromActive: the operator's message never inherits the active
 		// call's kind or notice flags (a Drain, a wake turn).
-		call = callFromActive(activeCall)
+		call = agentcall.CallFromActive(activeCall)
 		call.Prompt = injMsg.FullText()
 		call.Attachments = nil
 	} else {
@@ -602,7 +604,7 @@ func (c *coordinator) handleActiveNonDurableInterrupt(
 	token activeCallToken,
 	tokenAvailable bool,
 ) (bool, error) {
-	call := callFromActive(active)
+	call := agentcall.CallFromActive(active)
 	call.Prompt = msg.FullText()
 	call.ExistingMessageID = pi.MessageID
 	call.InjectID = ""

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -229,10 +230,10 @@ func TestWakeSession_RunPanicIsRecovered(t *testing.T) {
 	}
 	coord := newBatchRuntimeCoordinator()
 	// Registering a driver (rather than routing through c.currentAgent)
-	// keeps drainCallFor on its driver.callFor branch, which needs no
+	// keeps drainCallFor on its driver.CallFor branch, which needs no
 	// cfg/sessions wiring -- this test is about wakeSession's own recover(),
 	// not about model resolution.
-	coord.subAgentDrivers.register("sess-1", subAgentDriver{agent: agent})
+	coord.subAgentDrivers.Register("sess-1", toolwrap.Driver{Agent: agent})
 	conn, dataDir := batchFixtureConn(t)
 	ensureFixtureSession(t, conn, "sess-1")
 	coord.noticeStore = session.NewSessionNoticeStore(conn)
@@ -279,7 +280,7 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 		return nil, nil
 	}
 	coord := newBatchRuntimeCoordinator()
-	coord.subAgentDrivers.register("child-1", subAgentDriver{agent: agent})
+	coord.subAgentDrivers.Register("child-1", toolwrap.Driver{Agent: agent})
 	conn, dataDir := batchFixtureConn(t)
 	ensureFixtureSession(t, conn, "child-1")
 	coord.noticeStore = session.NewSessionNoticeStore(conn)

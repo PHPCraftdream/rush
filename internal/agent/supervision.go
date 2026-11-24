@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -103,7 +104,7 @@ func (sr *supervisionRegistry) resolveSupervisionConfig(ctx context.Context, hos
 
 // supervisionState is one root session's live countdown/backoff state.
 // generation guards every armed heap entry (timeoutEntry) the same way
-// subAgentDriverRegistry.generation guards a driver record: a stale fire for
+// toolwrap.Driver.Generation guards a driver record: a stale fire for
 // a generation this state has since moved past is a silent no-op, never a
 // second, duplicate tick.
 type supervisionState struct {
@@ -139,7 +140,7 @@ func newSupervisionRegistry() *supervisionRegistry {
 
 type supervisionHost interface {
 	configStore() *config.ConfigStore
-	lookupDriver(string) (subAgentDriver, bool)
+	lookupDriver(string) (toolwrap.Driver, bool)
 	armSupervisionDeadline(time.Time, func())
 	handleSupervisionDeadline(string, uint64)
 	batchCutoverFacts() BatchCutoverFacts
@@ -160,8 +161,8 @@ func (h coordinatorSupervisionHost) configStore() *config.ConfigStore {
 	return h.coordinator.cfg
 }
 
-func (h coordinatorSupervisionHost) lookupDriver(sessionID string) (subAgentDriver, bool) {
-	return h.coordinator.subAgentDrivers.get(sessionID)
+func (h coordinatorSupervisionHost) lookupDriver(sessionID string) (toolwrap.Driver, bool) {
+	return h.coordinator.subAgentDrivers.Get(sessionID)
 }
 
 func (h coordinatorSupervisionHost) armSupervisionDeadline(deadline time.Time, fire func()) {
@@ -689,7 +690,7 @@ func (sr *supervisionRegistry) afterReleaseContext(ctx context.Context, sessionI
 	// The wake above routes through agentFor, so it must run BEFORE the
 	// driver record can be torn down. After it, close the record's lifecycle:
 	// in the batch world nothing else ever unregisters a child's
-	// subAgentDriver (the ledger's recheckChild tail that used to call
+	// delegated child driver (the ledger's recheckChild tail that used to call
 	// releaseDriverIfScopeClosed is deleted), so agentFor would route every
 	// later wake/cancel to a stale task-agent forever, contradicting
 	// coordinator_work_scope.go's "a delivered delegation is unregistered by
@@ -703,7 +704,7 @@ func (sr *supervisionRegistry) afterReleaseContext(ctx context.Context, sessionI
 }
 
 // releaseChildDriverIfScopeClosed is afterReleaseContext's driver-lifecycle
-// tail: it removes sessionID's subAgentDriver record (and its allowlist
+// tail: it removes sessionID's delegated driver record (and its allowlist
 // entry) once the child's scope is closed. Conservative by construction:
 //
 //   - only a delegated child (a resolvable ParentSessionID) is considered;
@@ -749,7 +750,7 @@ func (sr *supervisionRegistry) releaseChildDriverIfScopeClosed(ctx context.Conte
 	}
 	// Release exactly the registration the reads above were made about: a
 	// resume that registered a newer driver meanwhile keeps its record.
-	host.releaseDriverGeneration(sessionID, observed.generation)
+	host.releaseDriverGeneration(sessionID, observed.Generation)
 }
 
 // supervisionIntervalNS shrinks the built-in initial interval for tests

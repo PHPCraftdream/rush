@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/gate"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -180,7 +181,7 @@ func (h finalizationQueueComponentHostAdapter) currentAgent() SessionAgent {
 	return h.coordinator.currentAgent
 }
 
-func (h finalizationQueueComponentHostAdapter) subAgentDrivers() *subAgentDriverRegistry {
+func (h finalizationQueueComponentHostAdapter) subAgentDrivers() *toolwrap.Registry {
 	return h.coordinator.subAgentDrivers
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -61,16 +62,16 @@ func TestFinalizationChildQueueCannotSubstituteRootDriver(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
 	root := &sessionAgent{}
 	child := &sessionAgent{}
-	coordinator := &coordinator{sessions: coresession.NewService(db.New(fixture.conn), fixture.conn), currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
+	coordinator := &coordinator{sessions: coresession.NewService(db.New(fixture.conn), fixture.conn), currentAgent: root, subAgentDrivers: toolwrap.NewRegistry()}
 	call := SessionAgentCall{SessionID: fixture.child.SessionID, LogicalCallID: fixture.child.LogicalCallID, FinalizationAuthorities: fixture.capability}
 	_, err := coordinator.RunSessionAgentCall(fixture.ctx, call)
 	require.ErrorIs(t, err, coresession.ErrAgentFinalizationDriverUnavailable, "restart cannot invent a child driver or execute on the root")
 	var attempted *ErrCallAlreadyAttempted
 	require.ErrorAs(t, err, &attempted)
-	coordinator.subAgentDrivers.register(call.SessionID, subAgentDriver{agent: child, call: SessionAgentCall{SessionID: call.SessionID, LogicalCallID: "replacement"}, FinalizationAuthorities: fixture.capability})
+	coordinator.subAgentDrivers.Register(call.SessionID, toolwrap.Driver{Agent: child, Call: SessionAgentCall{SessionID: call.SessionID, LogicalCallID: "replacement"}, FinalizationAuthorities: fixture.capability})
 	_, err = coordinator.finalizationQueueDriver(call)
 	require.ErrorIs(t, err, coresession.ErrAgentFinalizationDriverUnavailable, "a recorded but different logical driver is not proof")
-	coordinator.subAgentDrivers.register(call.SessionID, subAgentDriver{agent: child, call: call, FinalizationAuthorities: fixture.capability})
+	coordinator.subAgentDrivers.Register(call.SessionID, toolwrap.Driver{Agent: child, Call: call, FinalizationAuthorities: fixture.capability})
 	driver, err := coordinator.finalizationQueueDriver(call)
 	require.NoError(t, err)
 	require.Same(t, child, driver)

@@ -172,7 +172,7 @@ func (c *coordinator) parkedParentSessions() []string {
 	}
 	parents := make([]string, 0, 4)
 	seen := make(map[string]struct{})
-	for _, child := range c.subAgentDrivers.childSessions() {
+	for _, child := range c.subAgentDrivers.ChildSessions() {
 		parent := ""
 		if c.sessions != nil {
 			if sess, err := c.sessions.Get(context.Background(), child); err == nil {

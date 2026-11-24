@@ -38,7 +38,7 @@ import (
 func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
 	var rootLogicalID string
 	var rootRoleContract *session.RoleContract
-	if _, ok := c.subAgentDrivers.get(sessionID); !ok {
+	if _, ok := c.subAgentDrivers.Get(sessionID); !ok {
 		rootCall := SessionAgentCall{SessionID: sessionID}
 		if store, supported := c.sessions.(session.SessionRootRoleContractStore); supported {
 			logicalID, contract, found, err := store.GetRootRoleContract(ctx, sessionID)
@@ -63,31 +63,31 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			ctx = WithCallOptions(ctx, rootCall.CallOptions)
 		}
 	}
-	if _, ok := c.subAgentDrivers.get(sessionID); !ok && c.drainCredentialBoundary(ctx, sessionID) {
+	if _, ok := c.subAgentDrivers.Get(sessionID); !ok && c.drainCredentialBoundary(ctx, sessionID) {
 		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", diskport.ErrCredentialBindingUnavailable, sessionID)
 	}
-	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
+	if driver, ok := c.subAgentDrivers.Get(sessionID); ok {
 		// §6.2 (preserved from the old wakeNoticeCall driver branch): every
 		// wake re-inherits the driver's parentSessionID's allowlist baseline
 		// onto the child BEFORE waking it -- the child's own turn no longer
 		// clears its allowlist entry on return, so re-arming here keeps a
 		// woken turn judged by the delegation's policy instead of falling
 		// back to the process-wide gate.
-		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok && driver.parentSessionID != "" {
-			mgr.InheritSessionRunAllowlistForGeneration(driver.parentSessionID, sessionID, driver.generation)
+		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok && driver.ParentSessionID != "" {
+			mgr.InheritSessionRunAllowlistForGeneration(driver.ParentSessionID, sessionID, driver.Generation)
 		}
-		call := newDrainCall(driver.callFor(""))
-		if driver.call.RoleContract != nil && (call.CallOptions == nil || call.CallOptions.RoleContract == nil) {
-			call.CallOptions = WithRoleContractCopy(call.CallOptions, driver.call.RoleContract)
+		call := newDrainCall(driver.CallFor(""))
+		if driver.Call.RoleContract != nil && (call.CallOptions == nil || call.CallOptions.RoleContract == nil) {
+			call.CallOptions = WithRoleContractCopy(call.CallOptions, driver.Call.RoleContract)
 		}
 		if call.RequestedModelRole != "" {
 			var roleErr error
-			call, roleErr = c.refreshRequestedDelegationCall(ctx, driver.parentSessionID, call)
+			call, roleErr = c.refreshRequestedDelegationCall(ctx, driver.ParentSessionID, call)
 			if roleErr != nil {
 				return SessionAgentCall{}, nil, roleErr
 			}
-		} else if driver.slotRole != "" && call.Credentials == nil {
-			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.slotRole); ok {
+		} else if driver.SlotRole != "" && call.Credentials == nil {
+			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.SlotRole); ok {
 				call = applyDrainModelOptions(call, refreshed)
 				call.ProviderOptions = modelkit.GetProviderOptions(sessionID, refreshed, providerCfg)
 			}

@@ -41,6 +41,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -185,10 +186,10 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 
 	parentID, denyChild := controlChild(t, env, "bqdeny")
 	denyState := &batchChildQuestionState{Depth: 2, Route: false}
-	coord.subAgentDrivers.register(denyChild, subAgentDriver{
-		agent:           &mockSessionAgent{},
-		call:            SessionAgentCall{SessionID: denyChild, BatchQuestion: denyState, Tools: bqdShapedTools(t, false)},
-		parentSessionID: parentID,
+	coord.subAgentDrivers.Register(denyChild, toolwrap.Driver{
+		Agent:           &mockSessionAgent{},
+		Call:            SessionAgentCall{SessionID: denyChild, BatchQuestion: denyState, Tools: bqdShapedTools(t, false)},
+		ParentSessionID: parentID,
 	})
 
 	_, routeChild := controlChild(t, env, "bqroute")
@@ -198,10 +199,10 @@ func TestBuildCallInheritsBatchChildQuestionCapability(t *testing.T) {
 		BindingOK: true,
 		Binding:   batchAgentQuestionBinding{Ask: func(context.Context, int, string) (json.RawMessage, error) { return nil, nil }},
 	}
-	coord.subAgentDrivers.register(routeChild, subAgentDriver{
-		agent:           &mockSessionAgent{},
-		call:            SessionAgentCall{SessionID: routeChild, BatchQuestion: routeState, Tools: bqdShapedTools(t, true)},
-		parentSessionID: parentID,
+	coord.subAgentDrivers.Register(routeChild, toolwrap.Driver{
+		Agent:           &mockSessionAgent{},
+		Call:            SessionAgentCall{SessionID: routeChild, BatchQuestion: routeState, Tools: bqdShapedTools(t, true)},
+		ParentSessionID: parentID,
 	})
 
 	t.Run("deny_template_inherits_stripped_tools", func(t *testing.T) {
@@ -278,10 +279,10 @@ func TestInjectAgentReplacementInheritsChildCapability(t *testing.T) {
 				}
 			}
 			spy := &mockSessionAgent{}
-			coord.subAgentDrivers.register(childID, subAgentDriver{
-				agent:           spy,
-				call:            SessionAgentCall{SessionID: childID, BatchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
-				parentSessionID: parentID,
+			coord.subAgentDrivers.Register(childID, toolwrap.Driver{
+				Agent:           spy,
+				Call:            SessionAgentCall{SessionID: childID, BatchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
+				ParentSessionID: parentID,
 			})
 
 			// The child driver's credentials are nil, so InjectAgent takes
@@ -343,9 +344,9 @@ func TestDrainCallForCarriesDriverCapability(t *testing.T) {
 			// Re-register the fixture's own driver slot with a capability
 			// template: the same shape runSubAgent registers at delegation
 			// start.
-			f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{
-				agent: f.sa,
-				call:  SessionAgentCall{SessionID: f.sessID, SmartModel: &f.model, BatchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
+			f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{
+				Agent: f.sa,
+				Call:  SessionAgentCall{SessionID: f.sessID, SmartModel: &f.model, BatchQuestion: state, Tools: bqdShapedTools(t, tc.route)},
 			})
 
 			call, prep, err := f.coord.drainCallFor(ctx, f.sessID)

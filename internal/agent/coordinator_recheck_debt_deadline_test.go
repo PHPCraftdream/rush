@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -63,7 +64,7 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "b1-recheck-deadline")
 	require.NoError(t, err)
-	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
+	coord.subAgentDrivers.Register(sess.ID, toolwrap.Driver{Agent: agent, Call: SessionAgentCall{SessionID: sess.ID}})
 
 	// Seed real VISIBLE debt: a terminal, pulled, wake-armed completion debt
 	// in batch_nodes -- exactly what decideDrainTurn requires to allow a turn.
@@ -136,7 +137,7 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "b1-queued-turn-survives")
 	require.NoError(t, err)
-	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: sess.ID}})
+	coord.subAgentDrivers.Register(sess.ID, toolwrap.Driver{Agent: agent, Call: SessionAgentCall{SessionID: sess.ID}})
 
 	// Seed real VISIBLE debt: a terminal, pulled, wake-armed completion debt
 	// in batch_nodes -- exactly what decideDrainTurn requires to allow a turn.
