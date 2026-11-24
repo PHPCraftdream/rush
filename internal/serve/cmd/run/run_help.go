@@ -292,14 +292,22 @@ Git-worktree isolation:
                      worktree can only ever be created under
                      <main>/worktrees/. Without --session the session
                      id is the slug. The run's stdout (the --json
-                     envelope, or the terse final answer) and stderr
-                     are ALSO written to <main>/.rush/stdin/<session>.out
-                     and .err so results survive ` + "`rush worktree remove`" + `;
-                     shell redirection keeps working as before. If
-                     worktrees/ is not git-ignored a warning is printed
-                     to stderr (rush never edits .gitignore).
-                     --worktree is incompatible with --cwd and
-                     --data-dir. Lifecycle: ` + "`rush worktree list`" + `
+                     envelope, or terse final answer) is copied to
+                     <main>/.rush/stdin/<session>.out when non-empty;
+                     captured stderr replaces .err after each run.
+                     --isolated-store selects the session store under
+                     <main>/.rush/agent-dbs/<session>/.rush unless an explicit
+                     --data-dir is supplied, which takes precedence.
+                     Both files are written at the end of the invocation.
+                     Before they are replaced, the previous .out (only
+                     when the new stdout is non-empty) and the previous
+                     .err are copied to <session>.<UTC time>.out and .err.
+                     An empty new stdout leaves the latest .out in place.
+                     ` + "`rush result <id> --history`" + ` lists .out archives.
+                     Shell redirection keeps working as before. If worktrees/
+                     is not git-ignored a warning is printed to stderr
+                     (rush never edits .gitignore).
+                     --worktree is incompatible with --cwd. Lifecycle: ` + "`rush worktree list`" + `
                      and ` + "`rush worktree remove <slug>" + ` [--keep-branch]
                      [--force]` + "`" + `.` + `
 

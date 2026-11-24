@@ -185,7 +185,7 @@ func TestResultMissingEnvelope(t *testing.T) {
 	assert.Error(t, cmd.Execute())
 }
 
-// Revert-check: --json, --review and --field are mutually exclusive;
+// Revert-check: --json, --review, --history and --field are mutually exclusive;
 // the conflict must error instead of picking one silently.
 func TestResultConflictingModes(t *testing.T) {
 	cmd, _ := newResultHarness(t)
@@ -196,15 +196,33 @@ func TestResultConflictingModes(t *testing.T) {
 	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 
+func TestResultHistoryListsArchivedEnvelopes(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "s2.20250304T050607.000000000Z.out"), []byte(`{"exit_reason":"stop","review_verdict":"pass"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "s2.20250304T060607.000000000Z.out"), []byte(`{"exit_reason":"end_turn","review_verdict":"fail"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "s2.UNRELATED.out"), []byte(`not json`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "s2.20250304T070607.000000000Z.out"), []byte(`not json`), 0o644))
+	var buf bytes.Buffer
+	require.NoError(t, writeResultHistoryFromDir(&buf, dir, "s2"))
+	assert.Equal(t, "20250304T050607.000000000Z\texit_reason=stop\treview_verdict=pass\n20250304T060607.000000000Z\texit_reason=end_turn\treview_verdict=fail\n20250304T070607.000000000Z\tunreadable\n", buf.String())
+}
+
+func TestResultHistoryNoArchives(t *testing.T) {
+	err := writeResultHistoryFromDir(io.Discard, t.TempDir(), "absent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no archived envelopes")
+}
+
 // Revert-check: guards accidental flag renames that would break
-// scripts relying on --json/--review/--field.
+// scripts relying on --json/--review/--field/--history.
 func TestResultMutualFlagHelper(t *testing.T) {
 	cmd := &cobra.Command{Use: "result"}
 	addResultFlags(cmd)
 	names := make(map[string]bool)
 	cmd.Flags().VisitAll(func(f *pflag.Flag) { names[f.Name] = true })
-	assert.Len(t, names, 3)
+	assert.Len(t, names, 4)
 	assert.True(t, names["json"])
 	assert.True(t, names["review"])
 	assert.True(t, names["field"])
+	assert.True(t, names["history"])
 }

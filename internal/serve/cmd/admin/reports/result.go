@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +32,8 @@ var resultCmd = &cobra.Command{
 The argument is either a session id — looked up as
 <main-checkout>/.rush/stdin/<id>.out via ` + "`git rev-parse --git-common-dir`" + `,
 so it resolves from inside a linked worktree too — or a direct path to
-an envelope file.
+an envelope file. Use --history with a session id to list timestamped
+archived envelopes with their exit reason and review verdict.
 
 By default the envelope is rendered as readable text: exit reason,
 error, final text, review verdict and review, warnings, brief usage
@@ -40,14 +43,16 @@ non-zero when it was not found or is not valid JSON.
 
 ` + "`rush result`" + ` needs no database, session store or network and writes
 nothing to disk. It pairs with ` + "`rush run --worktree`" + ` (which stores
-the envelope at <main>/.rush/stdin/<session>.out) and with
-` + "`rush run --findings-from`" + ` (which feeds a stored envelope back into
+the latest envelope at <main>/.rush/stdin/<session>.out and archives
+previous runs there) and with
+` + "`rush run --findings-from`" + ` (which feeds the latest envelope back into
 a new run).`,
 	Example: `  rush result s1-review                    # human-readable text
-  rush result s1-review --review           # verdict + review only
-  rush result s1-review --field final_text # raw final_text for scripting
+  rush result s1-review --history           # timestamped archived runs
+  rush result s1-review --review             # verdict + review only
+  rush result s1-review --field final_text   # raw final_text for scripting
   rush result s1-review --json | jq .exit_reason
-  rush result /abs/path/envelope.out       # explicit file`,
+  rush result /abs/path/envelope.out         # explicit file`,
 	Args:         cobra.ExactArgs(1),
 	RunE:         runResultCmd,
 	SilenceUsage: true,
@@ -59,14 +64,16 @@ func addResultFlags(c *cobra.Command) {
 	c.Flags().Bool("json", false, "Write the envelope bytes to stdout exactly as stored (no re-formatting, no re-encoding).")
 	c.Flags().Bool("review", false, "Write only the reviewer verdict and the review text (nothing when the envelope has neither).")
 	c.Flags().String("field", "", "Write one envelope field's value; strings are written raw (no quotes), other types as JSON. Fails when the field is absent.")
+	c.Flags().Bool("history", false, "List timestamped archived envelopes for this session with exit reason and review verdict.")
 }
 
 func runResultCmd(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	asReview, _ := cmd.Flags().GetBool("review")
+	history, _ := cmd.Flags().GetBool("history")
 	field, _ := cmd.Flags().GetString("field")
 	set := 0
-	for _, b := range []bool{asJSON, asReview} {
+	for _, b := range []bool{asJSON, asReview, history} {
 		if b {
 			set++
 		}
@@ -75,9 +82,15 @@ func runResultCmd(cmd *cobra.Command, args []string) error {
 		set++
 	}
 	if set > 1 {
-		return fmt.Errorf("--json, --review and --field are mutually exclusive")
+		return fmt.Errorf("--json, --review, --history and --field are mutually exclusive")
 	}
-
+	out := cmd.OutOrStdout()
+	if history {
+		if strings.ContainsAny(args[0], `/\\*?[]`) || args[0] == "." || args[0] == ".." {
+			return fmt.Errorf("--history requires a session id, not an envelope path")
+		}
+		return writeResultHistory(out, args[0])
+	}
 	path, err := cliout.ResolveEnvelopePath(args[0])
 	if err != nil {
 		return err
@@ -86,8 +99,6 @@ func runResultCmd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	out := cmd.OutOrStdout()
-
 	switch {
 	case asJSON:
 		// Bytes pass through unchanged: valid UTF-8 in the file stays
@@ -126,7 +137,49 @@ func runResultCmd(cmd *cobra.Command, args []string) error {
 	}
 }
 
-// writeResultText renders the envelope as plain, deterministic lines.
+func writeResultHistory(w io.Writer, sessionID string) error {
+	root, err := cliout.MainCheckoutRoot()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(root, ".rush", "stdin")
+	return writeResultHistoryFromDir(w, dir, sessionID)
+}
+
+func writeResultHistoryFromDir(w io.Writer, dir, sessionID string) error {
+	matches, err := filepath.Glob(filepath.Join(dir, sessionID+".*.out"))
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("no archived envelopes for session %q", sessionID)
+	}
+	sort.Strings(matches)
+	found := false
+	for _, path := range matches {
+		stamp := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), sessionID+"."), ".out")
+		if !isResultHistoryTimestamp(stamp) {
+			continue
+		}
+		found = true
+		_, env, _, err := cliout.LoadEnvelope(path)
+		if err != nil {
+			fmt.Fprintf(w, "%s\tunreadable\n", stamp)
+			continue
+		}
+		fmt.Fprintf(w, "%s\texit_reason=%s\treview_verdict=%s\n", stamp, env.ExitReason, env.ReviewVerdict)
+	}
+	if !found {
+		return fmt.Errorf("no archived envelopes for session %q", sessionID)
+	}
+	return nil
+}
+
+func isResultHistoryTimestamp(stamp string) bool {
+	parsed, err := time.Parse("20060102T150405.000000000Z", stamp)
+	return err == nil && parsed.UTC().Format("20060102T150405.000000000Z") == stamp
+}
+
 // All writes are raw UTF-8 bytes via fmt.Fprintf: no encoding layer
 // exists between the envelope's strings and stdout, so Cyrillic and
 // any other Unicode survive on Windows regardless of the console code

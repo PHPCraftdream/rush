@@ -259,20 +259,26 @@ var runCmd = &cobra.Command{
 
 		// Fork patch (worktree delegation): --worktree resolves or
 		// creates <main>/worktrees/<slug>, chdirs the run into it,
-		// defaults --session to the slug, and mirrors stdout/stderr
-		// into the main checkout's .rush/stdin so results survive
-		// `rush worktree remove` (see run_worktree.go). Validated even
-		// without --worktree so stray --base/--branch fail fast.
+		// defaults --session to the slug, and mirrors completed stdout/stderr
+		// into the main checkout's .rush/stdin.
 		if err := validateRunWorktreeFlags(cmd, worktreeSlug, worktreeBase, worktreeBranch); err != nil {
 			return err
 		}
+		var wt *runWorktree
 		if worktreeSlug != "" {
-			wt, err := prepareRunWorktree(ctx, cmd, worktreeSlug, worktreeBase, worktreeBranch, sessionID)
+			var err error
+			wt, err = prepareRunWorktree(ctx, cmd, worktreeSlug, worktreeBase, worktreeBranch, sessionID)
 			if err != nil {
 				return err
 			}
 			defer wt.finish()
 			sessionID = wt.sessionID
+		}
+
+		if wt != nil {
+			if err := applyRunWorktreeDataDir(cmd, wt.mainRoot, sessionID); err != nil {
+				return err
+			}
 		}
 
 		a, err := setupRunApp(cmd, asJSON, sessionID)
@@ -290,7 +296,6 @@ var runCmd = &cobra.Command{
 				sessionID = sess.ID
 			}
 		}
-
 		if !a.Config().IsConfigured() {
 			return fmt.Errorf("no providers configured - please run 'rush' to set up a provider interactively")
 		}
@@ -480,7 +485,8 @@ func NewRunCmd() *cobra.Command {
 		// Fork patch (worktree delegation): run inside an isolated git
 		// worktree created/reused under the main checkout's worktrees/
 		// directory. See run_worktree.go.
-		runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug> and run this invocation with cwd inside it. The slug is a single path segment ([a-z0-9][a-z0-9._-]*). Reuses a registered worktree whose branch matches; refuses a path occupied by anything else or a branch mismatch (pass --branch to match). Defaults --session to the slug and mirrors stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd and --data-dir. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
+		runCmd.Flags().String("worktree", "", "Resolve or create the git worktree <main>/worktrees/<slug>, run there, default --session to the slug, and mirror stdout/stderr into <main>/.rush/stdin/<session>.{out,err}. Incompatible with --cwd. Manage with `rush worktree list` / `rush worktree remove <slug>`.")
+		runCmd.Flags().Bool("isolated-store", false, "With --worktree: use an isolated session store under <main>/.rush/agent-dbs/<session>/.rush unless --data-dir is explicitly set.")
 		runCmd.Flags().String("base", "", "With --worktree: the ref the worktree's branch is created from (default: the main checkout's HEAD). Ignored when the branch already exists. Requires --worktree.")
 		runCmd.Flags().String("branch", "", "With --worktree: the branch the worktree uses, created when missing (default: the slug). Required to match when reusing a worktree that sits on a different branch. Requires --worktree.")
 		runCmd.MarkFlagsMutuallyExclusive("session", "continue")
