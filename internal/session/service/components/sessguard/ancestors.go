@@ -1,4 +1,4 @@
-package session
+package sessguard
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/session/batch/finterm"
 )
 
 const FinalizationAncestorLimit = 32
@@ -16,13 +18,13 @@ type finalizationAncestorReader interface {
 }
 
 type finalizationManagedEdge struct {
-	node, owner, child string
-	token              int64
+	Node, Owner, Child string
+	Token              int64
 }
 
 type finalizationAncestry struct {
-	owners []string
-	edges  []finalizationManagedEdge
+	Owners []string
+	Edges  []finalizationManagedEdge
 }
 
 // FinalizationParentEdgesQuery runs once per ancestor on the writer connection,
@@ -38,8 +40,8 @@ func readFinalizationParentEdges(ctx context.Context, reader finalizationAncesto
 	}
 	defer func() { retErr = errors.Join(retErr, rows.Close()) }()
 	for rows.Next() {
-		edge := finalizationManagedEdge{child: owner}
-		if err := rows.Scan(&edge.node, &edge.owner, &edge.token); err != nil {
+		edge := finalizationManagedEdge{Child: owner}
+		if err := rows.Scan(&edge.Node, &edge.Owner, &edge.Token); err != nil {
 			return nil, err
 		}
 		edges = append(edges, edge)
@@ -57,20 +59,19 @@ func ReadFinalizationAncestry(ctx context.Context, reader finalizationAncestorRe
 	var visit func(string, int) error
 	visit = func(owner string, depth int) error {
 		if owner == "" || visiting[owner] || depth > FinalizationAncestorLimit {
-			return ErrAgentFinalizationChanged
+			return finterm.ErrAgentFinalizationChanged
 		}
 		if visited[owner] {
 			return nil
 		}
 		visiting[owner] = true
-		// Terminal edges still identify managed ancestry despite physical holds.
 		edges, err := readFinalizationParentEdges(ctx, reader, owner)
 		if err != nil {
 			return fmt.Errorf("read managed parents: %w", err)
 		}
 		for _, edge := range edges {
-			snapshot.edges = append(snapshot.edges, edge)
-			parents[owner] = append(parents[owner], edge.owner)
+			snapshot.Edges = append(snapshot.Edges, edge)
+			parents[owner] = append(parents[owner], edge.Owner)
 		}
 		for _, parent := range parents[owner] {
 			if err := visit(parent, depth+1); err != nil {
@@ -87,11 +88,11 @@ func ReadFinalizationAncestry(ctx context.Context, reader finalizationAncestorRe
 		}
 	}
 	for owner := range visited {
-		snapshot.owners = append(snapshot.owners, owner)
+		snapshot.Owners = append(snapshot.Owners, owner)
 	}
-	slices.Sort(snapshot.owners)
-	slices.SortFunc(snapshot.edges, func(a, b finalizationManagedEdge) int {
-		return strings.Compare(a.node, b.node)
+	slices.Sort(snapshot.Owners)
+	slices.SortFunc(snapshot.Edges, func(a, b finalizationManagedEdge) int {
+		return strings.Compare(a.Node, b.Node)
 	})
 	return snapshot, nil
 }
