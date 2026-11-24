@@ -70,7 +70,7 @@ func trustedFinalizationDeclaration(ctx context.Context, writerService *service,
 	}
 	snapshot := CaptureAgentFinalizationContext(ctx)
 	for _, authority := range snapshot.authorities {
-		if authority == nil || authority.Service != writerService {
+		if authority == nil || authority.Service == nil || authority.Service.DB != writerService.DB {
 			return "", ErrAgentFinalizationChanged
 		}
 		if authority.Identity.SessionID == data.SessionID && authority.Identity.LogicalCallID != data.LogicalCallID {
