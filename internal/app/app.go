@@ -665,3 +665,109 @@ func heartbeatDir() string {
 	_, globalDirActive := config.GlobalDir()
 	return heartbeat.DefaultDir(config.GlobalWorkspaceDir, globalDirActive)
 }
+
+// peNewErrorReleaseTimeout bounds the Runner drain on New's error path,
+// so a wedged Runner can never hang New. Same budget as the ordinary
+// graceful Shutdown drain (appBatchDrainTimeout, the per-cleanup
+// shutdownCtx budget of releaseResources).
+const peNewErrorReleaseTimeout = appbatch.BatchDrainTimeout
+
+// peReleaseBatchRuntimeOnNewError tears down everything installBatchRuntime
+// gave this (about-to-be-discarded) App, EXCEPT DB references: stop the
+// fault watcher and the dead-host maintenance goroutine, drain the Runner
+// (bounded), and release the host identity. Call it from New's error paths
+// after the install block -- including the install-failure branch
+// itself, where the host may already be ensured even though no runtime
+// was built (installBatchRuntime ensures the host first, then builds the
+// factory; a factory failure leaves the host registered). Safe to call
+// when nothing was installed: every step is nil-safe or a documented
+// no-op on a host that was never ensured.
+func (app *App) peReleaseBatchRuntimeOnNewError(ctx context.Context) {
+	// H4 W2: stop and join the dead-host maintenance goroutine first, so
+	// no maintenance pass runs against a host identity being released.
+	app.stopBatchMaintenance()
+
+	rt := app.batchRuntime
+	if rt == nil {
+		// Half-installed (or never installed): the host identity may
+		// already be ensured. HostStore.Close is a documented no-op
+		// without an ensured host, so release unconditionally.
+		app.peReleaseNewErrorHostIdentity(ctx)
+		// rt.Stop() normally stops the timeout wake dispatcher via
+		// cfg.TimeoutCheckin; with no runtime that never ran.
+		if app.batchTimeoutWake != nil {
+			app.batchTimeoutWake.Stop()
+			app.batchTimeoutWake = nil
+		}
+		return
+	}
+
+	// Disarm the held-question inject bridge first, exactly like
+	// releaseBatchRuntimeGate: no answer may be routed into a Runner that
+	// is about to drain. (app.AgentCoordinator is nil on this path --
+	// InitCoderAgent failed -- and SetCoordinatorBatchHeldAnswerSink is
+	// nil-safe.)
+	if app.batchHeldAnswerSink != nil {
+		app.batchHeldAnswerSink.Close()
+	}
+	agent.SetCoordinatorBatchHeldAnswerSink(app.AgentCoordinator, nil)
+	app.batchHeldAnswerSink = nil
+
+	// Disarm the fault watcher (and, through cfg.TimeoutCheckin, the
+	// timeout wake dispatcher). Idempotent.
+	rt.Stop()
+
+	app.peDrainRunnerAndReleaseHost(ctx, rt)
+
+	// Mark the runtime consumed so a re-entry can never double-drain or
+	// double-release through the same fields.
+	app.batchRuntime = nil
+	app.batchInstall = nil
+}
+
+// peDrainRunnerAndReleaseHost drains the Runner bounded by
+// peNewErrorReleaseTimeout and then releases the host identity -- the
+// graceful DrainAndRelease order (Runner, then host) minus the writer
+// release, which stays the caller's (conn) and New's own (readConn). A
+// drain timeout or a faulted Runner retains the host identity
+// (CloseKeepLock), exactly like the forced Shutdown path: the lock is
+// pinned until process exit and this helper must never hang New.
+func (app *App) peDrainRunnerAndReleaseHost(ctx context.Context, rt *appbatch.BatchRuntime) {
+	runner := rt.Runner()
+	if runner == nil {
+		// Dormant runtime (runnerless install): nothing to drain; the
+		// host identity is still ours to release.
+		app.peReleaseNewErrorHostIdentity(ctx)
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(ctx, peNewErrorReleaseTimeout)
+	defer cancel()
+	if err := runner.Close(closeCtx); err != nil {
+		slog.Warn("app: batch runner did not drain on New's error path - host identity retained until process exit", "error", err)
+		app.peRetainNewErrorHostIdentity()
+		return
+	}
+	app.peReleaseNewErrorHostIdentity(ctx)
+}
+
+// peReleaseNewErrorHostIdentity releases the host identity with the same
+// primitive the graceful Shutdown path uses (HostStore.Close):
+// OS lock release plus row cleanup. The DB writer is
+// still open here -- New's error path releases its own ConnectRead only
+// AFTER this returns, and the caller's conn reference is never New's to
+// release. drainResidualConstructions mirrors the ReleaseHostIdentity seam
+// wired in installBatchRuntime: residual construction scopes close before
+// the host release.
+func (app *App) peReleaseNewErrorHostIdentity(ctx context.Context) {
+	app.drainResidualConstructions()
+	if err := app.batchHostRelease(ctx); err != nil {
+		slog.Warn("app: failed to release batch host identity after New failed", "error", err)
+	}
+}
+
+// peRetainNewErrorHostIdentity is the forced counterpart (CloseKeepLock):
+// forget the in-memory handle, pin the OS lock until process exit. Same
+// graceful/forced split as releaseResources.
+func (app *App) peRetainNewErrorHostIdentity() {
+	app.batchHostReleaseKeepLock()
+}
