@@ -205,3 +205,28 @@ func TestResponsesWSManagerWarnsWhenRetiringALeasedConnection(t *testing.T) {
 	require.Contains(t, logs.String(), "retired during an active exchange")
 	require.Contains(t, logs.String(), `"level":"WARN"`)
 }
+
+func TestResponsesWSFailureLogsIdleTimeBeforeSend(t *testing.T) {
+	logs := diagCapture(t)
+	conn := newResponsesWSTestConn(&responsesWSTestWire{read: [][]byte{[]byte(`{}`)}}, 64, 128)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	_, err := conn.ReceiveRaw(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, conn.MarkCompleted())
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	_, err = conn.ReceiveRaw(context.Background())
+	require.Error(t, err)
+	var failed map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded))
+		if decoded["msg"] == "responses websocket exchange failed" {
+			failed = decoded
+		}
+	}
+	require.NotNil(t, failed)
+	require.GreaterOrEqual(t, failed["idle_before_send_ms"], float64(20), "the reused connection's idle time is reported")
+}
