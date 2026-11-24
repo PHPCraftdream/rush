@@ -990,7 +990,6 @@ func TestFolderScope_StripsAgenticFetchEvenWhenSubAgentsAllowed(t *testing.T) {
 	assert.NotContains(t, names, "agentic_fetch",
 		"the scope filter must strip agentic_fetch even when the sub-agent ban does not")
 	assert.NotContains(t, names, "download")
-	assert.Contains(t, names, modelkit.AgentToolName,
-		"the agent delegation tool stays: the sub-agent inherits the same scoped context")
+	assert.Contains(t, names, modelkit.AgentToolName, "the agent delegation tool stays: the sub-agent inherits the same scoped context")
 	assert.Contains(t, names, "fs_read")
 }

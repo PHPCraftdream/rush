@@ -753,8 +753,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		// the guidance to stderr separately BEFORE the ERROR box
 		// so the operator / orchestrator actually sees it.
 		// Reuses agent.PeakHoursGuidance so the stderr text stays
-		// identical to the DB finish-message details recorded by
-		// peakHoursStoppedFinishText (sessions why / diff, etc.).
+		// identical to the DB finish-message details recorded by peakHoursStoppedFinishText (sessions why / diff, etc.).
 		var peakErr *usage.PeakHoursError
 		if errors.As(runErr, &peakErr) {
 			fmt.Fprintf(s.stderr, "\n%s\n\n", agent.PeakHoursGuidance(peakErr))
