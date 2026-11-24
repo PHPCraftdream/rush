@@ -3668,15 +3668,15 @@ declaration	timeout_service.go::timeoutService.run	timeout_service.go	79	timeout
 declaration	timeout_service.go::timeoutService.fireDue	timeout_service.go	110	timeoutService.fireDue	method	watchdog	watchdog	timeout_service.go	runtime/exec/watchdog	DM1	not receiver inventory row	-	-
 declaration	timeout_service.go::timeoutService.close	timeout_service.go	125	timeoutService.close	method	watchdog	watchdog	timeout_service.go	runtime/exec/watchdog	DM1	not receiver inventory row	-	-
 declaration	timeout_stop.go::WatchdogResumeGuidance	timeout_stop.go	22	WatchdogResumeGuidance	func	coord	watchdog	stream_titles.go	runtime/exec/watchdog	DM1	not receiver inventory row	-	-
-declaration	timeout_stop.go::ErrRunDefaultCap	timeout_stop.go	37	ErrRunDefaultCap	var	coord	agentrun	timeout_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause	timeout_stop.go	40	RunTimeoutCause	type	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause.Duration	timeout_stop.go	41	RunTimeoutCause.Duration	field	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause.Source	timeout_stop.go	42	RunTimeoutCause.Source	field	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause.DefaultCap	timeout_stop.go	43	RunTimeoutCause.DefaultCap	field	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause.Error	timeout_stop.go	46	RunTimeoutCause.Error	method	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause.Unwrap	timeout_stop.go	54	RunTimeoutCause.Unwrap	method	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::RunTimeoutCause.Is	timeout_stop.go	56	RunTimeoutCause.Is	method	coord	coord	timeout_stop.go	runtime/coord	DM7-gated	not receiver inventory row	-	-
-declaration	timeout_stop.go::runTimeoutFinishText	timeout_stop.go	62	runTimeoutFinishText	func	coord	agentrun	timeout_methods.go	runtime/exec/agentrun	DM7-gated	not receiver inventory row	-	-
+declaration	timeout_stop.go::ErrRunDefaultCap	timeout_stop.go	37	ErrRunDefaultCap	var	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved; no root alias (callers qualify watchdog.ErrRunDefaultCap)	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause	timeout_stop.go	40	RunTimeoutCause	type	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved; root alias retained in agent_turn_failure.go for internal/app callers	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause.Duration	timeout_stop.go	41	RunTimeoutCause.Duration	field	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause.Source	timeout_stop.go	42	RunTimeoutCause.Source	field	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause.DefaultCap	timeout_stop.go	43	RunTimeoutCause.DefaultCap	field	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause.Error	timeout_stop.go	46	RunTimeoutCause.Error	method	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause.Unwrap	timeout_stop.go	54	RunTimeoutCause.Unwrap	method	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved	declaration	-	-
+declaration	timeout_stop.go::RunTimeoutCause.Is	timeout_stop.go	56	RunTimeoutCause.Is	method	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved	declaration	-	-
+declaration	timeout_stop.go::runTimeoutFinishText	timeout_stop.go	62	runTimeoutFinishText	func	watchdog	watchdog	timeout_stop.go	runtime/exec/watchdog	moved and exported as RunTimeoutFinishText	declaration	-	-
 declaration	tool_fatal_error.go::fatalToolCollector	tool_fatal_error.go	19	fatalToolCollector	type	toolwrap	toolwrap	tool_fatal_error.go	runtime/policy/toolwrap	DM4-gated	not receiver inventory row	-	-
 declaration	tool_fatal_error.go::fatalToolCollector.mu	tool_fatal_error.go	20	fatalToolCollector.mu	field	toolwrap	toolwrap	tool_fatal_error.go	runtime/policy/toolwrap	DM4-gated	not receiver inventory row	-	-
 declaration	tool_fatal_error.go::fatalToolCollector.err	tool_fatal_error.go	21	fatalToolCollector.err	field	toolwrap	toolwrap	tool_fatal_error.go	runtime/policy/toolwrap	DM4-gated	not receiver inventory row	-	-

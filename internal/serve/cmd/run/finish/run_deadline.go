@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 )
 
 // HardKillGrace is how long a `rush run` may take to exit after its deadline
@@ -38,7 +38,7 @@ func InstallRunDeadline(ctx context.Context, timeoutDur, defaultCap, grace time.
 	if isCap {
 		source = "default cap (RUSH_RUN_DEFAULT_HARD_TIMEOUT; no --timeout set)"
 	}
-	ctx, cancel := context.WithTimeoutCause(ctx, deadline, &agent.RunTimeoutCause{
+	ctx, cancel := context.WithTimeoutCause(ctx, deadline, &watchdog.RunTimeoutCause{
 		Duration: deadline, Source: source, DefaultCap: isCap,
 	})
 	timer := time.AfterFunc(deadline+grace, hardKillCallback(ctx, deadline, grace, isCap, stderr, exit))
@@ -53,7 +53,7 @@ func hardKillCallback(ctx context.Context, deadline, grace time.Duration, isCap 
 	// run's context rather than assuming the callback fired at its deadline.
 	return func() {
 		<-ctx.Done()
-		if cause, ok := context.Cause(ctx).(*agent.RunTimeoutCause); !ok || cause == nil {
+		if cause, ok := context.Cause(ctx).(*watchdog.RunTimeoutCause); !ok || cause == nil {
 			return
 		}
 		if isCap {

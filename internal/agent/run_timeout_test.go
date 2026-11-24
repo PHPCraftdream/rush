@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -158,7 +159,7 @@ func lastAssistantFinish(t *testing.T, env fakeEnv, sessionID string) *message.F
 
 // TestRun_RunTimeoutFinishNamesItsSource: the same turn cut off by the run's
 // deadline names what set it. An explicit --timeout says so; the default
-// wall-clock cap (the run tags its deadline with ErrRunDefaultCap) names the
+// wall-clock cap (the run tags its deadline with watchdog.ErrRunDefaultCap) names the
 // cap and RUSH_RUN_DEFAULT_HARD_TIMEOUT instead of a --timeout nobody passed.
 // The title stays the same for both.
 //
@@ -167,7 +168,7 @@ func lastAssistantFinish(t *testing.T, env fakeEnv, sessionID string) *message.F
 // back, R8B-1), so a cap that is not a deadline cannot hide behind the fake.
 //
 // Revert-check: reading no cause in handleStreamFailure (always the --timeout
-// text) turns the default-cap cases red; a plain errors.New ErrRunDefaultCap
+// text) turns the default-cap cases red; a plain errors.New watchdog.ErrRunDefaultCap
 // turns the cause-returning default-cap case red (generic "Provider Error").
 func TestRun_RunTimeoutFinishNamesItsSource(t *testing.T) {
 	cases := []struct {
@@ -187,7 +188,7 @@ func TestRun_RunTimeoutFinishNamesItsSource(t *testing.T) {
 		{
 			name: "default cap",
 			ctx: func(t *testing.T) (context.Context, context.CancelFunc) {
-				return context.WithTimeoutCause(t.Context(), 200*time.Millisecond, ErrRunDefaultCap)
+				return context.WithTimeoutCause(t.Context(), 200*time.Millisecond, watchdog.ErrRunDefaultCap)
 			},
 			want:    "The run's default wall-clock cap expired (no --timeout was set; RUSH_RUN_DEFAULT_HARD_TIMEOUT sets it)",
 			notWant: "--timeout deadline",
@@ -232,12 +233,12 @@ func TestRun_RunTimeoutFinishNamesItsSource(t *testing.T) {
 // counts as an operator stop (exempt from the Drain's wake accounting) exactly
 // like the same cut made by --timeout (R8B-1).
 //
-// Revert-check: a plain errors.New ErrRunDefaultCap makes the first assertion
+// Revert-check: a plain errors.New watchdog.ErrRunDefaultCap makes the first assertion
 // false.
 func TestOperatorStop_DefaultCapIsADeadline(t *testing.T) {
-	assert.True(t, operatorStop(ErrRunDefaultCap, true), "the cap with the turn context done is an operator stop")
+	assert.True(t, operatorStop(watchdog.ErrRunDefaultCap, true), "the cap with the turn context done is an operator stop")
 	assert.True(t, operatorStop(context.DeadlineExceeded, true), "the --timeout deadline is one too")
-	assert.False(t, operatorStop(ErrRunDefaultCap, false), "with a live turn context it is a transport failure")
-	assert.NotErrorIs(t, context.DeadlineExceeded, ErrRunDefaultCap, "a --timeout deadline is not the cap")
-	assert.ErrorIs(t, ErrRunDefaultCap, context.DeadlineExceeded)
+	assert.False(t, operatorStop(watchdog.ErrRunDefaultCap, false), "with a live turn context it is a transport failure")
+	assert.NotErrorIs(t, context.DeadlineExceeded, watchdog.ErrRunDefaultCap, "a --timeout deadline is not the cap")
+	assert.ErrorIs(t, watchdog.ErrRunDefaultCap, context.DeadlineExceeded)
 }
