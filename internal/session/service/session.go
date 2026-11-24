@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sessguard"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/zeebo/xxh3"
@@ -471,8 +472,9 @@ type service struct {
 	// using db/q — the single writer connection — so this split never
 	// changes write semantics or read-after-write guarantees for anything
 	// but the named standalone read paths.
-	readDB *sql.DB
-	qRead  *db.Queries
+	readDB               *sql.DB
+	qRead                *db.Queries
+	finalizationIdentity *sessguard.FinalizationServiceIdentity
 }
 
 // CallTreeActivity is the freshest message activity found anywhere in a
@@ -603,14 +605,15 @@ func NewService(q *db.Queries, conn *sql.DB) Service {
 func NewServiceWithWorkspace(q *db.Queries, conn *sql.DB, qRead *db.Queries, readConn *sql.DB, workspaceRoot string, workDir string, home bool) Service {
 	broker := pubsub.NewBroker[Session]()
 	svc := &service{
-		Broker:        broker,
-		DB:            conn,
-		q:             q,
-		readDB:        conn,
-		qRead:         q,
-		workspaceRoot: workspaceRoot,
-		workDir:       workDir,
-		home:          home,
+		Broker:               broker,
+		DB:                   conn,
+		finalizationIdentity: sessguard.NewFinalizationServiceIdentity(),
+		q:                    q,
+		readDB:               conn,
+		qRead:                q,
+		workspaceRoot:        workspaceRoot,
+		workDir:              workDir,
+		home:                 home,
 	}
 	if qRead != nil && readConn != nil {
 		svc.qRead = qRead

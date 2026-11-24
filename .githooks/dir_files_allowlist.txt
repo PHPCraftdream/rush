@@ -64,9 +64,8 @@ internal/config 197
 internal/serve/server/server 130
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 33
-# MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.
-# The design's MV3/EX satellite splits reduce this count per docs/plans/2026-11-15-sprint0-split-session.md §2.2.
-internal/session/service 55
+# EX4 service has 43 direct Go files (22 production, 21 tests); components is not counted here; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
+internal/session/service 43
 internal/session/jobbatch 43
 internal/session/jobbatch/lab 45
 internal/store/message 26

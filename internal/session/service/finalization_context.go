@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sessguard"
 )
 
 // AgentFinalizationContext is an opaque, in-process capability snapshot.
@@ -16,6 +18,12 @@ type AgentFinalizationContext struct {
 // RequiresManagedDriver reports lineage verified by the queue writer snapshot.
 func (snapshot AgentFinalizationContext) RequiresManagedDriver() bool {
 	return snapshot.managedContinuation
+}
+
+// FinalizationScoped reports whether the caller carries finalization
+// authorities, i.e. whether admission can mint revisions for this call.
+func FinalizationScoped(ctx context.Context) bool {
+	return len(CaptureAgentFinalizationContext(ctx).authorities) != 0
 }
 
 func CaptureAgentFinalizationContext(ctx context.Context) AgentFinalizationContext {
@@ -53,7 +61,7 @@ func (snapshot AgentFinalizationContext) RestoreCall(ctx context.Context, sessio
 		if authority.Identity.SessionID == sessionID && authority.Identity.LogicalCallID != logicalID {
 			return nil, ErrAgentFinalizationChanged
 		}
-		if err := authority.revalidate(ctx); err != nil {
+		if err := authority.Revalidate(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -102,22 +110,45 @@ func mergeFinalizationAuthorities(first, second []*AgentFinalizationAuthority) (
 }
 
 func BatchFinalizationIdentityFromContext(ctx context.Context, id BatchCommitIdentity) (BatchCommitIdentity, error) {
+	if ctx == nil {
+		return BatchCommitIdentity{}, errors.New("batch finalization authority service unavailable")
+	}
 	authorities, _ := ctx.Value(agentFinalizationAuthoritiesKey{}).([]*AgentFinalizationAuthority)
 	if len(authorities) == 0 {
 		return id, nil
 	}
-	if id.finalizationService == nil {
+	if id.FinalizationService() == nil {
 		return BatchCommitIdentity{}, errors.New("batch finalization authority service unavailable")
 	}
-	combined, err := mergeFinalizationAuthorities(id.finalizationAuthorities, authorities)
+	_, boundInner := id.FinalizationBinding()
+	bound := make([]*AgentFinalizationAuthority, 0, len(boundInner))
+	for _, authority := range boundInner {
+		var service *service
+		for _, contextual := range authorities {
+			if contextual != nil && contextual.Service != nil && contextual.Service.finalizationIdentity == id.FinalizationService() {
+				service = contextual.Service
+				break
+			}
+		}
+		if service == nil || authority.ServiceIdentity() != id.FinalizationService() {
+			return BatchCommitIdentity{}, errors.New("batch finalization authority belongs to another service")
+		}
+		bound = append(bound, &AgentFinalizationAuthority{Service: service, DB: authority.DB, Identity: authority.Identity, inner: authority})
+	}
+	combined, err := mergeFinalizationAuthorities(bound, authorities)
 	if err != nil {
 		return BatchCommitIdentity{}, err
 	}
+	inner := make([]*sessguard.AgentFinalizationAuthority, 0, len(combined))
 	for _, authority := range combined {
-		if authority.Service != id.finalizationService {
+		if authority.Service == nil || authority.Service.finalizationIdentity != id.FinalizationService() {
 			return BatchCommitIdentity{}, errors.New("batch finalization authority belongs to another service")
 		}
+		innerAuthority := authority.Service.sessguardAuthority(authority)
+		if innerAuthority == nil {
+			return BatchCommitIdentity{}, errors.New("batch finalization authority belongs to another service")
+		}
+		inner = append(inner, innerAuthority)
 	}
-	id.finalizationAuthorities = combined
-	return id, nil
+	return serviceIdentity(id, sessguard.AttachFinalizationAuthorities(componentIdentity(id), id.FinalizationService(), inner...)), nil
 }

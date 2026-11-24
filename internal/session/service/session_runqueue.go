@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/session/service/components/finqueue"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -32,7 +33,7 @@ type RunQueueEntry struct {
 	CreatedAt       int64
 	UpdatedAt       int64
 
-	FinalizationLease *agentFinalizationQueueLease
+	FinalizationLease *finqueue.Lease
 }
 
 // RunAllowlistSpec is a JSON-serializable mirror of
