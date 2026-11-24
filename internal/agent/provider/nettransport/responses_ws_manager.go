@@ -52,6 +52,13 @@ type ResponsesWSLease struct {
 
 const ResponsesWSPlannedMaxAge = 20 * time.Minute
 
+// responsesWSIdleRetire bounds how long a finished connection may wait for
+// the next exchange. An idle connection is not read, so the provider's
+// keepalive pings go unanswered and it closes the socket (observed: close
+// 1011 "keepalive ping timeout" read right after a send on a reused
+// connection); a connection is retired before that can happen.
+const responsesWSIdleRetire = 15 * time.Second
+
 func NewResponsesWSManager(parent context.Context, limit int) *ResponsesWSManager {
 	if limit <= 0 {
 		limit = 16
@@ -276,7 +283,7 @@ func (m *ResponsesWSManager) sweepLocked(now time.Time) {
 	}
 	for key, e := range m.entries {
 		revoked := e.valid != nil && !e.valid()
-		if revoked || (!e.busy && (now.Sub(e.used) >= 90*time.Second || now.Sub(e.created) >= e.maxAge || e.conn == nil || !e.conn.Reusable())) {
+		if revoked || (!e.busy && (now.Sub(e.used) >= responsesWSIdleRetire || now.Sub(e.created) >= e.maxAge || e.conn == nil || !e.conn.Reusable())) {
 			m.removeLocked(key, e)
 		}
 	}
