@@ -20,9 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockSessionAgent is a minimal mock for the SessionAgent interface.
-//
-// mu guards interruptAndReplaced specifically: it's the only field written
+// mockSessionAgent is a minimal mock for the SessionAgent interface. mu guards
+// interruptAndReplaced specifically: it's the only field written
 // from a background goroutine (coordinator.startInterruptTicker's ticker,
 // via handleInterruptTick -> InterruptAndReplace) while a test goroutine may
 // concurrently poll it (e.g. via require.Eventually) before the ticker has
