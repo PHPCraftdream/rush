@@ -44,7 +44,9 @@ internal/agent/tools/mcp 58
 # 253 -> 251: merge app_run_session.go and app_run_drain_pending.go into app_run_gates.go.
 # 251 -> 249: stage B merges app_run_async_ended.go and app_run_async_exit.go into app_run_async_fsm.go.
 # 249 -> 245: stage C merges four async-wait implementation files into app_run_async_wait.go.
-internal/app 245
+# 245 -> 244: Task #14 third pass merges app_run_reviewer_drain_identity.go into app_run_reviewer_outcome.go.
+# 244 -> 242: Task #14 third pass merges sub_agents.go and app_run_quota.go into existing same-group files.
+internal/app 242
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
 # D2-3 catalogsrc: 4 production + 4 test files leave the root for internal/config/providers/catalogsrc (213 -> 205 files).
