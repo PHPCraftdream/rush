@@ -11,7 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	cliout "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
@@ -288,7 +288,7 @@ func likelyTTLExpiryThresholdFor(ttlFor func(string) time.Duration, provider str
 // A provider/model switch is also excluded: that legitimately cold-starts
 // a different cache.
 func detectCacheInvalidations(msgs []message.Message) []cacheInvalidation {
-	return detectCacheInvalidationsWithLookup(msgs, agent.PromptCacheTTL)
+	return detectCacheInvalidationsWithLookup(msgs, provauth.PromptCacheTTL)
 }
 
 // detectCacheInvalidationsWithLookup is detectCacheInvalidations with the

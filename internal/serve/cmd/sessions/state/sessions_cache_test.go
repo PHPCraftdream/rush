@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -305,11 +305,11 @@ func TestDetectCacheInvalidations_UnknownUsageTurnResetsBaseline(t *testing.T) {
 func TestDetectCacheInvalidations_TTLThresholdComesFromProviderProfile(t *testing.T) {
 	t.Parallel()
 
-	// The production lookup is agent.PromptCacheTTL; anthropic's profile
+	// The production lookup is provauth.PromptCacheTTL; anthropic's profile
 	// TTL is 5 minutes today. Pinning it here keeps this test honest about
 	// the fake lookups below, and makes any future profile change update
 	// this diagnostic's expectations loudly instead of silently.
-	require.Equal(t, 5*time.Minute, agent.PromptCacheTTL("anthropic"))
+	require.Equal(t, 5*time.Minute, provauth.PromptCacheTTL("anthropic"))
 
 	setup := func(t *testing.T) []message.Message {
 		conn, q := cmdtest.NewTestDB(t)
