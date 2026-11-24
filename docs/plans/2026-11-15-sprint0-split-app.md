@@ -191,7 +191,7 @@ apptest     → appkernel, apprun, appbatch, apprecovery (тестовые по�
 | `app_run_drain_pending.go` (98) | `apprun/admission.go` | + глобал `drainPendingAfterAttemptSeam`; склейка 225+168+98=491 |
 | `app_run_terminal.go` (265) | `apprun/terminal.go` | склейка с timeout/run_on_finish/errors |
 | `app_run_timeout.go` (76) | `apprun/terminal.go` | `classifyRunTimeout`, `RunTimeoutError` |
-| `run_on_finish.go` (50) | `apprun/terminal.go` | |
+| `run_on_finish.go` (50) | `apprun/terminal.go` (eventual grouping; Task #14 delivered standalone `apprun/run_on_finish.go`) | |
 | `app_run_errors.go` (262) | `apprun/terminal.go` | `ErrRunQueued`, `RunIncompleteError`, `NewRunIncompleteError`, `RecoveredPartial`; склейка 265+76+50+262=653 |
 | `app_run_request.go` (285) | `review/request.go` | `RunMode` используется cliloop (`app_run_async.go:63-72,203`) и review (`app_run_reviewer.go:48,385-393`) — тип обязан быть ниже обоих |
 | `app_run_result.go` (544) | `review/results.go` | `RunResult` merge-ится в cliloop (`loopTotals`, `app_run_async.go:116-192`), `buildSessionUsageInfo` вызывается из `app_run_wait_interrupt.go:78` — типы и сборщики ниже cliloop |

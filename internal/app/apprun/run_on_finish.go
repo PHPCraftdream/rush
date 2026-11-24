@@ -1,4 +1,4 @@
-package app
+package apprun
 
 import (
 	"context"
@@ -15,10 +15,10 @@ import (
 // Fork patch: batch 24 (run --on-finish hook), review-fix (30s timeout to prevent hangs).
 const onFinishHookTimeout = 30 * time.Second
 
-// runOnFinishHook executes a shell command after the agent run completes.
+// RunOnFinishHook executes a shell command after the agent run completes.
 // Errors from the hook are printed to stderr but don't affect the exit code.
 // Uses CommandContext with 30s timeout so a misbehaving hook cannot hang rush.
-func runOnFinishHook(hook, sessionID, exitReason string, cost float64, tokens int64, duration time.Duration) {
+func RunOnFinishHook(hook, sessionID, exitReason string, cost float64, tokens int64, duration time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), onFinishHookTimeout)
 	defer cancel()
 
