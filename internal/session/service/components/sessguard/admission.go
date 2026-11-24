@@ -48,7 +48,7 @@ func (a *BatchFinalizationAdmission) AncestryHash() string {
 		Edges  []edge
 	}{Owners: a.ancestry.Owners}
 	for _, item := range a.ancestry.Edges {
-		snapshot.Edges = append(snapshot.Edges, edge{item.Node, item.Owner, item.Child, item.Token})
+		snapshot.Edges = append(snapshot.Edges, edge(item))
 	}
 	encoded, _ := json.Marshal(snapshot)
 	hash := sha256.Sum256(encoded)
