@@ -13,9 +13,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -368,8 +367,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		// turn. It is not the policy context of that turn, and may already be
 		// stale after the dispatcher has moved to another queued call. Copy the
 		// published call so every policy and pinned value comes from that turn.
-		// agentcall.CallFromActive: the operator's message never inherits the active
-		// call's kind or notice flags (a Drain, a wake turn).
+		// CallFromActive: the operator's message never inherits the active call's kind or notice flags.
 		call = agentcall.CallFromActive(activeCall)
 		call.Prompt = injMsg.FullText()
 		call.Attachments = nil
