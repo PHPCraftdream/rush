@@ -336,3 +336,4 @@ tool_suggest.go	agentrun
 tool_provider_options.go	toolwrap
 agentic_fetch_tool.go	toolwrap
 agentic_fetch_policy.go	agenticfetch
+batch_facts.go	agentcall

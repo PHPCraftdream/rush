@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -271,8 +273,8 @@ func TestWakeSession_AlwaysAttemptsRunEvenWhenSessionLooksBusy(t *testing.T) {
 	agent.setBusy(true)
 	agent.runFunc = func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		calls.Add(1)
-		if adm := turnAdmissionFrom(ctx); adm != nil {
-			adm.markQueued()
+		if adm := agentcall.TurnAdmissionFrom(ctx); adm != nil {
+			adm.MarkQueued()
 		}
 		return nil, nil
 	}

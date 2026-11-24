@@ -6,7 +6,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sesstypes"
 )
+
+// BatchDeliveryEnvelope remains available from the service compatibility package.
+type BatchDeliveryEnvelope = sesstypes.BatchDeliveryEnvelope
+
+// ErrBatchProjectionConflict remains available from the service package.
+var ErrBatchProjectionConflict = sesstypes.ErrBatchProjectionConflict
+
+// BatchRequireRow remains available from the service package.
+func BatchRequireRow(n int64, err error) error {
+	return sesstypes.BatchRequireRow(n, err)
+}
+
+const RoleContractVersion = sesstypes.RoleContractVersion
+
+type (
+	RoleContract = sesstypes.RoleContract
+	ModelCfg     = sesstypes.ModelCfg
+)
+
+func decodeRoleContract(raw string) (*RoleContract, error) {
+	return sesstypes.DecodeRoleContract(raw)
+}
 
 var ErrSessionRoleContractMismatch = errors.New("session_role_contract_mismatch")
 

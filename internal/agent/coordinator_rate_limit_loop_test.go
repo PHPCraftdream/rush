@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
@@ -89,8 +91,8 @@ func TestRunInternal_RateLimitQueuedAdmissionNotRetried(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, call.OnAssistantMessageCreated)
 			call.OnAssistantMessageCreated(badRow.ID)
-			if adm := turnAdmissionFrom(ctx); adm != nil {
-				adm.markQueued()
+			if adm := agentcall.TurnAdmissionFrom(ctx); adm != nil {
+				adm.MarkQueued()
 			}
 			return nil, nil
 		})

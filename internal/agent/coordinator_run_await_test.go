@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 )
@@ -48,8 +50,8 @@ func TestRunAwaitingAdmission_ReturnsQueuedTurnsResult(t *testing.T) {
 	captured := make(chan struct{})
 	agent := &mockSessionAgent{
 		runFunc: func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
-			if adm := turnAdmissionFrom(ctx); adm != nil {
-				adm.markQueued()
+			if adm := agentcall.TurnAdmissionFrom(ctx); adm != nil {
+				adm.MarkQueued()
 			}
 			savedCall = call
 			close(captured)

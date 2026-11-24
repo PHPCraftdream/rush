@@ -215,7 +215,7 @@ pump_failure_report_test.go	internal/session/run/sessionrun
 pump_fake_clock_test.go	internal/session/run/sessionrun
 pump_queue_report_test.go	internal/session/run/sessionrun
 retention_purge.go	internal/session/batch/sessionbatch
-role_contract.go	internal/session/service
+role_contract.go	internal/session/service/components/sesstypes
 role_contract_store.go	internal/session/service
 role_contract_test.go	internal/session/service
 root_role_contract_store.go	internal/session/service
@@ -268,7 +268,9 @@ session_purge_queue.go	internal/session/service
 session_purge_queue_test.go	internal/session/service
 session_read.go	internal/session/service
 session_row_fields_test.go	internal/session/service
+model_cfg.go	internal/session/service/components/sesstypes
 session_runqueue.go	internal/session/service
+batch_require_row.go	internal/session/service/components/sesstypes
 session_test.go	internal/session/service
 session_title_event_test.go	internal/session/service
 session_update.go	internal/session/service

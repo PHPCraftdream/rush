@@ -8,6 +8,8 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -51,9 +53,9 @@ func (c *coordinator) runAwaitingAdmission(ctx context.Context, agent SessionAge
 			}
 		})
 	}
-	admission := newTurnAdmission()
-	result, err = agent.Run(withTurnAdmission(ctx, admission), call)
-	if !(result == nil && err == nil && admission.wasQueued()) {
+	admission := agentcall.NewTurnAdmission()
+	result, err = agent.Run(agentcall.WithTurnAdmission(ctx, admission), call)
+	if !(result == nil && err == nil && admission.WasQueued()) {
 		return result, err, false
 	}
 	select {
