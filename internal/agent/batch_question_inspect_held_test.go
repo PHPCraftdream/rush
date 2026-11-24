@@ -31,6 +31,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +47,7 @@ func heldInspectFixture(t *testing.T, busy bool) (coord *coordinator, owner, chi
 	if busy {
 		spy := &bridgeCountingAgent{}
 		spy.setBusy(true)
-		coord.subAgentDrivers.register(child, subAgentDriver{agent: spy, parentSessionID: owner})
+		coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: spy, ParentSessionID: owner})
 	}
 	return coord, owner, child, env.conn
 }
@@ -133,7 +134,7 @@ func TestInspectAgentHeldQuestionBeatsBusyAndClearsOnAnswer(t *testing.T) {
 		require.NoError(t, err)
 		spy := &bridgeCountingAgent{}
 		spy.setBusy(true)
-		coord.subAgentDrivers.register(child, subAgentDriver{agent: spy, parentSessionID: owner})
+		coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: spy, ParentSessionID: owner})
 		conn := env.conn
 		_, otherNode := seedDelegation(t, conn, owner, "call-insp-foreign", otherChild.ID, 7)
 		commitMarkerNotice(t, conn, owner, otherNode, otherChild.ID, 7)
@@ -170,7 +171,7 @@ func TestInspectAgentHeldQuestionBeatsBusyAndClearsOnAnswer(t *testing.T) {
 		owner, child := controlChild(t, env, "held-inspect-legacy")
 		spy := &bridgeCountingAgent{}
 		spy.setBusy(true)
-		coord.subAgentDrivers.register(child, subAgentDriver{agent: spy, parentSessionID: owner})
+		coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: spy, ParentSessionID: owner})
 		insp, err := coord.InspectAgent(ctx, owner, child)
 		require.NoError(t, err)
 		require.Equal(t, child, insp.ChildSessionID)

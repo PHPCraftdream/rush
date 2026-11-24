@@ -21,6 +21,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/responsesws"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -432,7 +433,7 @@ func TestCoordinatorRunResponsesReplayFailureComposition(t *testing.T) {
 			sessionAgent.toolMaxDuration = time.Second
 			coord.currentAgent = &coordinatorReplayOwnerAgent{SessionAgent: sessionAgent, trace: trace, syntheticStatus: tc.syntheticStatus}
 			coord.driverHints = newBatchDriverHints()
-			coord.subAgentDrivers = newSubAgentDriverRegistry()
+			coord.subAgentDrivers = toolwrap.NewRegistry()
 			coord.skillTracker = skills.NewTracker(nil)
 			coord.activeSkills = nil
 			sess, err := env.sessions.Create(ctx, "replay composition acceptance")

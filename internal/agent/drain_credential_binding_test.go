@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/stretchr/testify/require"
 )
 
@@ -145,9 +146,9 @@ func TestDrainCredentialedRootRefusalIsRootOnly(t *testing.T) {
 		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
 		Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
 	}
-	f.coord.subAgentDrivers.register(child, subAgentDriver{
-		agent: f.sa,
-		call:  SessionAgentCall{SessionID: child, SmartModel: &f.model, Credentials: childCreds},
+	f.coord.subAgentDrivers.Register(child, toolwrap.Driver{
+		Agent: f.sa,
+		Call:  SessionAgentCall{SessionID: child, SmartModel: &f.model, Credentials: childCreds},
 	})
 	call, prep, err := f.coord.drainCallFor(ctx, child)
 	require.NoError(t, err)

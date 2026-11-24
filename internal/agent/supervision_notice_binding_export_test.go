@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
@@ -116,7 +117,7 @@ func NewSupervisionNoticeProbeForTest(c Coordinator, owner string, conn *sql.DB,
 		probe.Wakes <- observation
 		return nil, nil
 	}
-	probe.driverGeneration = coord.subAgentDrivers.register(owner, subAgentDriver{agent: agent, call: SessionAgentCall{SessionID: owner}})
+	probe.driverGeneration = coord.subAgentDrivers.Register(owner, toolwrap.Driver{Agent: agent, Call: SessionAgentCall{SessionID: owner}})
 
 	coord.supervision.mu.Lock()
 	coord.supervision.byRoot[owner] = &supervisionState{
@@ -190,5 +191,5 @@ func (p *SupervisionNoticeProbeForTest) Close() {
 	if p == nil || p.coord == nil || p.coord.subAgentDrivers == nil {
 		return
 	}
-	p.coord.subAgentDrivers.releaseIfCurrent(p.owner, p.driverGeneration)
+	p.coord.subAgentDrivers.ReleaseIfCurrent(p.owner, p.driverGeneration)
 }

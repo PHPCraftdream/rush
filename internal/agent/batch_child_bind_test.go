@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -75,7 +76,7 @@ func TestBatchDelegationPersistsChildLinkBeforeChildRuns(t *testing.T) {
 		return agentResultWithText("done"), nil
 	})
 	coord := newTestCoordinator(t, env, "bind-provider", config.ProviderConfig{ID: "bind-provider"})
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 
 	_, err := coord.runSubAgent(state.WithLifecycle(t.Context(), lifecycle), subAgentParams{
 		Agent: stub, SessionID: owner, AgentMessageID: "msg-bind", ToolCallID: "call-bind",
@@ -122,7 +123,7 @@ func TestBatchBindFailureIsFatalToLaunch(t *testing.T) {
 		return agentResultWithText("done"), nil
 	})
 	coord := newTestCoordinator(t, env, "bind-provider", config.ProviderConfig{ID: "bind-provider"})
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 
 	// MUTATION: swallowing the bind error (fire-and-forget bind) would let
 	// the child run unbound → the error assertion fails and entries becomes

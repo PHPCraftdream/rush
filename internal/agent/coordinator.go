@@ -35,6 +35,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -111,7 +112,7 @@ type coordinator struct {
 	// driving it, so a wake for that child's own async work never races a
 	// second SessionAgent for its OS session lock. See
 	// coordinator_subagent_drivers.go.
-	subAgentDrivers *subAgentDriverRegistry
+	subAgentDrivers *toolwrap.Registry
 
 	// batchDriverClaimer is the durable session-driver-marker store
 	// (sessionhosts.HostStore): claim/release AND the foreign-driver read go
@@ -347,7 +348,7 @@ func NewCoordinator(
 	c.driverHints = newBatchDriverHints()
 	c.supervision = newSupervisionRegistry()
 	c.timeouts = newTimeoutService()
-	c.subAgentDrivers = newSubAgentDriverRegistry()
+	c.subAgentDrivers = toolwrap.NewRegistry()
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok || agentCfg.ID == "" {

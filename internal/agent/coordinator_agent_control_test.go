@@ -11,6 +11,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -125,7 +126,7 @@ func newControlCoordinator(t *testing.T) (*coordinator, fakeEnv) {
 		currentAgent: newControlRealAgent(t, env, srv.URL),
 		modelCache:   csync.NewMap[string, cachedModelPair](),
 	}
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 	bindBatchNodeFacts(t, coord, env.conn, env.workingDir)
 	return coord, env
 }
@@ -212,7 +213,7 @@ func TestInspectAgent_Statuses(t *testing.T) {
 	// instead of agentFor makes this report idle and the test fail.
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: stub, ParentSessionID: parent})
 	insp, err = coord.InspectAgent(ctx, parent, child)
 	require.NoError(t, err)
 	require.Equal(t, "running", insp.Status)
@@ -236,7 +237,7 @@ func TestInspectAgent_Statuses(t *testing.T) {
 	// child not executing a turn.
 	parent2, child2 := controlChild(t, env, "insp2")
 	stub2 := &controlStubAgent{}
-	coord.subAgentDrivers.register(child2, subAgentDriver{agent: stub2, parentSessionID: parent2})
+	coord.subAgentDrivers.Register(child2, toolwrap.Driver{Agent: stub2, ParentSessionID: parent2})
 	seedControlDelegation(t, env, coord, parent2, child2)
 	insp, err = coord.InspectAgent(ctx, parent2, child2)
 	require.NoError(t, err)
@@ -267,7 +268,7 @@ func TestStopAgent_IdempotentRefusalWhenNothingToStop(t *testing.T) {
 	// A live turn + armed delegation: stop succeeds...
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: stub, ParentSessionID: parent})
 	seedControlDelegation(t, env, coord, parent, child)
 	t.Cleanup(func() { releaseDelegation(t, env.conn, parent, child, "cancelled") })
 	text, err := coord.StopAgent(ctx, parent, child)
@@ -292,11 +293,11 @@ func TestStopAgent_StopsOnlyThisChild_DeliversExactlyOneEvent(t *testing.T) {
 	// nothing active.
 	stub := &controlStubAgent{}
 	stub.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: stub, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: stub, ParentSessionID: parent})
 	seedControlDelegation(t, env, coord, parent, child)
 	sib := &controlStubAgent{}
 	sib.setBusy(true)
-	coord.subAgentDrivers.register(siblingChild, subAgentDriver{agent: sib, parentSessionID: siblingParent})
+	coord.subAgentDrivers.Register(siblingChild, toolwrap.Driver{Agent: sib, ParentSessionID: siblingParent})
 	seedControlDelegation(t, env, coord, siblingParent, siblingChild)
 
 	text, err := coord.StopAgent(ctx, parent, child)
@@ -359,7 +360,7 @@ func TestInjectAgent_InterruptOnBusyChildRoutesToItsDriver(t *testing.T) {
 	// leaves this driver's interruptAndReplaced empty and the test fails.
 	driverBusy := &controlStubAgent{}
 	driverBusy.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driverBusy, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driverBusy, ParentSessionID: parent})
 
 	text, err := coord.InjectAgent(ctx, parent, child, "redirect now", true)
 	require.NoError(t, err)
@@ -393,7 +394,7 @@ func TestInjectAgent_CredentialedInterruptReusesDriverTemplate(t *testing.T) {
 	EnsureCallBuildScope(options)
 	driver := &controlStubAgent{}
 	driver.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver, Call: SessionAgentCall{
 		SessionID: child, SmartModel: &driverModel, Credentials: creds, CallOptions: options,
 	}})
 	// If InjectAgent attempts ordinary configured-model resolution, it cannot
@@ -418,7 +419,7 @@ func TestInjectAgent_NoncredentialedInterruptResolvesConfiguredModelsAndReplaces
 	require.NoError(t, err)
 	driver := &controlStubAgent{}
 	driver.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver, ParentSessionID: parent})
 
 	_, err = coord.InjectAgent(t.Context(), parent, child, "configured replacement", true)
 	require.NoError(t, err)
@@ -436,7 +437,7 @@ func TestInjectAgent_MarkedCredentialedChildWithNilCredentialsFailsClosed(t *tes
 	coord.markCredentialedRoot(parent)
 	driver := &controlStubAgent{}
 	driver.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{SessionID: child}})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver, Call: SessionAgentCall{SessionID: child}})
 
 	_, err := coord.InjectAgent(t.Context(), parent, child, "must stay tenant-bound", true)
 	require.ErrorIs(t, err, diskport.ErrCredentialBindingUnavailable)
@@ -470,7 +471,7 @@ func TestInjectAgent_CredentialedInterruptRejectsUnusableDriverBinding(t *testin
 			}
 			driver := &controlStubAgent{}
 			driver.setBusy(true)
-			coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{
+			coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver, Call: SessionAgentCall{
 				SessionID: child, SmartModel: model, Credentials: tc.creds,
 			}})
 
@@ -510,7 +511,7 @@ func TestInjectAgent_CredentialedInterruptPreservesTemplateScopeOwnership(t *tes
 	EnsureCallBuildScope(options)
 	driver := &controlStubAgent{}
 	driver.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, call: SessionAgentCall{
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver, Call: SessionAgentCall{
 		SessionID: child, SmartModel: &model,
 		Credentials: &CredentialSet{
 			Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "key"}},
@@ -542,7 +543,7 @@ func TestInjectAgent_InterruptErrorSurfaced(t *testing.T) {
 	coord.cfg.Config().Models = map[config.SelectedModelType]config.SelectedModel{}
 	driver := newBusyStubAgent()
 	driver.setBusy(true)
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver, parentSessionID: parent})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver, ParentSessionID: parent})
 	_, err := coord.InjectAgent(ctx, parent, child, "x", true)
 	require.Error(t, err)
 }
@@ -573,7 +574,7 @@ func TestListDelegations_ListsOnlyCallersLiveChildren(t *testing.T) {
 	// one for the sibling caller.
 	for _, tc := range []struct{ owner, driver string }{{parent, child}, {parent, secondChild}, {otherParent, otherChild}} {
 		stub := &controlStubAgent{}
-		coord.subAgentDrivers.register(tc.driver, subAgentDriver{agent: stub, parentSessionID: tc.owner})
+		coord.subAgentDrivers.Register(tc.driver, toolwrap.Driver{Agent: stub, ParentSessionID: tc.owner})
 		seedControlDelegation(t, env, coord, tc.owner, tc.driver)
 	}
 	t.Cleanup(func() {

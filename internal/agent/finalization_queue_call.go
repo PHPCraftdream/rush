@@ -6,6 +6,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
 
@@ -31,13 +32,13 @@ func (p finalizationQueueComponent) selectFinalizationQueueDriver(sessionID, log
 	if requirement == nil {
 		return p.host.currentAgent(), 0, nil
 	}
-	if driver, ok := p.host.subAgentDrivers().get(sessionID); ok && driver.agent != nil {
+	if driver, ok := p.host.subAgentDrivers().Get(sessionID); ok && driver.Agent != nil {
 		stored := driver.FinalizationAuthorities.Requirement()
-		if driver.call.SessionID != sessionID || driver.call.LogicalCallID != logicalID || stored == nil ||
+		if driver.Call.SessionID != sessionID || driver.Call.LogicalCallID != logicalID || stored == nil ||
 			stored.Version != requirement.Version || !slices.Equal(stored.Authorities, requirement.Authorities) {
 			return nil, 0, session.ErrAgentFinalizationDriverUnavailable
 		}
-		return driver.agent, driver.generation, nil
+		return driver.Agent, driver.Generation, nil
 	}
 	if managed || len(requirement.Authorities) != 1 {
 		return nil, 0, session.ErrAgentFinalizationDriverUnavailable
@@ -76,7 +77,7 @@ func (p finalizationQueueComponent) restoreFinalizationQueuedCall(ctx context.Co
 type finalizationQueueComponentHost interface {
 	sessionsService() session.Service
 	currentAgent() SessionAgent
-	subAgentDrivers() *subAgentDriverRegistry
+	subAgentDrivers() *toolwrap.Registry
 	readyWait() error
 	rebuildSessionAgentCall() func(context.Context, string, session.SessionAgentCallData) (SessionAgentCall, error)
 	runSessionAgentCall() func(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)

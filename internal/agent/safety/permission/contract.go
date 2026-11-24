@@ -150,7 +150,7 @@ type SessionRunAllowlistManager interface {
 	// InheritSessionRunAllowlistForGeneration propagates parentID's
 	// per-session gate to childID exactly like InheritSessionRunAllowlist,
 	// but binds the copy to generation (a delegation driver's registration
-	// id, internal/agent's subAgentDriverRegistry -- async phase 3 §6.2) so
+	// id, internal/agent's toolwrap.Registry -- async phase 3 §6.2) so
 	// ClearSessionRunAllowlistForGeneration can later remove ONLY that
 	// specific copy. Used at the three call sites that re-inherit a
 	// delegated child's allowlist on every delegation/wake
@@ -215,7 +215,7 @@ type SessionRunAllowlistBaselineManager interface {
 // reserved run's epoch-aware clear can never match a legacy entry by
 // accident). ownerCallID "" marks an entry not bound to a logical call.
 // ownerDriverGen 0 marks an entry not bound to a delegation driver's
-// registration generation (subAgentDriverRegistry never issues generation
+// registration generation (toolwrap.Registry never issues generation
 // 0 either — async phase 3 §6.2). The three bindings are independent: the
 // epoch-scoped pair (Set/ClearSessionRunAllowlistForEpoch) matches only
 // ownerEpoch, the call-scoped pair (Set/ClearSessionRunAllowlistForCall)

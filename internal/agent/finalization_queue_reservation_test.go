@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -182,9 +183,9 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 			data := reservationQueueCall(t, fixture, fixture.child, fixture.capability)
 			driver := NewSessionAgent(SessionAgentOptions{})
 			root := NewSessionAgent(SessionAgentOptions{})
-			coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
-			coordinator.subAgentDrivers.register(data.SessionID, subAgentDriver{
-				agent: driver, call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, FinalizationAuthorities: fixture.capability,
+			coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: toolwrap.NewRegistry()}
+			coordinator.subAgentDrivers.Register(data.SessionID, toolwrap.Driver{
+				Agent: driver, Call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, FinalizationAuthorities: fixture.capability,
 			})
 			probe := &reservationQueueProbe{coordinator: coordinator}
 			switch failure {
@@ -194,8 +195,8 @@ func TestFinalizationReservationPostConsumeFailureReleasesEraAndBuildScope(t *te
 				probe.afterBuild = func(context.Context) { driver.Cancel(data.SessionID) }
 			case "driver_replaced":
 				probe.afterBuild = func(context.Context) {
-					coordinator.subAgentDrivers.register(data.SessionID, subAgentDriver{
-						agent: driver, call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, FinalizationAuthorities: fixture.capability,
+					coordinator.subAgentDrivers.Register(data.SessionID, toolwrap.Driver{
+						Agent: driver, Call: SessionAgentCall{SessionID: data.SessionID, LogicalCallID: data.LogicalCallID}, FinalizationAuthorities: fixture.capability,
 					})
 				}
 			}
@@ -233,7 +234,7 @@ func TestFinalizationReservationMissingChildDriverDoesNotBurnProofOrUseRoot(t *t
 	sessions := fixture.api.(coresession.Service)
 	data := reservationQueueCall(t, fixture, fixture.child, fixture.capability)
 	root := NewSessionAgent(SessionAgentOptions{})
-	coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: newSubAgentDriverRegistry()}
+	coordinator := &coordinator{sessions: sessions, currentAgent: root, subAgentDrivers: toolwrap.NewRegistry()}
 	probe := &reservationQueueProbe{coordinator: coordinator}
 	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{Sessions: sessions, Coordinator: probe, PumpInstanceID: "pump"})
 	defer pump.Stop()

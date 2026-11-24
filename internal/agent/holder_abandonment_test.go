@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +45,7 @@ func TestStartDetachedRun_AlreadyConsumedInjectReleasesHolder(t *testing.T) {
 	coord := &coordinator{
 		sessions:        &consumedInjectSessions{Service: env.sessions},
 		diskCaps:        caps,
-		subAgentDrivers: newSubAgentDriverRegistry(),
+		subAgentDrivers: toolwrap.NewRegistry(),
 	}
 	call := SessionAgentCall{
 		SessionID:       "s-consumed",

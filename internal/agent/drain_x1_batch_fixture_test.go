@@ -3,6 +3,8 @@
 // attemptFixture only; shared port helpers stay untouched.
 package agent
 
+import "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 // ensureDrainDriver re-registers the fixture session's delegation driver if
 // the coordinator's registry no longer holds it.
 //
@@ -20,8 +22,8 @@ package agent
 // the driver branch throughout the test.
 func (f *attemptFixture) ensureDrainDriver() {
 	f.t.Helper()
-	if _, ok := f.coord.subAgentDrivers.get(f.sessID); ok {
+	if _, ok := f.coord.subAgentDrivers.Get(f.sessID); ok {
 		return
 	}
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID}})
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID}})
 }

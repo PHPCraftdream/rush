@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionwake "github.com/PHPCraftdream/rush/internal/session/state/sessionwake"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -143,7 +144,7 @@ func TestCredentialRequirementLookupAndAncestorDriverDrain(t *testing.T) {
 		Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "tenant-key"}},
 		Models:      map[Role]ModelChoice{RoleSmart: {Provider: "tenant", Model: "tenant-model"}},
 	}
-	f.coord.subAgentDrivers.register(child.ID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: child.ID, SmartModel: &f.model, Credentials: childCreds}, parentSessionID: parent.ID})
+	f.coord.subAgentDrivers.Register(child.ID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: child.ID, SmartModel: &f.model, Credentials: childCreds}, ParentSessionID: parent.ID})
 	call, prep, err := f.coord.drainCallFor(context.Background(), child.ID)
 	require.NoError(t, err, "credentialed child with its driver binding may drain")
 	require.True(t, call.IsDrain)

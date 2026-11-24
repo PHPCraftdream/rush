@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
@@ -556,8 +558,8 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 }
 
 // TestBatchQuestionStateSurvivesWakeConstructors: the call-template
-// constructors behind wake turns. Catches a regression where callFromActive,
-// newDrainCall, applyDrainModelOptions or subAgentDriver.callFor rebuilt a
+// constructors behind wake turns. Catches a regression where agentcall.CallFromActive,
+// newDrainCall, applyDrainModelOptions or toolwrap.Driver.CallFor rebuilt a
 // SessionAgentCall WITHOUT carrying batchQuestion — wake turns arriving on
 // a capability-less background context: the delegation's Drain would lose
 // its route/binding/depth and fall back to the raw legacy ask. The SAME
@@ -570,13 +572,13 @@ func TestBatchQuestionStateSurvivesWakeConstructors(t *testing.T) {
 	for name, st := range map[string]*batchChildQuestionState{"route_ful": routeState, "no_route": noRouteState} {
 		t.Run(name, func(t *testing.T) {
 			template := SessionAgentCall{SessionID: "child", BatchQuestion: st}
-			fromActive := callFromActive(template)
+			fromActive := agentcall.CallFromActive(template)
 			require.Same(t, st, fromActive.BatchQuestion,
-				"callFromActive must preserve the SAME question state pointer")
+				"agentcall.CallFromActive must preserve the SAME question state pointer")
 			drain := newDrainCall(template)
 			require.Same(t, st, drain.BatchQuestion,
 				"newDrainCall must preserve the SAME question state pointer")
-			drainFromActive := newDrainCall(callFromActive(template))
+			drainFromActive := newDrainCall(agentcall.CallFromActive(template))
 			require.Same(t, st, drainFromActive.BatchQuestion,
 				"the composed wake constructor path must preserve the SAME question state pointer")
 			// applyDrainModelOptions takes the call BY VALUE and returns the
@@ -584,10 +586,10 @@ func TestBatchQuestionStateSurvivesWakeConstructors(t *testing.T) {
 			modeled := applyDrainModelOptions(template, Model{ModelCfg: config.SelectedModel{Provider: "prov", Model: "m"}})
 			require.Same(t, st, modeled.BatchQuestion,
 				"applyDrainModelOptions must preserve the SAME question state pointer")
-			driver := subAgentDriver{call: template}
-			woken := driver.callFor("p")
+			driver := toolwrap.Driver{Call: template}
+			woken := driver.CallFor("p")
 			require.Same(t, st, woken.BatchQuestion,
-				"subAgentDriver.callFor must preserve the SAME question state pointer")
+				"toolwrap.Driver.CallFor must preserve the SAME question state pointer")
 			// The VALUES survive too: identical pointers would mask a
 			// shallow-copy that swaps in a mutated clone.
 			require.Equal(t, st.Depth, woken.BatchQuestion.Depth)
@@ -599,11 +601,11 @@ func TestBatchQuestionStateSurvivesWakeConstructors(t *testing.T) {
 		// A non-batch call built from any constructor must stay state-less:
 		// a fabricated state would arm a fake capability.
 		template := SessionAgentCall{SessionID: "plain"}
-		require.Nil(t, callFromActive(template).BatchQuestion)
+		require.Nil(t, agentcall.CallFromActive(template).BatchQuestion)
 		require.Nil(t, newDrainCall(template).BatchQuestion)
-		require.Nil(t, newDrainCall(callFromActive(template)).BatchQuestion)
+		require.Nil(t, newDrainCall(agentcall.CallFromActive(template)).BatchQuestion)
 		require.Nil(t, applyDrainModelOptions(template, Model{}).BatchQuestion)
-		require.Nil(t, (subAgentDriver{call: template}).callFor("").BatchQuestion)
+		require.Nil(t, (toolwrap.Driver{Call: template}).CallFor("").BatchQuestion)
 	})
 }
 

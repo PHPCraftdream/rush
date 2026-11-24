@@ -316,22 +316,22 @@ func (c *coordinator) InjectAgent(ctx context.Context, callerSessionID, childSes
 			}
 		}()
 	}
-	driver, hasDriver := c.subAgentDrivers.get(childSessionID)
-	credentialed := c.credentialedSessionOrAncestor(ctx, childSessionID) || hasDriver && driver.call.Credentials != nil
+	driver, hasDriver := c.subAgentDrivers.Get(childSessionID)
+	credentialed := c.credentialedSessionOrAncestor(ctx, childSessionID) || hasDriver && driver.Call.Credentials != nil
 	if credentialed {
-		if !hasDriver || driver.call.Credentials == nil {
+		if !hasDriver || driver.Call.Credentials == nil {
 			return "", fmt.Errorf("%w: child session %s has no driver credential binding", diskport.ErrCredentialBindingUnavailable, childSessionID)
 		}
 		// Credentialed child work may only be replaced from its registered
 		// driver's frozen call template. Resolving against coordinator config
 		// here could silently switch the tenant to the operator's provider.
-		if driver.call.SmartModel == nil || driver.call.SmartModel.Model == nil {
+		if driver.Call.SmartModel == nil || driver.Call.SmartModel.Model == nil {
 			return "", fmt.Errorf("%w: child session %s has no usable driver template", diskport.ErrCredentialBindingUnavailable, childSessionID)
 		}
-		if err := driver.call.Credentials.Validate(); err != nil {
+		if err := driver.Call.Credentials.Validate(); err != nil {
 			return "", fmt.Errorf("%w: child session %s has unusable driver credentials: %v", diskport.ErrCredentialBindingUnavailable, childSessionID, err)
 		}
-		call := driver.callFor(msg)
+		call := driver.CallFor(msg)
 		call.SessionID = childSessionID
 		call.LogicalCallID = uuid.NewString()
 		callOptions := call.CallOptions

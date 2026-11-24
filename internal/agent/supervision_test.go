@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -140,7 +141,7 @@ func startOpenJob(t *testing.T, c *coordinator, sessionID, toolCallID string) {
 // for the delegated child too). Restored the guard; re-ran, passed.
 func TestSupervision_NoteWorkStartedSkipsDelegatedChildArmsRoot(t *testing.T) {
 	coord := newSupervisionTestCoordinator(t)
-	coord.subAgentDrivers.register("delegated-child", subAgentDriver{agent: &mockSessionAgent{}})
+	coord.subAgentDrivers.Register("delegated-child", toolwrap.Driver{Agent: &mockSessionAgent{}})
 
 	coord.noteWorkStarted(context.Background(), "delegated-child")
 	coord.supervision.mu.Lock()
@@ -168,7 +169,7 @@ func TestSupervision_NoTickWithoutOpenWork(t *testing.T) {
 		t.Fatal("must not wake a session with no open work")
 		return nil, nil
 	}}
-	coord.subAgentDrivers.register("idle-root", subAgentDriver{agent: spy})
+	coord.subAgentDrivers.Register("idle-root", toolwrap.Driver{Agent: spy})
 
 	coord.supervision.byRoot["idle-root"] = &supervisionState{
 		rootSessionID: "idle-root",
@@ -201,7 +202,7 @@ func TestSupervision_NoTickWhileTurnRunning(t *testing.T) {
 
 	busy := &busyStubAgent{}
 	busy.setBusy(true)
-	coord.subAgentDrivers.register("busy-root", subAgentDriver{agent: busy})
+	coord.subAgentDrivers.Register("busy-root", toolwrap.Driver{Agent: busy})
 
 	coord.supervision.byRoot["busy-root"] = &supervisionState{
 		rootSessionID: "busy-root",
@@ -284,7 +285,7 @@ func TestSupervision_TicksAfterSilenceWithOpenWork(t *testing.T) {
 		received <- call
 		return agentResultWithText("ok, waiting"), nil
 	}}
-	coord.subAgentDrivers.register("tick-root", subAgentDriver{agent: agent})
+	coord.subAgentDrivers.Register("tick-root", toolwrap.Driver{Agent: agent})
 
 	startOpenJob(t, coord, "tick-root", "call-abc")
 
@@ -346,7 +347,7 @@ func TestSupervision_RecordProgressPushesDeadlineForward(t *testing.T) {
 		done <- struct{}{}
 		return agentResultWithText("ok"), nil
 	}}
-	coord.subAgentDrivers.register("reset-root", subAgentDriver{agent: agent})
+	coord.subAgentDrivers.Register("reset-root", toolwrap.Driver{Agent: agent})
 	seedSupervisionOpenWork(t, coord, "reset-root", "call-1")
 
 	start := time.Now()
@@ -410,7 +411,7 @@ func TestSupervision_PushDeadlineOnTurnEndKeepsBackoffButReschedules(t *testing.
 		done <- struct{}{}
 		return agentResultWithText("ok"), nil
 	}}
-	coord.subAgentDrivers.register("turnend-root", subAgentDriver{agent: agent})
+	coord.subAgentDrivers.Register("turnend-root", toolwrap.Driver{Agent: agent})
 	seedSupervisionOpenWork(t, coord, "turnend-root", "call-1")
 
 	cfg := SupervisionConfig{Enabled: true, Interval: 10 * time.Millisecond, MaxInterval: 500 * time.Millisecond, MaxNoProgress: 6}
@@ -522,7 +523,7 @@ func TestSupervision_BackoffGrowsThenPausesThenResetsOnProgress(t *testing.T) {
 		addPrompt(call.Prompt)
 		return agentResultWithText("ok"), nil
 	}}
-	coord.subAgentDrivers.register("backoff-root", subAgentDriver{agent: agent})
+	coord.subAgentDrivers.Register("backoff-root", toolwrap.Driver{Agent: agent})
 
 	// Second-scale intervals: the deadlines are driven by hand
 	// (handleSupervisionDeadline), so the real timer each tick re-arms must

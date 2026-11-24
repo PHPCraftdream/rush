@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
 )
@@ -49,7 +50,7 @@ func newBatchRuntimeCoordinator() *coordinator {
 	c.driverHints = newBatchDriverHints()
 	c.supervision = newSupervisionRegistry()
 	c.timeouts = newTimeoutService()
-	c.subAgentDrivers = newSubAgentDriverRegistry()
+	c.subAgentDrivers = toolwrap.NewRegistry()
 	return c
 }
 

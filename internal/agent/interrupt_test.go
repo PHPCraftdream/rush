@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -102,8 +103,8 @@ func TestCoordinator_InterruptAndSend_RoutesToDelegatedChildAgent(t *testing.T) 
 	rootAgent := newMockAgent(providerID, 4096, nil)
 	driverAgent := newMockAgent(providerID, 4096, nil)
 	coord.currentAgent = rootAgent
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
-	coord.subAgentDrivers.register(child.ID, subAgentDriver{agent: driverAgent, parentSessionID: parent.ID})
+	coord.subAgentDrivers = toolwrap.NewRegistry()
+	coord.subAgentDrivers.Register(child.ID, toolwrap.Driver{Agent: driverAgent, ParentSessionID: parent.ID})
 
 	require.NoError(t, coord.InterruptAndSend(t.Context(), child.ID, "replace child work", nil, nil))
 

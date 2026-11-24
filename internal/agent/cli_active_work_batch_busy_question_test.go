@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -17,7 +18,7 @@ func (busyQuestionSessionAgent) IsSessionBusy(string) bool { return true }
 
 func busyQuestionDriver(coord *coordinator, child string) *busyQuestionSessionAgent {
 	driver := &busyQuestionSessionAgent{}
-	coord.subAgentDrivers.register(child, subAgentDriver{agent: driver})
+	coord.subAgentDrivers.Register(child, toolwrap.Driver{Agent: driver})
 	return driver
 }
 

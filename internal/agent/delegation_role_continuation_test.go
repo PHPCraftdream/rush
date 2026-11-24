@@ -5,6 +5,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -36,7 +37,7 @@ func TestRequestedRoleContinuationRefreshesModelWithoutChangingAuthority(t *test
 	require.Equal(t, original.SystemPrompt, got.SystemPrompt)
 	require.Equal(t, original.SystemPromptPrefix, got.SystemPromptPrefix)
 	require.Equal(t, original.MaxCost, got.MaxCost)
-	wake := newDrainCall((subAgentDriver{call: got}).callFor("reaction"))
+	wake := newDrainCall((toolwrap.Driver{Call: got}).CallFor("reaction"))
 	require.Equal(t, got.RequestedModelRole, wake.RequestedModelRole)
 	require.Equal(t, got.RequestedModelSource, wake.RequestedModelSource)
 	require.Equal(t, before.ModelRole, wake.CallOptions.ModelRole)

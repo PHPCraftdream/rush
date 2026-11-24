@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -269,7 +270,7 @@ func TestBatchSupervisionArming_PausedSessionResumedByStartedResponse(t *testing
 func TestBatchSupervisionArming_DelegatedChildDoesNotArm(t *testing.T) {
 	t.Parallel()
 	coord := newSupervisionTestCoordinator(t)
-	coord.subAgentDrivers.register("child-owner", subAgentDriver{agent: &mockSessionAgent{}})
+	coord.subAgentDrivers.Register("child-owner", toolwrap.Driver{Agent: &mockSessionAgent{}})
 	childInv := deliveryTestInvocation(batchDeliveryDetached)
 	childInv.SessionID = "child-owner"
 	child := psvDeliveryImplWithArming(t, newFakeDone(fantasy.NewTextResponse("later")), &fakeElector{}, psvArmingOverLedger(coord))

@@ -18,6 +18,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -123,8 +124,8 @@ func TestDrainCallFor_ChildTemplateClientCarriesFreshCredentials(t *testing.T) {
 	f.seedDebt(ctx, "call-1", false)
 	frozen, err := f.coord.resolveSessionModels(ctx, f.sessID)
 	require.NoError(t, err)
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{
-		agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{
+		Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
 	})
 	call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
@@ -157,8 +158,8 @@ func TestDrainCallFor_ChildSlotRefreshUsesLiveModelPreservesTemplate(t *testing.
 	topKOld, topKNew := int64(3), int64(12)
 	f.coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: provider, Model: "worker-2", Temperature: &tempNew, TopP: &topPNew, TopK: &topKNew, MaxTokens: 777}
 	frozen := Model{Model: f.model.Model, CatwalkCfg: catwalk.Model{DefaultMaxTokens: 333}, ModelCfg: config.SelectedModel{Provider: provider, Model: "worker-1", Temperature: &tempOld, TopP: &topPOld, TopK: &topKOld, MaxTokens: 333}}
-	driver := subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen, MaxOutputTokens: 333, Temperature: frozen.ModelCfg.Temperature, TopP: frozen.ModelCfg.TopP, TopK: frozen.ModelCfg.TopK}, slotRole: config.SelectedModelTypeWorker}
-	f.coord.subAgentDrivers.register(f.sessID, driver)
+	driver := toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen, MaxOutputTokens: 333, Temperature: frozen.ModelCfg.Temperature, TopP: frozen.ModelCfg.TopP, TopK: frozen.ModelCfg.TopK}, SlotRole: config.SelectedModelTypeWorker}
+	f.coord.subAgentDrivers.Register(f.sessID, driver)
 	call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	if prep != nil {
@@ -169,7 +170,7 @@ func TestDrainCallFor_ChildSlotRefreshUsesLiveModelPreservesTemplate(t *testing.
 	require.Equal(t, 0.4, *call.Temperature)
 	require.Equal(t, 0.7, *call.TopP)
 	require.Equal(t, int64(12), *call.TopK)
-	require.Equal(t, "worker-1", driver.callFor("").SmartModel.ModelCfg.Model)
+	require.Equal(t, "worker-1", driver.CallFor("").SmartModel.ModelCfg.Model)
 	require.Equal(t, "worker-1", frozen.ModelCfg.Model)
 }
 
@@ -189,7 +190,7 @@ func TestDrainCallFor_ExplicitChildPinStaysFrozen(t *testing.T) {
 	// as any of them changing.
 	liveTemp, liveTopP, liveTopK := 0.9, 0.8, int64(77)
 	f.coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: oauthTestProvider, Model: "worker-2", Temperature: &liveTemp, TopP: &liveTopP, TopK: &liveTopK, MaxTokens: 777}
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen, MaxOutputTokens: 111, Temperature: &temp, TopP: &topP, TopK: &topK}, slotRole: ""})
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen, MaxOutputTokens: 111, Temperature: &temp, TopP: &topP, TopK: &topK}, SlotRole: ""})
 	call, prep, err := f.coord.drainCallFor(ctx, f.sessID)
 	require.NoError(t, err)
 	if prep != nil {
@@ -226,7 +227,7 @@ func TestDrainCallFor_RealDispatchDriverWakesOnLiveWorkerSlot(t *testing.T) {
 	})
 	// newTestCoordinator leaves the driver registry nil (register is then a
 	// no-op); this test needs the real registration to be recorded.
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 	tempStart, topPStart := 0.1, 0.2
 	topKStart := int64(3)
 	coord.cfg.Config().Models[config.SelectedModelTypeWorker] = config.SelectedModel{Provider: prov, Model: "w1", Temperature: &tempStart, TopP: &topPStart, TopK: &topKStart, MaxTokens: 4096}
@@ -252,9 +253,9 @@ func TestDrainCallFor_RealDispatchDriverWakesOnLiveWorkerSlot(t *testing.T) {
 	require.NotEmpty(t, childID)
 
 	// The driver the production dispatch registered carries slot provenance.
-	driver, ok := coord.subAgentDrivers.get(childID)
+	driver, ok := coord.subAgentDrivers.Get(childID)
 	require.True(t, ok, "runSubAgent registered the child's driver")
-	require.Equal(t, config.SelectedModelTypeWorker, driver.slotRole)
+	require.Equal(t, config.SelectedModelTypeWorker, driver.SlotRole)
 
 	// The operator swaps the worker slot (with new literals); the child's next
 	// automatic turn must wake on the live slot, not the frozen template.
@@ -275,8 +276,8 @@ func TestDrainCallFor_RealDispatchDriverWakesOnLiveWorkerSlot(t *testing.T) {
 	require.Equal(t, int64(12), *call.TopK)
 
 	// The registered template itself stays frozen on w1's literals.
-	require.Equal(t, "w1", driver.call.SmartModel.ModelCfg.Model)
-	require.EqualValues(t, 4096, driver.call.MaxOutputTokens)
+	require.Equal(t, "w1", driver.Call.SmartModel.ModelCfg.Model)
+	require.EqualValues(t, 4096, driver.Call.MaxOutputTokens)
 }
 
 // runInternal resolved the call's model BEFORE its proactive refresh: after a
@@ -329,8 +330,8 @@ func TestDrainCallFor_ChildTemplateClientCarriesFreshAPIKey(t *testing.T) {
 	f.seedDebt(ctx, "call-1", false)
 	frozen, err := f.coord.resolveSessionModels(ctx, f.sessID) // the template's client, the old key
 	require.NoError(t, err)
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{
-		agent: f.sa, call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{
+		Agent: f.sa, Call: SessionAgentCall{SessionID: f.sessID, SmartModel: &frozen.smart},
 	})
 	f.withAPIKeyTemplateProvider(oauthTestProvider, "new-key") // the 401 accounting's refresh published it
 

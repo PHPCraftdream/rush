@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -39,8 +40,8 @@ func childDelegationBase(t *testing.T, o attemptFixtureOpts) (*attemptFixture, s
 	require.NoError(t, err)
 	child, err := f.env.sessions.CreateTaskSession(context.Background(), "task-q", parent.ID, "child")
 	require.NoError(t, err)
-	f.coord.subAgentDrivers.register(child.ID, subAgentDriver{
-		agent: f.sa, call: SessionAgentCall{SessionID: child.ID}, parentSessionID: parent.ID,
+	f.coord.subAgentDrivers.Register(child.ID, toolwrap.Driver{
+		Agent: f.sa, Call: SessionAgentCall{SessionID: child.ID}, ParentSessionID: parent.ID,
 	})
 	seedBatchDelegation(t, f.env.conn, parent.ID, "delegate-1", child.ID, "agent", "running", false)
 	return f, parent.ID, child.ID

@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
@@ -31,7 +32,7 @@ type backgroundHost interface {
 	coordinatorIsNil() bool
 	cfg() *config.ConfigStore
 	sessions() coresession.Service
-	subAgentDrivers() *subAgentDriverRegistry
+	subAgentDrivers() *toolwrap.Registry
 	currentAgent() SessionAgent
 	notifyWG() *sync.WaitGroup
 	notifyCallbackHook() func(context.Context)
@@ -70,7 +71,7 @@ func (h coordinatorBackgroundHost) sessions() coresession.Service {
 	return h.coordinator.sessions
 }
 
-func (h coordinatorBackgroundHost) subAgentDrivers() *subAgentDriverRegistry {
+func (h coordinatorBackgroundHost) subAgentDrivers() *toolwrap.Registry {
 	return h.coordinator.subAgentDrivers
 }
 
@@ -312,7 +313,7 @@ func (c *backgroundComponent) delegatedChildDriven(ctx context.Context, sessionI
 			return c.host.coordinatorBatchCutoverFacts().LiveDelegationChildOf(ctx, parent, child)
 		},
 		func(sessionID string) bool {
-			_, registered := c.host.subAgentDrivers().get(sessionID)
+			_, registered := c.host.subAgentDrivers().Get(sessionID)
 			return registered
 		},
 	)

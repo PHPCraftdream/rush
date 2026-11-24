@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -79,7 +80,7 @@ func (c *countingAgent) Run(ctx context.Context, call SessionAgentCall) (*fantas
 
 func (f *attemptFixture) countRuns() *countingAgent {
 	ca := &countingAgent{SessionAgent: f.sa}
-	f.coord.subAgentDrivers.register(f.sessID, subAgentDriver{agent: ca, call: SessionAgentCall{SessionID: f.sessID}})
+	f.coord.subAgentDrivers.Register(f.sessID, toolwrap.Driver{Agent: ca, Call: SessionAgentCall{SessionID: f.sessID}})
 	return ca
 }
 
@@ -251,7 +252,7 @@ func TestReleaseHook_NonChildSession_DoesNotBlockOnDB(t *testing.T) {
 	f := newAttemptFixture(t, "attempt-hook-db", attemptFixtureOpts{noIdle: true})
 	plain, err := f.env.sessions.Create(ctx, "a plain session, never a delegation driver")
 	require.NoError(t, err)
-	_, registered := f.coord.subAgentDrivers.get(plain.ID)
+	_, registered := f.coord.subAgentDrivers.Get(plain.ID)
 	require.False(t, registered, "precondition: no driver")
 	live, liveErr := f.coord.runningWorkOpen(ctx, plain.ID)
 	require.NoError(t, liveErr)

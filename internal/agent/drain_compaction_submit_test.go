@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -117,8 +118,8 @@ func TestNewDrainCall_ResetsInheritedFlags(t *testing.T) {
 	require.True(t, call.BackgroundJobNotice)
 
 	// A call built from the driver template must not carry IsDrain forward.
-	driver := subAgentDriver{call: SessionAgentCall{SessionID: "child", Prompt: "task"}}
-	require.False(t, driver.callFor("next").IsDrain)
+	driver := toolwrap.Driver{Call: SessionAgentCall{SessionID: "child", Prompt: "task"}}
+	require.False(t, driver.CallFor("next").IsDrain)
 }
 
 // TestSpliceCarried_KeepsOriginalPositions pins the carry-forward rule for
@@ -289,7 +290,7 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "web-async-e2e")
 	require.NoError(t, err)
-	coord.subAgentDrivers.register(sess.ID, subAgentDriver{agent: sa, call: SessionAgentCall{SessionID: sess.ID}})
+	coord.subAgentDrivers.Register(sess.ID, toolwrap.Driver{Agent: sa, Call: SessionAgentCall{SessionID: sess.ID}})
 
 	// The completion lives in the batch store: the wake below is answered
 	// from the batch debt.

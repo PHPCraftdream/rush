@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
@@ -28,20 +29,20 @@ import (
 // current.ok became false). Restored the compare-and-delete; re-ran, passed.
 func TestSubAgentDriverRegistry_ReleaseIfCurrentIsGenerationGuarded(t *testing.T) {
 	t.Parallel()
-	r := newSubAgentDriverRegistry()
-	g1 := r.register("child-1", subAgentDriver{agent: &mockSessionAgent{}})
-	g2 := r.register("child-1", subAgentDriver{agent: &mockSessionAgent{}})
+	r := toolwrap.NewRegistry()
+	g1 := r.Register("child-1", toolwrap.Driver{Agent: &mockSessionAgent{}})
+	g2 := r.Register("child-1", toolwrap.Driver{Agent: &mockSessionAgent{}})
 	require.NotEqual(t, g1, g2, "a re-registration must bump the generation")
 
-	require.False(t, r.releaseIfCurrent("child-1", g1),
+	require.False(t, r.ReleaseIfCurrent("child-1", g1),
 		"a stale (superseded) generation must not release the current record")
-	current, ok := r.get("child-1")
+	current, ok := r.Get("child-1")
 	require.True(t, ok, "the newer record must still be present")
-	require.Equal(t, g2, current.generation)
+	require.Equal(t, g2, current.Generation)
 
-	require.True(t, r.releaseIfCurrent("child-1", g2),
+	require.True(t, r.ReleaseIfCurrent("child-1", g2),
 		"the CURRENT generation must successfully release the record")
-	_, ok = r.get("child-1")
+	_, ok = r.Get("child-1")
 	require.False(t, ok)
 }
 
@@ -58,18 +59,18 @@ func TestSubAgentDriverRegistry_ReleaseIfCurrentIsGenerationGuarded(t *testing.T
 func TestReleaseDriverIfScopeClosed_RemovesDriverAndAllowlist(t *testing.T) {
 	t.Parallel()
 	spy := newAllowlistSpy(t)
-	coord := &coordinator{permissions: spy, subAgentDrivers: newSubAgentDriverRegistry()}
+	coord := &coordinator{permissions: spy, subAgentDrivers: toolwrap.NewRegistry()}
 
 	allowlist, err := permission.BuildRunAllowlist(permission.RunAllowlistSpec{Restrict: true, AllowTools: []string{"view"}})
 	require.NoError(t, err)
 	spy.SetSessionRunAllowlist("parent-1", allowlist)
 
-	gen := coord.subAgentDrivers.register("child-1", subAgentDriver{agent: &mockSessionAgent{}, parentSessionID: "parent-1"})
+	gen := coord.subAgentDrivers.Register("child-1", toolwrap.Driver{Agent: &mockSessionAgent{}, ParentSessionID: "parent-1"})
 	spy.mgr.InheritSessionRunAllowlistForGeneration("parent-1", "child-1", gen)
 
 	coord.releaseDriverIfScopeClosed("child-1")
 
-	_, ok := coord.subAgentDrivers.get("child-1")
+	_, ok := coord.subAgentDrivers.Get("child-1")
 	require.False(t, ok, "the driver record must be removed once the scope closes")
 
 	spy.mu.Lock()
@@ -88,7 +89,7 @@ func TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist(t *testing.T) {
 	spy := newAllowlistSpy(t)
 	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
 	coord.permissions = spy
-	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers = toolwrap.NewRegistry()
 
 	parent, err := env.sessions.Create(t.Context(), "parent")
 	require.NoError(t, err)
@@ -103,7 +104,7 @@ func TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist(t *testing.T) {
 	require.NoError(t, err)
 
 	childID := env.sessions.CreateAgentToolSessionID("msg-1", "call-1")
-	_, ok := coord.subAgentDrivers.get(childID)
+	_, ok := coord.subAgentDrivers.Get(childID)
 	require.True(t, ok, "the first delegation must register a driver")
 	spy.mu.Lock()
 	firstInheritCount := len(spy.inherits)
@@ -113,7 +114,7 @@ func TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist(t *testing.T) {
 	// Simulate the scope having fully closed (§6.2's release point,
 	// ordinarily reached via recheckChild once the child's own work drains).
 	coord.releaseDriverIfScopeClosed(childID)
-	_, ok = coord.subAgentDrivers.get(childID)
+	_, ok = coord.subAgentDrivers.Get(childID)
 	require.False(t, ok, "the driver must be gone once the scope is released")
 
 	// Resume the SAME child session through the FULL runSubAgent path.
@@ -123,7 +124,7 @@ func TestRunSubAgent_ResumeAfterScopeClosedReArmsAllowlist(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, ok = coord.subAgentDrivers.get(childID)
+	_, ok = coord.subAgentDrivers.Get(childID)
 	require.True(t, ok, "resume must re-register a driver")
 	spy.mu.Lock()
 	defer spy.mu.Unlock()

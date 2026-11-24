@@ -59,23 +59,6 @@ func lastUserMessageOrigin(ctx context.Context, messages message.Service, sessio
 	return rows[0].Origin, true
 }
 
-// callFromActive is the single constructor for a call built from an active
-// call or a template (the `sessions inject --interrupt` replacement,
-// subAgentDriver.callFor): it keeps the source's model/sampling/policy shape
-// but resets the call kind and notice flags, which are never inherited (doc
-// sec.3.4). Without it, an operator's interrupt landing on a Drain turn
-// would itself run as a Drain -- and, with nothing wake-worthy to pull,
-// never reach the provider.
-func callFromActive(active SessionAgentCall) SessionAgentCall {
-	call := active
-	call.IsDrain = false
-	call.DrainTurnCommitted = false
-	call.AutoResumed = false
-	call.BackgroundJobNotice = false
-	call.NoticeKind = ""
-	return call
-}
-
 func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall {
 	call.SmartModel = &model
 	call.MaxOutputTokens = model.CatwalkCfg.DefaultMaxTokens
