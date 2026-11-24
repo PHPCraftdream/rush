@@ -551,6 +551,11 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 		state = c.state
 	}
 	attrs := c.diagAttrsLocked()
+	closedBefore := c.closed
+	sinceSentMS := int64(-1)
+	if !c.sentAt.IsZero() {
+		sinceSentMS = time.Since(c.sentAt).Milliseconds()
+	}
 	c.stateMu.Unlock()
 	c.deltaMu.Lock()
 	c.delta.clear()
@@ -561,7 +566,13 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	if errors.As(cause, &closeError) {
 		closeStatus = closeError.Code
 	}
-	slog.Debug("responses websocket exchange failed", append(attrs, "stage", stage, "send_state", state.String(), "close_status", closeStatus)...)
+	attrs = append(attrs, "stage", stage, "send_state", state.String(), "close_status", closeStatus)
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		slog.Debug("responses websocket exchange failed", attrs...)
+	} else {
+		// The returned error hides the cause by design; the log keeps it.
+		slog.Warn("responses websocket exchange failed", append(attrs, "cause", diagCause(cause), "cause_type", fmt.Sprintf("%T", cause), "closed_locally", closedBefore, "since_sent_ms", sinceSentMS)...)
+	}
 	return &ResponsesWSError{state: state, stage: stage, cause: cause}
 }
 
@@ -749,6 +760,18 @@ func (c *ResponsesWSConn) frameAttrsLocked() []any {
 // session is reported as a hash only; callers hold stateMu.
 func (c *ResponsesWSConn) diagAttrsLocked() []any {
 	return append([]any{"protocol", c.protocol, "session_hash", session.HashID(c.owner.ConversationID)}, c.frameAttrsLocked()...)
+}
+
+// diagCause bounds the cause text kept in the log.
+func diagCause(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	text := cause.Error()
+	if len(text) > 300 {
+		text = text[:300]
+	}
+	return text
 }
 
 func debugEnabled() bool {
