@@ -13,6 +13,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/app/apprecovery"
+	"github.com/PHPCraftdream/rush/internal/app/apprun"
 	"github.com/PHPCraftdream/rush/internal/app/apprun/review"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -57,6 +58,10 @@ func (app *App) recoverInterruptedTurns(ctx context.Context) {
 		ListSeam:        recoverSessionListSeam,
 		PreWriteSeam:    recoverSessionPreWriteSeam,
 	})
+}
+
+func runOnFinishHook(hook, sessionID, exitReason string, cost float64, tokens int64, duration time.Duration) {
+	apprun.RunOnFinishHook(hook, sessionID, exitReason, cost, tokens, duration)
 }
 
 // Thin same-name private wrappers over the Sh2 run-cluster free functions,

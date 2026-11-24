@@ -155,3 +155,53 @@ func TestResponsesWSConnReportsFrameDecisionAndLogsParityFields(t *testing.T) {
 	require.NotContains(t, logs.String(), "conversation-test", "the session is reported only as a hash")
 	require.Contains(t, logs.String(), "responses websocket exchange completed")
 }
+
+func TestResponsesWSFailureLogsHiddenCauseAtWarn(t *testing.T) {
+	logs := diagCapture(t)
+	conn := newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	_, err := conn.ReceiveRaw(context.Background())
+	require.EqualError(t, err, "responses websocket: receive failed (possibly_sent)", "the returned error keeps hiding the cause")
+	var entry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded))
+		if decoded["msg"] == "responses websocket exchange failed" {
+			entry = decoded
+		}
+	}
+	require.NotNil(t, entry)
+	require.Equal(t, "WARN", entry["level"])
+	require.Equal(t, "EOF", entry["cause"])
+	require.Equal(t, "receive", entry["stage"])
+	require.Equal(t, false, entry["closed_locally"])
+	require.GreaterOrEqual(t, entry["since_sent_ms"], float64(0))
+
+	logs.Reset()
+	canceled := newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128)
+	require.NoError(t, canceled.BeginExchange())
+	require.NoError(t, canceled.SendRaw(context.Background(), []byte(`{}`)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = canceled.ReceiveRaw(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Contains(t, logs.String(), "responses websocket exchange failed")
+	require.NotContains(t, logs.String(), `"level":"WARN"`, "a caller cancellation is not a transport fault")
+}
+
+func TestResponsesWSManagerWarnsWhenRetiringALeasedConnection(t *testing.T) {
+	logs := diagCapture(t)
+	m := &ResponsesWSManager{now: time.Now, entries: make(map[[32]byte]*responsesWSEntry)}
+	idle := &responsesWSEntry{conn: newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128), conversation: "c", protocol: "p", created: time.Now()}
+	m.entries[[32]byte{1}] = idle
+	m.occupancy = 1
+	m.InvalidateConversation("c")
+	require.NotContains(t, logs.String(), "retired during an active exchange")
+	busy := &responsesWSEntry{conn: newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128), conversation: "c", protocol: "p", created: time.Now(), busy: true}
+	m.entries[[32]byte{2}] = busy
+	m.occupancy = 1
+	m.InvalidateConversation("c")
+	require.Contains(t, logs.String(), "retired during an active exchange")
+	require.Contains(t, logs.String(), `"level":"WARN"`)
+}

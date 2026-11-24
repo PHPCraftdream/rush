@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
+	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -706,4 +707,134 @@ func executeRun(env RunEnv, ctx context.Context, req RunRequest) (result *RunRes
 	// decided which phase's result is the run's single final answer.
 	loop.flushTerseOutput()
 	return result, resultErr
+}
+
+// resolveRunRole freezes a custom role for one logical execution. A caller
+// without an existing snapshot (every new SDK/CLI/API execution) resolves from
+// the current pinned config; subsequent turns reuse the immutable snapshot.
+func resolveRunRole(env RunEnv, overrides *RunOverrides) error {
+	if overrides == nil {
+		return nil
+	}
+	if overrides.RequestedRole == "" {
+		switch overrides.ModelRole {
+		case "", config.SelectedModelTypeSmart, config.SelectedModelTypeFast,
+			config.SelectedModelTypeWorker, config.SelectedModelTypeReviewer:
+			return nil
+		default:
+			return fmt.Errorf("ModelRole %q is not a built-in role; use RequestedRole", overrides.ModelRole)
+		}
+	}
+	if overrides.ModelRole != "" {
+		return fmt.Errorf("custom RequestedRole cannot be combined with built-in ModelRole")
+	}
+	if overrides.SmartModel != "" {
+		return fmt.Errorf("custom RequestedRole cannot be combined with SmartModel")
+	}
+	if overrides.roleContract != nil {
+		if err := overrides.roleContract.Validate(); err != nil || overrides.roleContract.Name != overrides.RequestedRole {
+			return fmt.Errorf("invalid snapshot for requested role %q", overrides.RequestedRole)
+		}
+		return nil
+	}
+	cfg, _ := env.Config.Snapshot()
+	contract, err := agent.ResolveRoleContract(cfg, overrides.RequestedRole, nil)
+	if err != nil {
+		return fmt.Errorf("resolve custom role %q: %w", overrides.RequestedRole, err)
+	}
+	if overrides.ReasoningEffort != "" {
+		contract.Model.ReasoningEffort = overrides.ReasoningEffort
+	}
+	overrides.roleContract = contract.Clone()
+	return nil
+}
+
+// runRoleName is the requested role label used by resume/error diagnostics.
+func runRoleName(overrides RunOverrides) string {
+	if overrides.RequestedRole != "" {
+		return overrides.RequestedRole
+	}
+	return string(overrides.ModelRole)
+}
+
+// shellQuoteRunRole quotes an exact role name for the POSIX resume command.
+func shellQuoteRunRole(role string) string {
+	if role == "" {
+		return "smart"
+	}
+	for _, r := range role {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == '@' || r == '/' || r == ':' || r == '+' {
+			continue
+		}
+		return "'" + strings.ReplaceAll(role, "'", `'\''`) + "'"
+	}
+	return role
+}
+
+// RunTimeoutError carries the owned deadline and exact continuation command.
+// CommittedResult reports that the invocation had already finished cleanly
+// (result envelope, no error) before the deadline was noticed: the run exits
+// timed out, but the envelope still carries that committed answer -- the
+// timeout reports how the RUN ended, it never erases a committed turn's
+// outcome (see cliLoop.turnCanceled, which adopts it).
+type RunTimeoutError struct {
+	Cause           *agent.RunTimeoutCause
+	ResumeCommand   string
+	CommittedResult bool
+}
+
+func (e *RunTimeoutError) Error() string { return e.Cause.Error() }
+func (e *RunTimeoutError) Unwrap() error { return e.Cause }
+
+func runResumeRole(role string) string {
+	return shellQuoteRunRole(role)
+}
+
+// classifyRunTimeout maps an owned run deadline onto the timeout exit: the
+// envelope gains the timeout reason/error/resume metadata and the caller gets
+// a *RunTimeoutError. A clean invocation outcome (err == nil with an envelope)
+// keeps its answer in the envelope and is flagged CommittedResult on the
+// error, so the loop can still adopt it; failed or envelope-less turns are
+// never marked committed.
+func classifyRunTimeout(ctx context.Context, final *RunResult, err error, sessionID, role string) (*RunResult, error) {
+	if ctx.Err() == nil {
+		return final, err
+	}
+	resume := ""
+	if sessionID != "" {
+		resume = fmt.Sprintf("rush run --role %s --session %s", runResumeRole(role), sessionID)
+	}
+	// Idempotent: several defers classify (the loop exit, both ExecuteRun
+	// defers). A repeat keeps the error, and so its CommittedResult, but
+	// re-asserts the envelope: the loop's cancel exit may have overwritten
+	// the reason with "canceled" in between.
+	var timeoutErr *RunTimeoutError
+	if errors.As(err, &timeoutErr) {
+		if timeoutErr.ResumeCommand == "" {
+			timeoutErr.ResumeCommand = resume
+		}
+	} else {
+		var cause *agent.RunTimeoutCause
+		if !errors.As(context.Cause(ctx), &cause) {
+			return final, err
+		}
+		committed := err == nil && final != nil
+		timeoutErr = &RunTimeoutError{Cause: cause, ResumeCommand: resume, CommittedResult: committed}
+	}
+	if final == nil {
+		final = &RunResult{SessionID: sessionID, ToolCalls: []ToolCallStat{}}
+	}
+	final.ExitReason = "timeout"
+	final.Error = timeoutErr.Error()
+	final.ResumeCommand = timeoutErr.ResumeCommand
+	return final, timeoutErr
+}
+
+// runTimeoutCommitted reports whether err is the timeout of a run whose turn
+// had already committed a clean result before the deadline was noticed; only
+// such a timeout may be traded for the committed answer.
+func runTimeoutCommitted(err error) bool {
+	var timeoutErr *RunTimeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr.CommittedResult
 }

@@ -1,0 +1,10 @@
+declaration	internal/agent/timeout_stop.go::ErrRunDefaultCap	internal/agent/runtime/exec/watchdog/timeout_stop.go	var	moved; no root alias; remaining callers qualify watchdog.ErrRunDefaultCap	watchdog.ErrRunDefaultCap
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause	internal/agent/runtime/exec/watchdog/timeout_stop.go	type	moved; root compatibility alias retained	watchdog.RunTimeoutCause; alias in internal/agent/agent_turn_failure.go for internal/app callers
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause.Duration	internal/agent/runtime/exec/watchdog/timeout_stop.go	field	moved	watchdog.RunTimeoutCause.Duration
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause.Source	internal/agent/runtime/exec/watchdog/timeout_stop.go	field	moved	watchdog.RunTimeoutCause.Source
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause.DefaultCap	internal/agent/runtime/exec/watchdog/timeout_stop.go	field	moved	watchdog.RunTimeoutCause.DefaultCap
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause.Error	internal/agent/runtime/exec/watchdog/timeout_stop.go	method	moved	watchdog.RunTimeoutCause.Error
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause.Unwrap	internal/agent/runtime/exec/watchdog/timeout_stop.go	method	moved	watchdog.RunTimeoutCause.Unwrap
+declaration	internal/agent/timeout_stop.go::RunTimeoutCause.Is	internal/agent/runtime/exec/watchdog/timeout_stop.go	method	moved	watchdog.RunTimeoutCause.Is
+declaration	internal/agent/timeout_stop.go::runTimeoutFinishText	internal/agent/runtime/exec/watchdog/timeout_stop.go	function	renamed	RunTimeoutFinishText
+declaration	internal/agent/agent_turn_failure.go::RunTimeoutCause	internal/agent/agent_turn_failure.go	type	retained root compatibility alias to watchdog.RunTimeoutCause; compiler-proven callers pending/unverified	internal/app callers noted in declaration comment; compiler-proven callers pending/unverified

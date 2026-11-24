@@ -16,7 +16,10 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/config"
+	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
+	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -252,4 +255,235 @@ func (s *executeRunLoop) usageBySession() (message.UsageReport, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), cleanupTimeout)
 	defer cancel()
 	return s.env.Messages().UsageBySession(ctx, s.sess.ID)
+}
+
+// processHome is ProcessHome's free helper. It takes the *App itself
+// (not a RunEnv) because it must also answer for a nil App.
+func processHome(app *App) bool {
+	if app == nil {
+		return true
+	}
+	return app.home
+}
+
+// refuseForeign reports the WS-1 refusal for a session this process does not
+// own (#1142 step C, docs/plans/2026-10-01-shared-data-dir.md §1 table).
+//
+// resolveSession consults this after every successful Get -- before any write,
+// and well before the OS-level session lock, so a foreign `--session <id>`
+// produces this refusal rather than an "already in use" raised by another
+// checkout's running agent.
+//
+// The wording (owning root, branch, and the two ways forward) and the typed
+// runq.ErrForeignWorkspace wrapper live in agent.ForeignWorkspaceError:
+// runOwned's guard refuses with the same sentence for every non-CLI entry
+// point, and one builder keeps those two unable to drift.
+func refuseForeign(sess core.Session) error {
+	return agent.ForeignWorkspaceError(sess)
+}
+
+// owns reports whether this process may drive sess (WS-1, #1142 step C).
+// Legacy unbound (”) rows are drivable exactly when the App is a home
+// process -- the explicit home flag from config.WorkspaceHome(), never a
+// derivation from the workspace root (which is non-empty for every git
+// checkout and would otherwise refuse the whole pre-WS-1 history).
+func owns(sess core.Session, workspaceRoot string, home bool) bool {
+	return core.Owns(sess.WorkspaceRoot, workspaceRoot, home)
+}
+
+// resolveSession resolves which session to use for a non-interactive run
+// If continueSessionID is set, it looks up that session by ID
+// If useLast is set, it returns the most recently updated top-level session
+// Otherwise, it creates a new session
+func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, useLast bool) (core.Session, error) {
+	origin := agent.CallOriginFrom(ctx)
+	switch {
+	case continueSessionID != "":
+		if env.Sessions().IsAgentToolSession(continueSessionID) {
+			return core.Session{}, fmt.Errorf("cannot continue an agent tool session: %s", continueSessionID)
+		}
+		sess, err := env.Sessions().Get(ctx, continueSessionID)
+		if err == nil {
+			return appbatch.ValidateResolvedSession(sess, continueSessionID, env.WorkspaceRoot, env.ProcessHome())
+		}
+		// Get-or-create semantics: --session <id> with an unknown id creates
+		// a brand-new top-level session with that exact id. Lets CI / scripts
+		// pick a deterministic key (e.g. an issue number) and re-run idempotently.
+		var created core.Session
+		var createErr error
+		if oc, ok := env.Sessions().(core.OriginCreator); ok {
+			created, createErr = oc.CreateWithIDAndOrigin(ctx, continueSessionID, continueSessionID, origin)
+		} else {
+			// Test fakes implementing core.Service without the
+			// OriginCreator seam keep the legacy behaviour.
+			created, createErr = env.Sessions().CreateWithID(ctx, continueSessionID, continueSessionID)
+		}
+		if createErr == nil {
+			slog.Info("Created session on demand from --session id", "session_id", created.ID)
+			return created, nil
+		}
+		// Session-creation race (task #605): several `rush run --session
+		// <id>` processes can all miss the Get above for an id that has
+		// NEVER existed before (first use of that id) and then all race
+		// CreateWithID's INSERT. SQLite's own single-writer serialization
+		// still guarantees exactly one INSERT wins — the losers get back a
+		// PRIMARY KEY/UNIQUE constraint violation on sessions.id, e.g.
+		// "constraint failed: UNIQUE constraint failed: sessions.id
+		// (1555)". Before this fix that raw driver error propagated
+		// straight to the operator/orchestrator instead of the friendly
+		// "session busy, use `sessions inject`" message the already-exists
+		// race already gets (see sessionBusyGuidance in app_run_errors.go)
+		// — an orchestrator parsing stderr would misclassify a transient,
+		// retryable race as a permanent failure.
+		//
+		// Fix: re-Get once. By the time our own INSERT has been rejected
+		// by the UNIQUE/PRIMARY KEY index, the winner's INSERT has
+		// necessarily already committed (SQLite's single-writer model
+		// serializes the two transactions; ours only sees the conflict
+		// because theirs finished first) — so the row is guaranteed to be
+		// there for a losing process to attach to. Re-Get is the shape
+		// that reuses ALL of the existing, tested busy-rejection path:
+		// once attached, this losing process proceeds exactly like the
+		// already-exists case above, and the pre-existing OS-level
+		// session lock (internal/agent/agent_run.go, checked once this
+		// function returns and AgentCoordinator.Run acquires it) is what
+		// actually produces the clean "session busy" guidance — no new
+		// error-classification branch or wrapping needed here.
+		//
+		// This intentionally only swallows the constraint violation for
+		// THIS table+column (sessions.id) via isSessionsIDConstraintError
+		// below, not any database error: a genuinely broken DB (disk
+		// full, corruption, permission denied) must still surface as-is
+		// rather than being silently retried into a confusing "not
+		// found" on the follow-up Get.
+		if isSessionsIDConstraintError(createErr) {
+			if sess, getErr := env.Sessions().Get(ctx, continueSessionID); getErr == nil {
+				// The winner of the create race may have bound the row to its
+				// own workspace: same ownership check as the first Get.
+				sess, err := appbatch.ValidateResolvedSession(sess, continueSessionID, env.WorkspaceRoot, env.ProcessHome())
+				if err == nil {
+					slog.Info("Session creation raced another process; attached to the winner's row",
+						"session_id", continueSessionID)
+				}
+				return sess, err
+			}
+			// The re-Get failed too (extremely unlikely — the row that
+			// caused our constraint violation vanished again, e.g. a
+			// concurrent `sessions kill`/delete). Fall through to the
+			// original wrapped error below rather than hiding the
+			// surprise.
+		}
+		return core.Session{}, fmt.Errorf("session %q not found and could not be created: %w", continueSessionID, createErr)
+
+	case useLast:
+		sess, err := env.Sessions().GetLast(ctx)
+		if err != nil {
+			return core.Session{}, fmt.Errorf("no sessions found to continue")
+		}
+		return sess, nil
+
+	default:
+		if oc, ok := env.Sessions().(core.OriginCreator); ok {
+			return oc.CreateWithOrigin(ctx, agent.DefaultSessionName, origin)
+		}
+		return env.Sessions().Create(ctx, agent.DefaultSessionName)
+	}
+}
+
+// resolveRunSession resolves the session of one ExecuteRun. A `rush run` loop's
+// Drain iteration (drainTurn) continues the session its first turn already
+// resolved and claimed: it is read back as is, without the "cannot continue a
+// child session" refusal, which guards only what an operator may start.
+func resolveRunSession(env RunEnv, ctx context.Context, drainTurn bool, continueSessionID string, useLast bool) (core.Session, error) {
+	if drainTurn && continueSessionID != "" {
+		return env.Sessions().Get(ctx, continueSessionID)
+	}
+	return resolveSession(env, ctx, continueSessionID, useLast)
+}
+
+const drainPendingMaxAttempts = 3
+
+var drainPendingAfterAttemptSeam func(string)
+
+// drainPendingBeforeRun executes outstanding durable rows before the new turn.
+func drainPendingBeforeRun(env RunEnv, ctx context.Context, sessionID string) error {
+	if env.Pump() == nil || env.Sessions() == nil {
+		return nil
+	}
+
+	for attempt := 1; attempt <= drainPendingMaxAttempts; attempt++ {
+		outstanding, err := env.Sessions().HasOutstandingRunQueueEntriesForSession(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("run: failed to check pending durable work before the turn: %w", err)
+		}
+		if !outstanding {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("run: canceled before pending durable work drained: %w", err)
+		}
+
+		slog.Info("run: executing pending durable work for this session before the new turn", "session_id", sessionID)
+		result, drainErr := env.Pump().DrainSessionNow(ctx, sessionID)
+		if drainPendingAfterAttemptSeam != nil {
+			drainPendingAfterAttemptSeam(sessionID)
+		}
+
+		localBusy := env.Coord() != nil && env.Coord().IsSessionBusy(sessionID)
+		if drainErr != nil {
+			contention := errors.Is(drainErr, core.ErrCallQueuedNotExecuted) || errors.Is(drainErr, runq.ErrDrainIncomplete)
+			if !contention {
+				return fmt.Errorf("run: pending durable work drain incomplete (%s): %w", result, drainErr)
+			}
+		}
+
+		if localBusy {
+			if err := waitLocalOwnerReleased(env, ctx, sessionID); err != nil {
+				return fmt.Errorf("run: canceled while waiting for the current session owner: %w", err)
+			}
+		}
+
+		outstanding, err = env.Sessions().HasOutstandingRunQueueEntriesForSession(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("run: failed to recheck pending durable work after drain: %w", err)
+		}
+		if !outstanding {
+			if drainErr != nil {
+				return fmt.Errorf("run: pending durable work drain incomplete (%s): %w", result, drainErr)
+			}
+			slog.Info("run: pending durable work drained", "session_id", sessionID, "result", result)
+			return nil
+		}
+		if attempt == drainPendingMaxAttempts {
+			break
+		}
+		if !localBusy {
+			timer := time.NewTimer(time.Duration(attempt) * 100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("run: canceled while waiting for pending durable work: %w", ctx.Err())
+			case <-timer.C:
+			}
+		}
+	}
+	return fmt.Errorf("run: pending durable work remains after %d drain attempts", drainPendingMaxAttempts)
+}
+
+// waitLocalOwnerReleased waits until this process no longer owns the session.
+func waitLocalOwnerReleased(env RunEnv, ctx context.Context, sessionID string) error {
+	if env.Coord() == nil || !env.Coord().IsSessionBusy(sessionID) {
+		return nil
+	}
+	slog.Info("run: waiting for this process's current turn on the session to finish", "session_id", sessionID)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for env.Coord().IsSessionBusy(sessionID) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	return nil
 }

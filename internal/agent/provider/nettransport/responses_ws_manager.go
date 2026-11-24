@@ -241,6 +241,10 @@ func (m *ResponsesWSManager) removeLocked(key [32]byte, e *responsesWSEntry) {
 		e.cancel()
 	}
 	if e.conn != nil {
+		if e.busy {
+			// Closing a leased connection fails its in-flight exchange.
+			slog.Warn("responses websocket retired during an active exchange", "protocol", e.protocol, "age_seconds", max(0, m.now().Sub(e.created).Seconds()), "send_state", e.conn.State().String())
+		}
 		slog.Debug("responses websocket retired", "protocol", e.protocol, "age_seconds", max(0, m.now().Sub(e.created).Seconds()), "planned_seconds", e.maxAge.Seconds(), "send_state", e.conn.State().String(), "learning_reason", "not_enabled")
 		_ = e.conn.Close()
 		m.occupancy--
