@@ -10,6 +10,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -110,7 +112,7 @@ func (n nodeBatchCutoverFacts) LiveWorkSummary(ctx context.Context, owner string
 	return len(res.Own), len(res.Descendants), nil
 }
 
-func (n nodeBatchCutoverFacts) LiveScopeForOwners(ctx context.Context, owners []string) ([]BatchLiveScopeEntry, error) {
+func (n nodeBatchCutoverFacts) LiveScopeForOwners(ctx context.Context, owners []string) ([]agentcall.BatchLiveScopeEntry, error) {
 	var firstErr error
 	if n.live == nil {
 		firstErr = errBatchFactsUnavailable
@@ -119,9 +121,9 @@ func (n nodeBatchCutoverFacts) LiveScopeForOwners(ctx context.Context, owners []
 	if n.live != nil {
 		results = n.live.BatchLiveForSessions(ctx, owners)
 	}
-	out := make([]BatchLiveScopeEntry, 0, len(owners))
+	out := make([]agentcall.BatchLiveScopeEntry, 0, len(owners))
 	for _, o := range owners {
-		entry := BatchLiveScopeEntry{Owner: o, Live: true}
+		entry := agentcall.BatchLiveScopeEntry{Owner: o, Live: true}
 		if res, ok := results[o]; ok && res.Complete && res.Err == nil {
 			entry.Live = res.HasLive()
 		}
@@ -206,13 +208,13 @@ func (n nodeBatchCutoverFacts) LiveDelegationNodes(ctx context.Context, owner st
 // errBatchFactsUnavailable marks a missing node source dependency.
 var errBatchFactsUnavailable = errors.New("batch facts: node source unavailable")
 
-func (n nodeBatchCutoverFacts) AttemptRows(ctx context.Context, owner string, snap session.BatchDebtSnapshot, atK int) (BatchAttemptRows, error) {
+func (n nodeBatchCutoverFacts) AttemptRows(ctx context.Context, owner string, snap session.BatchDebtSnapshot, atK int) (agentcall.BatchAttemptRows, error) {
 	if n.store == nil {
-		return BatchAttemptRows{}, errBatchFactsUnavailable
+		return agentcall.BatchAttemptRows{}, errBatchFactsUnavailable
 	}
 	// The GIVEN acted-on set only: rows another settlement closed since the
 	// snapshot was taken are never re-captured into this accounting.
-	out := BatchAttemptRows{AtK: session.BatchDebtSnapshot{Owner: owner}}
+	out := agentcall.BatchAttemptRows{AtK: session.BatchDebtSnapshot{Owner: owner}}
 	for _, ref := range snap.Nodes {
 		count, err := n.store.BatchReactionMaxWakeAttempts(ctx, owner, session.BatchDebtSnapshot{Owner: owner, Nodes: []session.BatchDebtNodeRef{ref}})
 		if err != nil {

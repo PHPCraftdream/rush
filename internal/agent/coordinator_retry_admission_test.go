@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -91,8 +93,8 @@ func TestRunInternal_QueuedAdmissionEarlyCallbackNotRetried(t *testing.T) {
 		call.OnAssistantMessageCreated(badRow.ID)
 		// agent_run.go's queueing branch: mark the direct caller's
 		// admission recorder, then the historical (nil, nil) return.
-		if adm := turnAdmissionFrom(ctx); adm != nil {
-			adm.markQueued()
+		if adm := agentcall.TurnAdmissionFrom(ctx); adm != nil {
+			adm.MarkQueued()
 		}
 		return nil, nil
 	})
