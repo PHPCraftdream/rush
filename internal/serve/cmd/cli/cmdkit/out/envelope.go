@@ -51,6 +51,11 @@ func ResolveEnvelopePath(ref string) (string, error) {
 	return "", fmt.Errorf("no envelope for session %q (looked for %s) and %q is not a readable file", ref, path, ref)
 }
 
+// MainCheckoutRoot returns the main checkout root found via git common dir.
+func MainCheckoutRoot() (string, error) {
+	return envelopeMainCheckoutRoot()
+}
+
 // envelopeMainCheckoutRoot returns the main checkout's root directory, derived
 // from the git common dir. Works from inside a linked worktree too.
 func envelopeMainCheckoutRoot() (string, error) {

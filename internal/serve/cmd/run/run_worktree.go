@@ -1,7 +1,7 @@
 // Flag validation and preparation for `rush run --worktree`: resolve or
 // create the git worktree, chdir the run into it, default the session id
-// to the slug, install the stream mirror, and flush the mirrored
-// stdout/stderr into the main checkout's .rush/stdin at the end.
+// to the slug, install the stream mirror, and copy stdout output
+// into the main checkout's .rush/stdin at the end.
 package run
 
 import (
@@ -10,19 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	wtree "github.com/PHPCraftdream/rush/internal/serve/cmd/run/wtree"
 	"github.com/spf13/cobra"
 )
 
 // validateRunWorktreeFlags validates the --worktree/--base/--branch flag
-// combination, including the conflicts with the root --cwd/--data-dir
-// flags. It must be callable even when --worktree is empty (to catch
-// --base/--branch without --worktree). Reads --cwd and --data-dir from
-// the command's flags.
+// combination, including conflicts with --cwd. It must be callable when
+// --worktree is empty to catch --base/--branch without --worktree.
 func validateRunWorktreeFlags(cmd *cobra.Command, slug, base, branch string) error {
 	cwdFlag, _ := cmd.Flags().GetString("cwd")
-	dataDirFlag, _ := cmd.Flags().GetString("data-dir")
 	switch {
 	case slug == "" && base == "" && branch == "":
 		return nil
@@ -33,12 +31,30 @@ func validateRunWorktreeFlags(cmd *cobra.Command, slug, base, branch string) err
 		return fmt.Errorf("--worktree is incompatible with --cwd: " +
 			"the worktree defines the working directory")
 	}
-	if dataDirFlag != "" {
-		return fmt.Errorf("--worktree is incompatible with --data-dir: " +
-			"the run uses the data directory resolved from inside the " +
-			"worktree (the shared <main>/.rush)")
-	}
 	return wtree.ValidateWorktreeSlug(slug)
+}
+
+func applyRunWorktreeDataDir(cmd *cobra.Command, mainRoot, sessionID string) error {
+	isolated, _ := cmd.Flags().GetBool("isolated-store")
+	if !isolated || explicitRunDataDir(cmd) {
+		return nil
+	}
+	flag := cmd.InheritedFlags().Lookup("data-dir")
+	if flag == nil {
+		flag = cmd.Flags().Lookup("data-dir")
+	}
+	if flag == nil {
+		return fmt.Errorf("--data-dir flag is unavailable for isolated worktree store")
+	}
+	return flag.Value.Set(filepath.Join(mainRoot, ".rush", "agent-dbs", sessionID, ".rush"))
+}
+
+func explicitRunDataDir(cmd *cobra.Command) bool {
+	flag := cmd.InheritedFlags().Lookup("data-dir")
+	if flag == nil {
+		flag = cmd.Flags().Lookup("data-dir")
+	}
+	return flag != nil && flag.Changed
 }
 
 // validateMirrorSessionID rejects session ids that could escape the
@@ -67,6 +83,7 @@ type runWorktree struct {
 	worktreePath string
 	mirror       *wtree.StreamMirror
 	prevCwd      string
+	startedAt    time.Time
 }
 
 // prepareRunWorktree resolves or creates the worktree, chdirs into it,
@@ -148,9 +165,9 @@ func prepareRunWorktree(
 		_ = os.Chdir(prevCwd)
 		return nil, err
 	}
+	startedAt := time.Now().UTC()
 	mirror, err := wtree.StartStreamMirror()
 	if err != nil {
-		// A mirror failure must not leave the cwd changed.
 		_ = os.Chdir(prevCwd)
 		return nil, fmt.Errorf("start stdout/stderr mirroring: %w", err)
 	}
@@ -160,37 +177,95 @@ func prepareRunWorktree(
 		worktreePath: plan.Path,
 		mirror:       mirror,
 		prevCwd:      prevCwd,
+		startedAt:    startedAt,
 	}, nil
 }
 
-// finish stops the mirror, flushes the tails into the main checkout's
-// .rush/stdin/<session>.{out,err}, and restores the previous working
-// directory. It never panics and never masks the run's own result: flush
-// errors go to stderr as warnings.
+// finish stops the mirror, archives prior output when new stdout exists,
+// replaces latest stdout and stderr with this run's captured tails, and restores
+// the previous working directory.
 func (w *runWorktree) finish() {
-	outTail, errTail, merr := w.mirror.Stop()
-	if merr != nil {
-		fmt.Fprintf(os.Stderr, "warning: stopping stream mirror: %v\n", merr)
+	outTail, errTail, mirrorErr := w.mirror.Stop()
+	if mirrorErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: stream mirror: %v\n", mirrorErr)
 	}
-	if err := flushRunWorktreeMirror(w.mainRoot, w.sessionID, outTail, errTail); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: flushing mirrored run output: %v\n", err)
+	dir := filepath.Join(w.mainRoot, ".rush", "stdin")
+	if len(outTail) > 0 {
+		if err := writeRunWorktreeOutput(dir, w.sessionID, outTail, errTail, w.startedAt); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: flushing mirrored run output: %v\n", err)
+		}
+	} else if err := preserveRunWorktreeStderr(dir, w.sessionID, errTail, w.startedAt); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: flushing mirrored run stderr: %v\n", err)
 	}
 	_ = os.Chdir(w.prevCwd)
 }
 
-// flushRunWorktreeMirror writes the mirrored streams into
-// <mainRoot>/.rush/stdin/<sessionID>.out and .err (MkdirAll 0o755,
-// WriteFile 0o644, files always written even when empty).
-func flushRunWorktreeMirror(mainRoot, sessionID string, outTail, errTail []byte) error {
-	dir := filepath.Join(mainRoot, ".rush", "stdin")
+func preserveRunWorktreeStderr(dir, sessionID string, errTail []byte, startedAt time.Time) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, sessionID+".out"), outTail, 0o644); err != nil {
+	latest := filepath.Join(dir, sessionID+".err")
+	old, err := os.ReadFile(latest)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read previous mirrored stderr: %w", err)
+	}
+	if err == nil {
+		archive := filepath.Join(dir, sessionID+"."+startedAt.UTC().Format("20060102T150405.000000000Z")+".err")
+		if err := writeRunWorktreeCopy(archive, old); err != nil {
+			return fmt.Errorf("archive previous mirrored stderr: %w", err)
+		}
+	}
+	return replaceRunWorktreeFile(latest, errTail)
+}
+
+func writeRunWorktreeOutput(dir, sessionID string, outTail, errTail []byte, startedAt time.Time) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	stamp := startedAt.UTC().Format("20060102T150405.000000000Z")
+	for _, ext := range []string{"out", "err"} {
+		latest := filepath.Join(dir, sessionID+"."+ext)
+		old, err := os.ReadFile(latest)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("read previous mirrored %s: %w", ext, err)
+		}
+		if err == nil {
+			archivePath := filepath.Join(dir, sessionID+"."+stamp+"."+ext)
+			if err := writeRunWorktreeCopy(archivePath, old); err != nil {
+				return fmt.Errorf("archive previous mirrored %s: %w", ext, err)
+			}
+		}
+	}
+	if err := replaceRunWorktreeFile(filepath.Join(dir, sessionID+".out"), outTail); err != nil {
 		return fmt.Errorf("write mirrored stdout: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, sessionID+".err"), errTail, 0o644); err != nil {
+	if err := replaceRunWorktreeFile(filepath.Join(dir, sessionID+".err"), errTail); err != nil {
 		return fmt.Errorf("write mirrored stderr: %w", err)
 	}
 	return nil
+}
+
+func replaceRunWorktreeFile(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func writeRunWorktreeCopy(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return file.Close()
 }
