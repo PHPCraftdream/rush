@@ -87,6 +87,18 @@ type ResponsesWSError struct {
 	state ResponsesWSSendState
 	stage string
 	cause error
+	// peerClosed marks a close frame sent by the provider; sinceSent is the
+	// time from the send to this failure (-1 when nothing was sent).
+	peerClosed bool
+	sinceSent  time.Duration
+}
+
+// ClosedBeforeAnyFrame reports a provider-initiated close that arrived within
+// window of the send and before any frame of the exchange: a dead connection
+// found at send time. The request produced nothing a caller could have seen,
+// so replaying it once on a fresh connection has no client-visible effect.
+func (e *ResponsesWSError) ClosedBeforeAnyFrame(window time.Duration) bool {
+	return e.stage == "receive" && e.state == ResponsesWSSendPossiblySent && e.peerClosed && e.sinceSent >= 0 && e.sinceSent <= window
 }
 
 func (e *ResponsesWSError) Error() string {
@@ -560,9 +572,13 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	attrs := c.diagAttrsLocked()
 	closedBefore := c.closed
 	idleMS := c.idleBeforeSendMS
-	sinceSentMS := int64(-1)
+	sinceSent := time.Duration(-1)
 	if !c.sentAt.IsZero() {
-		sinceSentMS = time.Since(c.sentAt).Milliseconds()
+		sinceSent = time.Since(c.sentAt)
+	}
+	sinceSentMS := sinceSent.Milliseconds()
+	if sinceSent < 0 {
+		sinceSentMS = -1
 	}
 	c.stateMu.Unlock()
 	c.deltaMu.Lock()
@@ -581,7 +597,7 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 		// The returned error hides the cause by design; the log keeps it.
 		slog.Warn("responses websocket exchange failed", append(attrs, "cause", diagCause(cause), "cause_type", fmt.Sprintf("%T", cause), "closed_locally", closedBefore, "since_sent_ms", sinceSentMS, "idle_before_send_ms", idleMS)...)
 	}
-	return &ResponsesWSError{state: state, stage: stage, cause: cause}
+	return &ResponsesWSError{state: state, stage: stage, cause: cause, peerClosed: closeError != nil && !closedBefore, sinceSent: sinceSent}
 }
 
 func ioDeadline(ctx context.Context, timeout time.Duration) time.Time {

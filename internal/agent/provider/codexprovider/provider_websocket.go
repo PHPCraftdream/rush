@@ -118,6 +118,17 @@ type WebSocketOptions struct {
 	endpoint string
 }
 
+// webSocketEarlyCloseWindow bounds how soon after the send a provider close
+// still counts as a dead connection found at send time.
+const webSocketEarlyCloseWindow = 2 * time.Second
+
+func closedBeforeAnyFrame(err error) bool {
+	var early interface {
+		ClosedBeforeAnyFrame(time.Duration) bool
+	}
+	return errors.As(err, &early) && early.ClosedBeforeAnyFrame(webSocketEarlyCloseWindow)
+}
+
 // streamWebSocket reports whether the WebSocket path handled the call. A server
 // rejection of a chained frame's unknown parent, seen before any output, is
 // retried once: the rejected connection is retired, so the next exchange opens
@@ -255,6 +266,13 @@ func (m *languageModel) streamWebSocketOnce(ctx context.Context, payload []byte,
 		if receiveErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				receiveErr = conn.Abort(ctxErr)
+			} else if allowRecovery && !state.acceptedOutput && closedBeforeAnyFrame(receiveErr) {
+				// The provider dropped the connection before any frame of this
+				// exchange: nothing was generated or delivered, so resend once
+				// on a fresh connection.
+				slog.Warn("responses websocket closed by the provider before any frame, retrying once on a new connection", "provider", Name, "session_hash", session.HashID(conversation))
+				_ = conn.Close()
+				return false, true
 			}
 			acceptPart(fantasy.StreamPart{Type: fantasy.StreamPartTypeError, Error: receiveErr})
 			return true, false
