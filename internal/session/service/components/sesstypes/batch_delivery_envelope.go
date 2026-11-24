@@ -1,4 +1,4 @@
-package session
+package sesstypes
 
 import "encoding/json"
 

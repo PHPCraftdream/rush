@@ -1,0 +1,52 @@
+kind	name	source	destination	owner
+const	RoleContractVersion	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+compat-const	RoleContractVersion (service alias)	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
+compat-type	RoleContract (service alias)	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
+compat-type	ModelCfg (service alias)	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
+compat-func	decodeRoleContract	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
+type	RoleContract	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+method	(*RoleContract).Clone	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+func	cloneRoleModel	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+func	cloneRoleMap	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+func	cloneRoleValue	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+method	(*RoleContract).Equal	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+method	(*RoleContract).Validate	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+func	validateRoleName	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+func	validateRoleToolGroup	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+func	DecodeRoleContract (decodeRoleContract)	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+method	(RoleContract).MarshalJSON	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+method	(*RoleContract).UnmarshalJSON	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+local-type	(RoleContract).MarshalJSON.contractJSON	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+local-field	(RoleContract).MarshalJSON.contractJSON.Version	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+local-field	(RoleContract).MarshalJSON.contractJSON.Name	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+local-field	(RoleContract).MarshalJSON.contractJSON.Model	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+local-field	(RoleContract).MarshalJSON.contractJSON.Tools	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+local-field	(RoleContract).MarshalJSON.contractJSON.Inherited	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+type	ModelCfg	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	RoleContract.Version	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+field	RoleContract.Name	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+field	RoleContract.Model	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+field	RoleContract.Tools	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+field	RoleContract.Inherited	internal/session/service/role_contract.go	internal/session/service/components/sesstypes/role_contract.go	internal/session/service/components/sesstypes
+field	ModelCfg.Model	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.Provider	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.ReasoningEffort	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.Think	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.MaxTokens	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.Temperature	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.TopP	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.TopK	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.FrequencyPenalty	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.PresencePenalty	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+field	ModelCfg.ProviderOptions	internal/session/service/session_runqueue.go	internal/session/service/components/sesstypes/model_cfg.go	internal/session/service/components/sesstypes
+type	BatchDeliveryEnvelope	internal/session/service/batch_delivery_envelope.go	internal/session/service/components/sesstypes/batch_delivery_envelope.go	internal/session/service/components/sesstypes
+field	BatchDeliveryEnvelope.State	internal/session/service/batch_delivery_envelope.go	internal/session/service/components/sesstypes/batch_delivery_envelope.go	internal/session/service/components/sesstypes
+field	BatchDeliveryEnvelope.Code	internal/session/service/batch_delivery_envelope.go	internal/session/service/components/sesstypes/batch_delivery_envelope.go	internal/session/service/components/sesstypes
+field	BatchDeliveryEnvelope.Summary	internal/session/service/batch_delivery_envelope.go	internal/session/service/components/sesstypes/batch_delivery_envelope.go	internal/session/service/components/sesstypes
+field	BatchDeliveryEnvelope.Details	internal/session/service/batch_delivery_envelope.go	internal/session/service/components/sesstypes/batch_delivery_envelope.go	internal/session/service/components/sesstypes
+field	BatchDeliveryEnvelope.Ref	internal/session/service/batch_delivery_envelope.go	internal/session/service/components/sesstypes/batch_delivery_envelope.go	internal/session/service/components/sesstypes
+compat-type	BatchDeliveryEnvelope (service alias)	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
+type	BatchRequireRow	internal/session/service/batch_require_row.go	internal/session/service/components/sesstypes/batch_require_row.go	internal/session/service/components/sesstypes
+type	ErrBatchProjectionConflict	internal/session/service/batch_require_row.go	internal/session/service/components/sesstypes/batch_require_row.go	internal/session/service/components/sesstypes
+compat-func	BatchRequireRow (service delegate)	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
+compat-var	ErrBatchProjectionConflict (service alias)	internal/session/service/role_contract_store.go	internal/session/service/role_contract_store.go	internal/session/service
