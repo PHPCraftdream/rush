@@ -1,0 +1,282 @@
+file	lines	destination	plan_row	status	split	blocker
+agent_cache_keepalive.go	613	runtime/policy/callbeat	DM3	open	whole	-
+agent_codex_recovery_cleanup.go	69	runtime/policy/provauth	DM3	open	whole	-
+agent_codex_recovery.go	265	runtime/policy/provauth	DM3	open	split	C1 port OPEN members (cfg/arb) still reached via *coordinator; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_compaction.go	296	runtime/exec/turnstep	DM2	open	whole	-
+agent_compaction_silent.go	510	runtime/policy/provauth	DM3	open	whole	-
+agent_control.go	325	runtime/exec/agentrun	DM7	blocked	split	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_drain.go	250	runtime/exec/drainctl	DM2	open	split	-
+agent.go	558	runtime/exec/agentrun	DM7	blocked	split	C1 port OPEN members (cfg/arb) still reached via *coordinator; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agentic_fetch_policy.go	133	runtime/policy/agenticfetch	DM4	open	whole	-
+agentic_fetch_tool.go	242	runtime/policy/agenticfetch	DM4	open	whole	-
+agent_options.go	133	runtime/exec/agentrun	DM7	blocked	whole	C1 port OPEN members (cfg/arb) still reached via *coordinator; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_ownership.go	855	runtime/exec/mailbox	DM1	open	whole	-
+agent_own_work_batch.go	59	runtime/exec/mailbox	DM1	open	split	-
+agent_prompt.go	112	runtime/exec/sessionprompt	DM1	open	whole	-
+agent_run.go	919	runtime/exec/agentrun	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_timeouts.go	136	runtime/exec/agentrun	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_title.go	461	runtime/exec/turnstep	DM2	open	whole	-
+agent_tool.go	106	runtime/modelkit	DM-W	open	whole	-
+agent_turn_checkpoint.go	269	runtime/exec/turnstep	DM2	open	whole	-
+agent_turn_failure.go	391	runtime/exec/agentrun	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_turn.go	812	runtime/exec/agentrun	DM7	blocked	whole	C1 port OPEN members (cfg/arb) still reached via *coordinator; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_turn_helpers.go	185	runtime/exec/turnstep	DM2	open	whole	-
+agent_turn_peakhours.go	5	runtime/exec/turnstep	DM2	open	whole	-
+agent_turn_step.go	883	runtime/exec/agentrun	DM7	blocked	whole	C1 port OPEN members (cfg/arb) still reached via *coordinator; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_turn_stream.go	608	runtime/exec/agentrun	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+agent_turn_title.go	240	runtime/exec/turnstep	DM2	open	whole	-
+agent_usage.go	109	runtime/policy/usage	DM3	open	whole	-
+arbiter_component.go	119	runtime/exec/drainctl	DM2	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+arbiter_state_component.go	102	runtime/exec/drainctl	DM2	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+await_tasks_era.go	37	runtime/exec/drainctl	DM2	open	split	-
+background_component.go	408	runtime/batch/subagents	DM6	open	whole	-
+batch_admission.go	42	runtime/batch/batchinst	DM5a	open	whole	-
+batch_allowed_controls.go	12	runtime/batch/batchinst	DM5a	open	whole	-
+batch_cancel.go	13	runtime/batch/batchflow	DM5c	open	whole	-
+batch_cli.go	284	runtime/batch/batchflow	DM5c	open	whole	-
+batch_cli_runtime.go	273	runtime/batch/batchflow	DM5c	open	whole	-
+batch_credentials_escrow.go	72	runtime/batch/batchflow	DM5c	open	whole	-
+batch_credentials_marker.go	33	runtime/batch/batchflow	DM5c	open	whole	-
+batch_cutover_driver.go	17	runtime/batch/batchflow	DM5c	open	split	-
+batch_cutover_facts.go	151	runtime/batch/batchflow	DM5c	open	split	R1/R4 re-homing disagreement (dm0b sec9): declarations to coord, file stays in batch family
+batch_cutover_facts_node.go	520	runtime/batch/batchflow	DM5c	open	whole	-
+batch_cutover_rerun.go	75	runtime/batch/batchflow	DM5c	open	split	-
+batch_delivery_doc.go	72	runtime/batch/batchflow	DM5c	open	whole	-
+batch_delivery.go	85	runtime/batch/batchflow	DM5c	open	whole	-
+batch_depth_payload.go	7	runtime/batch/batchrun	DM5b	open	whole	-
+batch_exec_agent_doc.go	54	runtime/batch/batchrun	DM5b	open	whole	-
+batch_exec_agent.go	380	runtime/batch/batchrun	DM5b	open	whole	-
+batch_exec_argv.go	69	runtime/batch/batchrun	DM5b	open	whole	-
+batch_exec_generic.go	106	runtime/batch/batchrun	DM5b	open	whole	-
+batch_exec.go	252	runtime/batch/batchrun	DM5b	open	whole	-
+batch_exec_shell.go	62	runtime/batch/batchrun	DM5b	open	whole	-
+batch_external_spec.go	22	runtime/batch/batchrun	DM5b	open	whole	-
+batch_glue.go	629	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+batch_held_question_route.go	37	runtime/batch/batchflow	DM5c	open	split	-
+batch_ingress.go	144	runtime/batch/batchinst	DM5a	open	whole	-
+batch_install_adapters.go	550	runtime/batch/batchinst	DM5a	open	whole	-
+batch_install_agent_driver.go	164	runtime/batch/batchinst	DM5a	open	whole	-
+batch_install_bridge.go	45	runtime/batch/batchinst	DM5a	open	whole	-
+batch_install_ingress.go	299	runtime/batch/batchinst	DM5a	open	whole	-
+batch_install_policy.go	76	runtime/batch/batchinst	DM5a	open	split	-
+batch_install_question.go	55	runtime/batch/batchinst	DM5a	open	whole	-
+batch_install_tools.go	227	runtime/batch/batchinst	DM5a	open	whole	-
+batch_invocation.go	264	runtime/batch/batchrun	DM5b	open	whole	-
+batch_model_control.go	134	runtime/batch/batchrun	DM5b	open	whole	-
+batch_model_tools.go	227	runtime/batch/batchrun	DM5b	open	whole	-
+batch_profile.go	188	runtime/batch/batchinst	DM5a	open	whole	-
+batch_question_rebuild.go	28	runtime/batch/batchflow	DM5c	open	split	-
+batch_question_route.go	12	runtime/batch/batchflow	DM5c	open	split	-
+batch_rehome_async_completion.go	6	runtime/batch/batchinst	DM5a	open	whole	-
+batch_rehome_coord_runtime.go	72	runtime/batch/batchinst	DM5a	open	split	-
+batch_rehome_runtime.go	96	runtime/batch/batchinst	DM5a	open	split	-
+batch_role_admission.go	45	runtime/batch/batchinst	DM5a	open	whole	-
+batch_root_lease.go	73	runtime/batch/batchflow	DM5c	open	whole	-
+batch_runtime.go	112	runtime/batch/batchinst	DM5a	open	whole	-
+batch_scope.go	38	runtime/batch/batchinst	DM5a	open	whole	-
+batch_scope_recovery.go	102	runtime/batch/batchinst	DM5a	open	split	R1/R4 re-homing disagreement (dm0b sec9): declarations to coord, file stays in batch family
+batch_terminal_output.go	62	runtime/batch/batchrun	DM5b	open	whole	-
+batch_worker_hints.go	49	runtime/batch/batchrun	DM5b	open	whole	-
+cache_diagnostics.go	192	runtime/policy/promptcache	DM3	open	whole	-
+cache_profile.go	28	runtime/policy/promptcache	DM3	open	whole	-
+cli_active_work.go	313	runtime/policy/clibridge	DM3	open	split	-
+cli_tool_bridge.go	10	runtime/policy/clibridge	DM3	open	whole	-
+contract_bridge.go	330	contract/agentcall	stays	already landed	whole	remnant: three call-type aliases already point to agentcall (scout: contract_bridge.go:26-30); alias removal question left to DM7/DM8
+coordinator_agent_control.go	410	runtime/coord	DM7	blocked	whole	C1 port OPEN member drainCredentialBoundary crosses boundary; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_agent_inject_batch.go	351	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_attempt_evidence.go	66	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_await_tasks.go	223	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_background.go	47	runtime/batch/subagents	DM6	open	whole	-
+coordinator_batch_stop.go	49	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_call_result.go	158	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_drain_policy.go	32	runtime/exec/drainctl	DM2	open	split	-
+coordinator_external_interrupt.go	24	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator.go	574	runtime/coord	DM7	blocked	split	pulled declarations to agentcall; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_iface_assert.go	14	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_interrupt.go	958	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_model_cache.go	54	runtime/modelkit	DM-W	open	whole	-
+coordinator_models_build.go	63	runtime/modelkit	DM-W	open	whole	-
+coordinator_models_call_tools.go	126	runtime/modelkit	DM-W	open	whole	-
+coordinator_models_custom_role.go	11	runtime/modelkit	DM-W	open	whole	-
+coordinator_models.go	184	runtime/modelkit	DM-W	open	whole	-
+coordinator_models_role.go	121	runtime/modelkit	DM-W	open	whole	-
+coordinator_providers_auth.go	245	runtime/modelkit	DM-W	open	whole	-
+coordinator_providers.go	297	runtime/modelkit	DM-W	open	whole	-
+coordinator_rate_limit.go	230	runtime/modelkit	DM-W	open	whole	-
+coordinator_reaction_chain.go	20	runtime/exec/drainctl	DM2	open	whole	-
+coordinator_reaction_source.go	37	runtime/exec/drainctl	DM2	open	split	-
+coordinator_recheck.go	191	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_rerun.go	7	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_responses_ws.go	65	runtime/exec/responsesws	DM1	open	split	coordinator methods retarget to manager type (EX-0K)
+coordinator_retry_classify.go	303	runtime/modelkit	DM-W	open	whole	-
+coordinator_retry_testsupport.go	26	runtime/modelkit	DM-W	open	whole	-
+coordinator_run_await.go	177	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_run_effort.go	18	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_run.go	877	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_run_queue_call.go	576	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+coordinator_session_prompt.go	62	runtime/exec/sessionprompt	DM1	blocked	whole	2 root declarations must move or be exported first (dm0b sec4.2)
+coordinator_session_state_sweep.go	130	runtime/exec/sessionprompt	DM1	open	whole	-
+coordinator_subagents.go	132	runtime/batch/subagents	DM6	open	split	-
+coordinator_summarize.go	181	runtime/modelkit	DM-W	open	split	-
+coordinator_summarize_role.go	101	runtime/modelkit	DM-W	open	whole	-
+coordinator_tool_assembly.go	22	runtime/modelkit	DM-W	open	whole	-
+coordinator_tools.go	289	runtime/modelkit	DM-W	open	whole	-
+coordinator_tools_reviewer.go	50	runtime/modelkit	DM-W	open	whole	-
+coordinator_turn_hold.go	29	runtime/exec/turnstep	DM2	open	whole	-
+coordinator_wake_cli.go	39	runtime/wakectl	DM-W	open	whole	-
+coordinator_wake.go	25	runtime/wakectl	DM-W	open	whole	-
+coordinator_wake_tools.go	39	runtime/wakectl	DM-W	open	whole	-
+coordinator_work_scope.go	213	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+credentials.go	466	runtime/coord	DM7	blocked	split	types to agentcall, 6 sessionAgent methods to agentrun, 6 coordinator methods to cred_glue; DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+custom_role_runtime.go	43	runtime/modelkit	DM-W	open	whole	-
+default_job_timeout.go	27	runtime/batch/subagents	DM6	open	whole	-
+delegation_depth.go	39	runtime/batch/delegation	DM6	open	whole	-
+delegation_question.go	84	runtime/batch/delegation	DM6	open	whole	-
+delegation_role_calls.go	141	runtime/batch/delegation	DM6	open	split	-
+delegation_role.go	17	runtime/batch/delegation	DM6	open	split	-
+delegation_role_models.go	155	runtime/batch/delegation	DM6	open	whole	-
+delegation_role_state.go	20	runtime/batch/delegation	DM6	open	whole	-
+disk_provider_binding.go	164	runtime/batch/batchinst	DM5a	open	whole	-
+disk_provider_call.go	38	runtime/batch/batchinst	DM5a	open	whole	-
+disk_provider_capability.go	272	runtime/batch/batchinst	DM5a	open	whole	-
+disk_provider_continuation.go	111	runtime/batch/batchinst	DM5a	open	whole	-
+disk_provider_durable.go	31	runtime/batch/batchinst	DM5a	open	whole	-
+disk_provider_intent.go	13	runtime/batch/batchinst	DM5a	open	whole	-
+drain_attempt.go	35	runtime/exec/drainctl	DM2	open	split	DrainAttempt already moved to drainctl; 4 sessionAgent methods to agentrun; init() pacing atoms move with file
+drain_call_component.go	208	runtime/exec/drainctl	DM2	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+drain_component.go	442	runtime/exec/drainctl	DM2	blocked	split	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+drain_policy_component.go	215	runtime/exec/drainctl	DM2	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+finalization_bind.go	43	runtime/batch/finalize	DM6	open	whole	-
+finalization_call_context.go	119	runtime/batch/finalize	DM6	open	whole	-
+finalization_driver_binding.go	30	runtime/batch/finalize	DM6	open	split	-
+finalization_gate.go	26	runtime/batch/batchinst	DM5a	open	whole	-
+finalization_holds_assembly.go	32	runtime/batch/finalize	DM6	open	whole	-
+finalization_holds_providers.go	201	runtime/batch/finalize	DM6	open	whole	-
+finalization_hooks.go	61	runtime/batch/finalize	DM6	open	whole	-
+finalization_queue_call.go	96	runtime/batch/finalize	DM6	open	split	-
+finalization_queue_reservation.go	200	runtime/batch/finalize	DM6	open	split	-
+finalization_recompose.go	117	runtime/batch/finalize	DM6	open	whole	-
+finalization_root_bind.go	116	runtime/batch/finalize	DM6	open	whole	-
+finalization_wait.go	254	runtime/batch/finalize	DM6	open	whole	-
+finalization_wiring.go	322	runtime/batch/finalize	DM6	open	split	layout disagreement (dm0b sec9): sprint0 sec2.3 says finalize (older layout row said coord); split pending C1 port
+inline_window.go	40	runtime/batch/batchinst	DM5a	open	whole	-
+loop_detection.go	187	runtime/exec/agentrun	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+mailbox_generation.go	166	runtime/exec/mailbox	DM1	open	whole	-
+mailbox.go	291	runtime/exec/mailbox	DM1	open	whole	-
+mailbox_inject.go	85	runtime/exec/mailbox	DM1	open	whole	-
+mailbox_interrupt.go	383	runtime/exec/mailbox	DM1	open	whole	-
+mailbox_ownership.go	516	runtime/exec/mailbox	DM1	open	whole	-
+mailbox_queue.go	230	runtime/exec/mailbox	DM1	open	whole	-
+mcp_output_access.go	32	runtime/modelkit	DM-W	open	whole	-
+models_component.go	892	runtime/modelkit	DM-W	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+oauth_token_source.go	52	runtime/policy/provauth	DM3	blocked	split	newOAuthBearerClientComponent names *coordinator (dm0b sec4.2)
+peak_hours_request_gate.go	88	runtime/policy/usage	DM3	open	split	-
+prompts.go	45	runtime/coord	DM7	blocked	whole	DM7: depends on DM1-DM6/DM-W; lane order and exact root removals UNPROVEN (scout); 62 two-core test routing unresolved
+queued_call_scope.go	156	runtime/exec/mailbox	DM1	open	split	-
+reaction_component.go	380	runtime/exec/drainctl	DM2	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+role_policy.go	85	runtime/policy/toolwrap	DM4	open	whole	-
+root_role_contract.go	16	runtime/batch/delegation	DM6	open	whole	-
+session_wake_dispatch.go	19	runtime/wakectl	DM-W	open	whole	-
+stall_component.go	34	runtime/exec/drainctl	DM2	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+step_progress.go	180	runtime/exec/turnstep	DM2	open	whole	-
+stream_watchdog.go	69	runtime/exec/watchdog	DM1	open	whole	-
+subagent_drivers_component.go	39	runtime/batch/subagents	DM6	open	whole	-
+subagents_component.go	731	runtime/batch/subagents	DM6	open	whole	-
+supervision.go	766	runtime/exec/watchdog	DM1	open	split	14 coordinator methods retargeted to *supervisionRegistry (EX-0F landed); move waits on DM1
+supervision_testsupport.go	19	runtime/exec/watchdog	DM1	open	whole	-
+tools_component.go	882	runtime/modelkit	DM-W	blocked	whole	EX-0 component: port method names must be exported before move (dm0b sec4.3)
+tool_suggest.go	99	runtime/policy/toolwrap	DM4	open	whole	-
+toolwrap_bridge.go	51	runtime/policy/toolwrap	DM4	open	whole	-
+turn_progress_guard.go	291	runtime/exec/turnstep	DM2	open	whole	-
+usage_glue.go	101	runtime/policy/usage	DM3	open	whole	-
+usage_record.go	132	runtime/policy/usage	DM3	open	split	-
+wake_component.go	89	runtime/wakectl	DM-W	blocked	split	wakeScheduler self-contained but 7 coordinator adapter methods stay in coord (dm0b sec4.2); EX-0 component: port method names must be exported before move (dm0b sec4.3)
+# Summary (computed from the 192 rows above)
+#
+# Destination totals (root production files per destination package)
+# contract/agentcall	1 files	330 lines
+# runtime/wakectl	5 files	211 lines
+# runtime/modelkit	21 files	4258 lines
+# runtime/coord	20 files	6026 lines
+# runtime/exec/agentrun	10 files	4952 lines
+# runtime/exec/turnstep	9 files	1956 lines
+# runtime/exec/drainctl	13 files	1911 lines
+# runtime/exec/mailbox	9 files	2741 lines
+# runtime/exec/watchdog	3 files	854 lines
+# runtime/exec/sessionprompt	3 files	304 lines
+# runtime/exec/responsesws	1 files	65 lines
+# runtime/batch/batchinst	26 files	2968 lines
+# runtime/batch/batchrun	13 files	1688 lines
+# runtime/batch/batchflow	15 files	1745 lines
+# runtime/batch/finalize	12 files	1591 lines
+# runtime/batch/delegation	7 files	472 lines
+# runtime/batch/subagents	6 files	1384 lines
+# runtime/policy/usage	4 files	430 lines
+# runtime/policy/promptcache	2 files	220 lines
+# runtime/policy/callbeat	1 files	613 lines
+# runtime/policy/provauth	4 files	896 lines
+# runtime/policy/clibridge	2 files	323 lines
+# runtime/policy/toolwrap	3 files	235 lines
+# runtime/policy/agenticfetch	2 files	375 lines
+# total	192 files	36548 lines
+# status totals: already landed=1, blocked=42, open=149
+# split totals: split=38 whole=154
+#
+# Comparison with sprint0-split-agent plan counts
+# sec2.3 input counts are HISTORICAL package inputs (sum 253), not counts of today's 192 root files:
+# many plan-source files no longer exist in the root (already moved upstream), and several plan
+# packages count DECLARATION-LEVEL rows pulled from files whose whole-file home is another package.
+# sec2.3 input vs this map (root files today) vs sec2.4 output (consolidated) per package:
+# contract/agentcall	plan-in 8	root-now 1	plan-out 7
+# runtime/wakectl	plan-in 5	root-now 5	plan-out 5
+# runtime/modelkit	plan-in 22	root-now 21	plan-out 6
+# runtime/coord	plan-in 19	root-now 20	plan-out 7
+# runtime/exec/agentrun	plan-in 10	root-now 10	plan-out 7
+# runtime/exec/turnstep	plan-in 15	root-now 9	plan-out 4
+# runtime/exec/drainctl	plan-in 17	root-now 13	plan-out 4
+# runtime/exec/mailbox	plan-in 10	root-now 9	plan-out 4
+# runtime/exec/watchdog	plan-in 5	root-now 3	plan-out 5
+# runtime/exec/sessionprompt	plan-in 5	root-now 3	plan-out 5
+# runtime/exec/responsesws	plan-in 2	root-now 1	plan-out 2
+# runtime/batch/batchinst	plan-in 30	root-now 26	plan-out 7
+# runtime/batch/batchrun	plan-in 18	root-now 13	plan-out 5
+# runtime/batch/batchflow	plan-in 20	root-now 15	plan-out 5
+# runtime/batch/finalize	plan-in 21	root-now 12	plan-out 3
+# runtime/batch/delegation	plan-in 7	root-now 7	plan-out 7
+# runtime/batch/subagents	plan-in 6	root-now 6	plan-out 6
+# runtime/policy/usage	plan-in 8	root-now 4	plan-out 7
+# runtime/policy/promptcache	plan-in 3	root-now 2	plan-out 3
+# runtime/policy/callbeat	plan-in 3	root-now 1	plan-out 3
+# runtime/policy/provauth	plan-in 7	root-now 4	plan-out 7
+# runtime/policy/clibridge	plan-in 2	root-now 2	plan-out 2
+# runtime/policy/toolwrap	plan-in 8	root-now 3	plan-out 7
+# runtime/policy/agenticfetch	plan-in 2	root-now 2	plan-out 2
+#
+# Root files counted by more than one plan package (declaration-level only rows):
+#   agent.go (agentcall + exec/agentrun), coordinator.go (agentcall + runtime/coord),
+#   credentials.go (agentcall + runtime/coord + exec/agentrun),
+#   agent_codex_recovery.go (agentcall + provauth), agent_control.go (agentcall + agentrun),
+#   batch_question_route.go (agentcall + batchflow), batch_install_policy.go (agentcall + batchinst),
+#   coordinator_summarize.go (agentcall + modelkit), coordinator_reaction_source.go (agentcall + drainctl),
+#   delegation_role.go (agentcall + delegation)
+# Declaration-level-only plan inputs whose donor root files are counted elsewhere:
+#   methods pulled to exec/agentrun from drain_attempt.go, queued_call_scope.go, usage_record.go,
+#   peak_hours_request_gate.go, turn_arbiter.go (no longer in root), credentials.go;
+#   methods pulled to runtime/coord glue from batch_cutover_facts.go, batch_cutover_rerun.go,
+#   batch_held_question_route.go, batch_question_rebuild.go, cli_active_work.go,
+#   finalization_queue_call.go, finalization_queue_reservation.go, delegation_role_calls.go,
+#   coordinator_subagents.go, batch_rehome_coord_runtime.go, finalization_wiring.go, await_tasks_era.go;
+#   types pulled to agentcall also from provider_retry.go and turn_stall_policy.go (no longer in root).
+# Plan glue OUTPUT files that are not root inputs: finalize_glue.go, drain_glue.go, cred_glue.go,
+#   cli_glue.go, misc_glue.go (batch_glue.go already exists in the root).
+# 17 root files have no sec2.3 row (dm0b sec9.3): 16 EX-0 component/glue files
+#   (arbiter_component, arbiter_state_component, background_component, drain_call_component,
+#   drain_component, drain_policy_component, models_component, reaction_component, role_policy,
+#   stall_component, subagent_drivers_component, subagents_component, tools_component,
+#   toolwrap_bridge, usage_glue, wake_component) plus contract_bridge.go (agentcall alias remnant).
+# Disagreement resolutions (dm0b sec9): batch_scope_recovery.go and batch_cutover_facts.go -> declarations
+#   to coord per R1/R4, file to batch family per sprint0 sec2.3; finalization_wiring.go -> batch/finalize
+#   per sprint0 sec2.3 (older layout row said coord); finalization_queue_call.go -> batch/finalize;
+#   coordinator_providers.go and coordinator_model_cache.go -> runtime/modelkit (sprint0 sec2.3 and scout
+#   agree; the dm0b 'layout' that said coord is the superseded 2026-11-16 TSV); coordinator_drain_policy.go
+#   -> runtime/exec/drainctl (split per scout receiver inventory).
