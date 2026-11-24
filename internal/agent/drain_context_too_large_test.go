@@ -37,9 +37,9 @@ func (f *attemptFixture) accountFailedDrain(ctx context.Context, turnErr error) 
 	batchSnap, batchCaptured := a1CaptureDebtSnapshot(f.t, f, ctx)
 	require.False(f.t, batchSnap.Empty())
 	f.coord.accountDrainAttempt(ctx, &drainAttempt{
-		sessionID: f.sessID, snapshot: batchSnap,
-		batchSnapshot: batchSnap, batchCaptured: batchCaptured,
-		outcome: drainAttempted,
+		SessionID: f.sessID, Snapshot: batchSnap,
+		BatchSnapshot: batchSnap, BatchCaptured: batchCaptured,
+		Outcome: drainAttempted,
 	}, turnErr)
 }
 

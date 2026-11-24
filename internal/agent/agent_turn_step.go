@@ -351,23 +351,6 @@ func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fan
 	}
 }
 
-// stepToolCapabilities reports what this step's tool set allows: editing files
-// and delegating to a sub-agent. Read from the set's own names, since a stale
-// session prompt cannot make a tool appear (§4 of the in-turn plan).
-func stepToolCapabilities(set []fantasy.AgentTool) (canEdit, canDelegate bool) {
-	for _, tool := range set {
-		switch tool.Info().Name {
-		case tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName,
-			tools.FSWriteToolName, tools.FSReplaceToolName, tools.FSWriteLinesToolName,
-			tools.FSDeleteToolName:
-			canEdit = true
-		case AgentToolName:
-			canDelegate = true
-		}
-	}
-	return canEdit, canDelegate
-}
-
 // recordStepProgress folds this step's calls into the in-turn guard's state
 // (§1.2): each call is classified against the coverage captured at the STEP'S
 // START (the guard snapshot), never against the live map, and the step's own
@@ -422,7 +405,7 @@ func (ts *turnStream) recordStepProgress(stepResult fantasy.StepResult) {
 // ran, so it started nothing -- and a text-only or neutral-only step is
 // neither.
 func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
-	if ts.att == nil || ts.att.closed {
+	if ts.att == nil || ts.att.Closed {
 		return
 	}
 	calls := make(map[string]fantasy.ToolCallContent, len(stepResult.Content))
@@ -466,16 +449,16 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			}
 			switch class {
 			case stepCallWait:
-				ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+				ts.att.ChainBatchRoots = append(ts.att.ChainBatchRoots, call.ToolCallID)
 			case stepCallRefused, stepCallNeutral, stepCallNoWrite:
 				// started nothing this leg may claim
 			default:
 				if repeated {
 					// an idle claim: this leg launched nothing new it may
 					// count as progress
-					ts.att.chainBatchRoots = append(ts.att.chainBatchRoots, call.ToolCallID)
+					ts.att.ChainBatchRoots = append(ts.att.ChainBatchRoots, call.ToolCallID)
 				} else {
-					ts.att.chainProgress = true
+					ts.att.ChainProgress = true
 				}
 			}
 			continue
@@ -490,18 +473,18 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		}
 		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && !repeated {
 			if class != stepCallWait {
-				ts.att.chainProgress = true
+				ts.att.ChainProgress = true
 				continue
 			}
 		}
 		if repeated {
-			ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, meta.ClaimID)
+			ts.att.ChainIdleClaims = append(ts.att.ChainIdleClaims, meta.ClaimID)
 			continue
 		}
 		switch class {
 		case stepCallWait:
 			if meta.Async && meta.ClaimID != "" {
-				ts.att.chainIdleClaims = append(ts.att.chainIdleClaims, meta.ClaimID)
+				ts.att.ChainIdleClaims = append(ts.att.ChainIdleClaims, meta.ClaimID)
 			}
 		case stepCallRefused, stepCallNeutral, stepCallNoWrite:
 			// a guard refusal is neither progress nor a claim: it started nothing
@@ -509,7 +492,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			if ts.a != nil && ts.a.coord != nil {
 				ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, "")
 			}
-			ts.att.chainProgress = true
+			ts.att.ChainProgress = true
 		}
 	}
 }
@@ -740,7 +723,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 				"max", ts.call.MaxCost,
 			)
 			if ts.att != nil {
-				ts.att.capAbort.Store(true)
+				ts.att.CapAbort.Store(true)
 			}
 			if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 				cancelFn()
@@ -764,7 +747,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 			"max", ts.call.MaxTokens,
 		)
 		if ts.att != nil {
-			ts.att.capAbort.Store(true)
+			ts.att.CapAbort.Store(true)
 		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()

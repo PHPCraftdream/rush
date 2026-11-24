@@ -81,7 +81,7 @@ func TestDrainGate_FreeDormancyReopensOnNewerFact(t *testing.T) {
 		require.NoError(t, f.wake(ctx, true)) // each fact is newer than the last pace
 	}
 	require.EqualValues(t, drainDormantStreak, launches.runs.Load())
-	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind, "three no-turn Drains: dormant")
+	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).Kind, "three no-turn Drains: dormant")
 
 	for range 3 {
 		f.waitReleases() // the attempt must finish and pace the gate first
@@ -120,7 +120,7 @@ func TestDrainGate_PaidDormancy_NewFactDoesNotReopen(t *testing.T) {
 	}
 	f.waitDrainIdle()
 	require.EqualValues(t, 3, f.requests.Load(), "three paid attempts, the close keeps failing")
-	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).kind)
+	require.Equal(t, drainStuck, f.coord.drainPermitted(ctx, f.sessID, false).Kind)
 
 	f.seedDebt(ctx, "call-2", false)
 	f.ensureDrainDriver()
@@ -181,7 +181,7 @@ func TestDrainAttempt_OnlyRowsAtKAreClosed(t *testing.T) {
 	require.Len(t, texts, 1)
 	require.Contains(t, texts[0], "call-A")
 	require.NotContains(t, texts[0], "call-B", "the marker names only the closed rows")
-	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "rows remain: the gate stays paced")
+	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).Kind, "rows remain: the gate stays paced")
 
 	for want := int64(2); want <= 3; want++ {
 		f.coord.arb.resetGate(f.sessID) // the retry pause elapses

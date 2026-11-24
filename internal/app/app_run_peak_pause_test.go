@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/stretchr/testify/assert"
 )
 
-func peakPauseFixture() *agent.PeakHoursError {
-	return &agent.PeakHoursError{
+func peakPauseFixture() *usage.PeakHoursError {
+	return &usage.PeakHoursError{
 		ProviderID: "zai",
 		Start:      "07:00",
 		End:        "11:00",

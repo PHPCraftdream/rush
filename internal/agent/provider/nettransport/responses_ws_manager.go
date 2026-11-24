@@ -52,6 +52,13 @@ type ResponsesWSLease struct {
 
 const ResponsesWSPlannedMaxAge = 20 * time.Minute
 
+// responsesWSIdleRetire bounds how long a finished connection may wait for
+// the next exchange. An idle connection is not read, so the provider's
+// keepalive pings go unanswered and it closes the socket (observed: close
+// 1011 "keepalive ping timeout" read right after a send on a reused
+// connection); a connection is retired before that can happen.
+const responsesWSIdleRetire = 15 * time.Second
+
 func NewResponsesWSManager(parent context.Context, limit int) *ResponsesWSManager {
 	if limit <= 0 {
 		limit = 16
@@ -241,6 +248,10 @@ func (m *ResponsesWSManager) removeLocked(key [32]byte, e *responsesWSEntry) {
 		e.cancel()
 	}
 	if e.conn != nil {
+		if e.busy {
+			// Closing a leased connection fails its in-flight exchange.
+			slog.Warn("responses websocket retired during an active exchange", "protocol", e.protocol, "age_seconds", max(0, m.now().Sub(e.created).Seconds()), "send_state", e.conn.State().String())
+		}
 		slog.Debug("responses websocket retired", "protocol", e.protocol, "age_seconds", max(0, m.now().Sub(e.created).Seconds()), "planned_seconds", e.maxAge.Seconds(), "send_state", e.conn.State().String(), "learning_reason", "not_enabled")
 		_ = e.conn.Close()
 		m.occupancy--
@@ -272,7 +283,7 @@ func (m *ResponsesWSManager) sweepLocked(now time.Time) {
 	}
 	for key, e := range m.entries {
 		revoked := e.valid != nil && !e.valid()
-		if revoked || (!e.busy && (now.Sub(e.used) >= 90*time.Second || now.Sub(e.created) >= e.maxAge || e.conn == nil || !e.conn.Reusable())) {
+		if revoked || (!e.busy && (now.Sub(e.used) >= responsesWSIdleRetire || now.Sub(e.created) >= e.maxAge || e.conn == nil || !e.conn.Reusable())) {
 			m.removeLocked(key, e)
 		}
 	}

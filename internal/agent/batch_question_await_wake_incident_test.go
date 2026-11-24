@@ -61,11 +61,11 @@ func TestChildQuestionDebtBreaksAwaitSleepForAnyAndAll(t *testing.T) {
 			if mode == "all" {
 				require.False(t, facts.SleepHolds(true, batchflow.BatchSleepBreakers{}), "question debt breaks the all-sleep")
 				verdict := coord.drainPolicy(env.ctx, env.sessionID, false)
-				require.Equal(t, drainAllow, verdict.kind, "owner wake is re-evaluated rather than deferred by all-sleep")
+				require.Equal(t, drainAllow, verdict.Kind, "owner wake is re-evaluated rather than deferred by all-sleep")
 			} else {
 				require.False(t, facts.SleepHolds(false, batchflow.BatchSleepBreakers{}), "any-mode has no all-sleep hold")
 				verdict := coord.drainPolicy(env.ctx, env.sessionID, false)
-				require.Equal(t, drainAllow, verdict.kind, "owner wake re-evaluates the any-mode wait")
+				require.Equal(t, drainAllow, verdict.Kind, "owner wake re-evaluates the any-mode wait")
 			}
 			pulled, err := NewBatchCutoverNodeFacts(env.store, env.live, env.conn).PullPendingSessionNotices(
 				env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)

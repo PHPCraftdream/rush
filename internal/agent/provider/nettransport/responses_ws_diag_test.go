@@ -155,3 +155,121 @@ func TestResponsesWSConnReportsFrameDecisionAndLogsParityFields(t *testing.T) {
 	require.NotContains(t, logs.String(), "conversation-test", "the session is reported only as a hash")
 	require.Contains(t, logs.String(), "responses websocket exchange completed")
 }
+
+func TestResponsesWSFailureLogsHiddenCauseAtWarn(t *testing.T) {
+	logs := diagCapture(t)
+	conn := newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	_, err := conn.ReceiveRaw(context.Background())
+	require.EqualError(t, err, "responses websocket: receive failed (possibly_sent)", "the returned error keeps hiding the cause")
+	var entry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded))
+		if decoded["msg"] == "responses websocket exchange failed" {
+			entry = decoded
+		}
+	}
+	require.NotNil(t, entry)
+	require.Equal(t, "WARN", entry["level"])
+	require.Equal(t, "EOF", entry["cause"])
+	require.Equal(t, "receive", entry["stage"])
+	require.Equal(t, false, entry["closed_locally"])
+	require.GreaterOrEqual(t, entry["since_sent_ms"], float64(0))
+
+	logs.Reset()
+	canceled := newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128)
+	require.NoError(t, canceled.BeginExchange())
+	require.NoError(t, canceled.SendRaw(context.Background(), []byte(`{}`)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = canceled.ReceiveRaw(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Contains(t, logs.String(), "responses websocket exchange failed")
+	require.NotContains(t, logs.String(), `"level":"WARN"`, "a caller cancellation is not a transport fault")
+}
+
+func TestResponsesWSManagerWarnsWhenRetiringALeasedConnection(t *testing.T) {
+	logs := diagCapture(t)
+	m := &ResponsesWSManager{now: time.Now, entries: make(map[[32]byte]*responsesWSEntry)}
+	idle := &responsesWSEntry{conn: newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128), conversation: "c", protocol: "p", created: time.Now()}
+	m.entries[[32]byte{1}] = idle
+	m.occupancy = 1
+	m.InvalidateConversation("c")
+	require.NotContains(t, logs.String(), "retired during an active exchange")
+	busy := &responsesWSEntry{conn: newResponsesWSTestConn(&responsesWSTestWire{}, 64, 128), conversation: "c", protocol: "p", created: time.Now(), busy: true}
+	m.entries[[32]byte{2}] = busy
+	m.occupancy = 1
+	m.InvalidateConversation("c")
+	require.Contains(t, logs.String(), "retired during an active exchange")
+	require.Contains(t, logs.String(), `"level":"WARN"`)
+}
+
+func TestResponsesWSFailureLogsIdleTimeBeforeSend(t *testing.T) {
+	logs := diagCapture(t)
+	conn := newResponsesWSTestConn(&responsesWSTestWire{read: [][]byte{[]byte(`{}`)}}, 64, 128)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	_, err := conn.ReceiveRaw(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, conn.MarkCompleted())
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	_, err = conn.ReceiveRaw(context.Background())
+	require.Error(t, err)
+	var failed map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded))
+		if decoded["msg"] == "responses websocket exchange failed" {
+			failed = decoded
+		}
+	}
+	require.NotNil(t, failed)
+	require.GreaterOrEqual(t, failed["idle_before_send_ms"], float64(20), "the reused connection's idle time is reported")
+}
+
+type responsesWSCloseWire struct {
+	responsesWSTestWire
+	delay  time.Duration
+	frames int
+}
+
+func (w *responsesWSCloseWire) ReadMessage() (int, []byte, error) {
+	if w.frames > 0 {
+		w.frames--
+		return websocket.TextMessage, []byte(`{}`), nil
+	}
+	time.Sleep(w.delay)
+	return 0, nil, &websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "unexpected EOF"}
+}
+
+func TestResponsesWSClosedBeforeAnyFrameNeedsAProviderCloseInsideTheWindow(t *testing.T) {
+	window := 40 * time.Millisecond
+	receiveFailure := func(t *testing.T, wire *responsesWSCloseWire, receives int) *ResponsesWSError {
+		conn := newResponsesWSTestConn(wire, 64, 128)
+		require.NoError(t, conn.BeginExchange())
+		require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+		var err error
+		for range receives {
+			_, err = conn.ReceiveRaw(context.Background())
+		}
+		var failed *ResponsesWSError
+		require.ErrorAs(t, err, &failed)
+		return failed
+	}
+	require.True(t, receiveFailure(t, &responsesWSCloseWire{}, 1).ClosedBeforeAnyFrame(window), "an immediate provider close before any frame")
+	require.False(t, receiveFailure(t, &responsesWSCloseWire{delay: 4 * window}, 1).ClosedBeforeAnyFrame(window), "a close after the window is not a dead connection found at send time")
+	require.False(t, receiveFailure(t, &responsesWSCloseWire{frames: 1}, 2).ClosedBeforeAnyFrame(window), "a close after a frame arrived is never replayable")
+
+	conn := newResponsesWSTestConn(&responsesWSCloseWire{}, 64, 128)
+	require.NoError(t, conn.BeginExchange())
+	require.NoError(t, conn.SendRaw(context.Background(), []byte(`{}`)))
+	require.NoError(t, conn.Close())
+	_, err := conn.ReceiveRaw(context.Background())
+	var failed *ResponsesWSError
+	require.ErrorAs(t, err, &failed)
+	require.False(t, failed.ClosedBeforeAnyFrame(window), "a local close is not a provider close")
+}

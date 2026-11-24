@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,8 +67,8 @@ func TestCheckPeakHoursWeeklyPolicyRefusesInWindow(t *testing.T) {
 	require.Error(t, err, "a window covering now must refuse")
 	require.ErrorIs(t, err, errProviderPeakHours, "refusal must wrap errProviderPeakHours")
 
-	var pe *PeakHoursError
-	require.ErrorAs(t, err, &pe, "refusal must be a *PeakHoursError")
+	var pe *usage.PeakHoursError
+	require.ErrorAs(t, err, &pe, "refusal must be a *usage.PeakHoursError")
 	assert.Equal(t, "weekly-peak", pe.ProviderID)
 	assert.Equal(t, msg, pe.Message, "the policy message rides through")
 	assert.Equal(t, "UTC+05:00", pe.Timezone)
@@ -112,7 +113,7 @@ func TestCheckPeakHoursWeeklyExpiredPauseRefuses(t *testing.T) {
 	require.Error(t, err, "after the pause expires the window must refuse again")
 	require.ErrorIs(t, err, errProviderPeakHours)
 
-	var pe *PeakHoursError
+	var pe *usage.PeakHoursError
 	require.ErrorAs(t, err, &pe)
 	assert.Equal(t, classTerminal, classifyProviderError(err),
 		"an expired-pause window refusal must classify as terminal")
@@ -143,7 +144,7 @@ func TestCheckPeakHoursWeeklyPauseAndWindow(t *testing.T) {
 		ph.Policy.PausedUntil = nowLoc.Add(-time.Hour).Format(time.RFC3339)
 		err := checkPeakHours(config.ProviderConfig{ID: "both-peak", PeakHours: ph})
 		require.Error(t, err)
-		var pe *PeakHoursError
+		var pe *usage.PeakHoursError
 		require.ErrorAs(t, err, &pe)
 		endLoc := time.Now().In(loc).Add(time.Hour)
 		require.WithinDuration(t, endLoc, pe.ReopensAt, 2*time.Minute,
@@ -189,7 +190,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 
 	t.Run("in-window with timezone appends the timezone", func(t *testing.T) {
 		t.Parallel()
-		err := &PeakHoursError{
+		err := &usage.PeakHoursError{
 			ProviderID: "prov-x",
 			Start:      "09:00",
 			End:        "18:00",
@@ -206,7 +207,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 
 	t.Run("in-window without timezone has no timezone suffix", func(t *testing.T) {
 		t.Parallel()
-		err := &PeakHoursError{
+		err := &usage.PeakHoursError{
 			ProviderID: "prov-x",
 			Start:      "09:00",
 			End:        "18:00",
@@ -220,7 +221,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 
 	t.Run("guidance extracts ReopensAt from a wrapped error", func(t *testing.T) {
 		t.Parallel()
-		base := &PeakHoursError{
+		base := &usage.PeakHoursError{
 			ProviderID: "prov-x",
 			Start:      "09:00",
 			End:        "18:00",
@@ -233,7 +234,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 
 	t.Run("zero ReopensAt omits the timed resume", func(t *testing.T) {
 		t.Parallel()
-		err := &PeakHoursError{ProviderID: "prov-x", Start: "00:00", End: "24:00"}
+		err := &usage.PeakHoursError{ProviderID: "prov-x", Start: "00:00", End: "24:00"}
 		out := PeakHoursGuidance(err)
 		assert.Contains(t, out, "do not schedule a timed resume")
 		assert.NotContains(t, out, "0001", "the zero time must never be rendered")
@@ -248,7 +249,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 
 	t.Run("errors stay recognisable through the sentinel", func(t *testing.T) {
 		t.Parallel()
-		base := &PeakHoursError{ProviderID: "prov-x"}
+		base := &usage.PeakHoursError{ProviderID: "prov-x"}
 		assert.True(t, errors.Is(base, errProviderPeakHours))
 	})
 }

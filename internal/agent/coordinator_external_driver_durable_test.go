@@ -165,9 +165,9 @@ func TestSessionDrainPolicy_DriverMarkerUnreadable(t *testing.T) {
 			f.claimAndFinish(t, ctx, "call-1")
 
 			v := f.coord.drainPolicy(ctx, f.sessID, false)
-			require.Equal(t, drainDeferred, v.kind)
-			require.True(t, v.recheck)
-			require.Error(t, v.err)
+			require.Equal(t, drainDeferred, v.Kind)
+			require.True(t, v.Recheck)
+			require.Error(t, v.Err)
 
 			require.NoError(t, f.coord.wakeSession(ctx, f.sessID, true))
 			require.Zero(t, f.requests.Load(), "an unreadable policy must never start a turn")

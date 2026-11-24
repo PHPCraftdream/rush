@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -70,6 +71,7 @@ type RunResult struct {
 	// last assistant message. Lets the orchestrator recover detail
 	// the parent over-summarised away.
 	SubAgentOutputs []SubAgentOutput `json:"sub_agent_outputs,omitempty"`
+	Recovered       bool             `json:"recovered,omitempty"`
 	Error           string           `json:"error,omitempty"`
 	// Warnings are non-fatal observations about the run that an
 	// orchestrator should know about even when exit_reason looks happy.
@@ -285,7 +287,7 @@ func BuildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// exit stays non-zero, --allow-peak-hours stays the only bypass. Only
 	// a bare/generic reason is overridden: an explicit canceled or a
 	// model-level finish keeps its own classification.
-	var peakErr *agent.PeakHoursError
+	var peakErr *usage.PeakHoursError
 	if errors.As(err, &peakErr) && (reason == "" || reason == "error") {
 		reason = "peak_hours"
 		// The refusal is the run's outcome and there is no model answer
@@ -535,7 +537,7 @@ func synthesiseEmptyFinalSummary(toolCounts map[string]int) string {
 // pause rather than an empty answer. Error stays the authoritative,
 // matchable refusal text ("is in peak hours ("); this is the readable
 // echo of it.
-func peakPauseFinalText(sessionID string, pe *agent.PeakHoursError) string {
+func peakPauseFinalText(sessionID string, pe *usage.PeakHoursError) string {
 	var b strings.Builder
 	if pe.Start != "" || pe.End != "" {
 		fmt.Fprintf(&b, "Paused: provider %s refused this turn — peak hours %s–%s", pe.ProviderID, pe.Start, pe.End)

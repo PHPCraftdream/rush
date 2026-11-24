@@ -25,7 +25,7 @@ import (
 // pre-check the debt -- so nothing is seeded here.
 func policyAllowed(c *coordinator, ctx context.Context, sessionID string) (bool, error) {
 	v := c.drainPolicy(ctx, sessionID, false)
-	return v.kind == drainAllow, v.err
+	return v.Kind == drainAllow, v.Err
 }
 
 func (f *attemptFixture) wake(ctx context.Context, fact bool) error {
@@ -348,10 +348,10 @@ func TestDrainPolicy_ReadErrorFailsClosed(t *testing.T) {
 
 			v := f.coord.drainPolicy(ctx, f.sessID, false)
 
-			require.Equal(t, drainDeferred, v.kind, "an unreadable policy input must never allow a Drain")
-			require.True(t, v.recheck, "and asks for a re-check tick")
-			require.Error(t, v.err)
-			require.Equal(t, tc.reason, v.reason, "the verdict names the input whose read failed")
+			require.Equal(t, drainDeferred, v.Kind, "an unreadable policy input must never allow a Drain")
+			require.True(t, v.Recheck, "and asks for a re-check tick")
+			require.Error(t, v.Err)
+			require.Equal(t, tc.reason, v.Reason, "the verdict names the input whose read failed")
 		})
 	}
 }

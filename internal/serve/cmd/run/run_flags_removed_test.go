@@ -3,14 +3,25 @@ package run
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRunPermissionFlagsRemoved pins the removal of the rush run
-// permission CLI flags: neither registration nor parsing may accept
-// them again. Revert-check: if any of the three flags is re-registered
-// on runCmd (runCmd.Flags().Bool/StringSlice in run.go's init), Lookup
-// returns a non-nil flag and Parse succeeds, so both assertions fail.
+func TestRunReportRetryFlagIsWired(t *testing.T) {
+	cmd := NewRunCmd()
+	flag := cmd.Flags().Lookup("report-retry")
+	require.NotNil(t, flag)
+	require.Equal(t, "1", flag.DefValue)
+	require.NoError(t, cmd.Flags().Parse([]string{"--report-retry", "0"}))
+	var overrides app.RunOverrides
+	require.NoError(t, applyReportRetryOverride(cmd, &overrides))
+	require.Zero(t, overrides.ReportRetries, "the CLI flag value passed into RunOverrides must be zero")
+}
+
+// TestRunPermissionFlagsRemoved pins the removal of the rush run permission
+// CLI flags: neither registration nor parsing may accept them again. Revert-check:
+// if any removed flag is re-registered, Lookup returns a non-nil flag and parsing
+// accepts it, so the assertions fail.
 func TestRunPermissionFlagsRemoved(t *testing.T) {
 	cmd := NewRunCmd()
 	for _, name := range []string{"restrict-run", "allow-bash", "allow-tool"} {

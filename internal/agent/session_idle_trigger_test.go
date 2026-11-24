@@ -29,6 +29,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/stretchr/testify/require"
 )
 
@@ -159,7 +160,7 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 
 	// Arm a delegation while the driver is genuinely busy: the live batch
 	// child-link is what a later wake re-derives the release from.
-	seedBatchDelegation(t, conn, parentSession, parentCall, childSession, AgentToolName, "running", false)
+	seedBatchDelegation(t, conn, parentSession, parentCall, childSession, modelkit.AgentToolName, "running", false)
 	inRecheck := func() bool {
 		coord.recheckMu.Lock()
 		defer coord.recheckMu.Unlock()

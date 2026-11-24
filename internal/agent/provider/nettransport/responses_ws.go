@@ -87,6 +87,18 @@ type ResponsesWSError struct {
 	state ResponsesWSSendState
 	stage string
 	cause error
+	// peerClosed marks a close frame sent by the provider; sinceSent is the
+	// time from the send to this failure (-1 when nothing was sent).
+	peerClosed bool
+	sinceSent  time.Duration
+}
+
+// ClosedBeforeAnyFrame reports a provider-initiated close that arrived within
+// window of the send and before any frame of the exchange: a dead connection
+// found at send time. The request produced nothing a caller could have seen,
+// so replaying it once on a fresh connection has no client-visible effect.
+func (e *ResponsesWSError) ClosedBeforeAnyFrame(window time.Duration) bool {
+	return e.stage == "receive" && e.state == ResponsesWSSendPossiblySent && e.peerClosed && e.sinceSent >= 0 && e.sinceSent <= window
 }
 
 func (e *ResponsesWSError) Error() string {
@@ -158,6 +170,8 @@ type ResponsesWSConn struct {
 	closeOnce        sync.Once
 	created          time.Time
 	sentAt           time.Time
+	completedAt      time.Time
+	idleBeforeSendMS int64
 	exchanges        int
 	deltaExchanges   int
 	fullBytesTotal   int64
@@ -431,6 +445,10 @@ func (c *ResponsesWSConn) SendRaw(ctx context.Context, frame []byte) error {
 	}
 	c.frameInfo = info
 	c.sentAt = time.Now()
+	c.idleBeforeSendMS = -1
+	if !c.completedAt.IsZero() {
+		c.idleBeforeSendMS = c.sentAt.Sub(c.completedAt).Milliseconds()
+	}
 	c.fullBytesTotal += int64(info.FullBytes)
 	c.wireBytesTotal += int64(info.WireBytes)
 	if info.Mode == ResponsesWSFrameDelta {
@@ -511,6 +529,7 @@ func (c *ResponsesWSConn) MarkCompleted() error {
 	c.state = ResponsesWSCompleted
 	c.active = false
 	c.hasCompleted = true
+	c.completedAt = time.Now()
 	if debugEnabled() {
 		slog.Debug("responses websocket exchange completed", append(c.diagAttrsLocked(), "exchange_ms", time.Since(c.sentAt).Milliseconds())...)
 	}
@@ -551,6 +570,16 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 		state = c.state
 	}
 	attrs := c.diagAttrsLocked()
+	closedBefore := c.closed
+	idleMS := c.idleBeforeSendMS
+	sinceSent := time.Duration(-1)
+	if !c.sentAt.IsZero() {
+		sinceSent = time.Since(c.sentAt)
+	}
+	sinceSentMS := sinceSent.Milliseconds()
+	if sinceSent < 0 {
+		sinceSentMS = -1
+	}
 	c.stateMu.Unlock()
 	c.deltaMu.Lock()
 	c.delta.clear()
@@ -561,8 +590,14 @@ func (c *ResponsesWSConn) fail(stage string, state ResponsesWSSendState, cause e
 	if errors.As(cause, &closeError) {
 		closeStatus = closeError.Code
 	}
-	slog.Debug("responses websocket exchange failed", append(attrs, "stage", stage, "send_state", state.String(), "close_status", closeStatus)...)
-	return &ResponsesWSError{state: state, stage: stage, cause: cause}
+	attrs = append(attrs, "stage", stage, "send_state", state.String(), "close_status", closeStatus)
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		slog.Debug("responses websocket exchange failed", attrs...)
+	} else {
+		// The returned error hides the cause by design; the log keeps it.
+		slog.Warn("responses websocket exchange failed", append(attrs, "cause", diagCause(cause), "cause_type", fmt.Sprintf("%T", cause), "closed_locally", closedBefore, "since_sent_ms", sinceSentMS, "idle_before_send_ms", idleMS)...)
+	}
+	return &ResponsesWSError{state: state, stage: stage, cause: cause, peerClosed: closeError != nil && !closedBefore, sinceSent: sinceSent}
 }
 
 func ioDeadline(ctx context.Context, timeout time.Duration) time.Time {
@@ -749,6 +784,18 @@ func (c *ResponsesWSConn) frameAttrsLocked() []any {
 // session is reported as a hash only; callers hold stateMu.
 func (c *ResponsesWSConn) diagAttrsLocked() []any {
 	return append([]any{"protocol", c.protocol, "session_hash", session.HashID(c.owner.ConversationID)}, c.frameAttrsLocked()...)
+}
+
+// diagCause bounds the cause text kept in the log.
+func diagCause(cause error) string {
+	if cause == nil {
+		return ""
+	}
+	text := cause.Error()
+	if len(text) > 300 {
+		text = text[:300]
+	}
+	return text
 }
 
 func debugEnabled() bool {

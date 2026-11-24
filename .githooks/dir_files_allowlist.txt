@@ -44,7 +44,9 @@ internal/agent/tools/mcp 58
 # 253 -> 251: merge app_run_session.go and app_run_drain_pending.go into app_run_gates.go.
 # 251 -> 249: stage B merges app_run_async_ended.go and app_run_async_exit.go into app_run_async_fsm.go.
 # 249 -> 245: stage C merges four async-wait implementation files into app_run_async_wait.go.
-internal/app 245
+# 245 -> 244: Task #14 third pass merges app_run_reviewer_drain_identity.go into app_run_reviewer_outcome.go.
+# 244 -> 242: Task #14 third pass merges sub_agents.go and app_run_quota.go into existing same-group files.
+internal/app 242
 # 303 -> 304: +1 internal/config/models_integrity.go from the 0b-3.1 seam lane (deliberate, temporary; only down from here).
 # 304 -> 309: the same +7/-2 files of the 0b-3.2 seam lane (deliberate, temporary; only down from here).
 # D2-3 catalogsrc: 4 production + 4 test files leave the root for internal/config/providers/catalogsrc (213 -> 205 files).
@@ -64,9 +66,8 @@ internal/config 197
 internal/serve/server/server 130
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 33
-# MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.
-# The design's MV3/EX satellite splits reduce this count per docs/plans/2026-11-15-sprint0-split-session.md §2.2.
-internal/session/service 55
+# EX4 service has 43 direct Go files (22 production, 21 tests); components is not counted here; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
+internal/session/service 43
 internal/session/jobbatch 43
 internal/session/jobbatch/lab 45
 internal/store/message 26

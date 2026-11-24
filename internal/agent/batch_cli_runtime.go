@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -89,7 +90,7 @@ func validateBatchOwnerPayloads(owner string, spec jobbatch.Spec) error {
 		}
 		return batchflow.OwnerLeafFacts{
 			SessionID:            p.SessionID,
-			AgentTool:            p.Tool == AgentToolName,
+			AgentTool:            p.Tool == modelkit.AgentToolName,
 			Input:                p.Input,
 			SelectedRoleContract: p.SelectedRoleContract,
 		}, nil

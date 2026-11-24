@@ -162,16 +162,16 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	debtRows, err := env.store.BatchReactionPendingInclusiveDebtRows(env.ctx, env.sessionID)
 	require.NoError(t, err)
 	require.Len(t, debtRows.Nodes, 1, "the settled root is the one node debt row")
-	att := &drainAttempt{chainBatchRoots: []string{"call-chain"}, batchSnapshot: session.BatchDebtSnapshot{Owner: env.sessionID, Nodes: debtRows.Nodes}}
+	att := &drainAttempt{ChainBatchRoots: []string{"call-chain"}, BatchSnapshot: session.BatchDebtSnapshot{Owner: env.sessionID, Nodes: debtRows.Nodes}}
 	for i := 0; i < 3; i++ {
 		coord.arb.chainLink(env.sessionID, att, session.BatchDebtSnapshot{})
 	}
 	require.GreaterOrEqual(t, coord.arb.chainLinksOf(env.sessionID), 3)
 
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, reactionChainReason, pv.reason,
+	require.Equal(t, reactionChainReason, pv.Reason,
 		"the chain guard defers on node-completion debt the chain launched")
-	t.Logf("ChainGuard defer reason=%q", pv.reason)
+	t.Logf("ChainGuard defer reason=%q", pv.Reason)
 
 	// A NON-completion row breaks the chain ownership: a pending child
 	// question in the rows makes rule 5's rows.Notices==0 condition fail,
@@ -183,7 +183,7 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	})
 	require.NoError(t, err)
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.NotEqual(t, reactionChainReason, pv.reason,
+	require.NotEqual(t, reactionChainReason, pv.Reason,
 		"a mixed-in question row breaks the chain ownership")
 
 	// An UNRELATED completion (a root the chain never launched) is NOT
@@ -195,7 +195,7 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	require.Eventually(t, func() bool { return env.debtExists() },
 		5*time.Second, 5*time.Millisecond, "the unrelated root's debt committed")
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.NotEqual(t, reactionChainReason, pv.reason,
+	require.NotEqual(t, reactionChainReason, pv.Reason,
 		"an unrelated completion is not chain-owned: no defer")
 
 	// Without node debt (settle it away) there is no defer.
@@ -205,7 +205,7 @@ func TestBatchCutoverChainGuardON(t *testing.T) {
 	_, err = facts.SettleReactedFailedWithMarker(env.ctx, env.sessionID, snapB, "chain probe")
 	require.NoError(t, err)
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.NotEqual(t, reactionChainReason, pv.reason, "no node debt: no chain defer")
+	require.NotEqual(t, reactionChainReason, pv.Reason, "no node debt: no chain defer")
 }
 
 // ---- Fix 6a proof: supervision's scope input and summary are facts-driven

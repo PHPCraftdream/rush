@@ -55,11 +55,11 @@ func TestBatchGateRefusalUntouchedON(t *testing.T) {
 	require.False(t, bsnap.Empty(), "the delivered root is visible batch debt")
 
 	att := &drainAttempt{
-		sessionID:     env.sessionID,
-		outcome:       drainNoTurn,
-		commitNo:      drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
-		batchSnapshot: bsnap,
-		batchCaptured: true,
+		SessionID:     env.sessionID,
+		Outcome:       drainNoTurn,
+		CommitNo:      drainctl.DrainVerdict{Kind: drainPaced, Recheck: true, Reason: "retry pause after an unreacted attempt"},
+		BatchSnapshot: bsnap,
+		BatchCaptured: true,
 	}
 	coord.accountDrainAttempt(env.ctx, att, nil)
 
@@ -74,8 +74,8 @@ func TestBatchGateRefusalUntouchedON(t *testing.T) {
 	require.True(t, gate.RetryAt.After(time.Now()), "the pause is still in the future")
 	// Behavioral oracle through the launch side: the paced refusal stands.
 	dv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainPaced, dv.kind, "the launch verdict is still the paced refusal")
-	require.Equal(t, "retry pause after an unreacted attempt", dv.reason)
+	require.Equal(t, drainPaced, dv.Kind, "the launch verdict is still the paced refusal")
+	require.Equal(t, "retry pause after an unreacted attempt", dv.Reason)
 }
 
 // TestBatchGateLegacyTwinsOFF (renamed semantics: the twins are now
@@ -91,11 +91,11 @@ func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 	// (the pre-fix predicate already covered this).
 	coord.arb.pace(env.sessionID, 0, time.Minute, false, drainctl.PacePaidUnreacted)
 	attRefused := &drainAttempt{
-		sessionID:     env.sessionID,
-		outcome:       drainNoTurn,
-		commitNo:      drainVerdict{kind: drainPaced, recheck: true, reason: "retry pause after an unreacted attempt"},
-		batchCaptured: true,
-		batchSnapshot: session.BatchDebtSnapshot{Nodes: []session.BatchDebtNodeRef{{RootID: "root-1", NodeID: "node-1"}}},
+		SessionID:     env.sessionID,
+		Outcome:       drainNoTurn,
+		CommitNo:      drainctl.DrainVerdict{Kind: drainPaced, Recheck: true, Reason: "retry pause after an unreacted attempt"},
+		BatchCaptured: true,
+		BatchSnapshot: session.BatchDebtSnapshot{Nodes: []session.BatchDebtNodeRef{{RootID: "root-1", NodeID: "node-1"}}},
 	}
 	coord.accountDrainAttempt(env.ctx, attRefused, nil)
 	gate := coord.arb.snapshot(env.sessionID).Gate
@@ -105,9 +105,9 @@ func TestBatchGateLegacyTwinsOFF(t *testing.T) {
 	// Reset twin: no debt at all -> "no debt: gate reset" opens the
 	// gate (executeAccountVerdict's reset branch).
 	attReset := &drainAttempt{
-		sessionID: env.sessionID,
-		outcome:   drainNoTurn,
-		commitNo:  drainVerdict{kind: drainDeferred, reason: "no visible debt"},
+		SessionID: env.sessionID,
+		Outcome:   drainNoTurn,
+		CommitNo:  drainctl.DrainVerdict{Kind: drainDeferred, Reason: "no visible debt"},
 	}
 	coord.accountDrainAttempt(env.ctx, attReset, nil)
 	gate = coord.arb.snapshot(env.sessionID).Gate
@@ -149,12 +149,12 @@ func TestBatchPendingLeftONNoDebtResetsGate(t *testing.T) {
 	require.Empty(t, pending.Notices)
 
 	att := &drainAttempt{
-		sessionID:     env.sessionID,
-		outcome:       drainNoTurn,
-		commitNo:      drainVerdict{kind: drainDeferred, reason: "no visible debt"},
-		batchSnapshot: bsnap,
-		batchCaptured: true,
-		pendingLeft:   len(pending.Nodes)+len(pending.Notices) > 0,
+		SessionID:     env.sessionID,
+		Outcome:       drainNoTurn,
+		CommitNo:      drainctl.DrainVerdict{Kind: drainDeferred, Reason: "no visible debt"},
+		BatchSnapshot: bsnap,
+		BatchCaptured: true,
+		PendingLeft:   len(pending.Nodes)+len(pending.Notices) > 0,
 	}
 	coord.accountDrainAttempt(env.ctx, att, nil)
 
@@ -204,12 +204,12 @@ func TestBatchPendingLeftONPendingDebtPacesGate(t *testing.T) {
 	require.NotZero(t, len(pending.Nodes)+len(pending.Notices), "the unpulled completion is pending-inclusive debt")
 
 	att := &drainAttempt{
-		sessionID:     env.sessionID,
-		outcome:       drainNoTurn,
-		commitNo:      drainVerdict{kind: drainDeferred, reason: "no visible debt"},
-		batchSnapshot: bsnap,
-		batchCaptured: true,
-		pendingLeft:   len(pending.Nodes)+len(pending.Notices) > 0,
+		SessionID:     env.sessionID,
+		Outcome:       drainNoTurn,
+		CommitNo:      drainctl.DrainVerdict{Kind: drainDeferred, Reason: "no visible debt"},
+		BatchSnapshot: bsnap,
+		BatchCaptured: true,
+		PendingLeft:   len(pending.Nodes)+len(pending.Notices) > 0,
 	}
 	coord.accountDrainAttempt(env.ctx, att, nil)
 

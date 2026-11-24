@@ -24,17 +24,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 )
-
-// noticeKindSupervision aliases the leaf declaration in
-// internal/agent/runtime/exec/sessionprompt (see that file's comment);
-// retained root callers and tests use this identifier directly.
-const noticeKindSupervision = sessionprompt.NoticeKindSupervision
 
 // Defaults for SupervisionConfig. supervisionMaxInterval/
 // supervisionMaxNoProgress are implementation constants, not configurable
@@ -351,9 +345,9 @@ func (sr *supervisionRegistry) noteWorkStarted(ctx context.Context, sessionID st
 // recordProgress resets sessionID's backoff to its base interval and clears
 // the no-progress/paused counters: a real completion (job/sub-agent/timeout
 // notice) is "progress" regardless of how many no-progress ticks preceded
-// it. Called from pullPendingNotices (agent_notice_pull.go) when a notice
+// it. Called from pullPendingNotices (drain_call_component.go) when a notice
 // moves into history, for every notice EXCEPT supervision's own
-// (noticeKindSupervision) -- see that call site's comment for why the tick's
+// (sessionprompt.NoticeKindSupervision) -- see that call site's comment for why the tick's
 // own resulting turn must not reset the very backoff it just grew.
 func (sr *supervisionRegistry) recordProgress(sessionID string, host supervisionHost) {
 	if sr == nil || sessionID == "" {

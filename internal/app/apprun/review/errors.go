@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	sqlitedriver "modernc.org/sqlite"
@@ -176,7 +177,7 @@ func RunFailed(finalReason string, runErr error, isCanceled bool) bool {
 // ErrCallAlreadyAttempted, "failed to start agent processing stream: %w")
 // keeps it identifiable.
 func IsPeakHoursStop(err error) bool {
-	var peak *agent.PeakHoursError
+	var peak *usage.PeakHoursError
 	return errors.As(err, &peak)
 }
 

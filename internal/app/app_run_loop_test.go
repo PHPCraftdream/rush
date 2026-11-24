@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -280,7 +281,7 @@ func TestRunNonInteractive_PeakRefusalNeverSettles(t *testing.T) {
 	res, _, err := h.run(ctx, RunOverrides{})
 
 	require.NoError(t, ctx.Err(), "the loop gives up on its own after the refusal budget")
-	var peak *agent.PeakHoursError
+	var peak *usage.PeakHoursError
 	require.ErrorAs(t, err, &peak, "the run ends with the refusal's own error")
 	require.NotNil(t, res)
 	require.EqualValues(t, 1, h.requests.Load(), "only the first turn reached the provider")

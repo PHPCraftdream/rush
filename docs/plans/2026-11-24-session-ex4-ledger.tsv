@@ -1,0 +1,642 @@
+kind	name	source	destination	owner
+compiler	service enqueue candidate first attempt	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	1	components/finqueue/enqueue.go:34:67 too many arguments in call to port.Existing; have (context.Context, string, string, string, T), want (context.Context, string, string, T); internal/session/service; historical corrected failure
+compiler	service enqueue candidate move attempt	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	1	finalization_compat.go:128:18 undefined finqueue.Enqueue; :128:59 undefined finqueue.EnqueuePort; internal/session/service; historical corrected failure
+compiler	service enqueue candidate final tree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	no output; successful compile; internal/session/service
+compiler	finqueue final tree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	? github.com/PHPCraftdream/rush/internal/session/service/components/finqueue [no test files]; internal/session/service/components/finqueue
+compiler	sessguard final tree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/sessguard	0	? github.com/PHPCraftdream/rush/internal/session/service/components/sessguard; internal/session/service/components/sessguard
+const	FinalizationAncestorLimit	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+const	FinalizationParentEdgesQuery	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+interface	finalizationAncestorReader	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+func	readFinalizationParentEdges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+type	finalizationManagedEdge	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.node -> Node	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.owner -> Owner	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.child -> Child	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.token -> Token	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+type	finalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationAncestry.owners -> Owners	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationAncestry.edges -> Edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+func	ReadFinalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+compat-type	finalizationManagedEdge	internal/session/service/finalization_ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-type	finalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-const	FinalizationAncestorLimit	internal/session/service/components/sessguard/ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-const	FinalizationParentEdgesQuery	internal/session/service/components/sessguard/ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-func	ReadFinalizationAncestry	internal/session/service/components/sessguard/ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+func	CanonicalFinalizationRequirement	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+type	AgentFinalizationRequirement	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+type-alias	AgentFinalizationRequirement	internal/session/service/components/finqueue/requirement.go	internal/session/service/finalization_compat.go	internal/session/service
+func	FinalizationScoped	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_context.go	Moved from ingress_helpers.go into finalization_context.go
+caller	service.ReadFinalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service
+type	FinalizationTransaction	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+field	FinalizationTransaction.db	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+field	FinalizationTransaction.queries	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+func	NewFinalizationTransaction	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+method	FinalizationTransaction.WithFinalizationTx	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+interface	FinalizationTransaction	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+method	service.WithFinalizationTx	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+type	Guard	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+field	Guard.writer	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+field	Guard.reader	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+func	NewGuard	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+method	Guard.HasFinalizationScope	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+removed-method	service.hasFinalizationScope	internal/session/service/finalization_authority.go	removed	internal/session/service
+type	BatchCommitIdentity	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+field	AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.OwnerFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.AuthorityFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.AdmitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.finalizationDB	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.finalizationAuthorities	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-alias	BatchCommitIdentity	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+type	AgentFinalizationAuthority	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+field	AgentFinalizationAuthority.Service, DB, Identity, inner	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+type-field	AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-alias	AgentFinalizationAuthority	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/finalization_authority.go	internal/session/service
+method	Guard.BindAgentFinalization	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	AgentFinalizationAuthority.Revalidate (exported behavioral equivalent of revalidate)	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	Guard.WithAgentFinalizationAuthorities	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	service.BindAgentFinalization delegate	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+method	service.WithAgentFinalizationAuthorities delegate	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+func	NewBoundBatchCommitIdentity	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	BatchCommitIdentity.FinalizationBinding	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+file	components/sessguard/finalization_authority.go	new	internal/session/service/components/sessguard	
+historical-corrected-failure	historical corrected compiler failure	first candidate passed authorities slice without variadic expansion; corrected code subsequently compiled successfully	compile receipt recorded	internal/session/service
+compile	service	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	internal/session/service
+compile	sessguard	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/sessguard	0	internal/session/service/components/sessguard
+vet	service	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	internal/session/service
+type	BatchFinalizationAdmission	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+field	BatchFinalizationAdmission.ancestry	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+field	BatchFinalizationAdmission.tickets	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	AdmitBatchCommitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	finalizationTicketRelease	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	combineTicketReleases	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	ValidateBatchFinalizationTx	internal/session/service/batch_finalization_tx.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+method	Guard.AdmitFinalizationMutation	internal/session/service/finalization_mutation.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+method	BatchFinalizationAdmission.HasOwner	new	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+method	BatchFinalizationAdmission.AncestryHash	new	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+type-alias	BatchFinalizationAdmission	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+type-alias	BatchCommitIdentity	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+func	AdmitBatchCommitOwners delegate	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+func	ValidateBatchFinalizationTx delegate	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+func	AdmitFinalizationMutation delegate	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+field	AgentFinalizationAuthority.reader	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+field	BatchCommitIdentity.finalizationReader	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+func	NewAgentFinalizationAuthority	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	AgentFinalizationAuthority.Reader	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+file	components/sessguard/admission.go	new	internal/session/service/components/sessguard	internal/session/service/components/sessguard
+type	agentFinalizationQueueLease	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.writer	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.rowID	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.leasedBy	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.Token	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.leasedAt	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.attempts	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	RunQueueEntry.FinalizationLease *agentFinalizationQueueLease -> *finqueue.Lease	internal/session/service/session_runqueue.go	internal/session/service/session_runqueue.go	internal/session/service
+func	BindQueueLeaseTx	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+func	WithQueueLease	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+func	RecordQueueFailure	finalization_queue_failure.go	internal/session/service/components/finqueue/lease.go (merged)	internal/session/service/components/finqueue
+func	Lease.Writer/RowID/LeasedBy/LeasedAt/Attempts	new	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+compat-type	agentFinalizationQueueLease	internal/session/service/components/finqueue/lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-error	ErrAgentFinalizationLeaseChanged	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-func	finalizationQueueLeaseChanged	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-method	service.bindFinalizationQueueLeaseTx delegate	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-func	WithFinalizationQueueLease delegate	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-func	RecordFinalizationQueueFailure delegate	internal/session/service/finalization_queue_failure.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-error	ErrCallQueuedNotExecuted and ErrAgentFinalizationDriverUnavailable	internal/session/service/finalization_queue_failure.go	internal/session/service/finalization_compat.go	internal/session/service
+field	RestorePort.HasRequirement	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.SessionID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.LogicalCallID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.Canonical	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.PayloadHash	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.Decode	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.ValidateLegacy	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.Lease	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.LeaseChanged	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.Changed	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.LeasedStatus	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.Ancestry	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.BuildSnapshot	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.Consume	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	RestorePort.RequireRows	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+file	components/finqueue/lease.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+file	components/finqueue/prepare.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+file	components/finqueue/requirement.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+merge	finalization_queue_failure.go	internal/session/service/components/finqueue	RecordQueueFailure merged into lease.go; no independent destination file	internal/session/service/components/finqueue
+move	finqueue.Restore[TData,TContext,TAncestry]	Full restore SQL/fence choreography implemented in generic Restore; typed service callbacks retain service-owned payload/context and identity snapshot construction; SQL and fence order preserved.	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+note	finqueue.Enqueue[T,A]	Generic EnqueuePort choreography implemented in components/finqueue/enqueue.go; service compatibility method delegates from finalization_compat.go. Ordered sequence and deferred release preserved.	internal/session/service/components/finqueue/enqueue.go	candidate compile final exit 0; intermediate compiler diagnostics recorded in ledger receipt rows; internal/session/service/components/finqueue
+move	finalization_queue_enqueue.go	full generic EnqueuePort choreography now lives in components/finqueue/enqueue.go; service compatibility method delegates from finalization_compat.go, preserving admission -> ancestry hash -> writer Tx -> validation -> duplicate/outbox checks -> enqueue -> row reread -> revalidate -> persist -> commit and deferred release	internal/session/service/components/finqueue/enqueue.go	candidate compile passes on service and finqueue packages; internal/session/service/components/finqueue
+note	finalization_queue_prepare.go	generic Preparation moved to finqueue; service typed adapter declarations are consolidated in finalization_compat.go	internal/session/service/components/finqueue/prepare.go; internal/session/service/finalization_compat.go	internal/session/service/components/finqueue/prepare.go; internal/session/service
+count	service direct production sources	22 direct production sources; 43 direct Go files (21 tests); components is one child	internal/session/service	counted current filesystem after finalization adapter relocation
+count	service direct elements	23 (22 direct production sources + components directory)	internal/session/service	current source count
+count	finqueue code files	5	internal/session/service/components/finqueue	lease.go, prepare.go, requirement.go, restore.go, enqueue.go; internal/session/service/components/finqueue
+compile	service	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	service; tool completion had no diagnostic output
+compile	finqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	? github.com/PHPCraftdream/rush/internal/session/service/components/finqueue [no test files]
+vet	service native	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	finqueue native	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output
+vet	service Linux	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	service Darwin	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	finqueue Linux	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output
+file	components/finqueue/prepare.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+compat	AgentFinalizationQueuePreparer / AgentFinalizationQueuePreparation / PrepareAgentFinalizationQueue / Requirement / Consume	service typed adapter API consolidated in finalization_compat.go; generic behavior delegates to finqueue.Preparation	internal/session/service/finalization_compat.go	internal/session/service
+compile	finqueue package-level candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	? github.com/PHPCraftdream/rush/internal/session/service/components/finqueue [no test files]
+compile	service final after enqueue move	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	no output; verified final post-move tree; internal/session/service
+vet	service native final	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	finqueue Linux final	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output
+vet	finqueue Darwin final	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output
+compile	service final after candidate revert	capm wrapped compile ./internal/session/service	0	no diagnostic output
+vet	finqueue native final	capm wrapped vet ./internal/session/service/components/finqueue	0	no output
+vet	service Linux final	capm wrapped GOOS=linux vet ./internal/session/service	0	no output
+vet	service native final after enqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	final tree; no output; internal/session/service
+vet	service Linux final after enqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service	0	final tree; no output; internal/session/service
+vet	service Darwin final after enqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service	0	final tree; no output; internal/session/service
+vet	finqueue native final after enqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	final tree; no output; internal/session/service/components/finqueue
+vet	finqueue Linux final after enqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	final tree; no output; internal/session/service/components/finqueue
+vet	finqueue Darwin final after enqueue	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	final tree; no output; internal/session/service/components/finqueue
+func	ReadLeasedCall	new	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	LeasedCall.Owner, Raw	new	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+compat-restore	restoreFinalizationQueue / restoreFinalizationQueue adapter	Service callbacks delegate through finalization_compat.go to finqueue.Restore; live queue lease verification remains in finqueue/restore.go.	internal/session/service/finalization_compat.go	internal/session/service
+compile	service restore move candidate initial	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	1	finalization_queue_restore.go:96:16: cannot use BatchRequireRow (func(int64,error) error) as func(int64) error; historical corrected failure; later full generic restore move and successful native/Linux/Darwin vet receipts follow
+vet	service native final restore	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output; internal/session/service
+vet	service Linux final restore	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output; internal/session/service
+vet	service Darwin final restore	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output; internal/session/service
+vet	finqueue native final restore	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output; internal/session/service/components/finqueue
+vet	finqueue Linux final restore	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output; internal/session/service/components/finqueue
+vet	finqueue Darwin final restore	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	no output; internal/session/service/components/finqueue
+note	finalization_queue_failure.go	Merged RecordQueueFailure logic into finqueue/lease.go; no separate destination file.	internal/session/service/components/finqueue/lease.go	merged RecordQueueFailure; no new file; internal/session/service/components/finqueue
+compile	finqueue restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	actual command output finqueue compile restore-candidate exit=0
+vet	service native restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	actual exit logged after helper extraction
+vet	finqueue native restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	actual exit logged after helper extraction
+vet	service Linux restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service	0	actual exit logged after helper extraction
+vet	finqueue Linux restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	actual exit logged after helper extraction
+vet	service Darwin restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service	0	actual exit logged after helper extraction
+vet	finqueue Darwin restore candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service/components/finqueue	0	actual exit logged after helper extraction
+format	changed Go files	gofumpt -l and goimports -l on changed/new Go files	-	0; no output after final edits
+compat-interface	AgentFinalizationService	service delegates bind/attach authority to sessguard.Guard; public interface retained	internal/session/service/finalization_compat.go	internal/session/service
+compat-method	service.BindAgentFinalization and service.WithAgentFinalizationAuthorities	delegation and unavailable-service errors preserved verbatim	internal/session/service/finalization_compat.go	internal/session/service
+compat-type-alias	AgentFinalizationAuthority	service wrapper preserves public Service *service field; private inner authority bridges to sessguard	internal/session/service/finalization_compat.go	internal/session/service; 
+compat-ancestry	FinalizationAncestorLimit, FinalizationParentEdgesQuery, finalizationAncestorReader, finalizationManagedEdge fields, finalizationAncestry fields, ReadFinalizationAncestry adapter	delegation and edge conversion order preserved verbatim	internal/session/service/finalization_compat.go	internal/session/service
+compat-prepare	AgentFinalizationQueuePreparer, AgentFinalizationQueuePreparation fields, PrepareAgentFinalizationQueue, Requirement, RequiresManagedDriver, Consume	typed adapter/delegation preserved verbatim	internal/session/service/finalization_compat.go	internal/session/service
+compat-restore	AgentFinalizationQueueService, RestoreAgentFinalizationQueue, restoreFinalizationQueue, FinalizationPayloadRequirement	service callbacks and delegation preserved verbatim; SQL/fences in finqueue.Restore	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_authority.go	adapter declarations relocated; no behavior change	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_ancestors.go	adapter declarations relocated; sessguard implementation retained	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_queue_prepare.go	adapter declarations relocated; finqueue generic retained	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_queue_restore.go	implementation moved to components/finqueue/restore.go; service adapter retained in finalization_compat.go	deleted	internal/session/service
+count	service direct production sources after queue deletion	22; direct Go files 43 including tests; components child = 23 direct elements	internal/session/service	filesystem count
+move	FinalizationPayloadHash	PayloadHash and finalizationHash implementation in finqueue; typed service wrapper remains in finalization_compat.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue/requirement.go; internal/session/service/components/finqueue
+compat	AgentFinalizationRequirement alias, CanonicalFinalizationRequirement, FinalizationPayloadHash, FinalizationAncestryHash, trustedFinalizationDeclaration, AgentFinalizationContext.Requirement	service API/signatures preserved in finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+file-delete	finalization_queue.go	finalizationContinuationExistsTx retained verbatim in finalization_compat.go; remaining wrappers relocated	deleted	internal/session/service
+compile	service after queue deletion	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	no output; internal/session/service
+compile	finqueue final after queue deletion	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	? no test files; internal/session/service/components/finqueue
+compile	sessguard final after queue deletion	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/sessguard	0	? no test files; internal/session/service/components/sessguard
+vet	service native/Linux/Darwin after queue deletion	wrapped Go vet native, linux, darwin	0	no output; internal/session/service
+vet	finqueue native/Linux/Darwin after payload hash extraction	wrapped Go vet native, linux, darwin	0	no output; internal/session/service/components/finqueue
+vet	sessguard native/Linux/Darwin final	wrapped Go vet native, linux, darwin	0	no output; internal/session/service/components/sessguard
+capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	no output		
+compile	finqueue final after adapter relocation	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	? github.com/PHPCraftdream/rush/internal/session/service/components/finqueue [no test files]
+compile	sessguard final after adapter relocation	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/sessguard	0	? github.com/PHPCraftdream/rush/internal/session/service/components/sessguard
+vet	service/sessguard/finqueue native+linux+darwin final after adapter relocation	wrapped native, GOOS=linux, and GOOS=darwin go vet commands per package	0	no output
+func	finqueue.Enqueue[T,A]	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Prepare	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Existing	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Admit	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.AncestryHash	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Begin	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Validate	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.CheckOutbox	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.CheckContinue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.CheckQueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Enqueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Persist	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Changed	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+func	service.enqueueFinalizationAware delegate	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+type	finqueue.Requirement and fields Version, Authorities	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+func	finqueue.CanonicalRequirement	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+func	finqueue.PayloadHash and finalizationHash	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+type	sessguard.AgentFinalizationAuthority and fields DB, Identity, reader	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	AgentFinalizationAuthority.Reader	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	Guard.HasFinalizationScope	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+type	sessguard.FinalizationTransaction and fields db, queries	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+type	sessguard.finalizationAncestorReader, finalizationManagedEdge fields, finalizationAncestry fields	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+compat	AgentFinalizationRequirement, BatchCommitIdentity, AgentFinalizationAuthority aliases; enqueue/authority/ancestry/transaction/queue delegates	service wrappers retained in finalization_compat.go; generic implementations in component packages	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_queue_failure.go	RecordQueueFailure merged into finqueue/lease.go; no separate destination source	deleted/merged	internal/session/service/components/finqueue
+deleted-source	finalization_queue_prepare.go	generic preparation is prepare.go; service typed adapters consolidated in finalization_compat.go	deleted/consolidated	internal/session/service
+type	sessguard.finalizationAncestorReader; finalizationManagedEdge fields node, owner, child, token; finalizationAncestry fields owners, edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+func	finqueue.Enqueue[T,A]	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Prepare	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Existing	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Admit	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.AncestryHash	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Begin	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Validate	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.CheckOutbox	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.CheckContinue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.CheckQueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Enqueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Persist	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Changed	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+compat	service delegates and aliases	service adapter methods and compatibility aliases retained in finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+historical-source	FinalizationScoped	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_context.go	Historical repeated declaration; authoritative unique func record below.
+api-cleanup	FinalizationPayloadRequirement renamed finalizationPayloadRequirement; internal service-only helper	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+compiler	service current worktree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service	0	no output
+compiler	finqueue current worktree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finqueue	0	? github.com/PHPCraftdream/rush/internal/session/service/components/finqueue [no test files]
+compiler	sessguard current worktree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/sessguard	0	? github.com/PHPCraftdream/rush/internal/session/service/components/sessguard [no test files]
+compiler	root session current worktree	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session	0	no output
+vet	service native	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	service linux	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=linux GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	service darwin	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOOS=darwin GOMEMLIMIT=700MiB go vet ./internal/session/service	0	no output
+vet	finqueue native/linux/darwin	wrapped go vet commands	0	no output for each
+vet	sessguard native/linux/darwin	wrapped go vet commands	0	no output for each
+api-cleanup	LeasedCall/readLeasedCall	previously component-internal helper names; current restore.go declarations/callers are lowercase	internal/session/service/components/finqueue/restore.go	Verified no exported LeasedCall/ReadLeasedCall declarations remain
+api-cleanup	Guard.BoundBatchCommitIdentity	sessguard.newBoundBatchCommitIdentity is the internal constructor; service attaches authorities to existing bound identity	internal/session/service/components/sessguard/finalization_authority.go; internal/session/service/finalization_context.go	Removed unused exported method; service now calls AttachFinalizationAuthorities(id, ...) preserving original bound DB
+api-retained	Guard.AuthorityReader	service AgentFinalizationAuthority.Reader delegates to AuthorityReader	internal/session/service/finalization_compat.go:295	Retained because direct compiled service caller
+api-verified	FinalizationPayloadRequirement	no exported declaration or callsite exists; wrapper uses finalizationPayloadRequirement	internal/session/service/finalization_compat.go	Helper is unexported
+candidate-compile-failure	finalization_context.go converted package candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finalizationcontext	undefined AgentFinalizationAuthority, ErrAgentFinalizationChanged, BatchCommitIdentity, service; first errors context.go:14,33,56,62,78,82,90-; removed candidate directory after diagnostic	Not moved; private service authority/context key APIs block isolated package without ports
+candidate-compile-failure	finalization_ingress_helpers.go converted package candidate	capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e -ldflags='-s -w' ./internal/session/service/components/finalizationingress	undefined SessionAgentCallData, service, ErrAgentFinalizationChanged, CanonicalFinalizationRequirement, FinalizationPayloadHash, CaptureAgentFinalizationContext, BatchFinalizationAdmission, ValidateBatchFinalizationTx, ReadFinalizationAncestry and service-owned ingress APIs; removed candidate directory after diagnostic	Not moved; requires typed service ports and exported data/admission API redesign
+count	service direct inventory	22 direct production sources; 43 direct Go files (21 tests); 23 direct filesystem elements including components child	internal/session/service	Current filesystem; requested 23-element ratchet met
+count	finqueue/sessguard/sesstypes component source files	5 / 5 / 4	internal/session/service/components	Component file counts verified
+verification	compile-only and vet	serialized prescribed wrapped commands for service, finqueue, sessguard, internal/session; native/Linux/Darwin vet for service/finqueue/sessguard	internal/session	Compile-only passed; all nine package/GOOS vet invocations passed without output
+compat-behavior	public AgentFinalizationAuthority literal wrappers	callback conversion and admission behavior	Adapter converts only valid wrappers belonging to their own Service; it does not prefilter against the bound opaque service token. sessguard rejects a nonnil callback authority with mismatched ServiceIdentity, plus DB and Identity validation. DB equality is not service identity.	internal/session/service/finalization_compat.go; internal/session/service/components/sessguard/admission.go
+note	validation scope	No tests or hooks run; compile and vet only, serial per package/platform	-	-
+-	-	-	-	-
+legacy-section	Prior ledger evidence below is historical/non-authoritative; authoritative deduplicated EX4 records follow after this historical receipt archive.			
+field	BatchCommitIdentity.Host	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Runner	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Owner	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.OwnerFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.AuthorityFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	Valid wrappers are lazily converted by service adapter.
+field	BatchCommitIdentity.AdmitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationDB	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationService	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationReader	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationAuthorities	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	AgentFinalizationAuthority.Service	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	Public service pointer retained; wrappers lazily convert when valid.
+field	AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.inner	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	sessguard.AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.reader	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.service	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	Opaque service identity token.
+compile-failure-summary	candidate compiler failures from rows 255-256	-	-	Historical corrected; original diagnostics preserved verbatim in compiler output column
+verification-fix	AdmitFinalizationMutation service binding	Bind service token then Guard.WithAgentFinalizationAuthorities(writer, service.readDB, converted authorities); use first authority reader with service.readDB fallback	internal/session/service/finalization_compat.go	Preserves nil/no-authority early return and prior validation-error ordering; fixes missing boundDB for authorities
+verification-receipt	Requested compile/vet matrix	Compile-only go test -c succeeded for ./internal/session, ./internal/session/service, ./internal/session/batch/sessionbatch, ./internal/session/run/sessionrun, ./internal/session/service/components/finqueue, ./internal/session/service/components/sessguard; go vet succeeded for all six under native, linux, darwin	wrapped serial commands via capm 2g bash D:/dev/go/crush/.rush/tmp/golock.sh	No tests/hooks run; finqueue and sessguard compile emitted [no test files]; other compile and vet runs produced no output
+legacy-section	Historically pipe-delimited ledger rows follow; authoritative per-field tab-separated section above			
+field	AgentFinalizationAuthority.Identity	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	valid incarnation identity
+field	sessguard.AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.reader	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Host	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Runner	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Owner	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.OwnerFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.AdmitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationDB	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationService	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationReader	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationAuthorities	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchFinalizationAdmission.ancestry	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	
+field	BatchFinalizationAdmission.tickets	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	
+field	FinalizationTransaction.db	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+field	FinalizationTransaction.queries	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+field	Lease.writer	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.rowID	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.leasedBy	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.Token	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.leasedAt	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.attempts	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	RunQueueEntry.FinalizationLease	internal/session/service/session_runqueue.go	internal/session/service/session_runqueue.go	changed from service lease pointer to *finqueue.Lease
+field	RestorePort.HasRequirement	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.SessionID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LogicalCallID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Canonical	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.PayloadHash	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Decode	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.ValidateLegacy	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Lease	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LeaseChanged	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Changed	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LeasedStatus	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Ancestry	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.BuildSnapshot	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Consume	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.RequireRows	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	Preparation.rowID	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	Preparation.frozen	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	Preparation.snapshot	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	EnqueuePort.Prepare	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Existing	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Admit	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.AncestryHash	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Begin	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Validate	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckOutbox	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckContinue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckQueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Enqueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Persist	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Changed	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	finqueue.Requirement.Version	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	finqueue.Requirement.Authorities	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	finalizationManagedEdge.node	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.owner	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.child	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+file	finalization_context.go	internal/session/service/finalization_context.go	internal/session/service/finalization_context.go	live source; context merges authorities into initially empty static binding
+file	finalization_ingress_helpers.go	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_ingress_helpers.go	Remains in service package; not deleted
+file	finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	Single consolidated compatibility wrapper file
+field	finalizationAncestry.owners	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationAncestry.edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+type	finalizationAncestorReader	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+func	FinalizationScoped	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_context.go	Moved from ingress_helpers.go into finalization_context.go
+type	FinalizationPayloadRequirement	internal/session/service/finalization_queue_restore.go	internal/session/service/finalization_compat.go	unexported in final tree as finalizationPayloadRequirement
+merge	RecordQueueFailure	internal/session/service/finalization_queue_failure.go	internal/session/service/components/finqueue/lease.go	source file no longer exists; implementation merged; no finalization_queue_failure.go destination
+file	finalization_compat.go	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	compatibility wrapper fields recorded individually above
+file	finalization_context.go	internal/session/service/finalization_context.go	internal/session/service/finalization_context.go	live context source
+file	finalization_ingress_helpers.go	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_ingress_helpers.go	remains service package/file
+file	finalization_tx.go	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+file	finqueue restore.go	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+file	finqueue enqueue.go	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+file	finqueue prepare.go	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+ratchet	service direct elements	filesystem inventory	internal/session/service	23 elements; threshold remains unmet (>7)
+ratchet	service direct Go files	filesystem inventory	internal/session/service	43 files
+ratchet	component source limits	filesystem inventory	internal/session/service/components	finqueue 5, sessguard 5, sesstypes 4; within limits
+receipt	candidate compile failures	existing receipts lines 255-256	-	Historical corrected diagnostics retained verbatim; no new compiler/vet receipts added
+P1	Static authority DB/reader binding lost for initially unbound identities	service.WithAgentFinalizationAuthorities must first BindFinalizationService then use Guard.WithAgentFinalizationAuthorities; AttachFinalizationAuthorities alone omits finalizationDB/reader	Guard binding restores writer/read DB and validates empty or non-empty sets while retaining opaque service token	internal/session/service/finalization_compat.go; internal/session/service/components/sessguard/finalization_authority.go; internal/session/service/components/sessguard/admission.go
+field	service.finalizationIdentity	internal/session/service/session.go	internal/session/service/session.go	opaque service identity token created once per service in service constructor
+field	AgentFinalizationAuthority.Service	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	public service pointer identifies owning service; preserved wrapper field
+field	AgentFinalizationAuthority.inner	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	inner sessguard authority carries opaque service token in addition to DB and identity
+field	BatchCommitIdentity.AuthorityFor	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	public callback returns *AgentFinalizationAuthority wrapper; adapter converts valid wrappers from their own Service
+P1	fix	service.WithAgentFinalizationAuthorities	BindFinalizationService before Guard.WithAgentFinalizationAuthorities restores writer/read DB binding for initially unbound identities; empty static authorities are allowed, non-empty authorities validated, opaque service token retained; does not use Attach as sole binder	internal/session/service/finalization_compat.go; compile-only current six-package importer graph and native/Linux/Darwin vet all wrapped exit 0; AuthorityFor callbacks compile via sessionbatch; no tests run
+compiler	current importer graph compile-only	wrapped go test -c for internal/session, service, sessionbatch, sessionrun, finqueue, sessguard	0	current tree after static authority binding correction; no test execution
+vet	current native Linux Darwin six-package graph	wrapped go vet native/linux/darwin on internal/session, service, sessionbatch, sessionrun, finqueue, sessguard	0	all eighteen platform/package vet checks completed with no output; current tree after correction
+field	AgentFinalizationAuthority.Service	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.inner	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	sessguard.AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.reader	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	sessguard.AgentFinalizationAuthority.service	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchFinalizationAdmission.ancestry	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	
+field	BatchFinalizationAdmission.tickets	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	
+field	FinalizationTransaction.db	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+field	FinalizationTransaction.queries	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+field	Lease.writer	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.rowID	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.leasedBy	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.Token	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.leasedAt	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.attempts	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	RunQueueEntry.FinalizationLease	internal/session/service/session_runqueue.go	internal/session/service/session_runqueue.go	*finqueue.Lease
+field	RestorePort.HasRequirement	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.SessionID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LogicalCallID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Canonical	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.PayloadHash	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Decode	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.ValidateLegacy	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Lease	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LeaseChanged	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Changed	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LeasedStatus	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Ancestry	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.BuildSnapshot	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Consume	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.RequireRows	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	Preparation.rowID	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	Preparation.frozen	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	Preparation.snapshot	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	EnqueuePort.Prepare	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Existing	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Admit	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.AncestryHash	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Begin	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Validate	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckOutbox	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckContinue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckQueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Enqueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Persist	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Changed	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	Requirement.Version	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	Requirement.Authorities	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	finalizationManagedEdge.Node	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.Owner	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.Child	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.Token	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationAncestry.Owners	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationAncestry.Edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+
+authoritative-section	Deduplicated EX4 declaration, field, compatibility, and file records; at most one record per kind/name. Earlier ledger material is historical/non-authoritative.			
+func	FinalizationScoped	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_context.go	Moved; exactly one authoritative record.
+field	AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	Compatibility wrapper field; current final type is alias/wrapper as described in historical notes.
+field	sessguard.AgentFinalizationAuthority.DB	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	Component authority field.
+field	sessguard.AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	Component authority field.
+field	sessguard.AgentFinalizationAuthority.reader	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	Component authority field.
+field	BatchCommitIdentity.finalizationDB	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	Moved field.
+field	BatchCommitIdentity.finalizationReader	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	Moved field.
+field	RunQueueEntry.FinalizationLease	internal/session/service/session_runqueue.go	internal/session/service/session_runqueue.go	Changed to *finqueue.Lease.
+file	finalization_context.go	internal/session/service/finalization_context.go	internal/session/service/finalization_context.go	Live EX4 source retained.
+file	finalization_ingress_helpers.go	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_ingress_helpers.go	Live EX4 source retained.
+file	finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	Live consolidated compatibility source retained.
+file	finalization_retire.go	internal/session/batch/finterm/finalization_retire.go	internal/session/batch/finterm/finalization_retire.go	Live source retained in finterm.
+file-delete	batch_commit_admission.go	internal/session/service/batch_commit_admission.go	deleted	Deleted source; not a live manifest entry.
+file-delete	batch_finalization_tx.go	internal/session/service/batch_finalization_tx.go	deleted	Deleted source; not a live manifest entry.
+file-delete	finalization_ancestors.go	internal/session/service/finalization_ancestors.go	deleted	Deleted source; component implementation and compatibility API are elsewhere.
+file-delete	finalization_authority.go	internal/session/service/finalization_authority.go	deleted	Deleted source; compatibility declarations are in finalization_compat.go.
+file-delete	finalization_mutation.go	internal/session/service/finalization_mutation.go	deleted	Deleted source; implementation relocated.
+file-delete	finalization_queue.go	internal/session/service/finalization_queue.go	deleted	Deleted source; compatibility API retained.
+file-delete	finalization_queue_enqueue.go	internal/session/service/finalization_queue_enqueue.go	deleted	Deleted source; finqueue/enqueue.go is live.
+file-delete	finalization_queue_failure.go	internal/session/service/finalization_queue_failure.go	deleted/merged	RecordQueueFailure merged into finqueue/lease.go.
+file-delete	finalization_queue_lease.go	internal/session/service/finalization_queue_lease.go	deleted	Deleted source; finqueue/lease.go is live.
+file-delete	finalization_queue_prepare.go	internal/session/service/finalization_queue_prepare.go	deleted/consolidated	Generic implementation in finqueue/prepare.go; adapter in finalization_compat.go.
+file-delete	finalization_queue_restore.go	internal/session/service/finalization_queue_restore.go	deleted	Generic implementation in finqueue/restore.go; adapter in finalization_compat.go.
+file-delete	finalization_tx.go	internal/session/service/finalization_tx.go	deleted	Implementation in sessguard/finalization_tx.go.
+ratchet	service direct elements	filesystem inventory	internal/session/service	23 elements; >7 incomplete.
+ratchet	service direct Go files	filesystem inventory	internal/session/service	43 direct Go files.
+const	FinalizationAncestorLimit	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+const	FinalizationParentEdgesQuery	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+interface	finalizationAncestorReader	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+func	readFinalizationParentEdges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+type	finalizationManagedEdge	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.node -> Node	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.owner -> Owner	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.child -> Child	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationManagedEdge.token -> Token	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+type	finalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationAncestry.owners -> Owners	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+field	finalizationAncestry.edges -> Edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+func	ReadFinalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+compat-type	finalizationManagedEdge	internal/session/service/finalization_ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-type	finalizationAncestry	internal/session/service/finalization_ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-const	FinalizationAncestorLimit	internal/session/service/components/sessguard/ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-const	FinalizationParentEdgesQuery	internal/session/service/components/sessguard/ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+compat-func	ReadFinalizationAncestry	internal/session/service/components/sessguard/ancestors.go	internal/session/service/finalization_ancestors.go	internal/session/service
+func	CanonicalFinalizationRequirement	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+type	AgentFinalizationRequirement	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+type-alias	AgentFinalizationRequirement	internal/session/service/components/finqueue/requirement.go	internal/session/service/finalization_compat.go	internal/session/service
+type	FinalizationTransaction	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+field	FinalizationTransaction.db	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+field	FinalizationTransaction.queries	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+func	NewFinalizationTransaction	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+method	FinalizationTransaction.WithFinalizationTx	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+interface	FinalizationTransaction	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+method	service.WithFinalizationTx	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+type	Guard	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+field	Guard.writer	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+field	Guard.reader	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+func	NewGuard	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+method	Guard.HasFinalizationScope	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/guard.go	internal/session/service/components/sessguard
+type	BatchCommitIdentity	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.OwnerFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.AuthorityFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.AdmitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.finalizationDB	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-field	BatchCommitIdentity.finalizationAuthorities	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-alias	BatchCommitIdentity	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+type	AgentFinalizationAuthority	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+field	AgentFinalizationAuthority.Service, DB, Identity, inner	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+type-field	AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type-alias	AgentFinalizationAuthority	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/finalization_authority.go	internal/session/service
+method	Guard.BindAgentFinalization	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	AgentFinalizationAuthority.Revalidate (exported behavioral equivalent of revalidate)	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	Guard.WithAgentFinalizationAuthorities	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	service.BindAgentFinalization delegate	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+method	service.WithAgentFinalizationAuthorities delegate	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	internal/session/service
+func	NewBoundBatchCommitIdentity	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	BatchCommitIdentity.FinalizationBinding	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+file	components/sessguard/finalization_authority.go	new	internal/session/service/components/sessguard	
+type	BatchFinalizationAdmission	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+field	BatchFinalizationAdmission.ancestry	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	
+field	BatchFinalizationAdmission.tickets	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	
+func	AdmitBatchCommitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	finalizationTicketRelease	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	combineTicketReleases	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+func	ValidateBatchFinalizationTx	internal/session/service/batch_finalization_tx.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+method	Guard.AdmitFinalizationMutation	internal/session/service/finalization_mutation.go	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+method	BatchFinalizationAdmission.HasOwner	new	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+method	BatchFinalizationAdmission.AncestryHash	new	internal/session/service/components/sessguard/admission.go	internal/session/service/components/sessguard
+type-alias	BatchFinalizationAdmission	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+func	AdmitBatchCommitOwners delegate	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+func	ValidateBatchFinalizationTx delegate	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+func	AdmitFinalizationMutation delegate	internal/session/service/components/sessguard/admission.go	internal/session/service/finalization_compat.go	internal/session/service
+field	AgentFinalizationAuthority.reader	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+func	NewAgentFinalizationAuthority	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+method	AgentFinalizationAuthority.Reader	new	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+file	components/sessguard/admission.go	new	internal/session/service/components/sessguard	internal/session/service/components/sessguard
+type	agentFinalizationQueueLease	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+field	Lease.writer	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.rowID	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.leasedBy	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.Token	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.leasedAt	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	Lease.attempts	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	
+field	RunQueueEntry.FinalizationLease *agentFinalizationQueueLease -> *finqueue.Lease	internal/session/service/session_runqueue.go	internal/session/service/session_runqueue.go	internal/session/service
+func	BindQueueLeaseTx	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+func	WithQueueLease	internal/session/service/finalization_queue_lease.go	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+func	RecordQueueFailure	finalization_queue_failure.go	internal/session/service/components/finqueue/lease.go (merged)	internal/session/service/components/finqueue
+func	Lease.Writer/RowID/LeasedBy/LeasedAt/Attempts	new	internal/session/service/components/finqueue/lease.go	internal/session/service/components/finqueue
+compat-type	agentFinalizationQueueLease	internal/session/service/components/finqueue/lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-func	finalizationQueueLeaseChanged	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-method	service.bindFinalizationQueueLeaseTx delegate	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-func	WithFinalizationQueueLease delegate	internal/session/service/finalization_queue_lease.go	internal/session/service/finalization_compat.go	internal/session/service
+compat-func	RecordFinalizationQueueFailure delegate	internal/session/service/finalization_queue_failure.go	internal/session/service/finalization_compat.go	internal/session/service
+field	RestorePort.HasRequirement	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.SessionID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LogicalCallID	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Canonical	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.PayloadHash	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Decode	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.ValidateLegacy	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Lease	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LeaseChanged	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Changed	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.LeasedStatus	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Ancestry	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.BuildSnapshot	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.Consume	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+field	RestorePort.RequireRows	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+file	components/finqueue/lease.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+file	components/finqueue/prepare.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+file	components/finqueue/requirement.go	new	internal/session/service/components/finqueue	internal/session/service/components/finqueue
+merge	finalization_queue_failure.go	internal/session/service/components/finqueue	RecordQueueFailure merged into lease.go; no independent destination file	internal/session/service/components/finqueue
+move	finqueue.Restore[TData,TContext,TAncestry]	Full restore SQL/fence choreography implemented in generic Restore; typed service callbacks retain service-owned payload/context and identity snapshot construction; SQL and fence order preserved.	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+move	finalization_queue_enqueue.go	full generic EnqueuePort choreography now lives in components/finqueue/enqueue.go; service compatibility method delegates from finalization_compat.go, preserving admission -> ancestry hash -> writer Tx -> validation -> duplicate/outbox checks -> enqueue -> row reread -> revalidate -> persist -> commit and deferred release	internal/session/service/components/finqueue/enqueue.go	candidate compile passes on service and finqueue packages; internal/session/service/components/finqueue
+compat	AgentFinalizationQueuePreparer / AgentFinalizationQueuePreparation / PrepareAgentFinalizationQueue / Requirement / Consume	service typed adapter API consolidated in finalization_compat.go; generic behavior delegates to finqueue.Preparation	internal/session/service/finalization_compat.go	internal/session/service
+func	ReadLeasedCall	new	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+field	LeasedCall.Owner, Raw	new	internal/session/service/components/finqueue/restore.go	internal/session/service/components/finqueue
+compat-restore	restoreFinalizationQueue / restoreFinalizationQueue adapter	Service callbacks delegate through finalization_compat.go to finqueue.Restore; live queue lease verification remains in finqueue/restore.go.	internal/session/service/finalization_compat.go	internal/session/service
+compat-interface	AgentFinalizationService	service delegates bind/attach authority to sessguard.Guard; public interface retained	internal/session/service/finalization_compat.go	internal/session/service
+compat-method	service.BindAgentFinalization and service.WithAgentFinalizationAuthorities	delegation and unavailable-service errors preserved verbatim	internal/session/service/finalization_compat.go	internal/session/service
+compat-type-alias	AgentFinalizationAuthority	service wrapper preserves public Service *service field; private inner authority bridges to sessguard	internal/session/service/finalization_compat.go	internal/session/service; 
+compat-ancestry	FinalizationAncestorLimit, FinalizationParentEdgesQuery, finalizationAncestorReader, finalizationManagedEdge fields, finalizationAncestry fields, ReadFinalizationAncestry adapter	delegation and edge conversion order preserved verbatim	internal/session/service/finalization_compat.go	internal/session/service
+compat-prepare	AgentFinalizationQueuePreparer, AgentFinalizationQueuePreparation fields, PrepareAgentFinalizationQueue, Requirement, RequiresManagedDriver, Consume	typed adapter/delegation preserved verbatim	internal/session/service/finalization_compat.go	internal/session/service
+compat-restore	AgentFinalizationQueueService, RestoreAgentFinalizationQueue, restoreFinalizationQueue, FinalizationPayloadRequirement	service callbacks and delegation preserved verbatim; SQL/fences in finqueue.Restore	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_authority.go	adapter declarations relocated; no behavior change	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_ancestors.go	adapter declarations relocated; sessguard implementation retained	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_queue_prepare.go	generic preparation is prepare.go; service typed adapters consolidated in finalization_compat.go	deleted/consolidated	internal/session/service
+deleted-source	finalization_queue_restore.go	implementation moved to components/finqueue/restore.go; service adapter retained in finalization_compat.go	deleted	internal/session/service
+move	FinalizationPayloadHash	PayloadHash and finalizationHash implementation in finqueue; typed service wrapper remains in finalization_compat.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue/requirement.go; internal/session/service/components/finqueue
+compat	AgentFinalizationRequirement alias, CanonicalFinalizationRequirement, FinalizationPayloadHash, FinalizationAncestryHash, trustedFinalizationDeclaration, AgentFinalizationContext.Requirement	service API/signatures preserved in finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+func	finqueue.Enqueue[T,A]	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	internal/session/service/components/finqueue
+field	EnqueuePort.Prepare	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Existing	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Admit	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.AncestryHash	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Begin	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Validate	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckOutbox	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckContinue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.CheckQueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Enqueue	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Persist	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+field	EnqueuePort.Changed	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+func	service.enqueueFinalizationAware delegate	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+type	finqueue.Requirement and fields Version, Authorities	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+func	finqueue.CanonicalRequirement	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+func	finqueue.PayloadHash and finalizationHash	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	internal/session/service/components/finqueue
+type	sessguard.AgentFinalizationAuthority and fields DB, Identity, reader	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	internal/session/service/components/sessguard
+type	sessguard.FinalizationTransaction and fields db, queries	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	internal/session/service/components/sessguard
+type	sessguard.finalizationAncestorReader, finalizationManagedEdge fields, finalizationAncestry fields	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+compat	AgentFinalizationRequirement, BatchCommitIdentity, AgentFinalizationAuthority aliases; enqueue/authority/ancestry/transaction/queue delegates	service wrappers retained in finalization_compat.go; generic implementations in component packages	internal/session/service/finalization_compat.go	internal/session/service
+deleted-source	finalization_queue_failure.go	RecordQueueFailure merged into finqueue/lease.go; no separate destination source	deleted/merged	internal/session/service/components/finqueue
+type	sessguard.finalizationAncestorReader; finalizationManagedEdge fields node, owner, child, token; finalizationAncestry fields owners, edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	internal/session/service/components/sessguard
+compat	service delegates and aliases	service adapter methods and compatibility aliases retained in finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+historical-source	FinalizationScoped	internal/session/service/finalization_ingress_helpers.go	internal/session/service/finalization_context.go	Historical repeated declaration; authoritative unique func record below.
+api-cleanup	FinalizationPayloadRequirement renamed finalizationPayloadRequirement; internal service-only helper	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	internal/session/service
+api-cleanup	LeasedCall/readLeasedCall	previously component-internal helper names; current restore.go declarations/callers are lowercase	internal/session/service/components/finqueue/restore.go	Verified no exported LeasedCall/ReadLeasedCall declarations remain
+api-cleanup	Guard.BoundBatchCommitIdentity	sessguard.newBoundBatchCommitIdentity is the internal constructor; service attaches authorities to existing bound identity	internal/session/service/components/sessguard/finalization_authority.go; internal/session/service/finalization_context.go	Removed unused exported method; service now calls AttachFinalizationAuthorities(id, ...) preserving original bound DB
+api-retained	Guard.AuthorityReader	service AgentFinalizationAuthority.Reader delegates to AuthorityReader	internal/session/service/finalization_compat.go:295	Retained because direct compiled service caller
+api-verified	FinalizationPayloadRequirement	no exported declaration or callsite exists; wrapper uses finalizationPayloadRequirement	internal/session/service/finalization_compat.go	Helper is unexported
+field	BatchCommitIdentity.Host	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Runner	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.Owner	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.OwnerFor	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.AuthorityFor	internal/session/service/finalization_compat.go	internal/session/service/finalization_compat.go	public callback returns *AgentFinalizationAuthority wrapper; adapter converts valid wrappers from their own Service
+field	BatchCommitIdentity.AdmitOwners	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationService	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	BatchCommitIdentity.finalizationAuthorities	internal/session/service/batch_commit_admission.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	AgentFinalizationAuthority.Service	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.Identity	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	AgentFinalizationAuthority.inner	internal/session/service/finalization_authority.go	internal/session/service/finalization_compat.go	
+field	sessguard.AgentFinalizationAuthority.service	internal/session/service/finalization_authority.go	internal/session/service/components/sessguard/finalization_authority.go	
+field	Preparation.rowID	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	Preparation.frozen	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	Preparation.snapshot	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	finqueue.Requirement.Version	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	finqueue.Requirement.Authorities	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	finalizationManagedEdge.Node	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.Owner	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationManagedEdge.Child	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationAncestry.Owners	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+field	finalizationAncestry.Edges	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+type	finalizationAncestorReader	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
+type	FinalizationPayloadRequirement	internal/session/service/finalization_queue_restore.go	internal/session/service/finalization_compat.go	unexported in final tree as finalizationPayloadRequirement
+merge	RecordQueueFailure	internal/session/service/finalization_queue_failure.go	internal/session/service/components/finqueue/lease.go	source file no longer exists; implementation merged; no finalization_queue_failure.go destination
+file	finalization_tx.go	internal/session/service/finalization_tx.go	internal/session/service/components/sessguard/finalization_tx.go	
+file	finqueue restore.go	internal/session/service/finalization_queue_restore.go	internal/session/service/components/finqueue/restore.go	
+file	finqueue enqueue.go	internal/session/service/finalization_queue_enqueue.go	internal/session/service/components/finqueue/enqueue.go	
+file	finqueue prepare.go	internal/session/service/finalization_queue_prepare.go	internal/session/service/components/finqueue/prepare.go	
+field	service.finalizationIdentity	internal/session/service/session.go	internal/session/service/session.go	opaque service identity token created once per service in service constructor
+field	Requirement.Version	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	Requirement.Authorities	internal/session/service/finalization_queue.go	internal/session/service/components/finqueue/requirement.go	
+field	finalizationManagedEdge.Token	internal/session/service/finalization_ancestors.go	internal/session/service/components/sessguard/ancestors.go	
