@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"charm.land/fang/v2"
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
@@ -49,7 +49,7 @@ func TestCommandErrorHandlerSettingsLockHint(t *testing.T) {
 // Revert-check: commandErrorHandler (installed by Execute) pins plain timeout rendering and default delegation.
 func TestCommandErrorHandlerTimeoutAndDefault(t *testing.T) {
 	var styles fang.Styles
-	timeoutErr := &app.RunTimeoutError{Cause: &agent.RunTimeoutCause{Duration: time.Second, Source: "--timeout"}, ResumeCommand: "rush run --role fast --session s1"}
+	timeoutErr := &app.RunTimeoutError{Cause: &watchdog.RunTimeoutCause{Duration: time.Second, Source: "--timeout"}, ResumeCommand: "rush run --role fast --session s1"}
 	var got bytes.Buffer
 	commandErrorHandler(&got, styles, fmt.Errorf("wrapped: %w", timeoutErr))
 	require.Equal(t, "rush: run timeout 1s exceeded (source: --timeout); resume: rush run --role fast --session s1; stored work remains in the session (rush sessions show/last)\n", got.String())

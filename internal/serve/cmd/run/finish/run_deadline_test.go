@@ -11,7 +11,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdtest"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,8 +53,8 @@ func TestInstallRunDeadline_DefaultCapIsAGracefulDeadline(t *testing.T) {
 	defer stop()
 	cmdtest.AwaitClosed(t, ctx.Done(), "the default cap to end the run's context")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
-	require.ErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "the cap tags its deadline so a cut-off turn names it (R7C-5)")
-	var cause *agent.RunTimeoutCause
+	require.ErrorIs(t, context.Cause(ctx), watchdog.ErrRunDefaultCap, "the cap tags its deadline so a cut-off turn names it (R7C-5)")
+	var cause *watchdog.RunTimeoutCause
 	require.ErrorAs(t, context.Cause(ctx), &cause)
 	require.Equal(t, 30*time.Millisecond, cause.Duration)
 	require.True(t, cause.DefaultCap)
@@ -94,9 +94,9 @@ func TestInstallRunDeadline_ParentEndsEarlier(t *testing.T) {
 				cmdtest.AwaitClosed(t, ctx.Done(), "the parent to end the run's context")
 				require.ErrorIs(t, ctx.Err(), wantErr)
 				require.ErrorIs(t, context.Cause(ctx), wantErr)
-				var cause *agent.RunTimeoutCause
+				var cause *watchdog.RunTimeoutCause
 				require.False(t, errors.As(context.Cause(ctx), &cause))
-				require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap)
+				require.NotErrorIs(t, context.Cause(ctx), watchdog.ErrRunDefaultCap)
 				require.Empty(t, stderr.String())
 				require.Empty(t, rec.Calls())
 			})
@@ -149,7 +149,7 @@ func TestInstallRunDeadline_HardKillWaitsForTimeoutCause(t *testing.T) {
 	}
 	require.Nil(t, context.Cause(ctx))
 	require.Empty(t, rec.Calls())
-	cancel(&agent.RunTimeoutCause{Duration: time.Second, Source: "test"})
+	cancel(&watchdog.RunTimeoutCause{Duration: time.Second, Source: "test"})
 	cmdtest.AwaitClosed(t, callbackDone, "hard-kill callback completion")
 	require.Equal(t, []int{124}, rec.Calls())
 	require.Contains(t, stderr.String(), "force-killing")
@@ -168,8 +168,8 @@ func TestInstallRunDeadline_TimeoutFlagUnchanged(t *testing.T) {
 
 	cmdtest.AwaitClosed(t, ctx.Done(), "the --timeout deadline")
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
-	require.NotErrorIs(t, context.Cause(ctx), agent.ErrRunDefaultCap, "an explicit --timeout is not the default cap")
-	var cause *agent.RunTimeoutCause
+	require.NotErrorIs(t, context.Cause(ctx), watchdog.ErrRunDefaultCap, "an explicit --timeout is not the default cap")
+	var cause *watchdog.RunTimeoutCause
 	require.ErrorAs(t, context.Cause(ctx), &cause)
 	require.EqualError(t, cause, "run timeout 10ms exceeded (source: --timeout)")
 	cmdtest.AwaitClosed(t, rec.First, "the --timeout hard kill")
