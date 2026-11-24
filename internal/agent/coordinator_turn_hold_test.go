@@ -59,8 +59,8 @@ func TestRerunHold_SurvivesTheHumanMessageReset(t *testing.T) {
 	f.coord.ResetAutoResumeCounter(f.sessID)
 
 	v := f.coord.drainPermitted(ctx, f.sessID, false)
-	require.Equal(t, drainPaced, v.kind, "the hold survives the reset")
-	require.Equal(t, "rerun in progress", v.reason)
+	require.Equal(t, drainPaced, v.Kind, "the hold survives the reset")
+	require.Equal(t, "rerun in progress", v.Reason)
 	require.True(t, f.coord.automaticTurnsHeld(f.sessID))
 }
 

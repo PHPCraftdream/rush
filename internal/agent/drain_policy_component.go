@@ -7,7 +7,6 @@ package agent
 
 import (
 	"context"
-	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -26,24 +25,8 @@ const (
 	drainStuck    = drainctl.DrainStuck
 )
 
-// drainVerdict is one launch decision -- the agent package's private carrier
-// of drainctl.DrainVerdict (kept so the retained internal callers and the
-// literal tests read the same lowercase fields as before). recheck: deferred,
-// but worth a tick (foreign driver, unreadable policy input).
-type drainVerdict struct {
-	kind    drainVerdictKind
-	retryAt time.Time
-	recheck bool
-	reason  string
-	// err is set when the refusal is an unreadable policy input (fail closed).
-	err error
-}
-
-// fromDrainctl carries a drainctl.DrainVerdict into the agent package's
-// private carrier (field-for-field).
-func fromDrainctl(dv drainctl.DrainVerdict) drainVerdict {
-	return drainVerdict{kind: dv.Kind, retryAt: dv.RetryAt, recheck: dv.Recheck, reason: dv.Reason, err: dv.Err}
-}
+// drainVerdict is the package-local name for the moved launch-decision record.
+type drainVerdict = drainctl.DrainVerdict
 
 // The launch decision (R-ARB-2): readTurnFacts + decide is THE decision;
 // drainPolicy/drainPermitted are now thin adapters translating the arbiter's
@@ -63,19 +46,17 @@ func (w *drainComponent) arbiterVerdict(ctx context.Context, sessionID string, s
 	return decide(facts), facts, nil
 }
 
-// drainVerdictOf maps an arbiter verdict onto the drainVerdict kinds the
-// callers (wakeSession's switch, the CLI loop, decideDrainTurn) still speak;
-// the mapping itself is drainctl-owned (drainctl.DrainVerdictOf, exact same
-// texts and recheck-ness).
+// drainVerdictOf maps an arbiter verdict onto the drainctl-owned kinds
+// callers still speak; the mapping itself is drainctl-owned.
 func drainVerdictOf(v Verdict) drainVerdict {
-	return fromDrainctl(drainctl.DrainVerdictOf(v))
+	return drainctl.DrainVerdictOf(v)
 }
 
 // unreadable wraps a read error as a fail-closed deferred verdict (worth a
 // tick), as the old policy's per-input handler did; drainctl-owned
 // (drainctl.UnreadablePolicyInput), same log line and outcome.
 func unreadablePolicyInput(what string, sessionID string, err error) drainVerdict {
-	return fromDrainctl(drainctl.UnreadablePolicyInput(what, sessionID, err))
+	return drainctl.UnreadablePolicyInput(what, sessionID, err)
 }
 
 // siteForSpent maps the legacy `spent` flag onto the launch site: a fact's
@@ -106,18 +87,18 @@ func (w *drainComponent) drainPolicy(ctx context.Context, sessionID string, spen
 		facts.Debt.PendingIncl = true
 		v = decide(facts)
 		if v.Kind == VRun {
-			return drainVerdict{kind: drainAllow}
+			return drainVerdict{Kind: drainAllow}
 		}
 	}
 	dv := drainVerdictOf(v)
-	if dv.kind == drainAllow {
+	if dv.Kind == drainAllow {
 		// Every allowed launch breaks await_tasks' sleep (rule 4b defers
 		// while it holds, so an allow means the sleep is over or was broken
 		// by a non-completion row); the max_wait schedule is cancelled with
 		// it. This is the one funnel every Drain launch passes through.
 		w.host.clearSleepAll(sessionID)
 	}
-	if dv.kind == drainDeferred && dv.reason == reactionChainReason &&
+	if dv.Kind == drainDeferred && dv.Reason == reactionChainReason &&
 		!facts.Session.ChainNoticed && !facts.Session.ExternallyDrivenSelf {
 		w.chainGuardMarker(ctx, sessionID)
 	}

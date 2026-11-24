@@ -46,13 +46,13 @@ func TestDecide_ForeignWorkspaceDefersWithoutRecheck(t *testing.T) {
 	// The adapter the launchers read must not ask for a tick: "recheck" is
 	// what turns a defer into a busy loop, and the reason here is permanent.
 	dv := drainVerdictOf(v)
-	require.False(t, dv.recheck, "a foreign workspace must not be worth a tick")
-	require.Equal(t, drainDeferred, dv.kind)
+	require.False(t, dv.Recheck, "a foreign workspace must not be worth a tick")
+	require.Equal(t, drainDeferred, dv.Kind)
 
 	// And it is not the paced/stuck kinds: both imply OUR gate is the problem,
 	// which it is not.
-	require.NotEqual(t, drainPaced, dv.kind)
-	require.NotEqual(t, drainStuck, dv.kind)
+	require.NotEqual(t, drainPaced, dv.Kind)
+	require.NotEqual(t, drainStuck, dv.Kind)
 }
 
 // TestDecide_ForeignWorkspaceBeatsEveryOtherRule: ownership is the
@@ -158,7 +158,7 @@ func TestAccountDrainAttempt_ForeignLegLeavesTheDebtAlone(t *testing.T) {
 
 	// A refused leg, exactly the shape runOwned's guard produces: the call
 	// never reached the provider, and the refusal names another workspace.
-	att := &drainAttempt{sessionID: f.sessID, outcome: drainNotAttempted}
+	att := &drainAttempt{SessionID: f.sessID, Outcome: drainNotAttempted}
 	turnErr := &DrainNotAttemptedError{Err: runq.ErrForeignWorkspace}
 
 	f.coord.accountDrainAttempt(ctx, att, turnErr)

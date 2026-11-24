@@ -219,8 +219,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// leaves the leg "not attempted": a refusal, never a count.
 		// Batch-only: the decision input is the batch debt (batch nodes +
 		// session notices) captured ONCE, and that same capture is the leg's
-		// accounting snapshot (att.batchSnapshot). att.snapshot stays zero:
-		// the accounting reads only att.batchSnapshot, and chainLink's
+		// accounting snapshot (att.BatchSnapshot). att.snapshot stays zero:
+		// the accounting reads only att.BatchSnapshot, and chainLink's
 		// legacy half is inert for a batch-only leg (chainIdleClaims empty).
 		var hasVisibleDebt bool
 		bfacts := coordinatorBatchCutoverFacts(a.coord)
@@ -229,7 +229,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		bcancel()
 		switch {
 		case berr == nil:
-			att.batchSnapshot, att.batchCaptured = bsnap, true
+			att.BatchSnapshot, att.BatchCaptured = bsnap, true
 			hasVisibleDebt = len(bsnap.Nodes)+len(bsnap.Notices) > 0
 		case call.DrainTurnCommitted:
 			// A committed continuation runs uncounted, never fails.
@@ -249,8 +249,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 				// Drain executes as the loop's next turn instead of being
 				// orphaned. The leg is accounted BEFORE the release: the
 				// release hook reads the gate the accounting writes.
-				att.outcome = drainNoTurn
-				att.commitNo = verdict
+				att.Outcome = drainNoTurn
+				att.CommitNo = verdict
 				if !hasVisibleDebt {
 					// Pending-inclusive debt source: the BATCH rows. An
 					// unreadable answer counts as "remains" (the same
@@ -261,9 +261,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 					if perr != nil {
 						slog.Warn("drain turn: pending batch debt check failed; treating the debt as remaining",
 							"session_id", call.SessionID, "err", perr)
-						att.pendingLeft = true
+						att.PendingLeft = true
 					} else {
-						att.pendingLeft = len(pending.Nodes)+len(pending.Notices) > 0
+						att.PendingLeft = len(pending.Nodes)+len(pending.Notices) > 0
 					}
 				}
 				preambleCancel()
@@ -620,9 +620,9 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// The leg reached the provider from here on: the Stream call itself is
 	// the "attempted" mark (a pre-Stream failure stays a refusal).
 	if att != nil {
-		att.outcome = drainAttempted
-		att.provider = smartModel.ModelCfg.Provider
-		att.credentialed = call.Credentials != nil
+		att.Outcome = drainAttempted
+		att.Provider = smartModel.ModelCfg.Provider
+		att.Credentialed = call.Credentials != nil
 	}
 	// runStallRetried re-issues the Stream attempt when the stall abort
 	// policy cancelled a stuck provider request (up to stallMaxRetries

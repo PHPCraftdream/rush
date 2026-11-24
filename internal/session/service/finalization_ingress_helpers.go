@@ -257,11 +257,11 @@ func finalizationIngressAncestryHash(payload finalizationIngressPayload, admissi
 		return "", ErrAgentFinalizationChanged
 	}
 	for _, identity := range payload.data.FinalizationRequirement.Authorities {
-		if _, affected := searchFinalizationOwner(admission.ancestry.owners, identity.SessionID); !affected {
+		if !admission.HasOwner(identity.SessionID) {
 			return "", fmt.Errorf("%w: authority outside managed ancestry", ErrAgentFinalizationChanged)
 		}
 	}
-	return FinalizationAncestryHash(admission.ancestry), nil
+	return admission.AncestryHash(), nil
 }
 
 // FinalizationFenceError marks an admission or validation failure as a lost
@@ -272,10 +272,4 @@ func FinalizationFenceError(err error) error {
 		return err
 	}
 	return errors.Join(ErrAgentFinalizationChanged, err)
-}
-
-// FinalizationScoped reports whether the caller carries finalization
-// authorities, i.e. whether admission can mint revisions for this call.
-func FinalizationScoped(ctx context.Context) bool {
-	return len(CaptureAgentFinalizationContext(ctx).authorities) != 0
 }

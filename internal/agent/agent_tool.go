@@ -34,10 +34,6 @@ type AgentParams struct {
 	Timeout *tools.TimeoutParams `json:"timeout,omitempty" description:"Optional explicit deadline: {\"seconds\": N, \"kind\": \"wake_only\"|\"terminate_and_wake\"}. \"wake_only\" lets the delegated work keep running and just notifies you it's taking a while; \"terminate_and_wake\" stops it and reports partial output. No default -- set it only when you actually want a deadline. A bare number of seconds is also accepted and means {\"seconds\": N, \"kind\": \"wake_only\"}."`
 }
 
-const (
-	AgentToolName = modelkit.AgentToolName
-)
-
 func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) {
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentTask]
 	if !ok {
@@ -57,7 +53,7 @@ func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) 
 		return nil, err
 	}
 	tool := fantasy.NewParallelAgentTool(
-		AgentToolName,
+		modelkit.AgentToolName,
 		agentToolDescription,
 		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			remaining, depthErr := MaxAgentDepthFrom(ctx)

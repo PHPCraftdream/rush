@@ -21,31 +21,31 @@ func TestReactionChain_RepeatedAsyncCommandAcceptance(t *testing.T) {
 		// ClientMetadata: the call id IS the chain identity.
 		result := batchStartedToolResult(id)
 		call := fantasy.ToolCallContent{ToolCallID: id, ToolName: "bash", Input: `{"command":` + reactionJSON(cmd) + `}`}
-		ts.att = &drainAttempt{sessionID: f.sessID, outcome: drainAttempted}
+		ts.att = &drainAttempt{SessionID: f.sessID, Outcome: drainAttempted}
 		ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, result}}})
 		return ts.att
 	}
 	first := launch("accept1", command)
-	require.True(t, first.chainProgress)
-	require.Empty(t, first.chainIdleClaims)
-	require.Empty(t, first.chainBatchRoots)
+	require.True(t, first.ChainProgress)
+	require.Empty(t, first.ChainIdleClaims)
+	require.Empty(t, first.ChainBatchRoots)
 	f.coord.arb.chainLink(f.sessID, first, session.BatchDebtSnapshot{})
 	require.Zero(t, f.chainCount())
 	previous := "accept1"
 	for _, id := range []string{"accept2", "accept3", "accept4"} {
 		att := launch(id, command)
-		require.False(t, att.chainProgress)
+		require.False(t, att.ChainProgress)
 		current := id
-		require.Equal(t, []string{id}, att.chainBatchRoots)
+		require.Equal(t, []string{id}, att.ChainBatchRoots)
 		// The leg acted on the PREVIOUS launch's completion: the batch
 		// twin of the legacy claim snapshot.
-		att.batchDebtCallIDs = []string{previous}
+		att.BatchDebtCallIDs = []string{previous}
 		f.coord.arb.chainLink(f.sessID, att, session.BatchDebtSnapshot{})
 		a3MarkRowsReacted(t, ctx, f.env.conn, f.sessID, previous)
 		previous = current
 	}
-	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).kind)
-	require.Equal(t, reactionChainReason, f.coord.drainPermitted(ctx, f.sessID, false).reason)
+	require.Equal(t, drainDeferred, f.coord.drainPermitted(ctx, f.sessID, false).Kind)
+	require.Equal(t, reactionChainReason, f.coord.drainPermitted(ctx, f.sessID, false).Reason)
 }
 
 func TestReactionChain_CommandIdentityAndProgressReset(t *testing.T) {
@@ -58,27 +58,27 @@ func TestReactionChain_CommandIdentityAndProgressReset(t *testing.T) {
 		ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, result}}})
 	}
 	step("go-build", "run_command", `{"program":"go","args":["build"]}`)
-	require.True(t, ts.att.chainProgress)
-	require.Empty(t, ts.att.chainIdleClaims)
+	require.True(t, ts.att.ChainProgress)
+	require.Empty(t, ts.att.ChainIdleClaims)
 	step("go-test", "run_command", `{"program":"go","args":["test"]}`)
-	require.True(t, ts.att.chainProgress)
-	require.Empty(t, ts.att.chainIdleClaims)
+	require.True(t, ts.att.ChainProgress)
+	require.Empty(t, ts.att.ChainIdleClaims)
 	command := `{"command":"cd /x && git log --oneline -1 >/dev/null; echo q"}`
 	step("repeat1", "bash", command)
-	require.True(t, ts.att.chainProgress)
-	require.Empty(t, ts.att.chainIdleClaims)
+	require.True(t, ts.att.ChainProgress)
+	require.Empty(t, ts.att.ChainIdleClaims)
 	step("repeat2", "bash", command)
-	require.False(t, ts.att.chainProgress)
-	require.Len(t, ts.att.chainIdleClaims, 1)
+	require.False(t, ts.att.ChainProgress)
+	require.Len(t, ts.att.ChainIdleClaims, 1)
 	for _, tool := range []string{"edit", "write", "view"} {
 		step("real-"+tool, tool, `{}`)
-		require.True(t, ts.att.chainProgress)
+		require.True(t, ts.att.ChainProgress)
 	}
 	step("after-real", "bash", command)
-	require.True(t, ts.att.chainProgress, "real action clears launch identity")
+	require.True(t, ts.att.ChainProgress, "real action clears launch identity")
 	f.coord.arb.resetChain(f.sessID)
 	step("after-human-reset", "bash", command)
-	require.True(t, ts.att.chainProgress, "explicit reset clears launch identity")
+	require.True(t, ts.att.ChainProgress, "explicit reset clears launch identity")
 }
 
 func reactionJSON(value string) string {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/fantasy"
@@ -18,16 +19,16 @@ import (
 
 func TestAgentRoleAdmissionRejectsInvalidValuesAcrossBatchAdapters(t *testing.T) {
 	t.Parallel()
-	inv := BatchInvocation{SessionID: "parent", CallID: "call", RegistryID: "registry", Policy: batchLeafPolicyContext{RegistryID: "registry", RestrictedToolset: AgentToolName}}
+	inv := BatchInvocation{SessionID: "parent", CallID: "call", RegistryID: "registry", Policy: batchLeafPolicyContext{RegistryID: "registry", RestrictedToolset: modelkit.AgentToolName}}
 	for _, value := range []string{`null`, `""`, `"custom/name"`, `false`} {
 		t.Run(value, func(t *testing.T) {
 			t.Parallel()
 			input := json.RawMessage(`{"prompt":"p","role":` + value + `}`)
-			_, err := (BatchExternalSpec{Tool: AgentToolName, Input: input}).Spec()
+			_, err := (BatchExternalSpec{Tool: modelkit.AgentToolName, Input: input}).Spec()
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
-			_, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: AgentToolName, Input: input}}}, inv, modelRegistry(AgentToolName))
+			_, err = modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: modelkit.AgentToolName, Input: input}}}, inv, modelRegistry(modelkit.AgentToolName))
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
-			_, err = batchOneItemSpec(inv, fantasy.ToolCall{Name: AgentToolName}, input)
+			_, err = batchOneItemSpec(inv, fantasy.ToolCall{Name: modelkit.AgentToolName}, input)
 			require.ErrorIs(t, err, ErrAgentRoleInvalid)
 			var inputErr batchcore.ToolInputError
 			require.ErrorAs(t, err, &inputErr)
@@ -78,19 +79,19 @@ func TestAgentRoleBatchAdaptersAcceptConfiguredCustomNames(t *testing.T) {
 	}
 	inv := BatchInvocation{
 		SessionID: "parent", CallID: "call", RegistryID: "registry",
-		Policy:     batchLeafPolicyContext{RegistryID: "registry", RestrictedToolset: AgentToolName},
+		Policy:     batchLeafPolicyContext{RegistryID: "registry", RestrictedToolset: modelkit.AgentToolName},
 		roleConfig: cfg,
 	}
 	for _, role := range []string{"auto", "unknown"} {
 		t.Run(role, func(t *testing.T) {
 			input := json.RawMessage(`{"prompt":"p","role":"` + role + `"}`)
-			_, err := (BatchExternalSpec{Tool: AgentToolName, Input: input}).Spec()
+			_, err := (BatchExternalSpec{Tool: modelkit.AgentToolName, Input: input}).Spec()
 			require.NoError(t, err, "external parsing checks syntax, not configured definitions")
-			modelSpec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: AgentToolName, Input: input}}}, inv, modelRegistry(AgentToolName))
+			modelSpec, err := modelBatchSpec(modelcontrol.Spec{Mode: "parallel", Items: []modelcontrol.Item{{Tool: modelkit.AgentToolName, Input: input}}}, inv, modelRegistry(modelkit.AgentToolName))
 			require.NoError(t, err)
 			modelPayload := batchPayloadAt(t, modelSpec.Batch.Items[0])
 			require.Equal(t, role, modelPayload.SelectedRoleContract.Name)
-			direct, err := batchOneItemSpec(inv, fantasy.ToolCall{Name: AgentToolName}, input)
+			direct, err := batchOneItemSpec(inv, fantasy.ToolCall{Name: modelkit.AgentToolName}, input)
 			require.NoError(t, err)
 			directPayload := batchPayloadAt(t, direct)
 			require.Equal(t, role, directPayload.SelectedRoleContract.Name)
@@ -110,5 +111,5 @@ func TestAgentRoleBatchAdmissionRejectsUnknownCustomBeforeEffects(t *testing.T) 
 }
 
 func batchRoleAdmissionTask(input json.RawMessage) jobbatch.Spec {
-	return jobbatch.Spec{Task: batchCLITaskSpec(AgentToolName, input)}
+	return jobbatch.Spec{Task: batchCLITaskSpec(modelkit.AgentToolName, input)}
 }

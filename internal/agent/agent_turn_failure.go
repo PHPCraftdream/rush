@@ -12,6 +12,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
@@ -52,9 +53,9 @@ func (ts *turnStream) handleStreamFailure(
 	if ts.att != nil {
 		// A watchdog stall surfaces as context.Canceled but is a real,
 		// paid attempt (accountDrainAttempt does not exempt it).
-		ts.att.stalled.Store(isWatchdogStall)
-		ts.att.turnCtxDone.Store(turnCtxDone)
-		ts.att.streamErr = err
+		ts.att.Stalled.Store(isWatchdogStall)
+		ts.att.TurnCtxDone.Store(turnCtxDone)
+		ts.att.StreamErr = err
 	}
 	// `rush run --timeout` bounds the whole invocation via
 	// context.WithTimeout on the root ctx (run.go); when it fires
@@ -182,7 +183,7 @@ func (ts *turnStream) handleStreamFailure(
 	}
 	var fantasyErr *fantasy.Error
 	var providerErr *fantasy.ProviderError
-	var peakErr *PeakHoursError
+	var peakErr *usage.PeakHoursError
 	var awaitingErr *AwaitingAnswerError
 	const defaultTitle = "Provider Error"
 	// None of the branches below perform I/O — they only decide which

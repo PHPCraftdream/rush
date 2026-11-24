@@ -816,9 +816,9 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	require.True(t, facts.Debt.CompletionOnly, "phase 3: root completion debt is completion-class")
 	require.False(t, facts.Session.SleepAll, "phase 3: sleep not armed on ANY")
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainAllow, pv.kind,
+	require.Equal(t, drainAllow, pv.Kind,
 		"phase 3: top-level ANY: one eligible launch after root debt")
-	t.Logf("AW-a3 phase3 runningOwn=%d kind=%v reason=%q", facts.Session.RunningOwnJobs, pv.kind, pv.reason)
+	t.Logf("AW-a3 phase3 runningOwn=%d kind=%v reason=%q", facts.Session.RunningOwnJobs, pv.Kind, pv.Reason)
 
 	// Phase 4: B settles too: the debt remains and the launch stays
 	// eligible (nothing consumed the debt: no launch actually ran).
@@ -826,8 +826,8 @@ func TestAWa3TopLevelAnyWakesOnlyOnRootDebt(t *testing.T) {
 	require.Equal(t, "completed", env.rootTerminal(rootB))
 	require.True(t, env.debtExists(), "phase 4: the durable debt is untouched")
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainAllow, pv.kind, "phase 4: the launch stays eligible")
-	t.Logf("AW-a3 phase4 kind=%v reason=%q", pv.kind, pv.reason)
+	require.Equal(t, drainAllow, pv.Kind, "phase 4: the launch stays eligible")
+	t.Logf("AW-a3 phase4 kind=%v reason=%q", pv.Kind, pv.Reason)
 	env.logDebtRows(t)
 	env.logNodeRows(t, rootR, rootB)
 }

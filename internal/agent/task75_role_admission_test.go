@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -97,7 +98,7 @@ func TestTask75UnknownCustomRoleRefusesAtBatchAdmissionBeforeEffects(t *testing.
 			rawInput := json.RawMessage(`{"prompt":"must not run","role":"` + role + `"}`)
 			// Syntax parsing deliberately accepts any valid custom name; only
 			// the configured admission boundary knows whether it is defined.
-			_, err := (BatchExternalSpec{Tool: AgentToolName, Input: rawInput}).Spec()
+			_, err := (BatchExternalSpec{Tool: modelkit.AgentToolName, Input: rawInput}).Spec()
 			require.NoError(t, err)
 			spec := jobbatch.Spec{Batch: &jobbatch.BatchSpec{Items: []jobbatch.Spec{
 				batchRoleAdmissionTask(rawInput),

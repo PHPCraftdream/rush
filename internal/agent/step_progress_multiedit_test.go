@@ -70,8 +70,8 @@ func TestNativeMultiEditProofAndFailuresSurviveFantasy(t *testing.T) {
 	require.Equal(t, "alpha\r\nbeta\r\n", string(content))
 	ts := &turnStream{att: &drainAttempt{}}
 	ts.recordChainEvidence(fantasy.StepResult{Response: fantasy.Response{Content: fantasy.ResponseContent{call, result}}})
-	require.False(t, ts.att.chainProgress)
-	require.Empty(t, ts.att.chainIdleClaims)
+	require.False(t, ts.att.ChainProgress)
+	require.Empty(t, ts.att.ChainIdleClaims)
 }
 
 func TestNativeEffectToolReasonWhitelistAndPrecedence(t *testing.T) {

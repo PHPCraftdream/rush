@@ -15,9 +15,27 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
+
+// stepToolCapabilities reports what this step's tool set allows: editing files
+// and delegating to a sub-agent. Read from the set's own names, since a stale
+// session prompt cannot make a tool appear (§4 of the in-turn plan).
+func stepToolCapabilities(set []fantasy.AgentTool) (canEdit, canDelegate bool) {
+	for _, tool := range set {
+		switch tool.Info().Name {
+		case tools.EditToolName, tools.MultiEditToolName, tools.WriteToolName,
+			tools.FSWriteToolName, tools.FSReplaceToolName, tools.FSWriteLinesToolName,
+			tools.FSDeleteToolName:
+			canEdit = true
+		case modelkit.AgentToolName:
+			canDelegate = true
+		}
+	}
+	return canEdit, canDelegate
+}
 
 // logProviderWarnings emits each fantasy CallWarning from a step at WARN
 // level. Without this, warnings such as malformed-tool-call input

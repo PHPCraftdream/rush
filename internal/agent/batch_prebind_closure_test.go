@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
 )
@@ -61,7 +62,7 @@ func TestBatchPrebindFailureSettlesScope(t *testing.T) {
 					return errors.New("bind rejected")
 				},
 			}}
-			execution, err := family.start(ctx, batchLeafEnv{}, jobbatch.Launch{ID: "root.1", Token: 1}, batchLeafPayload{SessionID: "owner", Tool: AgentToolName}, func(result jobbatch.Result) {
+			execution, err := family.start(ctx, batchLeafEnv{}, jobbatch.Launch{ID: "root.1", Token: 1}, batchLeafPayload{SessionID: "owner", Tool: modelkit.AgentToolName}, func(result jobbatch.Result) {
 				trace.addf("report: state=%s code=%s", result.State, result.Code)
 				reports <- result
 			})

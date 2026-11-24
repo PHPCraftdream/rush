@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	batchsession "github.com/PHPCraftdream/rush/internal/session"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
@@ -306,7 +307,7 @@ func (l *cliLoop) todoNudgeDue() bool {
 	// would kill it and surface as a "todo reminder turn failed" error.
 	// The reminder is skipped with a stderr note; the todos stay for the
 	// resumed run.
-	var peak *agent.PeakHoursError
+	var peak *usage.PeakHoursError
 	if errors.As(l.runErr, &peak) {
 		fmt.Fprintf(l.errOut(), "rush run: session %q: todo reminder skipped — the provider is in its peak-hours window (%v); the todos stay for the resumed run\n", l.sessionID, peak)
 		return false

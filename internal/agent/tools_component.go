@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -287,7 +288,7 @@ func (p *toolsComponent) buildToolsAgentConfigForCall(ctx context.Context, cfg *
 	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
 		stripped := make([]string, 0, len(agent.AllowedTools))
 		for _, name := range agent.AllowedTools {
-			if name != AgentToolName && name != tools.AgenticFetchToolName {
+			if name != modelkit.AgentToolName && name != tools.AgenticFetchToolName {
 				stripped = append(stripped, name)
 			}
 		}
@@ -329,7 +330,7 @@ func (p *toolsComponent) applyCallDisableSubAgents(ctx context.Context, cfg *con
 	if remaining, err := MaxAgentDepthFrom(ctx); err != nil || remaining == 0 {
 		stripped := make([]string, 0, len(agent.AllowedTools))
 		for _, name := range agent.AllowedTools {
-			if name != AgentToolName && name != tools.AgenticFetchToolName {
+			if name != modelkit.AgentToolName && name != tools.AgenticFetchToolName {
 				stripped = append(stripped, name)
 			}
 		}
@@ -351,7 +352,7 @@ func (p *toolsComponent) applyCallDisableSubAgents(ctx context.Context, cfg *con
 		if name == tools.AgenticFetchToolName {
 			continue
 		}
-		if name == AgentToolName && !bypass {
+		if name == modelkit.AgentToolName && !bypass {
 			continue
 		}
 		stripped = append(stripped, name)
@@ -513,13 +514,13 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 
 	outputAccess := p.host.mcpOutputAccess()
 	var allTools []fantasy.AgentTool
-	if slices.Contains(agent.AllowedTools, AgentToolName) {
+	if slices.Contains(agent.AllowedTools, modelkit.AgentToolName) {
 		if isSubAgent {
 			// Recursion guard (task #1050): this build is for the task
 			// agent itself -- the only isSubAgent=true build in production
 			// (see agent_tool.go's c.buildAgent call). Handing it the
 			// "agent" tool would let c.agentTool build a fresh copy of the
-			// same task agent, whose buildTools would see AgentToolName
+			// same task agent, whose buildTools would see modelkit.AgentToolName
 			// again and recurse forever, each level registering two more
 			// goroutines on the shared c.readyWg that every run entry point
 			// blocks on via readyWg.Wait(). Deny unconditionally, no matter

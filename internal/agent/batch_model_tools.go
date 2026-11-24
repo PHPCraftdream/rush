@@ -13,7 +13,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
-	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -117,7 +118,7 @@ func rewriteModelBatchLeaf(task *jobbatch.TaskSpec, callID string, maxDepth *int
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return err
 	}
-	if maxDepth != nil && (payload.Tool == AgentToolName || payload.Tool == tools.AgenticFetchToolName) &&
+	if maxDepth != nil && (payload.Tool == modelkit.AgentToolName || payload.Tool == tools.AgenticFetchToolName) &&
 		(payload.AgentDepth == nil || *payload.AgentDepth > *maxDepth) {
 		return errors.New("batch_add agent leaf exceeds trusted depth")
 	}
@@ -142,7 +143,7 @@ func buildModelBatchLeaf(it modelcontrol.Item, callPath string, leafCap int, inv
 		return nil, fmt.Errorf("tool %q input: %w", it.Tool, e)
 	}
 	var selectedRoleContract *session.RoleContract
-	if it.Tool == AgentToolName {
+	if it.Tool == modelkit.AgentToolName {
 		if err := validateAgentRoleInput(input); err != nil {
 			return nil, err
 		}
@@ -178,7 +179,7 @@ func buildModelBatchLeaf(it modelcontrol.Item, callPath string, leafCap int, inv
 		return nil, errors.New("item timeout and the leaf tool input's timeout are ambiguous; provide at most one")
 	}
 	leafPayload := batchLeafPayload{Tool: it.Tool, ToolCallID: fmt.Sprintf("%s-item-%s", inv.CallID, callPath), SessionID: inv.SessionID, Input: input, RegistryID: inv.RegistryID, Policy: &inv.Policy, QuestionRoute: inv.QuestionRoute, SelectedRoleContract: cloneRoleContractForCall(selectedRoleContract)}
-	if it.Tool == AgentToolName || it.Tool == tools.AgenticFetchToolName {
+	if it.Tool == modelkit.AgentToolName || it.Tool == tools.AgenticFetchToolName {
 		leafPayload.AgentDepth = &leafCap
 	}
 	timeout := time.Duration(0)

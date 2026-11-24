@@ -113,9 +113,9 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 	require.True(t, facts.Debt.CompletionOnly, "phase 6: D is completion-class")
 	require.GreaterOrEqual(t, facts.Session.RunningOwnJobs, 1, "phase 6: R (and B) live")
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, "sleeping until all tasks finish", pv.reason, "phase 6: 4b defers")
+	require.Equal(t, "sleeping until all tasks finish", pv.Reason, "phase 6: 4b defers")
 	require.Equal(t, "pending", env.nodeState(rootB), "B still Pending at the 4b fence")
-	t.Logf("AW-b6 facts runningOwn=%d reason=%q", facts.Session.RunningOwnJobs, pv.reason)
+	t.Logf("AW-b6 facts runningOwn=%d reason=%q", facts.Session.RunningOwnJobs, pv.Reason)
 
 	// 7. Release R's held leaf: the latched stop cause settles R CANCELLED;
 	// the ALL worker (captured {R} only) wakes on R; B was never captured.
@@ -156,7 +156,7 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 	facts = readFactsON(t, coord, env)
 	require.GreaterOrEqual(t, facts.Session.RunningOwnJobs, 1, "phase 9: B live")
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, "sleeping until all tasks finish", pv.reason, "phase 9: 4b still defers on B")
+	require.Equal(t, "sleeping until all tasks finish", pv.Reason, "phase 9: 4b still defers on B")
 
 	// 10. B completes: no live work left -> 4b lifts; the launch proceeds
 	// subject to the other gates (the fresh gate is open: allow).
@@ -167,7 +167,7 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 		return err == nil && f.Session.RunningOwnJobs == 0
 	}, 5*time.Second, 5*time.Millisecond, "phase 10: no live work")
 	pv = coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainAllow, pv.kind,
+	require.Equal(t, drainAllow, pv.Kind,
 		"phase 10: 4b lifted, exactly one eligible launch subject to other gates")
 
 	// 11. NOW the pull delivers the held completions: D's held notice and
@@ -272,7 +272,7 @@ func TestAWbDebtFreeVariant(t *testing.T) {
 		return err == nil && f.Session.RunningOwnJobs == 0
 	}, 5*time.Second, 5*time.Millisecond, "FINAL: no live work")
 	pv := coord.drainPolicy(env.ctx, env.sessionID, false)
-	require.Equal(t, drainAllow, pv.kind,
+	require.Equal(t, drainAllow, pv.Kind,
 		"FINAL: 4b lifted, one eligible launch (subject to other gates)")
 
 	// R's synchronous inline election WINS here too (unannounced one-task
@@ -297,7 +297,7 @@ func TestAWbDebtFreeVariant(t *testing.T) {
 	bDelivery, _, _, _ = env.nodeNotice(rootB)
 	require.Equal(t, "done", bDelivery)
 	require.True(t, env.debtExists(), "unreacted completion debt remains")
-	t.Logf("AW-b-free FINAL kind=%v reason=%q", pv.kind, pv.reason)
+	t.Logf("AW-b-free FINAL kind=%v reason=%q", pv.Kind, pv.Reason)
 	env.logDebtRows(t)
 	env.logNodeRows(t, rootR, rootB)
 }

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -54,7 +55,7 @@ func guardViewTool(f *attemptFixture) fantasy.AgentTool {
 // never calls it, it only has to be PRESENT in the step's set so the guard
 // reads the session as an orchestrator (no edit tool, but `agent`).
 func guardDelegateTool() fantasy.AgentTool {
-	return fantasy.NewAgentTool(AgentToolName, "delegate a change to a worker",
+	return fantasy.NewAgentTool(modelkit.AgentToolName, "delegate a change to a worker",
 		func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.NewTextResponse("delegated"), nil
 		})

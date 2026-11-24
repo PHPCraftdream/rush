@@ -60,7 +60,7 @@ func TestDrainAttempt_401AfterSuccessfulRefreshIsCountedAndPaced(t *testing.T) {
 	require.EqualValues(t, 0, row.Reacted, "not a verdict")
 	require.EqualValues(t, 0, row.ReactedFailed)
 	require.Zero(t, f.markers(ctx))
-	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).kind, "paced")
+	require.Equal(t, drainPaced, f.coord.drainPermitted(ctx, f.sessID, false).Kind, "paced")
 }
 
 // A 401 whose refresh fails (no way to get a working token) stays terminal:

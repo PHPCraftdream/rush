@@ -10,6 +10,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func (i *pctScopeIngress) Invoke(ctx context.Context, inv BatchInvocation, leaf 
 	if fail {
 		return fantasy.ToolResponse{}, errors.New("simulated admission rejection")
 	}
-	if call.Name == AgentToolName {
+	if call.Name == modelkit.AgentToolName {
 		h := toolwrap.HandoffFrom(ctx)
 		if h == nil {
 			return fantasy.ToolResponse{}, errors.New("missing invocation handoff")
@@ -132,7 +133,7 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 	require.NotEmpty(t, viewBuild.RegistryID, "inner tool registry is pinned")
 	view, ok := viewBuild.Tools[0].(*toolwrap.BatchIngressTool)
 	require.True(t, ok, "inner tool is armed through the batch ingress")
-	captured := childagent.NewPctCapturedAgentTool(&countingTool{name: AgentToolName}, child)
+	captured := childagent.NewPctCapturedAgentTool(&countingTool{name: modelkit.AgentToolName}, child)
 	outerBuild, err := newBatchWorkToolBuild(bind, []fantasy.AgentTool{captured}, parent, false)
 	require.NoError(t, err, "build outer tool through captured wrapper")
 	require.NotEmpty(t, outerBuild.RegistryID, "outer registry is pinned")
@@ -145,7 +146,7 @@ func pctNewScopeFixture(t *testing.T, accepted, claim bool) *pctScopeFixture {
 
 func (f *pctScopeFixture) pctStart(t *testing.T, id string) *toolwrap.PctDelegationHandoff {
 	t.Helper()
-	resp, err := f.outer.Run(batchCallCtx("pct-parent"), fantasy.ToolCall{ID: id, Name: AgentToolName, Input: `{}`})
+	resp, err := f.outer.Run(batchCallCtx("pct-parent"), fantasy.ToolCall{ID: id, Name: modelkit.AgentToolName, Input: `{}`})
 	require.NoError(t, err, "simulate outer agent admission")
 	require.False(t, resp.IsError)
 	f.ingress.mu.Lock()
@@ -191,7 +192,7 @@ func TestBatchChildToolScope_RejectedAdmissionAndFailedLaunch(t *testing.T) {
 	t.Run("rejected admission", func(t *testing.T) {
 		f := pctNewScopeFixture(t, false, false)
 		f.ingress.fail = true
-		_, err := f.outer.Run(batchCallCtx("pct-parent"), fantasy.ToolCall{ID: "rejected", Name: AgentToolName, Input: `{}`})
+		_, err := f.outer.Run(batchCallCtx("pct-parent"), fantasy.ToolCall{ID: "rejected", Name: modelkit.AgentToolName, Input: `{}`})
 		require.Error(t, err)
 		f.parent.Close()
 		_, count := f.caps.ownerCounts()
