@@ -57,7 +57,7 @@ internal/serve/server/server 130
 internal/session 33
 # MV1 temporary second-ratchet debt: the service subtree has 61 code files, above the ≤21 target.
 # The design's MV3/EX satellite splits reduce this count per docs/plans/2026-11-15-sprint0-split-session.md §2.2.
-internal/session/service 58
+internal/session/service 55
 internal/session/jobbatch 43
 internal/session/jobbatch/lab 45
 internal/store/message 26
