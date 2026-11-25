@@ -83,9 +83,9 @@ func TestQueuedPromptsList_ExcludesDrain(t *testing.T) {
 		Sessions: env.sessions, Messages: env.messages, DataDirectory: env.workingDir,
 	})
 	mb := sa.(*sessionAgent).getMailbox("s1")
-	mb.mu.Lock()
-	mb.submitted = append(mb.submitted, SessionAgentCall{SessionID: "s1", IsDrain: true}, SessionAgentCall{SessionID: "s1", Prompt: "visible"})
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	mb.Submitted = append(mb.Submitted, SessionAgentCall{SessionID: "s1", IsDrain: true}, SessionAgentCall{SessionID: "s1", Prompt: "visible"})
+	mb.Mu.Unlock()
 
 	list := sa.QueuedPromptsList("s1")
 	require.Equal(t, []string{"visible"}, list)

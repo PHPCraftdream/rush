@@ -127,7 +127,7 @@ func TestRunOwned_ReplacementInheritsOriginalCallsIdentityCallback_R9_1(t *testi
 	// the P0-A test, actually invoke the returned cancel: this test targets
 	// runTurn's isCancelErr/drainAfterCancel path, R9-1's own scenario.
 	mb := sa.getMailbox(sess.ID)
-	cancel, hadOwner := mb.interruptAndReplace(SessionAgentCall{
+	cancel, hadOwner := mb.InterruptAndReplace(SessionAgentCall{
 		SessionID:       sess.ID,
 		Prompt:          "the accepted replacement -- deliberately has NO OnAssistantMessageCreated of its own, matching buildCall's real shape",
 		MaxOutputTokens: 1000,

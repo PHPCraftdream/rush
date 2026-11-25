@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/fantasy"
@@ -49,7 +51,7 @@ func newLockTestSessionAgent(dataDir string, isSubAgent bool) *sessionAgent {
 		dataDir:                 dataDir,
 		isSubAgent:              isSubAgent,
 		activeRequests:          csync.NewMap[string, context.CancelFunc](),
-		mailboxes:               csync.NewMap[string, *mailbox](),
+		mailboxes:               csync.NewMap[string, *mailboxpkg.Mailbox](),
 		CacheKeepAliveComponent: callbeat.NewComponent(),
 		tools:                   csync.NewSliceFrom[fantasy.AgentTool](nil),
 		smartModel:              csync.NewValue(Model{}),

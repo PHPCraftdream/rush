@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -74,7 +76,7 @@ func TestRunInternal_DrainIsOneAttempt(t *testing.T) {
 
 	require.Equal(t, 3, runInternalCallsFor(t, t.Context(), "test-ordinary-retry"),
 		"precondition: an ordinary turn IS retried by the coordinator")
-	require.Equal(t, 1, runInternalCallsFor(t, WithDrainCall(t.Context()), "test-drain-once"),
+	require.Equal(t, 1, runInternalCallsFor(t, sessionprompt.WithDrainCall(t.Context()), "test-drain-once"),
 		"a Drain is one provider attempt")
 }
 
@@ -94,11 +96,11 @@ func TestDrainRefused_TypedAndPacesOnlyDrainCalls(t *testing.T) {
 	open, _, _ := gateOpen(coord, "s-ordinary", time.Now())
 	require.True(t, open, "an ordinary call leaves the gate alone")
 
-	err = coord.drainRefused(WithDrainCall(t.Context()), "s-drain", cause)
+	err = coord.drainRefused(sessionprompt.WithDrainCall(t.Context()), "s-drain", cause)
 	require.ErrorIs(t, err, cause, "the refusal stays reachable")
 	require.True(t, IsDrainNotAttempted(err))
 	open, _, _ = gateOpen(coord, "s-drain", time.Now())
 	require.False(t, open, "a refused Drain paces the gate")
 
-	require.NoError(t, coord.drainRefused(WithDrainCall(t.Context()), "s-drain", nil))
+	require.NoError(t, coord.drainRefused(sessionprompt.WithDrainCall(t.Context()), "s-drain", nil))
 }

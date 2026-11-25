@@ -8,7 +8,7 @@ package agent
 // to restartOrphanedWithRetry.
 //
 // Invariants proven here (no sleeps; the interleaving is forced by direct
-// calls, which is exactly the interleaving submit/abandon's shared mb.mu
+// calls, which is exactly the interleaving submit/abandon's shared mb.Mu
 // serializes in production):
 //   - a queued non-Drain call is durably enqueued EXACTLY once, and a stale
 //     second abandon of the same era cannot re-enqueue it (no duplicates);
@@ -18,6 +18,8 @@ package agent
 
 import (
 	"testing"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -52,7 +54,7 @@ func TestAbandonHandoff_NonDrainOrphanEnqueuedExactlyOnce(t *testing.T) {
 	sa, sessionID := newAbandonHandoffAgent(t)
 	mb := sa.getMailbox(sessionID)
 
-	became, epoch := mb.submit(SessionAgentCall{SessionID: sessionID, Prompt: "owner turn"}, nil)
+	became, epoch := mb.Submit(SessionAgentCall{SessionID: sessionID, Prompt: "owner turn"}, nil)
 	require.True(t, became)
 
 	// A call queued by a concurrent submit while this Run still owned the
@@ -62,11 +64,11 @@ func TestAbandonHandoff_NonDrainOrphanEnqueuedExactlyOnce(t *testing.T) {
 		Prompt:        "queued follow-up",
 		LogicalCallID: uuid.NewString(),
 	}
-	became, _ = mb.submit(orphan, nil)
+	became, _ = mb.Submit(orphan, nil)
 	require.False(t, became, "the submit must queue behind the owner")
 
 	sa.abandonOwnershipWithHandoff(sessionID, epoch)
-	require.Equal(t, mbIdle, mb.state)
+	require.Equal(t, mailboxpkg.MbIdle, mb.State)
 	require.Equal(t, 1, pendingRunQueueRowsForSession(t, sa, sessionID),
 		"the orphaned call must be durably enqueued exactly once")
 
@@ -81,10 +83,10 @@ func TestAbandonHandoff_QueuedDrainDroppedWithoutDurableRow(t *testing.T) {
 	sa, sessionID := newAbandonHandoffAgent(t)
 	mb := sa.getMailbox(sessionID)
 
-	became, epoch := mb.submit(SessionAgentCall{SessionID: sessionID, Prompt: "owner turn"}, nil)
+	became, epoch := mb.Submit(SessionAgentCall{SessionID: sessionID, Prompt: "owner turn"}, nil)
 	require.True(t, became)
 
-	became, _ = mb.submit(SessionAgentCall{
+	became, _ = mb.Submit(SessionAgentCall{
 		SessionID:     sessionID,
 		IsDrain:       true,
 		LogicalCallID: uuid.NewString(),
@@ -92,7 +94,7 @@ func TestAbandonHandoff_QueuedDrainDroppedWithoutDurableRow(t *testing.T) {
 	require.False(t, became)
 
 	sa.abandonOwnershipWithHandoff(sessionID, epoch)
-	require.Equal(t, mbIdle, mb.state)
+	require.Equal(t, mailboxpkg.MbIdle, mb.State)
 	require.Equal(t, 0, pendingRunQueueRowsForSession(t, sa, sessionID),
 		"an orphaned Drain must be dropped, never durably enqueued: the next turn-start pull re-derives it")
 }

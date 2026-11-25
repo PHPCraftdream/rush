@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -367,7 +369,7 @@ func TestRunInternal_RateLimitWaitContextDeadline(t *testing.T) {
 func TestRunInternal_RateLimitDrainIsOneAttempt(t *testing.T) {
 	shrinkRateLimitVars(t, time.Millisecond, 10*time.Millisecond, time.Second, time.Millisecond, time.Millisecond)
 	rlErr := rateLimit429Err()
-	_, calls, _, err := rateLimitLoopRun(t, WithDrainCall(t.Context()), "test-rl-drain", nil,
+	_, calls, _, err := rateLimitLoopRun(t, sessionprompt.WithDrainCall(t.Context()), "test-rl-drain", nil,
 		func(t *testing.T, env *fakeEnv, sess session.Session, ctx context.Context, n int, call SessionAgentCall) (*fantasy.AgentResult, error) {
 			return rateLimitErrorAttempt(t, env, sess, ctx, call, rlErr)
 		})

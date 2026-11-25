@@ -12,7 +12,7 @@ package agent
 // this test fails if abandonOwnershipAndPopSubmitted ever grows an
 // mb.stopped refusal (the enqueue would not happen), and it also fails if
 // the caller-side release is removed from handleRerunMessage's contract
-// reasoning (the mailbox would stay wedged at mbOwned-stopped).
+// reasoning (the mailbox would stay wedged at mailboxpkg.MbOwned-stopped).
 
 import (
 	"context"
@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -96,10 +98,10 @@ func TestRunWithReservedOwnership_MbStoppedInRebindWindow_CallerReleaseStillEnqu
 		// has long since returned and the rebind below has failed.
 		go sa.CancelAll()
 		// Deterministically wait for the sweep to reach THIS mailbox.
-		require.Eventually(t, mb.isStopped, 5*time.Second, 2*time.Millisecond)
+		require.Eventually(t, mb.IsStopped, 5*time.Second, 2*time.Millisecond)
 		// Queue work AFTER the latch, exactly as a racing QueueMessage
 		// would during teardown.
-		mb.queue(SessionAgentCall{
+		mb.Queue(SessionAgentCall{
 			SessionID:       sessionID,
 			Prompt:          "queued during teardown",
 			LogicalCallID:   "p641-queued",
@@ -114,11 +116,11 @@ func TestRunWithReservedOwnership_MbStoppedInRebindWindow_CallerReleaseStillEnqu
 	}, epoch, reserveCancel, nil)
 	require.Error(t, err, "rebind must fail: the mailbox was hard-stopped inside the admission->rebind window")
 
-	// The mailbox is still mbOwned here — nothing released yet.
-	mb.mu.Lock()
-	state, queued := mb.state, len(mb.submitted)
-	mb.mu.Unlock()
-	require.Equal(t, mbOwned, state, "RunWithReservedOwnership's stopped branch must NOT release; that is the caller's job")
+	// The mailbox is still mailboxpkg.MbOwned here — nothing released yet.
+	mb.Mu.Lock()
+	state, queued := mb.State, len(mb.Submitted)
+	mb.Mu.Unlock()
+	require.Equal(t, mailboxpkg.MbOwned, state, "RunWithReservedOwnership's stopped branch must NOT release; that is the caller's job")
 	require.Equal(t, 1, queued, "the queued call must still be in submitted")
 
 	// Mirror handleRerunMessage's releaseOnBailout defer exactly: it fires
@@ -134,6 +136,6 @@ func TestRunWithReservedOwnership_MbStoppedInRebindWindow_CallerReleaseStillEnqu
 	require.Len(t, keys, 1, "the caller-side release must durably enqueue the queued call despite the stopped latch")
 	require.Contains(t, keys[0], "p641-queued")
 
-	require.False(t, sa.IsSessionBusy(sessionID), "mailbox must be mbIdle after the caller-side release")
+	require.False(t, sa.IsSessionBusy(sessionID), "mailbox must be mailboxpkg.MbIdle after the caller-side release")
 	require.Zero(t, lm.calls.Load(), "no provider turn may start on this path — only a durable enqueue")
 }

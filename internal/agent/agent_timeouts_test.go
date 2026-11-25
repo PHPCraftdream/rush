@@ -1,5 +1,5 @@
 // Timeout and watchdog-semantics tests: SetTimeoutOptions, the
-// watchdogFinishMessage/watchdogToolResultMessage cause mappings, and
+// watchdog.FinishMessage/watchdog.ToolResultMessage cause mappings, and
 // effectiveToolMaxDuration / effectiveToolCleanupGrace precedence.
 
 package agent
@@ -7,6 +7,8 @@ package agent
 import (
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,8 +39,8 @@ func TestSetTimeoutOptions(t *testing.T) {
 // a tool in flight) always fell into the "Stream stalled" branch, which
 // falsely blames the PROVIDER for silence and cites idleTimeout, a
 // completely different configured duration than the one that actually
-// fired. This proves watchdogFinishMessage — the pure mapping the runTurn
-// AddFinish call now delegates to — gives causeHardCap its own title and
+// fired. This proves watchdog.FinishMessage — the pure mapping the runTurn
+// AddFinish call now delegates to — gives watchdog.CauseHardCap its own title and
 // body that (a) is NOT "Stream stalled", (b) does NOT mention idleTimeout's
 // duration or the word "Provider", and (c) DOES cite the actual configured
 // hardCap duration that fired.
@@ -48,7 +50,7 @@ func TestWatchdogFinishMessage_HardCapDoesNotBlameProviderOrTool(t *testing.T) {
 	const idleTimeout = 3 * time.Minute
 	const provider = "anthropic"
 
-	title, body := watchdogFinishMessage(causeHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+	title, body := watchdog.FinishMessage(watchdog.CauseHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 
 	assert.Equal(t, "Turn timeout", title, "hard-cap fire must get its own title, not reuse Tool timeout/Stream stalled")
 	assert.NotEqual(t, streamStalledFinishTitle, title)
@@ -70,9 +72,9 @@ func TestWatchdogFinishMessage_AllThreeCausesDistinct(t *testing.T) {
 	const idleTimeout = 3 * time.Minute
 	const provider = "anthropic"
 
-	toolTitle, toolBody := watchdogFinishMessage(causeToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
-	hardCapTitle, _ := watchdogFinishMessage(causeHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
-	idleTitle, idleBody := watchdogFinishMessage(causeIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+	toolTitle, toolBody := watchdog.FinishMessage(watchdog.CauseToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+	hardCapTitle, _ := watchdog.FinishMessage(watchdog.CauseHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+	idleTitle, idleBody := watchdog.FinishMessage(watchdog.CauseIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 
 	assert.Equal(t, "Tool timeout", toolTitle)
 	assert.Equal(t, "Turn timeout", hardCapTitle)
@@ -93,27 +95,27 @@ func TestComposeWatchdogFinishBody_DoesNotMislabelToolTimeoutAsRunTimeout(t *tes
 		idleTimeout     = 3 * time.Minute
 	)
 
-	toolBody := composeWatchdogFinishBody("sess-1", causeToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, "anthropic")
+	toolBody := watchdog.ComposeFinishBody("sess-1", watchdog.CauseToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, "anthropic")
 	assert.Contains(t, toolBody, toolMaxDuration.String())
 	assert.NotContains(t, toolBody, "--timeout")
 
-	hardCapBody := composeWatchdogFinishBody("sess-1", causeHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, "anthropic")
+	hardCapBody := watchdog.ComposeFinishBody("sess-1", watchdog.CauseHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, "anthropic")
 	assert.Contains(t, hardCapBody, "--timeout-hard-cap")
 }
 
 // TestWatchdogFinishMessage_IdleStallTitleMatchesRetryConstant is the
 // regression test for task #236: "Stream stalled" used to be hardcoded
-// independently in watchdogFinishMessage's causeIdleStall branch AND in
+// independently in watchdog.FinishMessage's watchdog.CauseIdleStall branch AND in
 // coordinator.go's streamStalledFinishTitle constant (the value
 // shouldRetryTurn's finish-part matching compares against to decide
 // whether a stall qualifies for transparent streamStallRetriesDefault
 // retry). Two independently-maintained copies of the same string meant a
 // future reword of one — e.g. for clarity or i18n — could silently break
 // the retry match with no test catching it, since every existing test
-// compared watchdogFinishMessage's output against ITS OWN separate
+// compared watchdog.FinishMessage's output against ITS OWN separate
 // hardcoded literal rather than against the actual constant coordinator.go
 // reads. This test cross-references the two directly: if
-// watchdogFinishMessage's idle-stall title and streamStalledFinishTitle
+// watchdog.FinishMessage's idle-stall title and streamStalledFinishTitle
 // ever diverge again, this assertion — not a hardcoded string — is what
 // catches it.
 func TestWatchdogFinishMessage_IdleStallTitleMatchesRetryConstant(t *testing.T) {
@@ -122,26 +124,26 @@ func TestWatchdogFinishMessage_IdleStallTitleMatchesRetryConstant(t *testing.T) 
 	const idleTimeout = 3 * time.Minute
 	const provider = "anthropic"
 
-	title, _ := watchdogFinishMessage(causeIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+	title, _ := watchdog.FinishMessage(watchdog.CauseIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 
-	assert.Equal(t, streamStalledFinishTitle, title, "watchdogFinishMessage's idle-stall title must match coordinator.go's streamStalledFinishTitle exactly, or transparent stall-retry silently stops matching")
+	assert.Equal(t, streamStalledFinishTitle, title, "watchdog.FinishMessage's idle-stall title must match coordinator.go's streamStalledFinishTitle exactly, or transparent stall-retry silently stops matching")
 }
 
 // TestWatchdogToolResultMessage_ReflectsRealCause is the regression test for
-// task #227 (same root-cause family as task #223's watchdogFinishMessage
+// task #227 (same root-cause family as task #223's watchdog.FinishMessage
 // split): the synthetic tool-result content built for the model when a tool
 // call is still unfinished at watchdog-fire time used to unconditionally
 // read "the provider stream stalled for >idleTimeout" regardless of the
 // real cause — so even after 7b48f75a fixed the HUMAN-facing finish
 // message, the MODEL was still told the wrong story on a genuine hard-cap
-// or tool-timeout fire. This proves watchdogToolResultMessage — what
+// or tool-timeout fire. This proves watchdog.ToolResultMessage — what
 // agent.go's runTurn now delegates to instead of a hardcoded string — gives
 // each cause distinct, correctly-attributed wording:
-//   - causeHardCap must NOT mention "provider" or cite idleTimeout; it must
+//   - watchdog.CauseHardCap must NOT mention "provider" or cite idleTimeout; it must
 //     cite the actual hardCap duration.
-//   - causeToolTimeout must NOT mention "provider" or cite idleTimeout; it
+//   - watchdog.CauseToolTimeout must NOT mention "provider" or cite idleTimeout; it
 //     must cite the actual toolMaxDuration.
-//   - causeIdleStall is the only cause allowed to blame the provider and
+//   - watchdog.CauseIdleStall is the only cause allowed to blame the provider and
 //     cite idleTimeout.
 func TestWatchdogToolResultMessage_ReflectsRealCause(t *testing.T) {
 	const toolMaxDuration = 45 * time.Minute
@@ -150,28 +152,28 @@ func TestWatchdogToolResultMessage_ReflectsRealCause(t *testing.T) {
 	const provider = "anthropic"
 
 	t.Run("hard cap does not blame the provider or cite idleTimeout", func(t *testing.T) {
-		msg := watchdogToolResultMessage(causeHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+		msg := watchdog.ToolResultMessage(watchdog.CauseHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 		assert.NotContains(t, msg, provider, "must not name the provider at all — it did not cause this")
 		assert.NotContains(t, msg, idleTimeout.String(), "must not cite idleTimeout — that's not the duration that fired")
 		assert.Contains(t, msg, hardCap.String(), "must cite the actual --timeout-hard-cap duration that fired")
 	})
 
 	t.Run("tool timeout does not blame the provider or cite idleTimeout", func(t *testing.T) {
-		msg := watchdogToolResultMessage(causeToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+		msg := watchdog.ToolResultMessage(watchdog.CauseToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 		assert.NotContains(t, msg, provider, "must not name the provider at all — it did not cause this")
 		assert.NotContains(t, msg, idleTimeout.String(), "must not cite idleTimeout — that's not the duration that fired")
 		assert.Contains(t, msg, toolMaxDuration.String(), "must cite the actual toolMaxDuration that fired")
 	})
 
 	t.Run("idle stall is the only cause that blames the provider", func(t *testing.T) {
-		msg := watchdogToolResultMessage(causeIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+		msg := watchdog.ToolResultMessage(watchdog.CauseIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 		assert.Contains(t, msg, idleTimeout.String(), "idle-stall must cite idleTimeout — the provider genuinely is the cause here")
 	})
 
 	t.Run("all three causes produce distinct messages", func(t *testing.T) {
-		hardCapMsg := watchdogToolResultMessage(causeHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
-		toolMsg := watchdogToolResultMessage(causeToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
-		idleMsg := watchdogToolResultMessage(causeIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+		hardCapMsg := watchdog.ToolResultMessage(watchdog.CauseHardCap, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+		toolMsg := watchdog.ToolResultMessage(watchdog.CauseToolTimeout, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
+		idleMsg := watchdog.ToolResultMessage(watchdog.CauseIdleStall, toolMaxDuration, hardCap, idleTimeout, 30*time.Minute, provider)
 		assert.NotEqual(t, hardCapMsg, toolMsg)
 		assert.NotEqual(t, toolMsg, idleMsg)
 		assert.NotEqual(t, hardCapMsg, idleMsg)

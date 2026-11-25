@@ -103,12 +103,12 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_SynchronousRun_Regr
 	// Queue the failing call BEFORE Summarize acquires ownership.
 	// This ensures it will be in the submitted queue when Summarize reaches
 	// the success path.
-	sessionAgent.getMailbox(sess.ID).queue(failingQueuedCall)
+	sessionAgent.getMailbox(sess.ID).Queue(failingQueuedCall)
 	require.Equal(t, 1, sessionAgent.QueuedPrompts(sess.ID), "failing call must be queued")
 
 	// Call Summarize. With the FIX (correct code):
 	// - Summarize succeeds (runSummarizeBody returns nil)
-	// - On success path: mb.abandonOwnership(epoch) releases ownership
+	// - On success path: mb.AbandonOwnership(epoch) releases ownership
 	// - popFirstSubmitted() returns the queued failing call (hasNext == true)
 	// - a.Run(ctx, firstQueued) executes synchronously with the invalid session ID
 	// - That a.Run fails with "failed to get session"

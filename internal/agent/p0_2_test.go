@@ -116,7 +116,7 @@ func TestCheckpointGenerationOverlap(t *testing.T) {
 	// checkpoint goroutine returns (because it's still blocked in Update()).
 	// This is the overlapping-generations race on checkpointGeneration.
 	mb := sessionAgent.getMailbox(sess.ID)
-	_, hadOwner := mb.interruptAndReplace(SessionAgentCall{
+	_, hadOwner := mb.InterruptAndReplace(SessionAgentCall{
 		SessionID: sess.ID,
 		Prompt:    "generation 2 — overlapping test",
 	})

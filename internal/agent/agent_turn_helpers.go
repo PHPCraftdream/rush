@@ -11,9 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -87,15 +90,15 @@ func (a *sessionAgent) drainDueInjects(sessionID string, genID uint64, historyID
 //     the preamble does not appear both in history and in the splice (the
 //     DUPLICATION half).
 func (t *turnBudget) drainDueInjects(h contextBudgetHost, sessionID string, genID uint64, historyIDs map[string]struct{}) []message.Message {
-	due := h.getMailbox(sessionID).drainInjects(genID)
+	due := h.getMailbox(sessionID).DrainInjects(genID)
 	return turnstep.DedupInjects(due, historyIDs,
-		func(inj pendingInject) string { return inj.msg.ID },
-		func(inj pendingInject) message.Message { return inj.msg },
+		func(inj mailboxpkg.PendingInject) string { return inj.Msg.ID },
+		func(inj mailboxpkg.PendingInject) message.Message { return inj.Msg },
 	)
 }
 
 func (a *sessionAgent) handleWatchdogFire(
-	cause watchdogCause,
+	cause watchdog.Cause,
 	elapsed time.Duration,
 	sessionID string,
 	watchdogCauseVal *atomic.Int32,
@@ -110,12 +113,12 @@ func (a *sessionAgent) handleWatchdogFire(
 // instantiated there — everything is a parameter). This delegate forwards
 // the cause/durations/model snapshot unchanged and passes h.timeoutHardCapCfg
 // as a method value, so the config read still happens only in the leaf's
-// causeHardCap branch, at the original point. See the leaf doc for the
+// watchdog.CauseHardCap branch, at the original point. See the leaf doc for the
 // full invariant commentary (first synchronous Store, sync capture, async
 // write, per-cause logs — all preserved verbatim).
 func (t *turnBudget) handleWatchdogFire(
 	h contextBudgetHost,
-	cause watchdogCause,
+	cause watchdog.Cause,
 	elapsed time.Duration,
 	sessionID string,
 	watchdogCauseVal *atomic.Int32,

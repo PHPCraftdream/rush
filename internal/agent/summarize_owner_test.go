@@ -27,26 +27,26 @@ func TestP268_ManualCompactBlocksConcurrentRun(t *testing.T) {
 	mb := sa.getMailbox(sess.ID)
 
 	// Simulate a manual /compact acquiring ownership.
-	epoch, ok := mb.beginCompact(func() {})
+	epoch, ok := mb.BeginCompact(func() {})
 	require.True(t, ok, "beginCompact must succeed on idle mailbox")
 
 	// A concurrent Run's submit must see the mailbox as owned and queue.
-	becomeOwner, submitEpoch := mb.submit(SessionAgentCall{SessionID: sess.ID, Prompt: "concurrent"}, func() {})
+	becomeOwner, submitEpoch := mb.Submit(SessionAgentCall{SessionID: sess.ID, Prompt: "concurrent"}, func() {})
 	require.False(t, becomeOwner, "submit must NOT become owner while compaction holds the mailbox")
 	require.Zero(t, submitEpoch, "epoch must be 0 when not becoming owner")
 
 	// The queued call must be in submitted, waiting for the compaction to
 	// release.
-	mb.mu.Lock()
-	assert.Equal(t, 1, len(mb.submitted), "the Run's call must be queued in submitted")
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	assert.Equal(t, 1, len(mb.Submitted), "the Run's call must be queued in submitted")
+	mb.Mu.Unlock()
 
 	// Release compaction ownership. The queued call should be handed back.
-	hadQueued := mb.abandonOwnership(epoch)
+	hadQueued := mb.AbandonOwnership(epoch)
 	require.True(t, hadQueued)
 
 	// After release, a new submit can become owner again.
-	becomeOwner2, _ := mb.submit(SessionAgentCall{SessionID: sess.ID}, func() {})
+	becomeOwner2, _ := mb.Submit(SessionAgentCall{SessionID: sess.ID}, func() {})
 	assert.True(t, becomeOwner2, "submit must succeed after compaction released")
 }
 
@@ -58,7 +58,7 @@ func TestP268_TwoCompactionsMutuallyExclusive(t *testing.T) {
 	mb := sa.getMailbox(sess.ID)
 
 	// First compaction acquires ownership.
-	epoch1, ok1 := mb.beginCompact(func() {})
+	epoch1, ok1 := mb.BeginCompact(func() {})
 	require.True(t, ok1, "first beginCompact must succeed")
 	require.NotZero(t, epoch1)
 
@@ -66,7 +66,7 @@ func TestP268_TwoCompactionsMutuallyExclusive(t *testing.T) {
 	// exclusion that prevents two concurrent compactions from creating
 	// overlapping summaries, deleting intersecting rows, and racing for
 	// SummaryMessageID.
-	_, ok2 := mb.beginCompact(func() {})
+	_, ok2 := mb.BeginCompact(func() {})
 	require.False(t, ok2, "second beginCompact must fail — two concurrent compactions are impossible")
 
 	// A manual Summarize call on the same session must see ErrSummarizeQueued.
@@ -74,8 +74,8 @@ func TestP268_TwoCompactionsMutuallyExclusive(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSummarizeQueued, "Summarize must queue when another compaction owns the mailbox")
 
 	// After the first compaction releases, a new one can proceed.
-	mb.abandonOwnership(epoch1)
-	_, ok3 := mb.beginCompact(func() {})
+	mb.AbandonOwnership(epoch1)
+	_, ok3 := mb.BeginCompact(func() {})
 	require.True(t, ok3, "beginCompact must succeed after the first compaction released")
 }
 
@@ -88,11 +88,11 @@ func TestP268_ManualCompactAndTurnMutuallyExclusive(t *testing.T) {
 	mb := sa.getMailbox(sess.ID)
 
 	// Turn acquires ownership first (via submit, exactly like Run's loop).
-	becomeOwner, turnEpoch := mb.submit(SessionAgentCall{SessionID: sess.ID}, func() {})
+	becomeOwner, turnEpoch := mb.Submit(SessionAgentCall{SessionID: sess.ID}, func() {})
 	require.True(t, becomeOwner)
 
 	// Manual /compact's beginCompact must fail — the turn owns.
-	_, compactOk := mb.beginCompact(func() {})
+	_, compactOk := mb.BeginCompact(func() {})
 	require.False(t, compactOk, "beginCompact must fail while a turn owns the mailbox")
 
 	// The Summarize wrapper must route to the queue.
@@ -100,34 +100,34 @@ func TestP268_ManualCompactAndTurnMutuallyExclusive(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSummarizeQueued)
 
 	// Now release the turn and acquire as compaction instead.
-	mb.abandonOwnership(turnEpoch)
-	compactEpoch, compactOk2 := mb.beginCompact(func() {})
+	mb.AbandonOwnership(turnEpoch)
+	compactEpoch, compactOk2 := mb.BeginCompact(func() {})
 	require.True(t, compactOk2, "beginCompact must succeed after the turn released")
 
 	// A new turn's submit must queue behind the compaction.
-	becomeOwner2, _ := mb.submit(SessionAgentCall{SessionID: sess.ID}, func() {})
+	becomeOwner2, _ := mb.Submit(SessionAgentCall{SessionID: sess.ID}, func() {})
 	require.False(t, becomeOwner2, "submit must queue while a compaction owns the mailbox")
 
-	mb.abandonOwnership(compactEpoch)
+	mb.AbandonOwnership(compactEpoch)
 }
 
 // TestP268_CompactionCancelReachableViaMailbox proves the cancel-func for a
-// compaction is reachable through mailbox.current.cancel (not a synthetic
+// compaction is reachable through mailbox.Current.cancel (not a synthetic
 // string key). Cancel(sessionID) must cancel the compaction's context.
 func TestP268_CompactionCancelReachableViaMailbox(t *testing.T) {
 	sa, sess := newSummarizeCoreTestAgent(t)
 	mb := sa.getMailbox(sess.ID)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	epoch, ok := mb.beginCompact(cancel)
+	epoch, ok := mb.BeginCompact(cancel)
 	require.True(t, ok)
 	require.NotZero(t, epoch)
 
 	// Cancel must find the compaction's cancel via the SAME path it uses
-	// for turns: mb.current.cancel (set by beginCompact).
-	mb.mu.Lock()
-	genCancel := mb.current.cancel
-	mb.mu.Unlock()
+	// for turns: mb.Current.Cancel (set by beginCompact).
+	mb.Mu.Lock()
+	genCancel := mb.Current.Cancel
+	mb.Mu.Unlock()
 	require.NotNil(t, genCancel, "current.cancel must hold the compaction's cancel func")
 
 	// Invoking it must cancel the context.
@@ -138,7 +138,7 @@ func TestP268_CompactionCancelReachableViaMailbox(t *testing.T) {
 		t.Fatal("compaction's cancel func did not cancel its context")
 	}
 
-	mb.abandonOwnership(epoch)
+	mb.AbandonOwnership(epoch)
 	cancel()
 }
 
@@ -150,7 +150,7 @@ func TestP268_SummarizeQueueStillWorksAfterFix(t *testing.T) {
 
 	// Simulate a busy session by claiming ownership.
 	mb := sa.getMailbox(sess.ID)
-	_, ok := mb.beginCompact(func() {})
+	_, ok := mb.BeginCompact(func() {})
 	require.True(t, ok)
 
 	// Summarize must queue and return ErrSummarizeQueued.

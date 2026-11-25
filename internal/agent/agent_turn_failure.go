@@ -40,11 +40,11 @@ func (ts *turnStream) handleStreamFailure(
 ) (*fantasy.AgentResult, SessionAgentCall, bool, error) {
 	isHyper := ts.smartModel.ModelCfg.Provider == hyper.Name
 	isCancelErr := errors.Is(err, context.Canceled)
-	isWatchdogStall := isCancelErr && ts.wd.stalled.Load()
-	// Turn-stall abort (causeStall): join ErrTurnStalled BEFORE the
+	isWatchdogStall := isCancelErr && ts.wd.Stalled.Load()
+	// Turn-stall abort (watchdog.CauseStall): join ErrTurnStalled BEFORE the
 	// ErrCallAlreadyAttempted wrap so the CLI's exit mapping can classify
 	// the run as "stalled" through the Unwrap chain.
-	if isWatchdogStall && ts.watchdogCauseVal != nil && watchdogCause(ts.watchdogCauseVal.Load()) == causeStall {
+	if isWatchdogStall && ts.watchdogCauseVal != nil && watchdog.Cause(ts.watchdogCauseVal.Load()) == watchdog.CauseStall {
 		err = errors.Join(err, ErrTurnStalled)
 	}
 	// The TURN's own context decides what a deadline error means: a net/http
@@ -97,7 +97,7 @@ func (ts *turnStream) handleStreamFailure(
 		// otherwise Run's abandonment path treats its live waiter as an orphan
 		// and splitCallsWithoutWaiters resolves it as never run.
 		if isCancelErr {
-			if next, ok := ts.a.getMailbox(ts.call.SessionID).drainAfterCancel(); ok {
+			if next, ok := ts.a.getMailbox(ts.call.SessionID).DrainAfterCancel(); ok {
 				ts.cancel()
 				return result, next, true, nil
 			}
@@ -155,8 +155,8 @@ func (ts *turnStream) handleStreamFailure(
 		}
 		content := "There was an error while executing the tool"
 		if isWatchdogStall {
-			content = watchdogToolResultMessage(
-				watchdogCause(ts.watchdogCauseVal.Load()),
+			content = watchdog.ToolResultMessage(
+				watchdog.Cause(ts.watchdogCauseVal.Load()),
 				ts.toolMaxDuration,
 				ts.timeoutHardCap,
 				ts.idleTimeout,
@@ -203,8 +203,8 @@ func (ts *turnStream) handleStreamFailure(
 			"session_id", ts.call.SessionID,
 			"provider", ts.smartModel.ModelCfg.Provider,
 		)
-		cause := watchdogCause(ts.watchdogCauseVal.Load())
-		title, _ := watchdogFinishMessage(
+		cause := watchdog.Cause(ts.watchdogCauseVal.Load())
+		title, _ := watchdog.FinishMessage(
 			cause,
 			ts.toolMaxDuration,
 			ts.timeoutHardCap,
@@ -212,7 +212,7 @@ func (ts *turnStream) handleStreamFailure(
 			stallTimeout,
 			ts.smartModel.ModelCfg.Provider,
 		)
-		body := composeWatchdogFinishBody(ts.call.SessionID, cause, ts.toolMaxDuration, ts.timeoutHardCap, ts.idleTimeout, stallTimeout, ts.smartModel.ModelCfg.Provider)
+		body := watchdog.ComposeFinishBody(ts.call.SessionID, cause, ts.toolMaxDuration, ts.timeoutHardCap, ts.idleTimeout, stallTimeout, ts.smartModel.ModelCfg.Provider)
 		ts.currentAssistant.AddFinish(message.FinishReasonError, title, body)
 	} else if isCancelErr {
 		ts.currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
@@ -329,7 +329,7 @@ func (ts *turnStream) handleStreamFailure(
 	// run another turn for the same sessionID) and is only released
 	// by Run() once the loop has no more queued work.
 	if isCancelErr {
-		if next, ok := ts.a.getMailbox(ts.call.SessionID).drainAfterCancel(); ok {
+		if next, ok := ts.a.getMailbox(ts.call.SessionID).DrainAfterCancel(); ok {
 			ts.cancel()
 			return nil, next, true, nil
 		}

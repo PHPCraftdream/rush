@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -16,7 +18,7 @@ import (
 func armOwnWork(t *testing.T, sa *sessionAgent, sessionID string) bool {
 	t.Helper()
 	ts := &turnStream{a: sa, call: SessionAgentCall{SessionID: sessionID}}
-	ctx := WithCallOrigin(context.Background(), message.OriginCLI)
+	ctx := sessionprompt.WithCallOrigin(context.Background(), message.OriginCLI)
 	var out []fantasy.AgentTool
 	var pinned []fantasy.AgentTool
 	ts.armProgressGuard(ctx, pinned, &out)

@@ -129,7 +129,7 @@ func TestRun_LateInterruptReplacement_SurvivesNormalCompletion_P0A(t *testing.T)
 	// never actually cancelled, so the turn's stream is free to complete on
 	// its own via the SSE server below.
 	mb := sa.getMailbox(sess.ID)
-	_, hadOwner := mb.interruptAndReplace(SessionAgentCall{
+	_, hadOwner := mb.InterruptAndReplace(SessionAgentCall{
 		SessionID:       sess.ID,
 		Prompt:          replacementPrompt,
 		MaxOutputTokens: 1000,

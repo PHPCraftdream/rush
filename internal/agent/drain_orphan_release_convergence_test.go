@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,17 +56,17 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 	// the release window".
 	seedBatchDelegation(t, f.env.conn, f.sessID, "call-1", "", "command", "running", false)
 
-	// Hand-craft the mailbox into "mid-turn" (mbOwned, epoch 1) exactly like
+	// Hand-craft the mailbox into "mid-turn" (mailboxpkg.MbOwned, epoch 1) exactly like
 	// run_orphaned_release_race_test.go's own full-path test, so
 	// drainOrReleaseFinal can be driven directly without a real Run() in
 	// flight.
 	mb := f.sa.getMailbox(f.sessID)
-	mb.mu.Lock()
-	mb.state = mbOwned
-	mb.epoch = 1
-	mb.dispatcherCancel = func() {}
-	mb.current = generation{id: 1, cancel: func() {}}
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	mb.State = mailboxpkg.MbOwned
+	mb.Epoch = 1
+	mb.DispatcherCancel = func() {}
+	mb.Current = mailboxpkg.Generation{ID: 1, Cancel: func() {}}
+	mb.Mu.Unlock()
 
 	// raceRelease fires INSIDE drainOrReleaseFinal's release window: the
 	// job's terminal transition commits its debt (wake=1, delivery=
@@ -74,13 +76,13 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 		if err := a2CompleteJobErr(ctx, f.conn, f.sessID, "call-1", "output"); err != nil {
 			return err
 		}
-		mb.mu.Lock()
-		mb.submitted = append(mb.submitted, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
-		mb.mu.Unlock()
+		mb.Mu.Lock()
+		mb.Submitted = append(mb.Submitted, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
+		mb.Mu.Unlock()
 		return nil
 	}
 
-	next, hasNext, orphaned, releaseErr := mb.drainOrReleaseFinal(1, raceRelease)
+	next, hasNext, orphaned, releaseErr := mb.DrainOrReleaseFinal(1, raceRelease)
 	require.NoError(t, releaseErr)
 	require.False(t, hasNext, "the original caller must not be told to keep running -- the mailbox is already released")
 	require.Equal(t, SessionAgentCall{}, next)

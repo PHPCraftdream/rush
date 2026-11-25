@@ -106,7 +106,7 @@ func TestRunOwnedCarryWinnerResultPastRefusedDrainBehavior(t *testing.T) {
 	done := c.runWinner()
 	// The winner's turn is parked on the gate: queue the Drain so the
 	// end-of-turn drainOrReleaseMerged pops it.
-	c.sa.getMailbox(c.sessID).queue(newDrainCall(SessionAgentCall{SessionID: c.sessID}))
+	c.sa.getMailbox(c.sessID).Queue(newDrainCall(SessionAgentCall{SessionID: c.sessID}))
 	close(c.gate)
 
 	select {
