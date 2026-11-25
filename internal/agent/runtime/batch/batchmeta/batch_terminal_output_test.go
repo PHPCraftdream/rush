@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/stretchr/testify/require"
 )
 
 type captureOutputReaderFunc func(context.Context, uint64) (jobbatch.OutputChunk, error)
@@ -198,5 +200,29 @@ func TestBatchOutputCacheMetadataOnly(t *testing.T) {
 		if !found {
 			t.Fatalf("unexpected retained field %s %s", typ.Field(i).Name, fieldType)
 		}
+	}
+}
+
+func TestFormatAsyncCompletionChildSessionIDEveryBranch(t *testing.T) {
+	const suffix = "\n\nchild_session_id=child-123 (resume with agent(resume_session_id=child-123); inject_agent addresses a running child)"
+	for _, tc := range []struct {
+		name       string
+		completion batchdispatch.AsyncCompletion
+		want       string
+	}{
+		{name: "finished", want: "Async job call-1 () finished.\n\noutput"},
+		{name: "failed", completion: batchdispatch.AsyncCompletion{IsError: true}, want: "Async job call-1 () failed.\n\noutput"},
+		{name: "timed out", completion: batchdispatch.AsyncCompletion{TimedOut: true}, want: "Async job call-1 () timed out after 0s and was stopped. Partial output:\n\noutput"},
+		{name: "stopped", completion: batchdispatch.AsyncCompletion{Stopped: true}, want: "Async job call-1 () was stopped (batch_stop). Partial output before the stop:\n\noutput"},
+		{name: "cancelled", completion: batchdispatch.AsyncCompletion{Cancelled: true}, want: "Async job call-1 () was cancelled (session stopped). Partial output:\n\noutput"},
+		{name: "interrupted", completion: batchdispatch.AsyncCompletion{Interrupted: true}, want: "Async job call-1 () was interrupted: its host process ended before the job finished.\n\noutput"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.completion.ToolCallID = "call-1"
+			tc.completion.Content = "output"
+			require.Equal(t, tc.want, FormatAsyncCompletion(tc.completion))
+			tc.completion.ChildSessionID = "child-123"
+			require.Equal(t, tc.want+suffix, FormatAsyncCompletion(tc.completion))
+		})
 	}
 }

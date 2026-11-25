@@ -18,28 +18,31 @@ func FormatAsyncCompletion(completion batchdispatch.AsyncCompletion) string {
 	if content == "" {
 		content = "(no output)"
 	}
+	var formatted string
 	if completion.TimedOut {
-		return fmt.Sprintf("Async job %s (%s) timed out after %ds and was stopped. Partial output:\n\n%s",
+		formatted = fmt.Sprintf("Async job %s (%s) timed out after %ds and was stopped. Partial output:\n\n%s",
 			completion.ToolCallID, completion.ToolName, completion.TimeoutSeconds, content)
-	}
-	if completion.Stopped {
-		return fmt.Sprintf("Async job %s (%s) was stopped (batch_stop). Partial output before the stop:\n\n%s",
+	} else if completion.Stopped {
+		formatted = fmt.Sprintf("Async job %s (%s) was stopped (batch_stop). Partial output before the stop:\n\n%s",
 			completion.ToolCallID, completion.ToolName, content)
-	}
-	if completion.Cancelled {
-		return fmt.Sprintf("Async job %s (%s) was cancelled (session stopped). Partial output:\n\n%s",
+	} else if completion.Cancelled {
+		formatted = fmt.Sprintf("Async job %s (%s) was cancelled (session stopped). Partial output:\n\n%s",
 			completion.ToolCallID, completion.ToolName, content)
-	}
-	if completion.Interrupted {
-		return fmt.Sprintf("Async job %s (%s) was interrupted: its host process ended before the job finished.\n\n%s",
+	} else if completion.Interrupted {
+		formatted = fmt.Sprintf("Async job %s (%s) was interrupted: its host process ended before the job finished.\n\n%s",
 			completion.ToolCallID, completion.ToolName, content)
+	} else {
+		status := "finished"
+		if completion.IsError {
+			status = "failed"
+		}
+		formatted = fmt.Sprintf("Async job %s (%s) %s.\n\n%s",
+			completion.ToolCallID, completion.ToolName, status, content)
 	}
-	status := "finished"
-	if completion.IsError {
-		status = "failed"
+	if completion.ChildSessionID != "" {
+		formatted += fmt.Sprintf("\n\nchild_session_id=%s (resume with agent(resume_session_id=%s); inject_agent addresses a running child)", completion.ChildSessionID, completion.ChildSessionID)
 	}
-	return fmt.Sprintf("Async job %s (%s) %s.\n\n%s",
-		completion.ToolCallID, completion.ToolName, status, content)
+	return formatted
 }
 
 // BuildBatchNoticeMessageParams converts a pulled batch_nodes selected
@@ -56,13 +59,14 @@ func BuildBatchNoticeMessageParams(row sessionbatch.BatchNoticeRow) message.Crea
 	// equals "cancelled", so a recovered node can never read as Cancelled.
 	recovered := row.State == "interrupted" || row.OutcomeCode == "host_lost"
 	completion := batchdispatch.AsyncCompletion{
-		ToolCallID: row.ToolCallID,
-		ToolName:   "",
-		Content:    row.OutcomeSummary,
-		IsError:    row.State == "failed" || row.OutcomeCode == "failed",
-		TimedOut:   row.State == "timed_out",
-		Stopped:    row.Cause == "stop" && !recovered,
-		Cancelled:  row.Cause == "stop" && row.State == "cancelled",
+		ToolCallID:     row.ToolCallID,
+		ToolName:       "",
+		ChildSessionID: row.ChildSessionID,
+		Content:        row.OutcomeSummary,
+		IsError:        row.State == "failed" || row.OutcomeCode == "failed",
+		TimedOut:       row.State == "timed_out",
+		Stopped:        row.Cause == "stop" && !recovered,
+		Cancelled:      row.Cause == "stop" && row.State == "cancelled",
 	}
 	// The structured state and the retained summary are kept; no cause or
 	// executor envelope is invented.
