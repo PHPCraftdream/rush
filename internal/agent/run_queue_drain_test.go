@@ -193,7 +193,7 @@ func TestRun_QueueDrain_DoesNotDeadlockOnOwnSessionLock(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			return
 		}
-		sa.getMailbox(sess.ID).queue(SessionAgentCall{
+		sa.getMailbox(sess.ID).Queue(SessionAgentCall{
 			SessionID:       sess.ID,
 			Prompt:          "second message",
 			MaxOutputTokens: 1000,

@@ -178,11 +178,11 @@ func TestP2_3_HTTPProviderRespectsCancellation(t *testing.T) {
 // have expired.
 //
 // REVERT CHECK PROCEDURE:
-//  1. In agent.go:~3059-3107, comment out the startStreamWatchdog call:
+//  1. In agent.go:~3059-3107, comment out the watchdog.StartStreamWatchdog call:
 //     // BUG: No watchdog for manual compaction (P2-3 problem 1 revert check)
-//     // wd := startStreamWatchdog(...)
-//     // genCtx = withWatchdogBump(genCtx, wd.bump)
-//     // defer func() { <-wd.done }()
+//     // wd := watchdog.StartStreamWatchdog(...)
+//     // genCtx = withWatchdogBump(genCtx, wd.Bump)
+//     // defer func() { <-wd.Done }()
 //  2. Run: go test ./internal/agent -run TestP2_3_ManualCompactionWatchdogCatchesIdleStall -v
 //  3. The test will FAIL (timeout) because the Summarize waits for the full 10-minute genCtx
 //  4. Restore the watchdog and the test will PASS again.

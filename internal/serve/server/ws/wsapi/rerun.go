@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	hub "github.com/PHPCraftdream/rush/internal/serve/server/hub"
 	wire "github.com/PHPCraftdream/rush/internal/serve/server/wire"
@@ -492,7 +493,7 @@ func handleRerunMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg w
 		rerunPreHandoffSeam()
 	}
 
-	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
+	agentCtx := agent.WithCallOptions(sessionprompt.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	c.Hub().Broadcast(wire.EventAgentBusy, wire.AgentBusyPayload{SessionID: sessionID, Busy: true})
 	if smartOverride != nil || fastOverride != nil {
 		_, err = a.AgentCoordinator.RunWithReservedOwnership(agentCtx, sessionID, text, epoch, reserveCancel, func() { releaseOnBailout = false }, smartOverride, fastOverride)

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 
 	"charm.land/fantasy"
@@ -136,7 +138,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// runs the callback once the mailbox and session lock are ours, so a turn
 	// refused by another owner leaves the flag for that owner. The `rush run`
 	// loop's own turns (per-call options) and Drains leave it to the loop.
-	if callOpts == nil && !isDrainCallFrom(ctx) {
+	if callOpts == nil && !sessionprompt.IsDrainCallFrom(ctx) {
 		sessions := c.sessions
 		previous := admissionSetupFrom(ctx)
 		ctx = WithAdmissionSetup(ctx, func(ctx context.Context) error {
@@ -265,7 +267,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// queued copy's callback recorded before this sender's resolve()
 	// sealed the capture.
 	attemptAdmission := agentcall.NewTurnAdmission()
-	autoResumed, backgroundJobNotice := noticeFlagsFrom(ctx)
+	autoResumed, backgroundJobNotice := sessionprompt.NoticeFlagsFrom(ctx)
 	agentCall := SessionAgentCall{
 		SessionID:            sessionID,
 		Prompt:               prompt,
@@ -295,7 +297,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		LogicalCallID:        uuid.New().String(), // P2-1: generate stable ID once
 		AutoResumed:          autoResumed,
 		BackgroundJobNotice:  backgroundJobNotice,
-		IsDrain:              isDrainCallFrom(ctx),
+		IsDrain:              sessionprompt.IsDrainCallFrom(ctx),
 		OnUserMessageCreated: func(id string) { createdUserMessageID = id },
 		// R3-1: the CURRENT attempt's sink (for multi-step or
 		// 401-retried runs the LAST prepared step wins). armAttempt
@@ -306,7 +308,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		OnAssistantMessageCreated: curAttempt.record,
 		// Stamp the entry-channel origin (see buildCall): createUserMessage
 		// persists it on the user message this turn creates.
-		Origin: CallOriginFrom(ctx),
+		Origin: sessionprompt.CallOriginFrom(ctx),
 	}
 	// Overrides pin fast model / prefix / base prompt too; pin() leaves
 	// SmartModel as set above when pinned is nil, and rewrites it to the same

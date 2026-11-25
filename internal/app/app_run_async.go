@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -221,7 +223,7 @@ func runNonInteractiveWithAsyncResults(env RunEnv, ctx context.Context, output i
 	source.RunMaintenanceSweep(ctx)
 	// Resolve once for continue/useLast/new before orphan cleanup. Pin the
 	// selected session so the first turn cannot resolve a different owner.
-	sess, err := resolveSession(env, agent.WithCallOrigin(ctx, overrides.Origin), continueSessionID, useLast)
+	sess, err := resolveSession(env, sessionprompt.WithCallOrigin(ctx, overrides.Origin), continueSessionID, useLast)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +293,7 @@ func (l *cliLoop) runTurn(first bool) (*RunResult, *bytes.Buffer, error) {
 		// Doc sec.3.4: an empty-prompt Drain call: lifts ErrEmptyPrompt, skips
 		// createUserMessage, reacts only to what its own turn-start pull moves
 		// into history.
-		turnCtx = agent.WithDrainCall(agent.WithBackgroundJobNotice(l.ctx))
+		turnCtx = sessionprompt.WithDrainCall(sessionprompt.WithBackgroundJobNotice(l.ctx))
 	}
 	result, err := l.host.executeRun(turnCtx, RunRequest{
 		Prompt: l.prompt, Overrides: l.turnOverrides, Mode: l.mode,

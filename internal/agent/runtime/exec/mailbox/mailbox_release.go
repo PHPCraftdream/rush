@@ -10,7 +10,7 @@ import (
 
 // CallReleaseRecoveringPanic invokes release and recovers any panic it
 // raises, folding it into the returned error instead of letting it unwind
-// through drainOrReleaseFinal. #296/P1-C moved release() (real disk I/O:
+// through DrainOrReleaseFinal. #296/P1-C moved release() (real disk I/O:
 // Truncate/Seek/Sync/sidecar-unlink/unlock/Close) outside mb.mu specifically
 // so a slow filesystem cannot stall the control plane; a panic escaping
 // uncaught would be worse than the stall it replaces — it would leave
@@ -51,13 +51,13 @@ func ReleaseQueuedCallsBuildOwnership(calls []agentcall.SessionAgentCall) {
 // release (called from runOwned's turn loop, agent_run.go). It deliberately
 // does NOT depend on origin-options identity: a retained queued call handed
 // to a FRESH Run (manual compaction pops it via
-// abandonOwnershipAndPopFirstSubmitted and re-runs it, agent_compaction.go)
+// AbandonOwnershipAndPopFirstSubmitted and re-runs it, agent_compaction.go)
 // arrives as that dispatcher's FIRST call, so originCallOpts equals its own
 // copy and the historical origin-inequality test would never fire. The rule
 // is therefore: close when the options are not the origin's, OR when they
 // carry the queued-retention marker. close is idempotent and exactly-once
 // (mutex-guarded, disk_provider_capability.go), and the marker is cleared
-// afterwards so a re-queued copy is freshly armed by submit instead of
+// afterwards so a re-queued copy is freshly armed by Submit instead of
 // keeping a closed scope. No-op for the origin's own first call (its scope
 // is closed by the entry-point defers) and for any call carrying
 // OnQueueResolved (the hook family owns its scope through
@@ -85,7 +85,7 @@ func ReleaseTurnEndBuildScope(call *agentcall.SessionAgentCall, originCallOpts *
 // disk_provider_capability.go:97-113).
 //
 // The sender's own first Run is unaffected: arming happens on a COPY stored
-// in mb.submitted (mailbox.submit → armQueuedBuildRetention), so the
+// in mb.submitted (mailbox.Submit → armQueuedBuildRetention), so the
 // sender's call parameter is never marked and the helper returns a no-op.
 // The same holds for RunWithReservedOwnership / runPreReservedOwnership:
 // their callers (handleRerunMessage, ReserveExclusive holders) build fresh

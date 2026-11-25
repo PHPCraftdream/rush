@@ -175,10 +175,10 @@ func TestHandleInterruptTick_ReconcileLostGenerationKeepsNewerQueueRow(t *testin
 		RunAllowlistSpec: &permission.RunAllowlistSpec{Restrict: true, AllowBash: []string{"git status"}},
 		CallOptions:      &CallOptions{ModelRole: config.SelectedModelTypeFast, DisableSubAgents: true},
 	}
-	_, epoch := mb.submit(a, func() {})
+	_, epoch := mb.Submit(a, func() {})
 	require.NotZero(t, epoch)
-	mb.setCurrentCall(a)
-	mb.beginGeneration(func() {})
+	mb.SetCurrentCall(a)
+	mb.BeginGeneration(func() {})
 
 	msg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
 		Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "interrupt"}},
@@ -208,9 +208,9 @@ func TestHandleInterruptTick_ReconcileLostGenerationKeepsNewerQueueRow(t *testin
 	}()
 	<-sessions.entered
 
-	mb.setCurrentCall(b)
+	mb.SetCurrentCall(b)
 	bCanceled := false
-	mb.beginGeneration(func() { bCanceled = true })
+	mb.BeginGeneration(func() { bCanceled = true })
 	require.NoError(t, env.sessions.EnqueueRunQueueEntry(t.Context(), "newer-generation-row", sess.ID, []byte(`{"prompt":"newer"}`)))
 	close(sessions.release)
 

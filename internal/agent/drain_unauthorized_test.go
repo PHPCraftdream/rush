@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -297,7 +299,7 @@ func TestRunInternal_DrainCarriesFreshCredentialsAfterTheProactiveRefresh(t *tes
 	pinned, err := f.coord.resolveSessionModels(ctx, f.sessID) // resolved before the refresh
 	require.NoError(t, err)
 
-	_, err = f.coord.runInternal(WithDrainCall(ctx), f.sessID, "", pinned)
+	_, err = f.coord.runInternal(sessionprompt.WithDrainCall(ctx), f.sessID, "", pinned)
 	require.NoError(t, err)
 
 	require.EqualValues(t, 1, refreshes.Load())

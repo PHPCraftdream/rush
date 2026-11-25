@@ -2,12 +2,12 @@
 // #1036) has an in-process waiter blocked on that hook firing -- no implicit
 // timeout exists anywhere in this call chain, so a call that is silently
 // dropped instead of resolved leaves its waiter blocked forever. This file is
-// the single place every "this call left the mailbox's queue without ever
+// the single place every "this call left the mailbox's Queue without ever
 // becoming a turn" path routes through to guarantee that never happens: the
 // orphan/restart durable-enqueue path (restartOrphanedWithRetry -- durable
 // enqueue serializes the call via ToSessionAgentCallData, which has no field
 // for OnQueueResolved (json:"-"), so a pump-rebuilt replay could never call it
-// back), ClearQueue (mailbox.clearAll), and interruptAndReplace's replacement
+// back), ClearQueue (mailbox.ClearAll), and InterruptAndReplace's Replacement
 // slot being overwritten before the call it held ever ran.
 package mailbox
 
@@ -29,7 +29,7 @@ var ErrQueuedTurnNotRun = errors.New("queued turn was not run")
 // in-process waiter. Safe to call more than once for the same call (the hook
 // wrapper installed by runAwaitingAdmission is itself exactly-once-guarded),
 // but every call site here is already structured to invoke it at most once
-// per call, since a call leaves the queue exactly once.
+// per call, since a call leaves the Queue exactly once.
 func ResolveCallWithError(call agentcall.SessionAgentCall, reason string) {
 	if call.OnQueueResolved != nil {
 		call.OnQueueResolved(nil, fmt.Errorf("%w: %s", ErrQueuedTurnNotRun, reason))

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
@@ -17,7 +19,7 @@ import (
 
 // TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected is the
 // end-to-end regression test for the #297 review finding against an earlier
-// draft of #296/P1-C: a call that mailbox.drainOrReleaseFinal reports as
+// draft of #296/P1-C: a call that mailbox.DrainOrReleaseFinal reports as
 // orphaned (raced into the mailbox DURING release()'s OS-lock teardown, so
 // the ORIGINAL caller's lk is already gone by the time it is noticed) must
 // be restarted via a.restartOrphaned under a BRAND NEW session.SessionLock
@@ -28,7 +30,7 @@ import (
 // drainOrReleaseMerged — see that method's own doc for the case-4 wiring)
 // against a REAL session.SessionLock and a REAL provider probe. The mailbox
 // half of this contract (drainOrReleaseFinal returning hasNext==false with
-// the racing call in `orphaned`, never hasNext==true/mbOwned) is proven in
+// the racing call in `orphaned`, never hasNext==true/mailboxpkg.MbOwned) is proven in
 // isolation by mailbox_lock_test.go's
 // TestMailbox_DrainOrReleaseFinal_OrphanedWorkNeverRunsWithoutFreshOSLock;
 // THIS test proves the layer above actually restarts what the mailbox
@@ -170,7 +172,7 @@ func TestSessionAgent_RestartOrphaned_RunsUnderFreshLock_NotUnprotected(t *testi
 // that what drainOrReleaseFinal reports as orphaned for a REAL session is
 // exactly what ends up passed to restartOrphaned by drainOrReleaseMerged,
 // end to end, using the actual production wiring (not a hand-rolled call to
-// restartOrphaned as the test above does, and not a bare *mailbox as
+// restartOrphaned as the test above does, and not a bare *mailboxpkg.Mailbox as
 // mailbox_lock_test.go does) — the seam between the two that neither of the
 // other two tests exercises on its own.
 func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testing.T) {
@@ -216,13 +218,13 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 	sa := agentIface.(*sessionAgent)
 
 	mb := sa.getMailbox(sess.ID)
-	mb.mu.Lock()
-	mb.state = mbOwned
-	mb.epoch = 1
+	mb.Mu.Lock()
+	mb.State = mailboxpkg.MbOwned
+	mb.Epoch = 1
 	dispatcherCancel := func() {}
-	mb.dispatcherCancel = dispatcherCancel
-	mb.current = generation{id: 1, cancel: func() {}}
-	mb.mu.Unlock()
+	mb.DispatcherCancel = dispatcherCancel
+	mb.Current = mailboxpkg.Generation{ID: 1, Cancel: func() {}}
+	mb.Mu.Unlock()
 
 	lk, err := sessionlock.TryAcquireSessionLock(dataDir, sess.ID)
 	require.NoError(t, err)
@@ -234,17 +236,17 @@ func TestMailbox_DrainOrReleaseFinal_ThenAgentRestartsOrphaned_FullPath(t *testi
 	// lk.Release wiring exposes in production, but driven through the REAL
 	// agent.go call path (drainOrReleaseMerged), not a hand-built mailbox.
 	raceRelease := func() error {
-		mb.mu.Lock()
-		mb.submitted = append(mb.submitted, SessionAgentCall{
+		mb.Mu.Lock()
+		mb.Submitted = append(mb.Submitted, SessionAgentCall{
 			SessionID:       sess.ID,
 			Prompt:          "raced in during the real release window",
 			MaxOutputTokens: 1000,
 		})
-		mb.mu.Unlock()
+		mb.Mu.Unlock()
 		return lk.Release()
 	}
 
-	next, hasNext, orphaned, releaseErr := mb.drainOrReleaseFinal(1, raceRelease)
+	next, hasNext, orphaned, releaseErr := mb.DrainOrReleaseFinal(1, raceRelease)
 	require.NoError(t, releaseErr)
 	require.False(t, hasNext, "the original caller must not be told to keep running — lk is already released")
 	require.Equal(t, SessionAgentCall{}, next)

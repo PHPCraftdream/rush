@@ -29,7 +29,7 @@ func newQueuedCallScopeFixture(t *testing.T) (*DiskProviderRegistry, *sessionAge
 	caps := NewDiskProviderRegistry()
 	a := &sessionAgent{}
 	a.bindDiskCaps(caps)
-	a.mailboxes = csync.NewMap[string, *mailbox]()
+	a.mailboxes = csync.NewMap[string, *mailboxpkg.Mailbox]()
 	return caps, a
 }
 
@@ -97,11 +97,11 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	require.Nil(t, res)
 
 	mb := a.getMailbox(sid)
-	require.Len(t, mb.submitted, 1)
+	require.Len(t, mb.Submitted, 1)
 	// FIRST PRODUCTION-FACING ASSERTION: the queued copy carries the
 	// retained marker on its OWN options copy.
-	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
-	require.NotSame(t, opts, mb.submitted[0].CallOptions)
+	require.True(t, mb.Submitted[0].CallOptions.BuildScopeRetained)
+	require.NotSame(t, opts, mb.Submitted[0].CallOptions)
 	owners1, con1 := caps.ownerCounts()
 	require.Equal(t, owners0+1, owners1)
 	require.Equal(t, con0, con1)
@@ -113,7 +113,7 @@ func TestQueuedCallScope_PromotionKeepsConstructionUsable(t *testing.T) {
 	// the primitive every live drain path uses via drainOrReleaseMerged
 	// (agent_ownership.go:245-261). What remains unexercised here is
 	// runTurn/provider execution and the batch leaf ingress.
-	next, hasNext, orphaned, relErr := mb.drainOrReleaseFinal(epoch, nil)
+	next, hasNext, orphaned, relErr := mb.DrainOrReleaseFinal(epoch, nil)
 	require.True(t, hasNext)
 	require.Len(t, orphaned, 0)
 	require.NoError(t, relErr)
@@ -589,7 +589,7 @@ func TestQueuedCallScope_FreshRunRefusalReleasesRetained(t *testing.T) {
 
 // TestQueuedCallScope_SenderFirstRunUnaffected pins the sender-side boundary
 // of the arming rule: the sender's OWN call parameter is never marked —
-// arming happens on the COPY stored in mb.submitted — so the I1 entry defer
+// arming happens on the COPY stored in mb.Submitted — so the I1 entry defer
 // in Run is a no-op for the sender's first Run.
 //
 // MUTATION CAUGHT — arming the sender's call in place (or double-arming)
@@ -607,14 +607,14 @@ func TestQueuedCallScope_SenderFirstRunUnaffected(t *testing.T) {
 	res, err := a.Run(context.Background(), call)
 	require.NoError(t, err)
 	require.Nil(t, res)
-	// The SENDER's call parameter is untouched: arming happened on the copy in mb.submitted.
+	// The SENDER's call parameter is untouched: arming happened on the copy in mb.Submitted.
 	require.Same(t, opts, call.CallOptions)
 	require.False(t, call.CallOptions.BuildScopeRetained)
 	mb := a.getMailbox(sid)
-	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
+	require.True(t, mb.Submitted[0].CallOptions.BuildScopeRetained)
 	owners0, _ := caps.ownerCounts()
 	require.Equal(t, 2, owners0) // pin + armed copy
-	mb.clearAll()                // I2: queue-exit release
+	mb.ClearAll()                // I2: queue-exit release
 	owners1, con1 := caps.ownerCounts()
 	require.Equal(t, 1, owners1)
 	require.Equal(t, 1, con1)

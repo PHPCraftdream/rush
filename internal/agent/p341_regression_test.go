@@ -222,7 +222,7 @@ func TestP341_ConcurrentSetModelsSummarizeUsesTargetSessionSnapshot(t *testing.T
 
 	// Deterministically land the concurrent shared-state mutation exactly
 	// inside the window a pre-#341 regression would have re-read shared
-	// state in — mailbox.testPreSnapshotConsumeSeam fires strictly after
+	// state in — mailbox.TestPreSnapshotConsumeSeam fires strictly after
 	// coordinator.Summarize captured its snapshot (model-a) and strictly
 	// before runSummarize consumes it. A wall-clock time.Sleep here would
 	// NOT be reliable: this environment's in-memory beginCompact/OS-lock
@@ -233,7 +233,7 @@ func TestP341_ConcurrentSetModelsSummarizeUsesTargetSessionSnapshot(t *testing.T
 	sa := coord.currentAgent.(*sessionAgent)
 	mb := sa.getMailbox(sessionA.ID)
 	seamHit := make(chan struct{})
-	mb.testPreSnapshotConsumeSeam = func() {
+	mb.TestPreSnapshotConsumeSeam = func() {
 		defer close(seamHit)
 		// This simulates the exact scenario where the bug would manifest:
 		// - coordinator.Summarize already built its snapshot from shared
@@ -244,7 +244,7 @@ func TestP341_ConcurrentSetModelsSummarizeUsesTargetSessionSnapshot(t *testing.T
 		coord.currentAgent.SetSystemPromptPrefix("prefix-b")
 		cfg.Config().Providers.Set("openaicompat", providerCfgB)
 	}
-	t.Cleanup(func() { mb.testPreSnapshotConsumeSeam = nil })
+	t.Cleanup(func() { mb.TestPreSnapshotConsumeSeam = nil })
 
 	// Pass nil to Summarize - it will resolve the snapshot from current shared state.
 	err = coord.Summarize(t.Context(), sessionA.ID, nil)

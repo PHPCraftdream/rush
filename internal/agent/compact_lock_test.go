@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -263,7 +265,7 @@ func TestP312_InlineCompactionDoesNotDeadlock(t *testing.T) {
 			return
 		}
 		sa := a.(*sessionAgent)
-		sa.getMailbox(sess.ID).queue(SessionAgentCall{
+		sa.getMailbox(sess.ID).Queue(SessionAgentCall{
 			SessionID:       sess.ID,
 			Prompt:          "queued",
 			MaxOutputTokens: 1000,
@@ -399,7 +401,7 @@ func TestP312_ManualCompactionDrainsQueuedWork_WithDataDir(t *testing.T) {
 		Prompt:          "queued during manual compact",
 		MaxOutputTokens: 1000,
 	}
-	sa.getMailbox(sess.ID).queue(queued)
+	sa.getMailbox(sess.ID).Queue(queued)
 
 	err = sa.Summarize(t.Context(), sess.ID, sa.testBuildSummarizeSnapshot())
 	require.NoError(t, err,
@@ -422,14 +424,14 @@ func TestP312_ManualCompactionDrainsQueuedWork_WithDataDir(t *testing.T) {
 
 // TestP312_OSLockReleasedBeforeMailboxReportsIdle is the regression test for
 // HIGH-1 found by an independent review of #312: runSummarize's first
-// version called abandonOwnership (which flips the mailbox to mbIdle, what
+// version called abandonOwnership (which flips the mailbox to mailboxpkg.MbIdle, what
 // IsSessionBusy/IsBusy report to same-process callers) BEFORE releasing the
 // OS session lock. Releasing the lock is unbounded disk I/O (Truncate/Seek/
 // Sync/unlink sidecar/unlock/Close) with no timeout, so a same-process
 // caller (a web UI request, `sessions inject`, restartOrphaned) could see
 // "not busy" via IsSessionBusy, win submit(), and then hit
 // TryAcquireSessionLock's SessionLockBusyError naming its OWN pid while this
-// goroutine was still mid-Release. This is the exact class of bug mbReleasing
+// goroutine was still mid-Release. This is the exact class of bug mailboxpkg.MbReleasing
 // (#296) exists to prevent, reopened by #312's own fix.
 //
 // Uses mailbox.testPreAbandonSeam — fired strictly after the OS lock is
@@ -477,7 +479,7 @@ func TestP312_OSLockReleasedBeforeMailboxReportsIdle(t *testing.T) {
 	mb := sa.getMailbox(sess.ID)
 
 	seamHit := make(chan struct{})
-	mb.testPreAbandonSeam = func() {
+	mb.TestPreAbandonSeam = func() {
 		defer close(seamHit)
 
 		// The OS lock must already be free: another process (simulated here
@@ -491,21 +493,21 @@ func TestP312_OSLockReleasedBeforeMailboxReportsIdle(t *testing.T) {
 		// The mailbox must still report this session busy: abandonOwnership
 		// has not run yet, so no same-process caller should be able to walk
 		// in and become owner right now. The seam's own contract (mirroring
-		// testLoopRearmSeam) is that it fires with mb.mu NOT held, so a plain
+		// testLoopRearmSeam) is that it fires with mb.Mu NOT held, so a plain
 		// Lock here is safe.
 		//
-		// P1-2 fix: The mailbox is now in mbReleasing state at this point,
-		// not mbOwned, because we call mb.beginRelease() BEFORE lk.Release().
-		// This is the intended behavior - mbReleasing still reports as busy,
+		// P1-2 fix: The mailbox is now in mailboxpkg.MbReleasing state at this point,
+		// not mailboxpkg.MbOwned, because we call mb.beginRelease() BEFORE lk.Release().
+		// This is the intended behavior - mailboxpkg.MbReleasing still reports as busy,
 		// it just provides visibility that we're in the "releasing OS lock"
 		// phase rather than "still streaming".
-		mb.mu.Lock()
-		state := mb.state
-		mb.mu.Unlock()
-		assert.Contains(t, []mailboxState{mbOwned, mbReleasing}, state,
-			"mailbox must still report busy (mbOwned or mbReleasing) — abandonOwnership must not have run yet")
+		mb.Mu.Lock()
+		state := mb.State
+		mb.Mu.Unlock()
+		assert.Contains(t, []mailboxpkg.MailboxState{mailboxpkg.MbOwned, mailboxpkg.MbReleasing}, state,
+			"mailbox must still report busy (mailboxpkg.MbOwned or mailboxpkg.MbReleasing) — abandonOwnership must not have run yet")
 	}
-	t.Cleanup(func() { mb.testPreAbandonSeam = nil })
+	t.Cleanup(func() { mb.TestPreAbandonSeam = nil })
 
 	err = sa.Summarize(t.Context(), sess.ID, sa.testBuildSummarizeSnapshot())
 	require.NoError(t, err)

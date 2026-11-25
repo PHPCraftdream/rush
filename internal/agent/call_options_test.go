@@ -10,7 +10,7 @@ package agent
 // carried in the run's context must win over — and leave untouched — the
 // shared state, including under concurrent runs.
 //
-// R1-4: mailbox.submit is the single atomic check-and-set that grants
+// R1-4: mailbox.Submit is the single atomic check-and-set that grants
 // session ownership. A call with FailIfSessionBusy that loses the race
 // must neither queue nor mutate the mailbox; exactly one of two
 // simultaneous starters on an idle session can win.
@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -134,7 +136,7 @@ func TestRunInternal_PerCallOptions_honorsOptionsAndLeavesSharedState(t *testing
 
 	t.Run("per-call no-bypass refuses while shared flag stays untouched", func(t *testing.T) {
 		capture.reset()
-		// Arm the shared state: a per-call run must neither read nor
+		// Arm the shared St: a per-call run must neither read nor
 		// consume it (the pre-fix code reset allowPeakHours on every read).
 		coord.SetAllowPeakHours(true)
 		coord.SetRunLimits(9, 9)
@@ -284,39 +286,39 @@ func TestWorkerSubAgentActiveForCall_ContextRoleWins(t *testing.T) {
 // the mailbox — it must never land in the submitted queue.
 func TestMailboxSubmit_FailFastNeverQueues(t *testing.T) {
 	t.Run("idle mailbox: fail-fast call becomes owner", func(t *testing.T) {
-		mb := &mailbox{}
-		became, epoch := mb.submit(SessionAgentCall{FailIfSessionBusy: true}, func() {})
+		mb := &mailboxpkg.Mailbox{}
+		became, epoch := mb.Submit(SessionAgentCall{FailIfSessionBusy: true}, func() {})
 		assert.True(t, became)
 		assert.NotZero(t, epoch)
-		assert.True(t, mb.state == mbOwned, "state must be mbOwned after winning")
+		assert.True(t, mb.State == mailboxpkg.MbOwned, "state must be mailboxpkg.MbOwned after winning")
 	})
 
 	t.Run("owned mailbox: fail-fast call is rejected without queueing", func(t *testing.T) {
-		mb := &mailbox{}
-		_, epoch := mb.submit(SessionAgentCall{}, func() {}) // first caller owns
-		became, epoch2 := mb.submit(SessionAgentCall{FailIfSessionBusy: true, Prompt: "loser"}, func() {})
+		mb := &mailboxpkg.Mailbox{}
+		_, epoch := mb.Submit(SessionAgentCall{}, func() {}) // first caller owns
+		became, epoch2 := mb.Submit(SessionAgentCall{FailIfSessionBusy: true, Prompt: "loser"}, func() {})
 		assert.False(t, became)
 		assert.Zero(t, epoch2, "a losing fail-fast call never holds ownership")
-		assert.Empty(t, mb.submitted, "a losing fail-fast call must NOT be queued")
-		assert.Equal(t, epoch, mb.epoch, "epoch must not move for a rejected call")
+		assert.Empty(t, mb.Submitted, "a losing fail-fast call must NOT be queued")
+		assert.Equal(t, epoch, mb.Epoch, "epoch must not move for a rejected call")
 	})
 
 	t.Run("owned mailbox: legacy call still queues silently", func(t *testing.T) {
-		mb := &mailbox{}
-		mb.submit(SessionAgentCall{}, func() {})
-		became, _ := mb.submit(SessionAgentCall{Prompt: "queued"}, func() {})
+		mb := &mailboxpkg.Mailbox{}
+		mb.Submit(SessionAgentCall{}, func() {})
+		became, _ := mb.Submit(SessionAgentCall{Prompt: "queued"}, func() {})
 		assert.False(t, became)
-		require.Len(t, mb.submitted, 1, "non-fail-fast callers keep the historical queue behavior")
-		assert.Equal(t, "queued", mb.submitted[0].Prompt)
+		require.Len(t, mb.Submitted, 1, "non-fail-fast callers keep the historical queue behavior")
+		assert.Equal(t, "queued", mb.Submitted[0].Prompt)
 	})
 
 	t.Run("releasing mailbox: fail-fast call is rejected as busy", func(t *testing.T) {
-		mb := &mailbox{}
-		_, epoch := mb.submit(SessionAgentCall{}, func() {})
-		require.True(t, mb.beginRelease(epoch), "enter mbReleasing")
-		became, _ := mb.submit(SessionAgentCall{FailIfSessionBusy: true}, func() {})
+		mb := &mailboxpkg.Mailbox{}
+		_, epoch := mb.Submit(SessionAgentCall{}, func() {})
+		require.True(t, mb.BeginRelease(epoch), "enter mbReleasing")
+		became, _ := mb.Submit(SessionAgentCall{FailIfSessionBusy: true}, func() {})
 		assert.False(t, became, "mbReleasing reads as busy")
-		assert.Empty(t, mb.submitted)
+		assert.Empty(t, mb.Submitted)
 	})
 }
 

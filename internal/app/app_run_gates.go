@@ -13,6 +13,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -296,7 +298,7 @@ func owns(sess core.Session, workspaceRoot string, home bool) bool {
 // If useLast is set, it returns the most recently updated top-level session
 // Otherwise, it creates a new session
 func resolveSession(env RunEnv, ctx context.Context, continueSessionID string, useLast bool) (core.Session, error) {
-	origin := agent.CallOriginFrom(ctx)
+	origin := sessionprompt.CallOriginFrom(ctx)
 	switch {
 	case continueSessionID != "":
 		if env.Sessions().IsAgentToolSession(continueSessionID) {

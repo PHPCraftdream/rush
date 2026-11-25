@@ -59,7 +59,7 @@ func assertBindingLossWake(t *testing.T, f *attemptFixture, store *countingFence
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable)
 
-	// Terminal for this epoch: drainRecheckSet EMPTIES the set here, so this
+	// Terminal for this Ep: drainRecheckSet EMPTIES the set here, so this
 	// empty-set assertion IS the discriminator -- any re-add by the old
 	// routing fails at this require.Empty.
 	set := f.coord.drainRecheckSet()
@@ -203,7 +203,7 @@ func TestInterruptTicker_StopsOnUnavailableBinding(t *testing.T) {
 	// Bare coordinator: a nil currentAgent is safe here -- handleInterruptTick
 	// calls activeCallStateForSession(nil, id), whose type assertions all
 	// fall through to the snapshotter miss returning
-	// (SessionAgentCall{}, activeCallToken{}, owned=false, published=true,
+	// (SessionAgentCall{}, mailboxpkg.ActiveCallToken{}, owned=false, published=true,
 	// tokenAvailable=false) with no panic; the FIRST real interaction is
 	// PeekInterruptInject, which the stub refuses.
 	coord := &coordinator{

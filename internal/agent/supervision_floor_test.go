@@ -19,16 +19,16 @@ func TestSupervisionDefaultInterval_OverrideBelowFloorIsIgnored(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("below the floor", func(t *testing.T) {
-		t.Cleanup(SetSupervisionDefaultIntervalForTest(500 * time.Millisecond))
+		setSupervisionDefaultIntervalForTest(t, 500*time.Millisecond)
 		require.Equal(t, supervisionDefaultInterval, c.resolveSupervisionConfig(ctx).Interval)
 		require.Equal(t, supervisionDefaultInterval, DefaultSupervisionConfig().Interval)
 	})
 	t.Run("at the floor", func(t *testing.T) {
-		t.Cleanup(SetSupervisionDefaultIntervalForTest(supervisionMinIntervalFloor))
+		setSupervisionDefaultIntervalForTest(t, supervisionMinIntervalFloor)
 		require.Equal(t, supervisionMinIntervalFloor, c.resolveSupervisionConfig(ctx).Interval)
 	})
 	t.Run("above the floor", func(t *testing.T) {
-		t.Cleanup(SetSupervisionDefaultIntervalForTest(1100 * time.Millisecond))
+		setSupervisionDefaultIntervalForTest(t, 1100*time.Millisecond)
 		require.Equal(t, 1100*time.Millisecond, c.resolveSupervisionConfig(ctx).Interval)
 	})
 }
