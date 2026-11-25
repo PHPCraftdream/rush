@@ -11,6 +11,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -19,9 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockSessionAgent is a minimal mock for the SessionAgent interface.
-//
-// mu guards interruptAndReplaced specifically: it's the only field written
+// mockSessionAgent is a minimal mock for the SessionAgent interface. mu guards
+// interruptAndReplaced specifically: it's the only field written
 // from a background goroutine (coordinator.startInterruptTicker's ticker,
 // via handleInterruptTick -> InterruptAndReplace) while a test goroutine may
 // concurrently poll it (e.g. via require.Eventually) before the ticker has
@@ -238,7 +238,7 @@ func TestRunSubAgentDepthChargesOneChildEdge(t *testing.T) {
 			})
 			spec, err := ParseBatchExternalSpecJSON([]byte(fmt.Sprintf(`{"max_agent_depth":%d,"items":[{"tool":"agent","input":{"prompt":"p"}}]}`, tc.depth)))
 			require.NoError(t, err)
-			var payload batchExternalDepthPayload
+			var payload batchinst.ExternalDepthPayload
 			require.NoError(t, json.Unmarshal(spec.Batch.Items[0].Task.Payload, &payload))
 			ctx, err := WithAgentDepth(t.Context(), payload.AgentDepth)
 			require.NoError(t, err)
