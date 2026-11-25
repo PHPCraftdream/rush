@@ -1,4 +1,4 @@
-package server
+package api
 
 import (
 	"bytes"
@@ -14,33 +14,33 @@ import (
 
 func TestIdempotencyBeginReplayConflictAndExpiry(t *testing.T) {
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	store := newIdempotencyStore(func() time.Time { return now })
-	if outcome, replay, _ := store.Begin("token", "key", "hash"); outcome != idempotencyStarted || replay != nil {
+	store := NewIdempotencyStore(func() time.Time { return now })
+	if outcome, replay, _ := store.Begin("token", "key", "hash"); outcome != IdempotencyStarted || replay != nil {
 		t.Fatalf("first Begin = %q, %v", outcome, replay)
 	}
-	if outcome, _, _ := store.Begin("token", "key", "hash"); outcome != idempotencyInProgress {
+	if outcome, _, _ := store.Begin("token", "key", "hash"); outcome != IdempotencyInProgress {
 		t.Fatalf("in-flight Begin = %q", outcome)
 	}
-	if outcome, _, _ := store.Begin("token", "key", "other"); outcome != idempotencyConflict {
+	if outcome, _, _ := store.Begin("token", "key", "other"); outcome != IdempotencyConflict {
 		t.Fatalf("different-body Begin = %q", outcome)
 	}
 	store.Complete("token", "key", "hash", 1, http.StatusCreated, http.Header{"Content-Type": {"application/json"}, "Location": {"/sessions/1"}}, []byte("created"))
 	outcome, replay, _ := store.Begin("token", "key", "hash")
-	if outcome != idempotencyReplay || replay.Status != http.StatusCreated || !bytes.Equal(replay.Body, []byte("created")) || replay.Headers.Get("Location") != "/sessions/1" || replay.Headers.Get("Content-Type") != "application/json" {
+	if outcome != IdempotencyReplay || replay.Status != http.StatusCreated || !bytes.Equal(replay.Body, []byte("created")) || replay.Headers.Get("Location") != "/sessions/1" || replay.Headers.Get("Content-Type") != "application/json" {
 		t.Fatalf("replay = %q, %#v", outcome, replay)
 	}
-	now = now.Add(idempotencyTTL)
-	if outcome, _, _ := store.Begin("token", "key", "hash"); outcome != idempotencyStarted {
+	now = now.Add(IdempotencyTTL)
+	if outcome, _, _ := store.Begin("token", "key", "hash"); outcome != IdempotencyStarted {
 		t.Fatalf("expired Begin = %q", outcome)
 	}
 }
 
 func TestIdempotencyServerErrorAndRedirectNotCached(t *testing.T) {
 	for _, status := range []int{http.StatusInternalServerError, http.StatusFound} {
-		store := newIdempotencyStore(nil)
+		store := NewIdempotencyStore(nil)
 		_, _, generation := store.Begin("token", "key", "hash")
 		store.Complete("token", "key", "hash", generation, status, nil, []byte("response"))
-		if outcome, replay, _ := store.Begin("token", "key", "hash"); outcome != idempotencyStarted || replay != nil {
+		if outcome, replay, _ := store.Begin("token", "key", "hash"); outcome != IdempotencyStarted || replay != nil {
 			t.Fatalf("Begin after status %d = %q, %v", status, outcome, replay)
 		}
 	}
@@ -48,55 +48,55 @@ func TestIdempotencyServerErrorAndRedirectNotCached(t *testing.T) {
 
 func TestIdempotencyMaxEntriesEvictsOldestCompleted(t *testing.T) {
 	now := time.Unix(1, 0)
-	store := newIdempotencyStore(func() time.Time { return now })
-	for i := range idempotencyMaxEntries {
+	store := NewIdempotencyStore(func() time.Time { return now })
+	for i := range IdempotencyMaxEntries {
 		key := string(rune(i + 1))
 		_, _, generation := store.Begin("token", key, "hash")
 		store.Complete("token", key, "hash", generation, http.StatusOK, nil, nil)
 		now = now.Add(time.Nanosecond)
 	}
-	if outcome, _, _ := store.Begin("token", "last", "hash"); outcome != idempotencyStarted {
+	if outcome, _, _ := store.Begin("token", "last", "hash"); outcome != IdempotencyStarted {
 		t.Fatalf("insertion outcome = %q", outcome)
 	}
-	if outcome, _, _ := store.Begin("token", string(rune(1)), "hash"); outcome != idempotencyStarted {
+	if outcome, _, _ := store.Begin("token", string(rune(1)), "hash"); outcome != IdempotencyStarted {
 		t.Fatalf("oldest entry outcome = %q", outcome)
 	}
-	if got := len(store.Entries); got != idempotencyMaxEntries {
-		t.Fatalf("entries = %d, want %d", got, idempotencyMaxEntries)
+	if got := len(store.Entries); got != IdempotencyMaxEntries {
+		t.Fatalf("entries = %d, want %d", got, IdempotencyMaxEntries)
 	}
 }
 
 func TestIdempotencyInFlightEntriesCannotExpireOrEvict(t *testing.T) {
 	now := time.Unix(1, 0)
-	store := newIdempotencyStore(func() time.Time { return now })
+	store := NewIdempotencyStore(func() time.Time { return now })
 	_, _, generation := store.Begin("token", "reserved", "hash")
-	now = now.Add(2 * idempotencyTTL)
-	for i := 0; i < idempotencyMaxEntries-1; i++ {
-		if outcome, _, _ := store.Begin("token", "fill"+string(rune(i+1)), "hash"); outcome != idempotencyStarted {
+	now = now.Add(2 * IdempotencyTTL)
+	for i := 0; i < IdempotencyMaxEntries-1; i++ {
+		if outcome, _, _ := store.Begin("token", "fill"+string(rune(i+1)), "hash"); outcome != IdempotencyStarted {
 			t.Fatalf("fill %d outcome = %q", i, outcome)
 		}
 	}
-	if outcome, _, _ := store.Begin("token", "overflow", "hash"); outcome != idempotencyFull {
-		t.Fatalf("full store outcome = %q, want %q", outcome, idempotencyFull)
+	if outcome, _, _ := store.Begin("token", "overflow", "hash"); outcome != IdempotencyFull {
+		t.Fatalf("full store outcome = %q, want %q", outcome, IdempotencyFull)
 	}
-	if outcome, _, _ := store.Begin("token", "reserved", "hash"); outcome != idempotencyInProgress {
+	if outcome, _, _ := store.Begin("token", "reserved", "hash"); outcome != IdempotencyInProgress {
 		t.Fatalf("reservation outcome = %q", outcome)
 	}
 	store.Release("token", "reserved", generation)
 }
 
 func TestIdempotencyGenerationPreventsStaleCompletion(t *testing.T) {
-	store := newIdempotencyStore(nil)
+	store := NewIdempotencyStore(nil)
 	_, _, oldGeneration := store.Begin("token", "key", "hash")
 	store.Release("token", "key", oldGeneration)
 	_, _, newGeneration := store.Begin("token", "key", "hash")
 	store.Complete("token", "key", "hash", oldGeneration, http.StatusOK, nil, []byte("stale"))
-	if outcome, _, _ := store.Begin("token", "key", "hash"); outcome != idempotencyInProgress {
+	if outcome, _, _ := store.Begin("token", "key", "hash"); outcome != IdempotencyInProgress {
 		t.Fatalf("after stale completion = %q", outcome)
 	}
 	store.Complete("token", "key", "hash", newGeneration, http.StatusOK, nil, []byte("current"))
 	outcome, replay, _ := store.Begin("token", "key", "hash")
-	if outcome != idempotencyReplay || string(replay.Body) != "current" {
+	if outcome != IdempotencyReplay || string(replay.Body) != "current" {
 		t.Fatalf("replay = %q, %#v", outcome, replay)
 	}
 }
@@ -116,7 +116,7 @@ func TestValidIdempotencyKey(t *testing.T) {
 		{"ümlaut", false},
 	} {
 		t.Run(test.key, func(t *testing.T) {
-			if got := validIdempotencyKey(test.key); got != test.valid {
+			if got := ValidIdempotencyKey(test.key); got != test.valid {
 				t.Fatalf("validIdempotencyKey(%q) = %t, want %t", test.key, got, test.valid)
 			}
 		})
@@ -130,9 +130,9 @@ type idempotencyTestResponse struct {
 }
 
 func TestWithIdempotencyReplayResponse(t *testing.T) {
-	store := newIdempotencyStore(nil)
+	store := NewIdempotencyStore(nil)
 	var calls atomic.Int32
-	handler := withIdempotency(store, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := WithIdempotency(store, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Location", "/sessions/one")
 		w.Header().Set("Content-Type", "application/json")
@@ -147,12 +147,12 @@ func TestWithIdempotencyReplayResponse(t *testing.T) {
 }
 
 func TestWithIdempotencyConcurrentSameKey(t *testing.T) {
-	store := newIdempotencyStore(nil)
+	store := NewIdempotencyStore(nil)
 	entered := make(chan struct{})
 	var enteredOnce sync.Once
 	release := make(chan struct{})
 	var calls atomic.Int32
-	handler := withIdempotency(store, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := WithIdempotency(store, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		enteredOnce.Do(func() { close(entered) })
 		select {
@@ -198,7 +198,7 @@ func TestWithIdempotencyConcurrentSameKey(t *testing.T) {
 }
 
 func TestWithIdempotencyRejectsEmptyAndInvalidKey(t *testing.T) {
-	handler := withIdempotency(newIdempotencyStore(nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
+	handler := WithIdempotency(NewIdempotencyStore(nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
 	for _, key := range []string{"", "bad key"} {
 		request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "/sessions", bytes.NewBufferString("{}"))
 		if err != nil {
@@ -214,11 +214,11 @@ func TestWithIdempotencyRejectsEmptyAndInvalidKey(t *testing.T) {
 }
 
 func TestWithIdempotencyFullReturnsServiceUnavailable(t *testing.T) {
-	store := newIdempotencyStore(nil)
-	for i := 0; i < idempotencyMaxEntries; i++ {
+	store := NewIdempotencyStore(nil)
+	for i := 0; i < IdempotencyMaxEntries; i++ {
 		store.Begin("token", "occupied"+string(rune(i+1)), "hash")
 	}
-	handler := withIdempotency(store, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
+	handler := WithIdempotency(store, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
 	response := runIdempotencyRequest(t, handler, "new", "body")
 	if response.status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", response.status)
@@ -226,8 +226,8 @@ func TestWithIdempotencyFullReturnsServiceUnavailable(t *testing.T) {
 }
 
 func TestWithIdempotencyPanicReleasesReservation(t *testing.T) {
-	store := newIdempotencyStore(nil)
-	handler := withIdempotency(store, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+	store := NewIdempotencyStore(nil)
+	handler := WithIdempotency(store, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
 	func() {
 		defer func() { _ = recover() }()
 		runIdempotencyRequest(t, handler, "panic", "body")
@@ -244,7 +244,7 @@ func TestWithIdempotencyOversizedBodyReturns413(t *testing.T) {
 	}
 	request.Header.Set("Idempotency-Key", "oversized")
 	request.Body = http.MaxBytesReader(httptest.NewRecorder(), request.Body, 2)
-	handler := withIdempotency(newIdempotencyStore(nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
+	handler := WithIdempotency(NewIdempotencyStore(nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusRequestEntityTooLarge {
@@ -253,7 +253,7 @@ func TestWithIdempotencyOversizedBodyReturns413(t *testing.T) {
 }
 
 func TestWithIdempotencyRejectsMultipleKeys(t *testing.T) {
-	handler := withIdempotency(newIdempotencyStore(nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
+	handler := WithIdempotency(NewIdempotencyStore(nil), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }))
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "/sessions", bytes.NewBufferString("{}"))
 	if err != nil {
 		t.Fatal(err)
@@ -268,10 +268,10 @@ func TestWithIdempotencyRejectsMultipleKeys(t *testing.T) {
 
 func TestIdempotencyHashPartsAreLengthDelimited(t *testing.T) {
 	var first, second bytes.Buffer
-	writeIdempotencyHashPart(&first, []byte("a"))
-	writeIdempotencyHashPart(&first, []byte("bc"))
-	writeIdempotencyHashPart(&second, []byte("ab"))
-	writeIdempotencyHashPart(&second, []byte("c"))
+	WriteIdempotencyHashPart(&first, []byte("a"))
+	WriteIdempotencyHashPart(&first, []byte("bc"))
+	WriteIdempotencyHashPart(&second, []byte("ab"))
+	WriteIdempotencyHashPart(&second, []byte("c"))
 	if bytes.Equal(first.Bytes(), second.Bytes()) {
 		t.Fatal("different parts encoded identically")
 	}
