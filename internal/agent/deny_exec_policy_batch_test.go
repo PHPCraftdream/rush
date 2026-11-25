@@ -3,11 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"os"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"

@@ -3,8 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"

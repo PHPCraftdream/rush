@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"

@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"log"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"

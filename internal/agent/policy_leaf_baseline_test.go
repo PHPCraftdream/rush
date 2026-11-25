@@ -4,9 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"reflect"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"

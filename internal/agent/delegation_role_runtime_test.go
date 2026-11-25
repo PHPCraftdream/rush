@@ -3,9 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"sync/atomic"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 

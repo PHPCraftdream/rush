@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"github.com/stretchr/testify/require"
 

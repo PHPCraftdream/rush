@@ -3,12 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"

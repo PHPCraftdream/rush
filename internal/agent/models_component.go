@@ -5,10 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
