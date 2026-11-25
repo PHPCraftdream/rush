@@ -226,7 +226,7 @@ func TestScheduleCacheKeepAlive_SkipsNonExplicitCacheProvider(t *testing.T) {
 
 	a.ScheduleCacheKeepAlive(a, "sess-2", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-2")
+	_, scheduled := a.CacheKeepAlive.Get("sess-2")
 	require.False(t, scheduled, "non-explicit-cache provider must not get a scheduled timer")
 
 	time.Sleep(100 * time.Millisecond)
@@ -243,7 +243,7 @@ func TestScheduleCacheKeepAlive_SkipsWhenCacheDisabled(t *testing.T) {
 
 	a.ScheduleCacheKeepAlive(a, "sess-3", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-3")
+	_, scheduled := a.CacheKeepAlive.Get("sess-3")
 	require.False(t, scheduled, "must not schedule when RUSH_DISABLE_ANTHROPIC_CACHE is set")
 
 	time.Sleep(100 * time.Millisecond)
@@ -259,11 +259,11 @@ func TestCancelCacheKeepAlive_StopsPendingTimer(t *testing.T) {
 	model := testKeepAliveModel(Model{Model: lm})
 
 	a.ScheduleCacheKeepAlive(a, "sess-4", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-4")
+	_, scheduled := a.CacheKeepAlive.Get("sess-4")
 	require.True(t, scheduled)
 
 	a.CancelCacheKeepAlive("sess-4")
-	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-4")
+	_, stillScheduled := a.CacheKeepAlive.Get("sess-4")
 	require.False(t, stillScheduled)
 
 	// Advance well past the shrunk interval and confirm no replay fired.
@@ -280,13 +280,13 @@ func TestScheduleCacheKeepAlive_NewWriteResetsExtensionCounter(t *testing.T) {
 	model := testKeepAliveModel(Model{Model: lm})
 
 	a.ScheduleCacheKeepAlive(a, "sess-5", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	entry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-5")
+	entry, ok := a.CacheKeepAlive.Get("sess-5")
 	require.True(t, ok)
 	entry.Extension = 2 // simulate having already extended twice
 
 	// A fresh cache-writing turn re-schedules and must reset the counter.
 	a.ScheduleCacheKeepAlive(a, "sess-5", model, []fantasy.Message{fantasy.NewUserMessage("hi again")}, nil, nil, 0)
-	entry, ok = a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-5")
+	entry, ok = a.CacheKeepAlive.Get("sess-5")
 	require.True(t, ok)
 	require.Equal(t, 0, entry.Extension, "a fresh cache write must reset the extension counter to 0")
 }
@@ -313,7 +313,7 @@ func TestFireCacheKeepAlive_StopsAtExtensionCap(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.EqualValues(t, 2, lm.calls.Load(), "must stop firing once the extension cap is reached")
 
-	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-6")
+	_, stillScheduled := a.CacheKeepAlive.Get("sess-6")
 	require.False(t, stillScheduled)
 }
 
@@ -334,7 +334,7 @@ func TestFireCacheKeepAlive_FailureDoesNotReschedule(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.EqualValues(t, 1, lm.calls.Load(), "a failed replay must not reschedule")
 
-	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-7")
+	_, stillScheduled := a.CacheKeepAlive.Get("sess-7")
 	require.False(t, stillScheduled)
 }
 
@@ -346,13 +346,13 @@ func TestCancelAll_StopsPendingKeepAliveTimers(t *testing.T) {
 	model := testKeepAliveModel(Model{Model: lm})
 
 	a.ScheduleCacheKeepAlive(a, "sess-8", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-8")
+	_, scheduled := a.CacheKeepAlive.Get("sess-8")
 	require.True(t, scheduled)
 
 	stillBusy := a.CancelAll()
 	require.False(t, stillBusy)
 
-	require.Zero(t, a.CacheKeepAliveComponent.CacheKeepAlive.Len(), "CancelAll must sweep all pending keep-alive timers")
+	require.Zero(t, a.CacheKeepAlive.Len(), "CancelAll must sweep all pending keep-alive timers")
 
 	// Even past the shrunk interval, no replay should fire: the timer was
 	// stopped AND tryAdmitRunWg refuses post-shutdown admission as a backstop.
@@ -557,7 +557,7 @@ func TestFireCacheKeepAlive_GenerationGuardSurvivesRace(t *testing.T) {
 	newMessages := []fantasy.Message{fantasy.NewUserMessage("new turn")}
 
 	a.ScheduleCacheKeepAlive(a, "sess-race", model, oldMessages, nil, nil, 0)
-	oldEntry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-race")
+	oldEntry, ok := a.CacheKeepAlive.Get("sess-race")
 	require.True(t, ok)
 	oldGen := oldEntry.Generation
 
@@ -582,7 +582,7 @@ func TestFireCacheKeepAlive_GenerationGuardSurvivesRace(t *testing.T) {
 	// new schedule's entry is present — the old generation must never be the
 	// one left standing, and the map must never end up empty when the new
 	// schedule ran (scheduleCacheKeepAlive always leaves an entry behind).
-	entry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-race")
+	entry, ok := a.CacheKeepAlive.Get("sess-race")
 	require.True(t, ok, "the new schedule must always leave an entry behind")
 	require.NotEqual(t, oldGen, entry.Generation,
 		"surviving entry must never be the stale pre-race generation")
@@ -606,10 +606,10 @@ func TestShutdownCancelAllSweepsKeepAlive(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 	a.ScheduleCacheKeepAlive(a, "sess-shutdown-sweep", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	entry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-shutdown-sweep")
+	entry, ok := a.CacheKeepAlive.Get("sess-shutdown-sweep")
 	require.True(t, ok)
 	a.CancelAll()
-	_, stillPending := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-shutdown-sweep")
+	_, stillPending := a.CacheKeepAlive.Get("sess-shutdown-sweep")
 	require.False(t, stillPending, "sessionAgent.CancelAll must sweep the keep-alive component's pending timers")
 	if entry.Timer != nil {
 		require.False(t, entry.Timer.Stop(), "the pending timer should have been stopped by the sweep")

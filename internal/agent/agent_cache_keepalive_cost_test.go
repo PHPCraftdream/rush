@@ -78,7 +78,7 @@ func TestFireCacheKeepAlive_CancelDuringMaxCostCheckIsHonored(t *testing.T) {
 	// when the call is still hanging in the background well past this test's
 	// own return — this check instead demands the round trip completed.
 	require.Eventually(t, func() bool {
-		_, stillInFlight := a.CacheKeepAliveComponent.CacheKeepAliveInFlight.Get(sessionID)
+		_, stillInFlight := a.CacheKeepAliveInFlight.Get(sessionID)
 		return !stillInFlight
 	}, 2*time.Second, 5*time.Millisecond,
 		"cancelled replay must return promptly, not run out the 30s call timeout")
@@ -86,7 +86,7 @@ func TestFireCacheKeepAlive_CancelDuringMaxCostCheckIsHonored(t *testing.T) {
 	// Give any incorrect rearm a chance to fire, then confirm none did.
 	time.Sleep(100 * time.Millisecond)
 	require.EqualValues(t, 1, lm.calls.Load(), "a cancelled fire must not rearm")
-	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sessionID)
+	_, stillScheduled := a.CacheKeepAlive.Get(sessionID)
 	require.False(t, stillScheduled, "a cancelled fire must not leave a pending entry behind")
 }
 
@@ -161,8 +161,8 @@ func TestFireCacheKeepAlive_SkipsDuringProviderPeakHours(t *testing.T) {
 	// The short timer deterministically reaches checkLivePeakHours; an
 	// in-window configured provider must be refused before Stream is called.
 	require.Eventually(t, func() bool {
-		_, pending := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sess.ID)
-		_, inFlight := a.CacheKeepAliveComponent.CacheKeepAliveInFlight.Get(sess.ID)
+		_, pending := a.CacheKeepAlive.Get(sess.ID)
+		_, inFlight := a.CacheKeepAliveInFlight.Get(sess.ID)
 		return !pending && !inFlight
 	}, 2*time.Second, 5*time.Millisecond, "peak-hours refusal should consume the scheduled replay")
 	require.Zero(t, lm.calls.Load(), "keepalive request must be skipped inside provider peak hours")
@@ -190,7 +190,7 @@ func TestFireCacheKeepAlive_SkipsWhenSessionAtMaxCost(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	require.Zero(t, lm.calls.Load(), "session at max cost must never get a replay Stream call")
 
-	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sess.ID)
+	_, stillScheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, stillScheduled, "a cost-capped skip must not reschedule")
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
@@ -248,12 +248,12 @@ func TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost(t *testing
 	// recorded even though the concurrent charge pushed the session over cap.
 	// It must still not rearm: the max-cost guard prevents future requests.
 	require.Eventually(t, func() bool {
-		_, stillInFlight := a.CacheKeepAliveComponent.CacheKeepAliveInFlight.Get(sess.ID)
+		_, stillInFlight := a.CacheKeepAliveInFlight.Get(sess.ID)
 		return !stillInFlight
 	}, 2*time.Second, 5*time.Millisecond, "replay must complete promptly")
 
 	time.Sleep(100 * time.Millisecond)
-	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sess.ID)
+	_, stillScheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, stillScheduled, "a mid-flight max-cost crossing must not rearm")
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
@@ -297,7 +297,7 @@ func TestCancelCacheKeepAlive_CancelsInFlightReplay(t *testing.T) {
 	require.Less(t, elapsed, 5*time.Second,
 		"in-flight replay must be cancelled promptly, not run out callbeat.CacheKeepAliveCallTimeout (30s)")
 
-	_, stillInFlight := a.CacheKeepAliveComponent.CacheKeepAliveInFlight.Get(sessionID)
+	_, stillInFlight := a.CacheKeepAliveInFlight.Get(sessionID)
 	require.False(t, stillInFlight, "in-flight entry must be cleared after the call returns")
 }
 
@@ -507,7 +507,7 @@ func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing
 	// Assert the fire finished: the deferred release must have cleared the
 	// in-flight entry.
 	require.Eventually(t, func() bool {
-		_, stillInFlight := a.CacheKeepAliveComponent.CacheKeepAliveInFlight.Get(sessionID)
+		_, stillInFlight := a.CacheKeepAliveInFlight.Get(sessionID)
 		return !stillInFlight
 	}, 2*time.Second, 5*time.Millisecond,
 		"fire's deferred release must have cleared the in-flight entry")
@@ -518,7 +518,7 @@ func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing
 	require.EqualValues(t, 1, lm.calls.Load(),
 		"a cancel landing between the ctx.Err() check and the rearm critical section must stop the rearm")
 
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sessionID)
+	_, scheduled := a.CacheKeepAlive.Get(sessionID)
 	require.False(t, scheduled,
 		"the stale fire must not leave a re-armed pending entry behind")
 }
@@ -565,7 +565,7 @@ func TestFireCacheKeepAlive_ChargeRecordedWhenDeltaCrossesMaxCost(t *testing.T) 
 	require.EqualValues(t, 1, lm.calls.Load(),
 		"the cap is checked after accounting, so a crossing charge must stop rearming")
 
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sess.ID)
+	_, scheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, scheduled)
 }
 
@@ -609,7 +609,7 @@ func TestFireCacheKeepAlive_ChargeFailureStopsRearm(t *testing.T) {
 	require.EqualValues(t, 1, lm.calls.Load(),
 		"a failed charge must stop rearming — no repeated unbilled replays under DB trouble (K-3)")
 
-	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get(sess.ID)
+	_, scheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, scheduled,
 		"a failed charge must not leave a re-armed entry behind")
 }
