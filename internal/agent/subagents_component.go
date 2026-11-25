@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -40,6 +41,7 @@ type subAgentHost interface {
 	currentAgent() SessionAgent
 	resolveRequestedDelegationModel(ctx context.Context, cfg *config.Config, parentID string, role RequestedModelRole) (delegationRoleModel, error)
 	batchHeldQuestionResumeHint(ctx context.Context, owner string) string
+	knownChildSessionsHint(ctx context.Context, owner string) string
 	batchHeldQuestionResumeRefusal(ctx context.Context, owner, child string) string
 	resetConsecutiveResume(sessionID string)
 	buildModelsFromCfg(ctx context.Context, cfg *config.Config, smartModelCfg, fastModelCfg config.SelectedModel, isSubAgent bool) (Model, Model, error)
@@ -58,6 +60,23 @@ type subAgentHost interface {
 }
 
 type subagentsComponent struct{ host subAgentHost }
+
+func (h coordinatorSubAgentHost) knownChildSessionsHint(ctx context.Context, owner string) string {
+	children, err := h.sessions().ListSubSessions(ctx, owner)
+	if err != nil || len(children) == 0 {
+		return ""
+	}
+	// ListSubSessions is oldest-first; show only the five newest to keep the hint concise.
+	start := len(children) - 5
+	if start < 0 {
+		start = 0
+	}
+	ids := make([]string, 0, len(children)-start)
+	for i := len(children) - 1; i >= start; i-- {
+		ids = append(ids, children[i].ID)
+	}
+	return "\n\nknown child sessions of this session: " + strings.Join(ids, ", ")
+}
 
 // subAgentParams holds the parameters for running a sub-agent.
 type subAgentParams struct {
@@ -226,7 +245,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	if params.ResumeSessionID != "" {
 		existing, getErr := c.host.sessions().Get(ctx, params.ResumeSessionID)
 		if getErr != nil {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q not found: %s%s", params.ResumeSessionID, getErr, c.host.batchHeldQuestionResumeHint(ctx, params.SessionID))), nil
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q not found: %s%s%s", params.ResumeSessionID, getErr, c.host.batchHeldQuestionResumeHint(ctx, params.SessionID), c.host.knownChildSessionsHint(ctx, params.SessionID))), nil
 		}
 		if existing.ParentSessionID != params.SessionID {
 			return fantasy.NewTextErrorResponse(fmt.Sprintf("resume_session_id %q is not a child of the current session; refusing to resume a session that does not belong to this agent call%s", params.ResumeSessionID, c.host.batchHeldQuestionResumeHint(ctx, params.SessionID))), nil

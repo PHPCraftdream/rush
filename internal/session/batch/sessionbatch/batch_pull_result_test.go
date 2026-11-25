@@ -184,6 +184,47 @@ func TestBatchPullResult_NoTaskChildUnchanged(t *testing.T) {
 	require.Equal(t, "", out[0].Message.FullText())
 }
 
+func TestBatchPullResult_SingleAgentRootCarriesBoundChildID(t *testing.T) {
+	s, _, ctx := batchStoreTestDB(t)
+	m := message.NewService(db.New(s.writer))
+	snap := batchPullResultReserve(t, s, ctx, 1)
+	batchPullResultSettle(t, s, ctx, snap, 2,
+		batchPullResultUpdate{id: snap.Nodes[1].NodeID, state: "completed", summary: "agent-result"},
+		batchPullResultUpdate{id: snap.Root.RootID, state: "completed", summary: ""},
+	)
+	_, err := s.writer.ExecContext(ctx, "UPDATE batch_nodes SET child_session_id='child-resume-1' WHERE node_id=?", snap.Nodes[1].NodeID)
+	require.NoError(t, err)
+	batchOutboxAck(t, s, ctx, m, snap.Root.RootID)
+	var got BatchNoticeRow
+	out, err := s.BatchPullNotices(ctx, m, "owner", func(row BatchNoticeRow) message.CreateMessageParams {
+		got = row
+		return batchOutboxText("child_session_id=" + row.ChildSessionID + " (resume with agent(resume_session_id=" + row.ChildSessionID + "); inject_agent addresses a running child)")
+	})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Contains(t, out[0].Message.FullText(), "child_session_id=child-resume-1 (resume with agent(resume_session_id=child-resume-1); inject_agent addresses a running child)")
+	require.Equal(t, "child-resume-1", got.ChildSessionID)
+}
+
+func TestBatchPullResult_TwoBoundAgentLeavesCarryNoID(t *testing.T) {
+	s, _, ctx := batchStoreTestDB(t)
+	m := message.NewService(db.New(s.writer))
+	snap := batchPullResultReserve(t, s, ctx, 2)
+	batchPullResultSettle(t, s, ctx, snap, 2,
+		batchPullResultUpdate{id: snap.Nodes[1].NodeID, state: "completed", summary: "agent-a"},
+		batchPullResultUpdate{id: snap.Nodes[2].NodeID, state: "completed", summary: "agent-b"},
+		batchPullResultUpdate{id: snap.Root.RootID, state: "completed", summary: ""},
+	)
+	for i, childID := range []string{"child-a", "child-b"} {
+		_, err := s.writer.ExecContext(ctx, "UPDATE batch_nodes SET child_session_id=? WHERE node_id=?", childID, snap.Nodes[i+1].NodeID)
+		require.NoError(t, err)
+	}
+	out, got := batchPullResultPull(t, s, ctx, m, snap)
+	require.Len(t, out, 1)
+	require.NotContains(t, out[0].Message.FullText(), "child_session_id")
+	require.Equal(t, "", got.ChildSessionID)
+}
+
 func TestBatchPullResult_RepeatedPullDeliversExactlyOnce(t *testing.T) {
 	// Regression-sensitive: messages count == 2 and the second pull is
 	// empty. Mutation caught: breaking the delivery CAS (e.g. re-setting
