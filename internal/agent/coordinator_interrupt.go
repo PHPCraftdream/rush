@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
@@ -216,7 +218,7 @@ func interruptTickStopsFor(err error) bool {
 // CORRECTED (task #421/P0-1; the original text here claimed "a replacement
 // turn runs under the same coordinator-level Run", which stopped being true
 // once handleInterruptTick started marking calls FromDurableQueue=true —
-// see mailbox.go's guard on mb.replacement): for a durable-queue-originated
+// see mailbox.go's guard on mb.Replacement): for a durable-queue-originated
 // interrupt, cancelling the current generation does NOT hand this Run() call
 // a replacement turn to keep running — sessionAgent.Run's turn loop simply
 // ends (hasNext=false), and this ticker's own ctx (the owning Run call's)
@@ -226,7 +228,7 @@ func interruptTickStopsFor(err error) bool {
 // RunNonInteractive's DrainSessionNow call (internal/app/app.go) once this
 // Run() returns — not by this ticker continuing to poll for it. The one
 // case this ticker DOES keep ticking across is a NON-durable interrupt
-// (InterruptAndSend, still sets mb.replacement): that replacement genuinely
+// (InterruptAndSend, still sets mb.Replacement): that replacement genuinely
 // does run under this same Run call, and remains interruptible by a second
 // cross-process interrupt via this same ticker, exactly as originally
 // documented. The goroutine also exits when ctx is cancelled (turn finished/
@@ -438,7 +440,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 	call.OnUserMessageCreated = nil
 
 	// Mark as originating from the durable queue so InterruptAndReplace skips
-	// mb.replacement to avoid double-execution (P0-1 fix). The pump will execute
+	// mb.Replacement to avoid double-execution (P0-1 fix). The pump will execute
 	// the durable row directly; we only cancel the in-flight generation here.
 	call.FromDurableQueue = true
 
@@ -473,7 +475,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		if idlePrep != nil {
 			idlePrep.release()
 		}
-		return false, fmt.Errorf("failed to serialize call data for interrupt inject: %w", marshalErr)
+		return false, fmt.Errorf("failed to serialize call data for interrupt In: %w", marshalErr)
 	}
 
 	// Now atomically consume (delete) and enqueue in one transaction, matching
@@ -490,7 +492,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		if idlePrep != nil {
 			idlePrep.release()
 		}
-		return false, fmt.Errorf("failed to enqueue interrupt inject: %w", enqueueErr)
+		return false, fmt.Errorf("failed to enqueue interrupt In: %w", enqueueErr)
 	}
 	if enqueuedPi == nil {
 		// Row vanished between peek and enqueue — handled gracefully
@@ -526,7 +528,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 			idlePrep.release()
 		}
 		if reconcileErr := c.reconcileInterruptInjectEnqueue(ctx, *enqueuedPi, idempotencyKey); reconcileErr != nil {
-			return false, fmt.Errorf("failed to reconcile undelivered interrupt inject: %w", reconcileErr)
+			return false, fmt.Errorf("failed to reconcile undelivered interrupt In: %w", reconcileErr)
 		}
 		return false, nil
 	}
@@ -559,31 +561,31 @@ type activeCallInspector interface {
 }
 
 type activeCallTokenInspector interface {
-	ActiveCallStateWithToken(sessionID string) (SessionAgentCall, activeCallToken, bool, bool)
+	ActiveCallStateWithToken(sessionID string) (SessionAgentCall, mailboxpkg.ActiveCallToken, bool, bool)
 }
 
 type activeCallReplacer interface {
-	InterruptAndReplaceIfCurrent(sessionID string, call SessionAgentCall, token activeCallToken) bool
+	InterruptAndReplaceIfCurrent(sessionID string, call SessionAgentCall, token mailboxpkg.ActiveCallToken) bool
 }
 
-func activeCallStateForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, activeCallToken, bool, bool, bool) {
+func activeCallStateForSession(currentAgent SessionAgent, sessionID string) (SessionAgentCall, mailboxpkg.ActiveCallToken, bool, bool, bool) {
 	if inspector, ok := currentAgent.(activeCallTokenInspector); ok {
 		call, token, owned, published := inspector.ActiveCallStateWithToken(sessionID)
 		return call, token, owned, published, true
 	}
 	if inspector, ok := currentAgent.(activeCallInspector); ok {
 		call, owned, published := inspector.ActiveCallState(sessionID)
-		return call, activeCallToken{}, owned, published, false
+		return call, mailboxpkg.ActiveCallToken{}, owned, published, false
 	}
 	snapshotter, ok := currentAgent.(activeCallSnapshotter)
 	if !ok {
-		return SessionAgentCall{}, activeCallToken{}, false, true, false
+		return SessionAgentCall{}, mailboxpkg.ActiveCallToken{}, false, true, false
 	}
 	call, published := snapshotter.ActiveCall(sessionID)
-	return call, activeCallToken{}, published, published, false
+	return call, mailboxpkg.ActiveCallToken{}, published, published, false
 }
 
-func interruptAndReplaceSnapshot(currentAgent SessionAgent, sessionID string, call SessionAgentCall, token activeCallToken, tokenAvailable bool) bool {
+func interruptAndReplaceSnapshot(currentAgent SessionAgent, sessionID string, call SessionAgentCall, token mailboxpkg.ActiveCallToken, tokenAvailable bool) bool {
 	if tokenAvailable {
 		replacer, ok := currentAgent.(activeCallReplacer)
 		if !ok {
@@ -599,7 +601,7 @@ func (c *coordinator) handleActiveNonDurableInterrupt(
 	pi *core.PendingInject,
 	msg message.Message,
 	active SessionAgentCall,
-	token activeCallToken,
+	token mailboxpkg.ActiveCallToken,
 	tokenAvailable bool,
 ) (bool, error) {
 	call := agentcall.CallFromActive(active)
@@ -696,7 +698,7 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 // below for what changed and why.
 //
 // Those paths used to call QueueMessage(call) when InterruptAndReplace
-// reported no owner. That is a runnerless queue: with the session idle
+// reported no owner. That is a runnerless Qu: with the session idle
 // there is no turn loop left to drain it, so the call sat there until
 // some unrelated future Run() happened to come along — while the caller
 // (and, through it, the web client) had already been told the message was
@@ -704,7 +706,7 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 // finished, or landing in the race right after a release, the message
 // simply never ran. Durably enqueuing here is what the mailbox's own
 // contract says the caller must do when it is handed "no owner" (see
-// mailbox.interruptAndReplace's doc).
+// mailbox.InterruptAndReplace's doc).
 //
 // Task #340, ROUND 3 migration: durably enqueues the call to the
 // session_run_queue table (session.EnqueueRunQueueEntry) synchronously, in
@@ -944,7 +946,7 @@ func (c *coordinator) InjectMessage(ctx context.Context, sessionID, prompt strin
 	// Resolve the session's model configuration before building the call.
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
-		return message.Message{}, fmt.Errorf("failed to resolve session models for inject: %w", err)
+		return message.Message{}, fmt.Errorf("failed to resolve session models for In: %w", err)
 	}
 
 	call, err := c.buildCall(ctx, sessionID, prompt, pinned, attachments)

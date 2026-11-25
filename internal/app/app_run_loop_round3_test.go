@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -115,7 +117,7 @@ func TestExecuteRun_DrainTurnNeverRunsTheReviewerPass(t *testing.T) {
 	rh.seedDebt()
 
 	var out syncBuffer
-	res, err := rh.app.ExecuteRun(agent.WithDrainCall(agent.WithBackgroundJobNotice(ctx)), RunRequest{
+	res, err := rh.app.ExecuteRun(sessionprompt.WithDrainCall(sessionprompt.WithBackgroundJobNotice(ctx)), RunRequest{
 		Overrides:         RunOverrides{ModelRole: config.SelectedModelTypeSmart, Origin: message.OriginCLI},
 		Mode:              RunModeJSON,
 		ContinueSessionID: rh.sessionID,

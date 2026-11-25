@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,7 +15,7 @@ import (
 //
 // Two ways that happened before the agent-level gate:
 //
-//   - after CancelAll's sweep leaves a mailbox at mbIdle, submit() happily
+//   - after CancelAll's sweep leaves a mailbox at mailboxpkg.MbIdle, submit() happily
 //     grants ownership again (submit never consults `stopped`), so the next
 //     Run performs a full provider turn that the already-finished sweep can
 //     never cancel;
@@ -26,7 +28,7 @@ import (
 // Summarize, and the web handlers — none of which look at mailbox state.
 func TestCancelAll_RefusesNewRunsAfterShutdown(t *testing.T) {
 	t.Run("mailbox latch alone does not stop a new owner", func(t *testing.T) {
-		// Observation, NOT a contract: submit() consults only mb.state, so a
+		// Observation, NOT a contract: submit() consults only mb.State, so a
 		// hard-stopped mailbox whose era has ended still grants ownership.
 		// That is why the refusal has to live on the AGENT, ahead of any
 		// mailbox — which is what the other subtests actually pin.
@@ -38,14 +40,14 @@ func TestCancelAll_RefusesNewRunsAfterShutdown(t *testing.T) {
 		// reading like a regression they caused. Start from a genuinely
 		// owned mailbox so the scenario matches the comment — from the zero
 		// value, hardStop/abandonOwnership change nothing this observes.
-		mb := &mailbox{}
-		became, epoch := mb.submit(SessionAgentCall{SessionID: "s1"}, func() {})
+		mb := &mailboxpkg.Mailbox{}
+		became, epoch := mb.Submit(SessionAgentCall{SessionID: "s1"}, func() {})
 		require.True(t, became, "sanity: a fresh mailbox grants ownership")
-		mb.hardStop()
-		mb.abandonOwnership(epoch)
-		require.True(t, mb.isStopped(), "sanity: the latch is set and the era has ended")
+		mb.HardStop()
+		mb.AbandonOwnership(epoch)
+		require.True(t, mb.IsStopped(), "sanity: the latch is set and the era has ended")
 
-		againBecame, _ := mb.submit(SessionAgentCall{SessionID: "s1"}, func() {})
+		againBecame, _ := mb.Submit(SessionAgentCall{SessionID: "s1"}, func() {})
 		t.Logf("submit on a hard-stopped, era-ended mailbox returned becomeOwner=%v "+
 			"(if this ever becomes false, submit grew its own stopped gate — fine, and this line can go)", againBecame)
 	})
@@ -103,29 +105,29 @@ func TestCancelAll_RefusesNewRunsAfterShutdown(t *testing.T) {
 // TestInterruptAndReplace_RefusesOnStoppedMailbox covers the closing
 // review's blocker 2.
 //
-// interruptAndReplace only checked `state != mbOwned`. On a mailbox that
-// had been hard-stopped but was still mbOwned it recorded the replacement
+// interruptAndReplace only checked `state != mailboxpkg.MbOwned`. On a mailbox that
+// had been hard-stopped but was still mailboxpkg.MbOwned it recorded the replacement
 // and returned hadOwner=true — so the coordinator skipped its own
 // no-owner path and the web client was told "queued". Both drains are
 // then guaranteed to refuse it, and the payload is swept into an
 // in-memory queue by a process that is exiting: accepted, never run,
 // never reported.
 func TestInterruptAndReplace_RefusesOnStoppedMailbox(t *testing.T) {
-	mb := &mailbox{
-		state:            mbOwned,
-		epoch:            1,
-		dispatcherCancel: func() {},
-		current:          generation{id: 1, cancel: func() {}},
+	mb := &mailboxpkg.Mailbox{
+		State:            mailboxpkg.MbOwned,
+		Epoch:            1,
+		DispatcherCancel: func() {},
+		Current:          mailboxpkg.Generation{ID: 1, Cancel: func() {}},
 	}
-	mb.hardStop()
+	mb.HardStop()
 
-	cancelFn, hadOwner := mb.interruptAndReplace(SessionAgentCall{SessionID: "s1", Prompt: "replace me"})
+	cancelFn, hadOwner := mb.InterruptAndReplace(SessionAgentCall{SessionID: "s1", Prompt: "replace me"})
 
 	require.False(t, hadOwner,
 		"a hard-stopped mailbox must report no owner so the caller takes its own no-owner path (where Run "+
 			"refuses visibly) instead of being told the interrupt was accepted (closing review, blocker 2)")
 	require.Nil(t, cancelFn)
-	require.Nil(t, mb.replacement,
+	require.Nil(t, mb.Replacement,
 		"nothing may be recorded on a stopped mailbox — both drains would refuse it, so it could only ever be "+
 			"swept away unrun")
 }

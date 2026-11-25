@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"charm.land/fantasy"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
@@ -358,9 +360,9 @@ type sessionAgent struct {
 	// testReserveRebindSeam, when non-nil, is invoked by
 	// RunWithReservedOwnership strictly after tryAdmitRunWg succeeds and
 	// strictly before mailbox.rebindDispatcher runs — the narrow window in
-	// which a concurrent CancelAll can latch mb.stopped between admission
+	// which a concurrent CancelAll can latch mb.Stopped between admission
 	// and the rebind. Test-only (task #641 F-4); nil (a no-op) in every
-	// production path, mirroring mailbox.testLoopRearmSeam's idiom.
+	// production path, mirroring mailbox.TestLoopRearmSeam's idiom.
 	testReserveRebindSeam func()
 	// checkpointInterval is plumbed from SessionAgentOptions.
 	// When > 0 the Run method starts a coalescing ticker that flushes
@@ -411,7 +413,7 @@ type sessionAgent struct {
 	// look up directly (Cancel/CancelAll now route through the mailbox
 	// instead). The sessionID+"-summarize" synthetic key that used to live
 	// here has been removed (#268/P0-4: compaction now owns the mailbox via
-	// beginCompact, so its cancel lives in mailbox.current.cancel). Plain
+	// beginCompact, so its cancel lives in mailbox.Current.cancel). Plain
 	// sessionID entries are inert (already-fired cancelFuncs) and are no
 	// longer consulted for busy state (IsSessionBusy reads the mailbox).
 	activeRequests *csync.Map[string, context.CancelFunc]
@@ -427,7 +429,7 @@ type sessionAgent struct {
 	// session id, created lazily on first touch via GetOrSet and never
 	// explicitly deleted — same "one map, lazily populated, entries live
 	// forever" lifetime as activeRequests today.
-	mailboxes *csync.Map[string, *mailbox]
+	mailboxes *csync.Map[string, *mailboxpkg.Mailbox]
 	*callbeat.CacheKeepAliveComponent
 
 	// runAllowlists, when non-nil, lets the turn loop activate each call's
@@ -469,7 +471,7 @@ func (a *sessionAgent) diskCapsRef() *DiskProviderRegistry {
 func (a *sessionAgent) sessionOwnershipComponent() *sessionOwnership {
 	return &sessionOwnership{
 		host:                    a,
-		mailboxes:               func() *csync.Map[string, *mailbox] { return a.mailboxes },
+		mailboxes:               func() *csync.Map[string, *mailboxpkg.Mailbox] { return a.mailboxes },
 		sessions:                func() coresession.Service { return a.sessions },
 		hasSummarizeQueue:       func() bool { return a.summarizeQueue != nil },
 		armQueuedBuildRetention: func() func(*SessionAgentCall) { return a.armQueuedBuildRetention },
@@ -505,7 +507,7 @@ func NewSessionAgent(
 		notify:                     opts.Notify,
 		activeRequests:             csync.NewMap[string, context.CancelFunc](),
 		turnBudget:                 turnBudget{summarizeQueue: csync.NewMap[string, *SummarizeSnapshot]()},
-		mailboxes:                  csync.NewMap[string, *mailbox](),
+		mailboxes:                  csync.NewMap[string, *mailboxpkg.Mailbox](),
 		CacheKeepAliveComponent:    callbeat.NewComponent(),
 		streamIdleTimeout:          opts.StreamIdleTimeout,
 		streamWatchdogTick:         opts.StreamWatchdogTick,

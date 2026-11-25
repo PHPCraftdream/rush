@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
@@ -74,7 +77,7 @@ type turnStreamConfig struct {
 	notifyUI        func() error
 	drainPendingUI  func()
 
-	wd               streamWatchdog
+	wd               watchdog.StreamWatchdog
 	watchdogCauseVal *atomic.Int32
 	toolMaxDuration  time.Duration
 	timeoutHardCap   time.Duration
@@ -144,7 +147,7 @@ type turnStream struct {
 	notifyUI        func() error
 	drainPendingUI  func()
 
-	wd               streamWatchdog
+	wd               watchdog.StreamWatchdog
 	watchdogCauseVal *atomic.Int32
 	toolMaxDuration  time.Duration
 	timeoutHardCap   time.Duration
@@ -553,7 +556,7 @@ func (ts *turnStream) onToolInputEnd(id string) error {
 
 func (ts *turnStream) onRetry(err *fantasy.ProviderError, delay time.Duration) {
 	ts.bumpActivity()
-	slog.Warn("Provider request failed, retrying", providerRetryLogFields(err, delay)...)
+	slog.Warn("Provider request failed, retrying", sessionprompt.ProviderRetryLogFields(err, delay)...)
 	// fantasy re-runs the whole step on the SAME callbacks (its retry
 	// wraps Stream+processStepStream; PrepareStep is not re-run), so the
 	// cut attempt's partial text/reasoning would ride under the retry's
@@ -615,7 +618,7 @@ func (ts *turnStream) onToolCall(tc fantasy.ToolCallContent) error {
 	ts.stall.ToolEnter(tc.ToolName, tc.ToolCallID)
 	ts.stall.MarkProgress()
 	ts.phase = phaseToolBoundary // Fork patch: batch 8
-	input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
+	input, wasSanitized := sessionprompt.SanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
 	if wasSanitized {
 		ts.sanitizedToolCalls[tc.ToolCallID] = true
 	}

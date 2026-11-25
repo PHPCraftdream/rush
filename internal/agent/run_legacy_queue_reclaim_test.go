@@ -100,7 +100,7 @@ func TestRun_LegacyQueueMessageDuringFinalDrain_DoesNotWedgeAcrossTurns(t *testi
 	// Queue directly into the mailbox during turn 1's stream, simulating a
 	// QueueMessage caller. Strictly after turn 1's PrepareStep has already
 	// run, so it can only be picked up by the end-of-turn drain.
-	sa.getMailbox(sess.ID).queue(SessionAgentCall{
+	sa.getMailbox(sess.ID).Queue(SessionAgentCall{
 		SessionID:       sess.ID,
 		Prompt:          "queued via the legacy path during turn 1's stream",
 		MaxOutputTokens: 1000,

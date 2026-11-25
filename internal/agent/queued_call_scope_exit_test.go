@@ -39,7 +39,7 @@ func TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases(t *testing.T) {
 	caps := NewDiskProviderRegistry()
 	a := &sessionAgent{}
 	a.bindDiskCaps(caps)
-	a.mailboxes = csync.NewMap[string, *mailbox]()
+	a.mailboxes = csync.NewMap[string, *mailboxpkg.Mailbox]()
 
 	// A real session service over its own database, wrapped in the
 	// enqueue-recording fake: the durable row goes to a REAL table, the
@@ -80,13 +80,13 @@ func TestQueuedCallScope_OrphanHandoffReenqueuesAndReleases(t *testing.T) {
 	require.Nil(t, res)
 
 	mb := a.getMailbox(sid)
-	require.Len(t, mb.submitted, 1)
-	require.Equal(t, "lc-orphan-marker", mb.submitted[0].LogicalCallID)
-	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
+	require.Len(t, mb.Submitted, 1)
+	require.Equal(t, "lc-orphan-marker", mb.Submitted[0].LogicalCallID)
+	require.True(t, mb.Submitted[0].CallOptions.BuildScopeRetained)
 	owners1, _ := caps.ownerCounts()
 	require.Equal(t, owners0+1, owners1)
 
-	popped := mb.abandonOwnershipAndPopSubmitted(epoch)
+	popped := mb.AbandonOwnershipAndPopSubmitted(epoch)
 	require.Len(t, popped, 1)
 
 	// The real orphan handoff: durable re-enqueue (synchronous) + the
@@ -151,18 +151,18 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 		require.Equal(t, 1, owners0)
 
 		mb := a.getMailbox(sid)
-		mb.armQueuedBuild(&call)
-		mb.queue(call)
+		mb.ArmQueuedBuild(&call)
+		mb.Queue(call)
 		owners1, _ := caps.ownerCounts()
 		require.Equal(t, owners0+1, owners1)
 
-		mb.clearAll()
+		mb.ClearAll()
 		owners2, con2 := caps.ownerCounts()
 		require.Equal(t, owners0, owners2)
 		require.Equal(t, con0, con2)
 
 		// Second clearAll (empty queue): still the baseline.
-		mb.clearAll()
+		mb.ClearAll()
 		owners3, con3 := caps.ownerCounts()
 		require.Equal(t, owners0, owners3)
 		require.Equal(t, con0, con3)
@@ -185,23 +185,23 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 		// (LIFO) even when an assertion below fails: the installed
 		// replacement is resolved first and never reaches orphan recovery
 		// with a nil session service.
-		t.Cleanup(func() { mb.clearAll() })
+		t.Cleanup(func() { mb.ClearAll() })
 		retained := SessionAgentCall{
 			SessionID:   sid,
 			Prompt:      "replacement",
 			CallOptions: &CallOptions{},
 			Tools:       []fantasy.AgentTool{pinnedIngressTool("reg-super")},
 		}
-		mb.armQueuedBuild(&retained)
+		mb.ArmQueuedBuild(&retained)
 		require.True(t, retained.CallOptions.BuildScopeRetained)
-		mb.mu.Lock()
-		mb.replacement = &retained
-		mb.mu.Unlock()
+		mb.Mu.Lock()
+		mb.Replacement = &retained
+		mb.Mu.Unlock()
 		owners1, _ := caps.ownerCounts()
 		require.Equal(t, owners0+1, owners1)
 
 		other := SessionAgentCall{SessionID: sid, Prompt: "instead"}
-		_, replaced := mb.interruptAndReplace(other)
+		_, replaced := mb.InterruptAndReplace(other)
 		require.True(t, replaced)
 
 		// The safety net released the old replacement's retained scope.
@@ -214,7 +214,7 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 		// unmarked, non-waiter, non-Drain "instead" call into
 		// restartOrphanedWithRetry with a nil session service, whose
 		// enqueue goroutine panics (agent_ownership.go:564).
-		mb.clearAll()
+		mb.ClearAll()
 	})
 
 	t.Run("shutdown hardStop routing", func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 		caps := NewDiskProviderRegistry()
 		a := &sessionAgent{}
 		a.bindDiskCaps(caps)
-		a.mailboxes = csync.NewMap[string, *mailbox]()
+		a.mailboxes = csync.NewMap[string, *mailboxpkg.Mailbox]()
 
 		// Real db + fake-recording sessions: the queued call must reach the
 		// DURABLE session_run_queue table via restartOrphanedWithRetry —
@@ -239,7 +239,7 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 
 		// Queue the armed call via the REAL Run path: ReserveExclusive
 		// holds the epoch, so Run acknowledges the call as queued and arms
-		// its retained build scope through mailbox.submit.
+		// its retained build scope through mailbox.Submit.
 		_, epoch, cancel, ok := a.ReserveExclusive(context.Background(), sess.ID)
 		require.True(t, ok)
 		t.Cleanup(func() { a.ReleaseExclusive(sess.ID, epoch, cancel) })
@@ -257,19 +257,19 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 		require.Nil(t, res)
 
 		mb := a.getMailbox(sess.ID)
-		require.Len(t, mb.submitted, 1)
-		require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
+		require.Len(t, mb.Submitted, 1)
+		require.True(t, mb.Submitted[0].CallOptions.BuildScopeRetained)
 		owners0, con0 := caps.ownerCounts()
 		require.Equal(t, 2, owners0) // pin + retained
 		require.Equal(t, 1, con0)
 
 		// What App teardown does: hardStop latches stopped, then the real
-		// shutdown drain pops the queued call as orphaned (drainOrReleaseFinal:
+		// shutdown drain pops the queued call as orphaned (Dr:
 		// stopped entry check skips the live branches -> mbReleasing with
 		// release==nil -> the finalize step hands submitted out as orphaned;
 		// the epoch must match, which it does here — hardStop never bumps it).
-		mb.hardStop()
-		_, _, orphaned, relErr := mb.drainOrReleaseFinal(epoch, nil)
+		mb.HardStop()
+		_, _, orphaned, relErr := mb.DrainOrReleaseFinal(epoch, nil)
 		require.NoError(t, relErr)
 		require.Len(t, orphaned, 1)
 		require.Equal(t, "lc-shutdown-marker", orphaned[0].LogicalCallID)
@@ -299,12 +299,12 @@ func TestQueuedCallScope_ClearAndShutdownReleaseExactlyOnce(t *testing.T) {
 		require.Equal(t, 0, owners2)
 		require.Equal(t, 0, con2)
 
-		mb.clearAll()
+		mb.ClearAll()
 		owners3, con3 := caps.ownerCounts()
 		require.Equal(t, 0, owners3)
 		require.Equal(t, 0, con3)
 
-		mb.clearAll()
+		mb.ClearAll()
 		owners4, con4 := caps.ownerCounts()
 		require.Equal(t, 0, owners4)
 		require.Equal(t, 0, con4)
@@ -419,13 +419,13 @@ func TestQueuedCallScope_FourPolicyDecisionsReduced(t *testing.T) {
 	require.Nil(t, res)
 
 	mb := a.getMailbox(sid)
-	require.Len(t, mb.submitted, 1)
-	require.True(t, mb.submitted[0].CallOptions.BuildScopeRetained)
-	require.Same(t, &policyB, mb.submitted[0].RunAllowlist)
+	require.Len(t, mb.Submitted, 1)
+	require.True(t, mb.Submitted[0].CallOptions.BuildScopeRetained)
+	require.Same(t, &policyB, mb.Submitted[0].RunAllowlist)
 
 	// The REAL promotion pop (the primitive every live drain path uses via
 	// drainOrReleaseMerged).
-	next, hasNext, orphaned, relErr := mb.drainOrReleaseFinal(epoch, nil)
+	next, hasNext, orphaned, relErr := mb.DrainOrReleaseFinal(epoch, nil)
 	require.True(t, hasNext)
 	require.Len(t, orphaned, 0)
 	require.NoError(t, relErr)

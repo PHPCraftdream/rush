@@ -194,7 +194,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // The ONE exception to "this function releases every early return" is the
 // rebindDispatcher failure branch. A failed rebind has TWO distinct
 // causes (see mailbox.rebindDispatcher: it returns false when
-// `mb.epoch != epoch || mb.state != mbOwned || mb.stopped`):
+// `mb.Epoch != epoch || mb.State != mbOwned || mb.stopped`):
 //
 //   - Epoch/state mismatch: the epoch this caller thinks it owns has
 //     ALREADY ended (moved on to some other owner, or this era vacated
@@ -244,7 +244,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 // ReleaseExclusive after the handoff point (once onHandoff has fired),
 // because runOwned's defer owns releasing from that point forward. On early
 // error returns before the handoff, the caller's armed defer is the intended
-// (and on the mb.stopped rebind branch, the ONLY) release mechanism.
+// (and on the mb.Stopped rebind branch, the ONLY) release mechanism.
 //
 // onHandoff, if non-nil, is invoked immediately before the handoff to
 // runOwned. It is used by callers (e.g. handleRerunMessage) to transfer
@@ -254,7 +254,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 //
 // For MOST early returns (before onHandoff fires), this function itself
 // releases and the caller's still-armed defer's release is then an
-// epoch-mismatched/idle no-op. The EXCEPTION is the mb.stopped rebind
+// epoch-mismatched/idle no-op. The EXCEPTION is the mb.Stopped rebind
 // branch: this function deliberately does NOT release (the epoch still
 // matches, the mailbox is still mbOwned with possibly non-empty queues),
 // and the caller's later ReleaseExclusive (via its bailout defer) is what
@@ -286,7 +286,7 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 		// mailbox would make CancelAll's own hardStop sweep (which iterates
 		// existing mailboxes) the only thing that could ever clear it.
 		// abandonOwnershipWithHandoff is safe to call post-shutdown-latch:
-		// it does not consult mb.stopped (deliberately — see the rebind
+		// it does not consult mb.Stopped (deliberately — see the rebind
 		// branch below), but "restarting" queued work means durably
 		// enqueueing it via restartOrphanedWithRetry, not starting a
 		// provider turn — the admission gate refuses any Run during
@@ -307,7 +307,7 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 	// Test-only seam (task #641 F-4): fires strictly after admission
 	// succeeded and strictly before rebindDispatcher runs — the exact
 	// window a concurrent CancelAll must land in to make the rebind below
-	// fail on mb.stopped. nil in every production path.
+	// fail on mb.Stopped. nil in every production path.
 	if a.testReserveRebindSeam != nil {
 		a.testReserveRebindSeam()
 	}
@@ -319,7 +319,7 @@ func (a *sessionAgent) RunWithReservedOwnership(ctx context.Context, call Sessio
 	defer runCancel()
 
 	mb := a.getMailbox(call.SessionID)
-	if !mb.rebindDispatcher(epoch, runCancel) {
+	if !mb.RebindDispatcher(epoch, runCancel) {
 		// EXCEPTION to "this function releases every early return" — see the
 		// doc paragraph above titled "THE SINGLE HANDOFF POINT": the refusal
 		// is either an epoch/state mismatch (the era already isn't ours to
@@ -435,7 +435,7 @@ func (a *sessionAgent) refuseForeignSession(ctx context.Context, sessionID strin
 // cancelable context every turn in the loop derives from.
 func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCall, epoch uint64, runCancel context.CancelFunc) (*fantasy.AgentResult, error) {
 	mb := a.getMailbox(call.SessionID)
-	defer mb.clearCurrentCall(epoch)
+	defer mb.ClearCurrentCall(epoch)
 	// We now own call.SessionID's reservation, under ownership era `epoch`,
 	// for the entire loop below, including every queue-drain turn. Released
 	// exactly once, whichever way the loop ends, via THIS defer.
@@ -665,23 +665,23 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 	originCallOpts := call.CallOptions
 	for {
 		// Test-only seam (#289): fires strictly after any end-of-turn drain
-		// has already released mb.mu and strictly before this iteration's
+		// has already released mb.Mu and strictly before this iteration's
 		// beginGeneration call below re-arms it. nil (a no-op) in every
 		// production path — see mailbox.testLoopRearmSeam's own doc for why
 		// this exists and what it lets a test do that it otherwise could
 		// not: deterministically land a concurrent Cancel() inside the
 		// window between a reclaim and the loop's own re-arm, instead of
-		// racing the two for the next mb.mu acquisition.
-		if mb.testLoopRearmSeam != nil {
-			mb.testLoopRearmSeam()
+		// racing the two for the next mb.Mu acquisition.
+		if mb.TestLoopRearmSeam != nil {
+			mb.TestLoopRearmSeam()
 		}
 		// #307 (P1-2 follow-up): reclaim a same-window replacement BEFORE
 		// committing to run `call` — the value the PREVIOUS turn's own drain
 		// already decided on. An InterruptAndReplace landing in the
 		// inter-turn window (after the previous iteration's turnCancel()
 		// above, before this iteration's beginGeneration below —
-		// mb.current.cancel is nil for the whole window, exactly where
-		// testLoopRearmSeam parks a test) now records mb.replacement and
+		// mb.Current.cancel is nil for the whole window, exactly where
+		// testLoopRearmSeam parks a test) now records mb.Replacement and
 		// returns a nil cancel instead of falling back to dispatcherCancel
 		// (see interruptAndReplace's own doc for why that fallback used to
 		// cancel runCtx itself and poison every future turn). Nothing was
@@ -694,7 +694,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// interrupt landed in this exact window, which is the overwhelming
 		// majority of iterations.
 		previousCall := call
-		reclaimed := mb.reclaimReplacementOrKeep(call)
+		reclaimed := mb.ReclaimReplacementOrKeep(call)
 		if reclaimed.ReplacementHandoff && previousCall.FromDurableQueue {
 			replacedDurableCallID = previousCall.LogicalCallID
 			replacementError = ""
@@ -734,7 +734,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				return nil, notAttempted(call, err)
 			}
 		}
-		mb.setCurrentCall(call)
+		mb.SetCurrentCall(call)
 		// R3-4: activate THIS call's carried restricted-run policy exactly
 		// when the call becomes the active turn — whether it won ownership
 		// immediately (tryReserveSession), was queued and is now drained as
@@ -773,12 +773,12 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		a.activeRequests.Set(call.SessionID, turnCancel)
 		// Mirror the activeRequests re-arm into the mailbox's current
 		// generation cancel (design §4): Cancel(sessionID) targets
-		// mailbox.current.cancel, so it must be populated for the whole
+		// mailbox.Current.cancel, so it must be populated for the whole
 		// preamble (until runTurn swaps in its own per-turn genCtx cancel
 		// below). Using turnCancel (not runCancel) is the #284 fix: the
 		// preamble is now part of a cancelable generation that is SEPARATE
 		// from the durable dispatcher cancel.
-		mb.beginGeneration(turnCancel)
+		mb.BeginGeneration(turnCancel)
 		if replacedDurableCallID != "" && call.LogicalCallID == replacedDurableCallID {
 			replacedDurableCallID = ""
 			replacementError = ""
@@ -824,7 +824,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 				call.OnQueueResolved(result, err)
 			}
 		}
-		mb.clearCurrentCall(epoch)
+		mb.ClearCurrentCall(epoch)
 		turnCancel()
 		// A trailing refused no-turn Drain leg (nil result, nil error,
 		// hasNext=false) must not clobber the carried outcome of an earlier
@@ -903,7 +903,7 @@ func inheritReplacementIdentityCallback(previous, next *SessionAgentCall) {
 // context is unconditionally ours to clean up regardless of mailbox state.
 func (a *sessionAgent) runPreReservedOwnership(ctx context.Context, runCtx context.Context, runCancel context.CancelFunc, call SessionAgentCall, token *reservedOwnership) (*fantasy.AgentResult, error) {
 	mb := a.getMailbox(call.SessionID)
-	if !mb.rebindDispatcher(token.epoch, runCancel) {
+	if !mb.RebindDispatcher(token.epoch, runCancel) {
 		token.cancel()
 		return nil, fmt.Errorf("agent.Run: pre-reserved ownership for session %q is no longer valid (epoch mismatch or stopped mailbox); the reservation's owner still holds and will release it", call.SessionID)
 	}

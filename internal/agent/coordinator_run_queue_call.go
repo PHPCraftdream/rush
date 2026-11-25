@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -461,7 +463,7 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		}
 	}
 
-	ctx = WithCallOrigin(ctx, call.Origin)
+	ctx = sessionprompt.WithCallOrigin(ctx, call.Origin)
 	var roleErr error
 	call, roleErr = c.restoreRequestedDelegationCall(ctx, call)
 	if roleErr != nil {

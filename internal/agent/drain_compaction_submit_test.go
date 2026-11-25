@@ -1,6 +1,6 @@
 // Phase-4 step 3 coverage that complements drain_notice_pull_test.go:
 // DUR-3d (a compaction step never pulls) and the Drain merge rule as wired
-// through the real mailbox.submit busy path, not only mergeQueuedCall.
+// through the real mailbox.Submit busy path, not only mergeQueuedCall.
 package agent
 
 import (
@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -69,32 +71,32 @@ func TestCompaction_DoesNotPullNotices(t *testing.T) {
 }
 
 // TestMailboxSubmit_DrainMergeRule drives the real busy path of
-// mailbox.submit (not mergeQueuedCall directly): a Drain behind a busy owner
+// mailbox.Submit (not mergeQueuedCall directly): a Drain behind a busy owner
 // queues once, a second Drain is dropped, and a user call then replaces the
 // queued Drain -- one turn, not two.
 //
-// Revert-check performed: replaced `mergeQueuedCall(mb.submitted, call)` in
+// Revert-check performed: replaced `mergeQueuedCall(mb.Submitted, call)` in
 // submit with a plain append -- this test FAILED (queue length 2 after the
 // second Drain). Restored; re-ran, passed.
 func TestMailboxSubmit_DrainMergeRule(t *testing.T) {
-	mb := &mailbox{state: mbOwned, current: generation{id: 1, cancel: func() {}}}
+	mb := &mailboxpkg.Mailbox{State: mailboxpkg.MbOwned, Current: mailboxpkg.Generation{ID: 1, Cancel: func() {}}}
 
-	owner, _ := mb.submit(newDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
+	owner, _ := mb.Submit(newDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
 	require.False(t, owner)
-	owner, _ = mb.submit(newDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
+	owner, _ = mb.Submit(newDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
 	require.False(t, owner)
-	mb.mu.Lock()
-	require.Len(t, mb.submitted, 1, "at most one Drain may sit in the queue")
-	require.True(t, mb.submitted[0].IsDrain)
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	require.Len(t, mb.Submitted, 1, "at most one Drain may sit in the queue")
+	require.True(t, mb.Submitted[0].IsDrain)
+	mb.Mu.Unlock()
 
-	owner, _ = mb.submit(SessionAgentCall{SessionID: "s1", Prompt: "hello"}, nil)
+	owner, _ = mb.Submit(SessionAgentCall{SessionID: "s1", Prompt: "hello"}, nil)
 	require.False(t, owner)
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	require.Len(t, mb.submitted, 1, "the user call subsumes the queued Drain")
-	require.False(t, mb.submitted[0].IsDrain)
-	require.Equal(t, "hello", mb.submitted[0].Prompt)
+	mb.Mu.Lock()
+	defer mb.Mu.Unlock()
+	require.Len(t, mb.Submitted, 1, "the user call subsumes the queued Drain")
+	require.False(t, mb.Submitted[0].IsDrain)
+	require.Equal(t, "hello", mb.Submitted[0].Prompt)
 }
 
 // TestNewDrainCall_ResetsInheritedFlags pins the "never inherited" rule for
@@ -424,7 +426,7 @@ func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 		// Land a real, prompted call in the mailbox's queue BEFORE this
 		// turn's own decideDrainTurn/drainOrReleaseMerged run -- synchronous,
 		// no race.
-		agent.getMailbox(sess.ID).submit(SessionAgentCall{SessionID: sess.ID, Prompt: "are you there"}, nil)
+		agent.getMailbox(sess.ID).Submit(SessionAgentCall{SessionID: sess.ID, Prompt: "are you there"}, nil)
 		runTurnToolsSnapshotSeam = orig // fire once
 	}
 	t.Cleanup(func() { runTurnToolsSnapshotSeam = orig })

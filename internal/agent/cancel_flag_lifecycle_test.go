@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
@@ -120,7 +122,7 @@ func TestCancelFlag_LoopOwnedTurnsKeepTheFlag(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]func(context.Context) context.Context{
 		"per-call options (ExecuteRun)": func(c context.Context) context.Context { return WithCallOptions(c, &CallOptions{}) },
-		"Drain":                         WithDrainCall,
+		"Drain":                         sessionprompt.WithDrainCall,
 	}
 	for name, mark := range cases {
 		t.Run(name, func(t *testing.T) {

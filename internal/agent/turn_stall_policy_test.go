@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,9 +16,9 @@ import (
 // check doc):
 //
 //   - TestTurnStallAbortClosureFiresCauseStall guards the runTurn abort
-//     closure: forceStall, causeStall stored, genCtx cancelled.
+//     closure: forceStall, watchdog.CauseStall stored, genCtx cancelled.
 //   - TestTurnStallAbortJoinsErrTurnStalled guards handleStreamFailure's
-//     ErrTurnStalled join for causeStall aborts.
+//     ErrTurnStalled join for watchdog.CauseStall aborts.
 //   - TestExitMapsStallAbort guards app's exit mapping of ErrTurnStalled
 //     to exit_reason "stalled".
 
@@ -30,7 +32,7 @@ func TestTurnStallAbortClosureFiresCauseStall(t *testing.T) {
 	abort(42 * time.Minute)
 
 	require.True(t, stalled.Load())
-	require.Equal(t, int32(causeStall), causeVal.Load())
+	require.Equal(t, int32(watchdog.CauseStall), causeVal.Load())
 	select {
 	case <-ctx.Done():
 	default:
@@ -41,16 +43,16 @@ func TestTurnStallAbortClosureFiresCauseStall(t *testing.T) {
 func TestTurnStallAbortJoinsErrTurnStalled(t *testing.T) {
 	f := newRetryFixture(t, "stall-join")
 	var causeVal atomic.Int32
-	causeVal.Store(int32(causeStall))
+	causeVal.Store(int32(watchdog.CauseStall))
 	var stalled atomic.Bool
 	stalled.Store(true)
-	f.ts.wd = streamWatchdog{stalled: &stalled}
+	f.ts.wd = watchdog.StreamWatchdog{Stalled: &stalled}
 	f.ts.watchdogCauseVal = &causeVal
 	_, _, _, err := f.ts.handleStreamFailure(nil, context.Canceled, false)
 	require.True(t, errors.Is(err, ErrTurnStalled))
 
-	// A plain watchdog idle-stall (causeIdleStall) must NOT map to stalled.
-	causeVal.Store(int32(causeIdleStall))
+	// A plain watchdog idle-stall (watchdog.CauseIdleStall) must NOT map to stalled.
+	causeVal.Store(int32(watchdog.CauseIdleStall))
 	_, _, _, err = f.ts.handleStreamFailure(nil, context.Canceled, false)
 	require.False(t, errors.Is(err, ErrTurnStalled))
 }

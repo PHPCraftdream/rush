@@ -29,7 +29,7 @@ import (
 // Mechanism (see mailbox.interruptAndReplace's and reclaimReplacementOrKeep's
 // own docs for the full account): drainOrReleaseFinal's every "keep
 // ownership" branch (submitted/replacement/legacy-reclaim) leaves
-// mb.current.cancel == nil — that is the exact postcondition
+// mb.Current.cancel == nil — that is the exact postcondition
 // mailbox_invariant_test.go's table checks. The loop only repopulates it via
 // beginGeneration at the TOP of its next iteration. An InterruptAndReplace
 // landing in that gap used to fall back to mb.dispatcherCancel, which is
@@ -49,7 +49,7 @@ import (
 //  1. Turn 1 runs "first message" and blocks mid-stream.
 //  2. While turn 1 is blocked, a STALE call is queued into the legacy
 //     messageQueue — this is what drainOrReleaseMerged will decide to run
-//     as turn 2 once turn 1 finishes (mb.submitted/mb.replacement are both
+//     as turn 2 once turn 1 finishes (mb.Submitted/mb.Replacement are both
 //     empty at that point, so it falls through to the legacy reclaim).
 //  3. Turn 1 is allowed to finish. Its own end-of-turn drain reclaims the
 //     stale call and returns hasNext=true; the loop goes to its next
@@ -57,7 +57,7 @@ import (
 //  4. testLoopRearmSeam fires for the SECOND time (the first firing is turn
 //     1's own loop entry, long before any of this) — by construction this
 //     is strictly after the reclaim's critical section has already run
-//     (mb.current.cancel nil, dispatcherCancel == runCancel) and strictly
+//     (mb.Current.cancel nil, dispatcherCancel == runCancel) and strictly
 //     before this same iteration's beginGeneration call. The loop parks
 //     here.
 //  5. While parked, the test calls sa.InterruptAndReplace with a REPLACEMENT
@@ -164,7 +164,7 @@ func TestRun_InterruptDuringInterTurnWindow_ReplacementRunsExactlyOnce(t *testin
 	loopRearmEntered := make(chan struct{})
 	releaseLoopRearm := make(chan struct{})
 	var loopRearmCalls atomic.Int64
-	mb.testLoopRearmSeam = func() {
+	mb.TestLoopRearmSeam = func() {
 		if loopRearmCalls.Add(1) == 2 {
 			close(loopRearmEntered)
 			<-releaseLoopRearm
@@ -191,20 +191,20 @@ func TestRun_InterruptDuringInterTurnWindow_ReplacementRunsExactlyOnce(t *testin
 	// Queue a STALE legacy message while turn 1 is still in flight — this is
 	// what the end-of-turn drain will reclaim and hand to the loop as `call`
 	// for its next iteration, strictly BEFORE the interrupt below lands.
-	sa.getMailbox(sess.ID).queue(SessionAgentCall{
+	sa.getMailbox(sess.ID).Queue(SessionAgentCall{
 		SessionID:       sess.ID,
 		Prompt:          "STALE queued message, must never reach the provider",
 		MaxOutputTokens: 1000,
 	})
 
 	// Let turn 1 finish. Its own end-of-turn drain reclaims the stale
-	// message (mb.submitted/mb.replacement empty at that instant) and the
+	// message (mb.Submitted/mb.Replacement empty at that instant) and the
 	// loop proceeds into its next iteration with call == the stale message.
 	close(proceed1)
 
 	// Wait for the loop to park at its SECOND testLoopRearmSeam call — by
 	// construction this is strictly after the reclaim's critical section
-	// has already released mb.mu, and strictly before this iteration's own
+	// has already released mb.Mu, and strictly before this iteration's own
 	// beginGeneration call.
 	select {
 	case <-loopRearmEntered:
@@ -217,7 +217,7 @@ func TestRun_InterruptDuringInterTurnWindow_ReplacementRunsExactlyOnce(t *testin
 	// Fire InterruptAndReplace from a separate goroutine while the loop is
 	// parked, and wait for it to return. This is what makes the
 	// interleaving deterministic instead of racing the loop's own re-arm
-	// for the next mb.mu acquisition (#289's fix, reused here for the same
+	// for the next mb.Mu acquisition (#289's fix, reused here for the same
 	// reason).
 	const replacementPrompt = "REPLACEMENT message from InterruptAndReplace"
 	interruptDone := make(chan bool, 1)
@@ -280,7 +280,7 @@ func TestRun_InterruptDuringInterTurnWindow_ReplacementRunsExactlyOnce(t *testin
 // queued (there was nothing left to distinguish "discarded" from "consumed
 // as the pre-empted call"), but with MORE than one message already queued
 // it silently destroyed exactly the one message a drain had already popped
-// out of mb.submitted, while its siblings survived untouched — the choice
+// out of mb.Submitted, while its siblings survived untouched — the choice
 // of victim decided purely by scheduling luck. This is the #283/P0-2 class
 // of bug: "the interrupt deletes the very message it's supposed to queue
 // behind."
@@ -289,11 +289,11 @@ func TestRun_InterruptDuringInterTurnWindow_ReplacementRunsExactlyOnce(t *testin
 //
 //  1. Turn 1 runs and blocks mid-stream.
 //  2. While turn 1 is blocked, THREE more Run() calls are made for the same
-//     session — A, B, then C — each queues into mb.submitted via
+//     session — A, B, then C — each queues into mb.Submitted via
 //     mailbox.submit (Run's own busy-queue path), in that order.
 //  3. Turn 1 finishes. Its own end-of-turn drain (drainOrReleaseFinal)
-//     pops A out of mb.submitted (the FIFO head) as `call` for the loop's
-//     next iteration; B and C remain in mb.submitted.
+//     pops A out of mb.Submitted (the FIFO head) as `call` for the loop's
+//     next iteration; B and C remain in mb.Submitted.
 //  4. testLoopRearmSeam parks the loop strictly before that iteration's
 //     beginGeneration — i.e. strictly before `call` (A) is committed to.
 //  5. While parked, InterruptAndReplace fires with D.
@@ -301,7 +301,7 @@ func TestRun_InterruptDuringInterTurnWindow_ReplacementRunsExactlyOnce(t *testin
 //
 // Expected (the FIXED contract): D runs next (turn 2) — the interrupt's
 // explicit request to pre-empt is honored. A is NOT discarded: it is pushed
-// back onto the front of mb.submitted, so it runs as turn 3, followed by B
+// back onto the front of mb.Submitted, so it runs as turn 3, followed by B
 // (turn 4) and C (turn 5) — original FIFO order preserved among the
 // deferred messages, only D allowed to jump the queue.
 func TestRun_InterruptDuringInterTurnWindow_MultiElementQueue_NoMessageLost(t *testing.T) {
@@ -381,11 +381,11 @@ func TestRun_InterruptDuringInterTurnWindow_MultiElementQueue_NoMessageLost(t *t
 	// Arm testLoopRearmSeam: fires at the TOP of every loop iteration. The
 	// first firing is turn 1's own entry; the second is the one this test
 	// cares about — strictly after the drain that popped A out of
-	// mb.submitted, strictly before beginGeneration commits to running A.
+	// mb.Submitted, strictly before beginGeneration commits to running A.
 	loopRearmEntered := make(chan struct{})
 	releaseLoopRearm := make(chan struct{})
 	var loopRearmCalls atomic.Int64
-	mb.testLoopRearmSeam = func() {
+	mb.TestLoopRearmSeam = func() {
 		if loopRearmCalls.Add(1) == 2 {
 			close(loopRearmEntered)
 			<-releaseLoopRearm
@@ -411,7 +411,7 @@ func TestRun_InterruptDuringInterTurnWindow_MultiElementQueue_NoMessageLost(t *t
 
 	// Queue A, B, C — in that order — via three more Run() calls for the
 	// SAME session while turn 1 is still in flight. Each one queues into
-	// mb.submitted via mailbox.submit (Run's busy-queue path) and returns
+	// mb.Submitted via mailbox.submit (Run's busy-queue path) and returns
 	// immediately with (nil, nil) since it never becomes owner.
 	for _, prompt := range []string{"A - must run third", "B - must run fourth", "C - must run fifth"} {
 		res, queueErr := agentIface.Run(t.Context(), SessionAgentCall{
@@ -422,21 +422,21 @@ func TestRun_InterruptDuringInterTurnWindow_MultiElementQueue_NoMessageLost(t *t
 		require.NoError(t, queueErr, "queuing behind a busy session must not itself error")
 		require.Nil(t, res, "a queued call must return (nil, nil) — it does not run inline")
 	}
-	mb.mu.Lock()
-	submittedSnapshot := append([]SessionAgentCall(nil), mb.submitted...)
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	submittedSnapshot := append([]SessionAgentCall(nil), mb.Submitted...)
+	mb.Mu.Unlock()
 	require.Equal(t, []string{"A - must run third", "B - must run fourth", "C - must run fifth"},
-		promptsOf(submittedSnapshot), "precondition: A, B, C must all be sitting in mb.submitted, in FIFO order, "+
+		promptsOf(submittedSnapshot), "precondition: A, B, C must all be sitting in mb.Submitted, in FIFO order, "+
 			"before turn 1 is allowed to finish")
 
 	// Let turn 1 finish. Its own end-of-turn drain pops A out of
-	// mb.submitted (FIFO head) as `call` for the loop's next iteration; B
+	// mb.Submitted (FIFO head) as `call` for the loop's next iteration; B
 	// and C remain queued.
 	close(proceed1)
 
 	// Wait for the loop to park at its SECOND testLoopRearmSeam call —
 	// strictly after the drain above has already popped A and released
-	// mb.mu, strictly before this iteration's own beginGeneration call
+	// mb.Mu, strictly before this iteration's own beginGeneration call
 	// would commit to running A.
 	select {
 	case <-loopRearmEntered:
@@ -486,7 +486,7 @@ func TestRun_InterruptDuringInterTurnWindow_MultiElementQueue_NoMessageLost(t *t
 	assert.Contains(t, promptsSeen[1], replacementPrompt, "D must run SECOND — it pre-empts A, B, and C, which is "+
 		"the whole point of interrupt-and-replace")
 	assert.Contains(t, promptsSeen[2], "A - must run third", "A must survive and run third — it must NOT be "+
-		"discarded just because a drain had already popped it out of mb.submitted before the interrupt landed "+
+		"discarded just because a drain had already popped it out of mb.Submitted before the interrupt landed "+
 		"(closing review: the #283/P0-2 class of bug this test exists to catch)")
 	assert.Contains(t, promptsSeen[3], "B - must run fourth", "B must survive and run fourth, preserving its "+
 		"original position relative to A and C")
@@ -497,7 +497,7 @@ func TestRun_InterruptDuringInterTurnWindow_MultiElementQueue_NoMessageLost(t *t
 }
 
 // promptsOf extracts the Prompt field from a slice of SessionAgentCall, for
-// asserting mb.submitted's contents/order directly.
+// asserting mb.Submitted's contents/order directly.
 func promptsOf(calls []SessionAgentCall) []string {
 	out := make([]string, len(calls))
 	for i, c := range calls {
@@ -515,12 +515,12 @@ func promptsOf(calls []SessionAgentCall) []string {
 //
 // This is not assumed to be "the same bug, don't need a separate test" —
 // verified directly, because the two windows differ in one way that could
-// plausibly have mattered: mb.state transitions to mbOwned INSIDE submit()
+// plausibly have mattered: mb.State transitions to mbOwned INSIDE submit()
 // (mailbox.go), called from tryReserveSession, BEFORE Run() ever reaches its
 // turn loop — as opposed to the inter-turn window, where state was already
 // mbOwned from a PRIOR iteration and merely stays mbOwned across the gap.
 // Tracing agent.go confirms nothing sits between submit() returning
-// (mb.state already mbOwned, mb.current.cancel still its zero value nil)
+// (mb.State already mbOwned, mb.Current.cancel still its zero value nil)
 // and the loop's first testLoopRearmSeam call except OS-lock acquisition
 // (session.TryAcquireSessionLock), which never touches the mailbox — so the
 // FIRST firing of testLoopRearmSeam is, in every mailbox-observable respect,
@@ -530,13 +530,13 @@ func promptsOf(calls []SessionAgentCall) []string {
 // on that trace alone.
 //
 // This test's FIRST draft assumed "there is no stale call here: nothing can
-// be queued in mb.submitted before the session's very first owner exists" —
+// be queued in mb.Submitted before the session's very first owner exists" —
 // that assumption was checked, not trusted, by running the test, and it was
 // WRONG: reclaimReplacementOrKeep's requeue fix (the closing-review fix for
 // the #283/P0-2-class discard defect) treats the loop's own `call` local —
 // turn 1's original, about-to-run prompt — exactly the same way it treats
-// an inter-turn `call` popped from mb.submitted: it gets pushed onto
-// mb.submitted and requeued behind the replacement, then runs as turn 2.
+// an inter-turn `call` popped from mb.Submitted: it gets pushed onto
+// mb.Submitted and requeued behind the replacement, then runs as turn 2.
 // There is nothing special about "the original prompt was never queued
 // anywhere" that exempts it — reclaimReplacementOrKeep doesn't know or care
 // where `call` came from. This is CORRECT behavior, consistent with the
@@ -629,14 +629,14 @@ func testInterruptBeforeFirstGeneration(t *testing.T, rejectReplacement bool) {
 
 	// Arm testLoopRearmSeam to park on its FIRST firing — turn 1's own loop
 	// entry, before ANY beginGeneration has ever run for this session. This
-	// is the window under test: mb.state is already mbOwned (set inside
+	// is the window under test: mb.State is already mbOwned (set inside
 	// submit(), which already returned by the time Run() reaches its loop),
-	// but mb.current.cancel is still its zero value (nil) — nobody has
+	// but mb.Current.cancel is still its zero value (nil) — nobody has
 	// called beginGeneration yet.
 	loopRearmEntered := make(chan struct{})
 	releaseLoopRearm := make(chan struct{})
 	var loopRearmCalls atomic.Int64
-	mb.testLoopRearmSeam = func() {
+	mb.TestLoopRearmSeam = func() {
 		if loopRearmCalls.Add(1) == 1 {
 			close(loopRearmEntered)
 			<-releaseLoopRearm
@@ -657,7 +657,7 @@ func testInterruptBeforeFirstGeneration(t *testing.T, rejectReplacement bool) {
 	}()
 
 	// Wait for the loop to park at its FIRST testLoopRearmSeam call —
-	// strictly after submit() returned (mb.state already mbOwned) and
+	// strictly after submit() returned (mb.State already mbOwned) and
 	// strictly before this iteration's own beginGeneration call.
 	select {
 	case <-loopRearmEntered:
@@ -686,7 +686,7 @@ func testInterruptBeforeFirstGeneration(t *testing.T, rejectReplacement bool) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("InterruptAndReplace never returned while the loop was parked at testLoopRearmSeam")
 	}
-	require.True(t, hadOwner, "InterruptAndReplace must report an owner existed — mb.state is already mbOwned by "+
+	require.True(t, hadOwner, "InterruptAndReplace must report an owner existed — mb.State is already mbOwned by "+
 		"the time Run() reaches its loop, even though no generation has ever been live yet")
 
 	// Before allowing the first generation to proceed, make its durable

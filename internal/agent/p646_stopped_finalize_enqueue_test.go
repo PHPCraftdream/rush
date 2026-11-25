@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"charm.land/catwalk/pkg/catwalk"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -38,7 +40,7 @@ func TestAgent_DrainOrReleaseMerged_StoppedFinalizeEnqueuesOrphanedWork(t *testi
 	sessionID := sess.ID
 
 	// Acquire ownership of the mailbox as if we're in a turn loop
-	becomeOwner, epoch := sa.getMailbox(sessionID).submit(SessionAgentCall{
+	becomeOwner, epoch := sa.getMailbox(sessionID).Submit(SessionAgentCall{
 		SessionID:       sessionID,
 		Prompt:          "first turn",
 		MaxOutputTokens: 1000,
@@ -48,16 +50,16 @@ func TestAgent_DrainOrReleaseMerged_StoppedFinalizeEnqueuesOrphanedWork(t *testi
 	mb := sa.getMailbox(sessionID)
 
 	// Verify the mailbox is in the expected state
-	mb.mu.Lock()
-	require.Equal(t, mbOwned, mb.state, "mailbox must be owned after submit")
+	mb.Mu.Lock()
+	require.Equal(t, mailboxpkg.MbOwned, mb.State, "mailbox must be owned after submit")
 	require.Equal(t, uint64(1), epoch, "epoch must be 1 after submit")
-	mb.mu.Unlock()
+	mb.Mu.Unlock()
 
 	// Simulate work racing in after hardStop is latched but before the
 	// finalize step runs. We latch stopped first, then queue work, to
 	// test the "stopped already latched at entry" path through drainOrReleaseFinal.
-	mb.mu.Lock()
-	mb.stopped = true
+	mb.Mu.Lock()
+	mb.Stopped = true
 	// Queue a call with a unique LogicalCallID we can verify in the durable enqueue
 	queuedCall := SessionAgentCall{
 		SessionID:       sessionID,
@@ -65,9 +67,9 @@ func TestAgent_DrainOrReleaseMerged_StoppedFinalizeEnqueuesOrphanedWork(t *testi
 		LogicalCallID:   "p646-queued-12345",
 		MaxOutputTokens: 1000,
 	}
-	mb.submitted = append(mb.submitted, queuedCall)
-	mb.replacement = nil
-	mb.mu.Unlock()
+	mb.Submitted = append(mb.Submitted, queuedCall)
+	mb.Replacement = nil
+	mb.Mu.Unlock()
 
 	// Call drainOrReleaseMerged with a nil lock (no real OS lock, so
 	// release() is a no-op). This is the agent-level path that handles
@@ -75,7 +77,7 @@ func TestAgent_DrainOrReleaseMerged_StoppedFinalizeEnqueuesOrphanedWork(t *testi
 	//
 	// Because stopped was already latched at entry, drainOrReleaseFinal
 	// will skip the live replacement/submitted branches (they're inside
-	// `if !mb.stopped`), fall through to the releasing path, and then
+	// `if !mb.Stopped`), fall through to the releasing path, and then
 	// in the finalize step hand out the queued work as orphaned (our
 	// #646 fix). drainOrReleaseMerged then calls restartOrphaned, which
 	// durably enqueues via the Sessions service.
@@ -87,12 +89,12 @@ func TestAgent_DrainOrReleaseMerged_StoppedFinalizeEnqueuesOrphanedWork(t *testi
 	require.False(t, hasNext, "hasNext must be false — a shutdown must not start a fresh turn in-process")
 
 	// Verify the mailbox state after the drain
-	mb.mu.Lock()
-	state := mb.state
-	stopped := mb.stopped
-	queued := len(mb.submitted)
-	mb.mu.Unlock()
-	require.Equal(t, mbIdle, state, "mailbox must end at mbIdle after drain")
+	mb.Mu.Lock()
+	state := mb.State
+	stopped := mb.Stopped
+	queued := len(mb.Submitted)
+	mb.Mu.Unlock()
+	require.Equal(t, mailboxpkg.MbIdle, state, "mailbox must end at mailboxpkg.MbIdle after drain")
 	require.True(t, stopped, "the stopped latch must remain set")
 	require.Equal(t, 0, queued, "the queued work must have been drained out as orphaned")
 

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -12,36 +14,36 @@ import (
 )
 
 func TestMailboxInterruptAndReplaceIfCurrentRejectsStaleGeneration(t *testing.T) {
-	mb := &mailbox{state: mbOwned, epoch: 9}
+	mb := &mailboxpkg.Mailbox{State: mailboxpkg.MbOwned, Epoch: 9}
 	callA := SessionAgentCall{SessionID: "same-era", Prompt: "A"}
-	mb.currentCall = &callA
-	mb.current.id = 3
-	mb.current.cancel = func() { t.Fatal("stale generation was canceled") }
+	mb.CurrentCall = &callA
+	mb.Current.ID = 3
+	mb.Current.Cancel = func() { t.Fatal("stale generation was canceled") }
 
-	_, tokenA, owned, published := mb.currentCallStateWithToken()
+	_, tokenA, owned, published := mb.CurrentCallStateWithToken()
 	require.True(t, owned)
 	require.True(t, published)
 
 	callB := SessionAgentCall{SessionID: callA.SessionID, Prompt: "B"}
-	mb.setCurrentCall(callB)
-	mb.beginGeneration(func() { t.Fatal("new generation was canceled") })
+	mb.SetCurrentCall(callB)
+	mb.BeginGeneration(func() { t.Fatal("new generation was canceled") })
 
-	_, matched := mb.interruptAndReplaceIfCurrent(tokenA, SessionAgentCall{SessionID: callA.SessionID, Prompt: "stale"})
+	_, matched := mb.InterruptAndReplaceIfCurrent(tokenA, SessionAgentCall{SessionID: callA.SessionID, Prompt: "stale"})
 	require.False(t, matched)
-	mb.mu.Lock()
-	require.Nil(t, mb.replacement)
-	require.Equal(t, "B", mb.currentCall.Prompt)
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	require.Nil(t, mb.Replacement)
+	require.Equal(t, "B", mb.CurrentCall.Prompt)
+	mb.Mu.Unlock()
 
-	_, tokenB, owned, published := mb.currentCallStateWithToken()
+	_, tokenB, owned, published := mb.CurrentCallStateWithToken()
 	require.True(t, owned)
 	require.True(t, published)
-	cancel, matched := mb.interruptAndReplaceIfCurrent(tokenB, SessionAgentCall{SessionID: callA.SessionID, Prompt: "replacement"})
+	cancel, matched := mb.InterruptAndReplaceIfCurrent(tokenB, SessionAgentCall{SessionID: callA.SessionID, Prompt: "replacement"})
 	require.True(t, matched)
 	require.NotNil(t, cancel)
-	mb.mu.Lock()
-	require.Equal(t, "replacement", mb.replacement.Prompt)
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	require.Equal(t, "replacement", mb.Replacement.Prompt)
+	mb.Mu.Unlock()
 }
 
 type blockingInterruptDeleteSessions struct {
@@ -126,9 +128,9 @@ func TestHandleInterruptTick_StaleNonDurableSnapshotRestoresAndRetriesForNewGene
 	}
 	aCanceled := false
 	bCanceled := false
-	_, epoch := mb.submit(callA, func() {})
+	_, epoch := mb.Submit(callA, func() {})
 	require.NotZero(t, epoch)
-	mb.beginGeneration(func() { aCanceled = true })
+	mb.BeginGeneration(func() { aCanceled = true })
 
 	msg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
 		Role:  message.User,
@@ -157,8 +159,8 @@ func TestHandleInterruptTick_StaleNonDurableSnapshotRestoresAndRetriesForNewGene
 
 	// Reuse the same ownership era but publish a new generation and call while
 	// the coordinator is blocked after consuming the row and before delivery.
-	mb.setCurrentCall(callB)
-	mb.beginGeneration(func() { bCanceled = true })
+	mb.SetCurrentCall(callB)
+	mb.BeginGeneration(func() { bCanceled = true })
 	sessions.allowDelete()
 
 	first := <-result
@@ -167,10 +169,10 @@ func TestHandleInterruptTick_StaleNonDurableSnapshotRestoresAndRetriesForNewGene
 	require.False(t, aCanceled)
 	require.False(t, bCanceled, "a stale A snapshot must not cancel B")
 	require.Equal(t, 0, messages.notifyCount())
-	mb.mu.Lock()
-	require.Nil(t, mb.replacement, "a stale A snapshot must not replace B")
-	current := *mb.currentCall
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	require.Nil(t, mb.Replacement, "a stale A snapshot must not replace B")
+	current := *mb.CurrentCall
+	mb.Mu.Unlock()
 	require.Equal(t, callB.Prompt, current.Prompt)
 
 	pending, err := env.sessions.PeekInterruptInject(t.Context(), sess.ID)
@@ -190,14 +192,14 @@ func TestHandleInterruptTick_StaleNonDurableSnapshotRestoresAndRetriesForNewGene
 	require.True(t, bCanceled, "matching B delivery cancels B's generation")
 	require.Equal(t, 1, messages.notifyCount(), "only the successful retry notifies")
 
-	mb.mu.Lock()
-	require.NotNil(t, mb.replacement)
-	require.Same(t, bDisk, mb.replacement.CallOptions.DiskProvider)
-	require.Same(t, bCreds, mb.replacement.Credentials)
-	require.Equal(t, config.SelectedModelTypeFast, mb.replacement.CallOptions.ModelRole)
-	require.True(t, mb.replacement.CallOptions.DisableSubAgents)
-	require.Equal(t, msg.ID, mb.replacement.ExistingMessageID)
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	require.NotNil(t, mb.Replacement)
+	require.Same(t, bDisk, mb.Replacement.CallOptions.DiskProvider)
+	require.Same(t, bCreds, mb.Replacement.Credentials)
+	require.Equal(t, config.SelectedModelTypeFast, mb.Replacement.CallOptions.ModelRole)
+	require.True(t, mb.Replacement.CallOptions.DisableSubAgents)
+	require.Equal(t, msg.ID, mb.Replacement.ExistingMessageID)
+	mb.Mu.Unlock()
 
 	remaining, err := env.sessions.PeekInterruptInject(t.Context(), sess.ID)
 	require.NoError(t, err)

@@ -324,7 +324,7 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	// Phase 1 — scope identity, deterministic: reserve the session so the
 	// mailbox is owned but has NO live generation (mb.current.cancel nil).
 	// The REAL coord.InterruptAndSend then takes the busy branch,
-	// InterruptAndReplace records mb.replacement and has no cancel to fire,
+	// InterruptAndReplace records mb.Replacement and has no cancel to fire,
 	// so the replacement stays parked and observable without any race.
 	sessParked, err := env.sessions.Create(t.Context(), "round2 queued scope, parked")
 	require.NoError(t, err)
@@ -345,8 +345,8 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 		"InterruptAndSend must accept the interrupt against the owned (reserved) session")
 
 	mb := h.sa.getMailbox(sessParked.ID)
-	require.NotNil(t, mb.replacement, "the busy branch must record the call as the mailbox replacement")
-	queued := *mb.replacement
+	require.NotNil(t, mb.Replacement, "the busy branch must record the call as the mailbox replacement")
+	queued := *mb.Replacement
 	queuedTools := queued.Tools
 	require.NotEmpty(t, queuedTools, "the queued call must carry its resolved pinned toolset")
 	require.NotNil(t, queued.CallOptions, "the queued call must carry call options")
@@ -432,11 +432,11 @@ func TestInterruptAndSendQueuedCallOwnsBuildScope(t *testing.T) {
 	// this is the scope the run loop must close when the replacement's
 	// turn finishes (the R12-H2a round-2 run-loop close).
 	liveMB := h.sa.getMailbox(sessLive.ID)
-	liveMB.mu.Lock()
-	require.NotNil(t, liveMB.replacement, "the live interrupt must have parked its replacement")
-	require.NotNil(t, liveMB.replacement.CallOptions, "the parked replacement must carry call options")
-	cloneScope := liveMB.replacement.CallOptions.BuildScope
-	liveMB.mu.Unlock()
+	liveMB.Mu.Lock()
+	require.NotNil(t, liveMB.Replacement, "the live interrupt must have parked its replacement")
+	require.NotNil(t, liveMB.Replacement.CallOptions, "the parked replacement must carry call options")
+	cloneScope := liveMB.Replacement.CallOptions.BuildScope
+	liveMB.Mu.Unlock()
 	require.NotNil(t, cloneScope, "the replacement's clone must carry its own build scope")
 	require.NotEqual(t, liveOriginalScope, cloneScope,
 		"the replacement's clone scope must not be the interrupting ctx's shared one")

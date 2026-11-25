@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	hub "github.com/PHPCraftdream/rush/internal/serve/server/hub"
@@ -257,7 +258,7 @@ func handleSendMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg wi
 	// Decouple the agent run from the WebSocket connection lifetime.
 	// Without this, closing/refreshing the browser tab would cancel the agent.
 	// Explicit cancellation is still available via Cancel(sessionID).
-	agentCtx := agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
+	agentCtx := sessionprompt.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb)
 	agentCtx = agent.WithCallOptions(agentCtx, &agent.CallOptions{WebTurnOptIn: true})
 
 	c.Hub().Broadcast(wire.EventAgentBusy, wire.AgentBusyPayload{SessionID: p.SessionID, Busy: true})
@@ -353,7 +354,7 @@ func handleInterruptAndSend(ctx context.Context, a *appPkg.App, c *hub.Client, m
 	// Use bounded context for idle-interrupt: WithoutCancel + timeout to ensure
 	// the operation can complete even if the WebSocket connection closes, but with
 	// a reasonable upper bound to prevent indefinite hangs (e.g., blocked SQLite write).
-	agentCtx, cancel := context.WithTimeout(agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true}), 30*time.Second)
+	agentCtx, cancel := context.WithTimeout(agent.WithCallOptions(sessionprompt.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true}), 30*time.Second)
 	defer cancel()
 
 	if err := a.AgentCoordinator.InterruptAndSend(agentCtx, p.SessionID, p.Content, smartOverride, fastOverride, attachments...); err != nil {
@@ -407,7 +408,7 @@ func handleInjectMessage(ctx context.Context, a *appPkg.App, c *hub.Client, msg 
 		})
 	}
 
-	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
+	agentCtx := agent.WithCallOptions(sessionprompt.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	if _, err := a.AgentCoordinator.InjectMessage(agentCtx, p.SessionID, p.Content, attachments...); err != nil {
 		slog.Error("ws: inject-message failed", "err", err)
 		c.Reply(msg.ID, wire.EventError, nil, err.Error())
@@ -538,7 +539,7 @@ func handleInitializeProject(ctx context.Context, a *appPkg.App, c *hub.Client, 
 	c.Reply(msg.ID, wire.EventResponse, map[string]string{"status": "ok", "sessionID": sess.ID}, "")
 
 	// Run the agent in a background context so closing the tab won't cancel it.
-	agentCtx := agent.WithCallOptions(agent.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
+	agentCtx := agent.WithCallOptions(sessionprompt.WithCallOrigin(context.WithoutCancel(ctx), message.OriginWeb), &agent.CallOptions{WebTurnOptIn: true})
 	c.Hub().Broadcast(wire.EventAgentBusy, wire.AgentBusyPayload{SessionID: sess.ID, Busy: true})
 	_, runErr := a.AgentCoordinator.Run(agentCtx, sess.ID, initPrompt)
 	// P2-2 fix: broadcast the actual busy state derived from mailbox ownership.

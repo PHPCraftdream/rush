@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/wakectl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
@@ -172,7 +174,7 @@ func TestWakeFiredNoticeIsNotAHumanMessage(t *testing.T) {
 		{NoticeKind: "supervision"},
 		{NoticeKind: session.NoticeKindWakeFired, Parts: []message.ContentPart{message.TextContent{Text: "wake two"}}},
 	}
-	kept := dropSupersededSupervisionNotices(msgs)
+	kept := sessionprompt.DropSupersededSupervisionNotices(msgs)
 	require.Equal(t, "wake one", mustText(t, kept[0]), "wake_fired history must never be collapsed")
 	require.Equal(t, "wake two", mustText(t, kept[2]))
 }

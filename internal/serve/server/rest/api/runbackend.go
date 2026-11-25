@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	appPkg "github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -262,7 +263,7 @@ func (b *AppAPIRunBackend) StartWithSelection(ctx context.Context, runID, sessio
 	b.mu.Unlock()
 	recorder := agent.NewCallResultRecorder()
 	runCtx = agent.WithCallResultRecorder(runCtx, recorder)
-	runCtx = agent.WithCallOptions(agent.WithCallOrigin(runCtx, message.OriginAPI), &agent.CallOptions{
+	runCtx = agent.WithCallOptions(sessionprompt.WithCallOrigin(runCtx, message.OriginAPI), &agent.CallOptions{
 		WebTurnOptIn: true, ModelRole: roleType, RoleContract: roleContract.Clone(), MaxAgentDepth: maxAgentDepth, AgentDepthSet: true,
 	})
 	b.app.AgentCoordinator.ResetAutoResumeCounter(sessionID)
@@ -355,7 +356,7 @@ func (b *AppAPIRunBackend) Inject(sessionID, answer, mode string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ctx = agent.WithCallOptions(agent.WithCallOrigin(ctx, message.OriginAPI), &agent.CallOptions{WebTurnOptIn: true})
+	ctx = agent.WithCallOptions(sessionprompt.WithCallOrigin(ctx, message.OriginAPI), &agent.CallOptions{WebTurnOptIn: true})
 	var err error
 	switch mode {
 	case "", "merge":

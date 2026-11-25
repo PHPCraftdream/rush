@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	rushlog "github.com/PHPCraftdream/rush/internal/kit/diag/log"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
@@ -60,7 +62,7 @@ import (
 // It proves, against the REAL method:
 //  1. watchdogCauseVal is stored with the real fired cause by the time
 //     handleWatchdogFire returns (this is the field runTurn's post-stream
-//     error path reads via watchdogCause(watchdogCauseVal.Load()) to decide
+//     error path reads via watchdog.Cause(watchdogCauseVal.Load()) to decide
 //     the user-facing finish message and tool-result text).
 //  2. The method returns BEFORE the (deliberately held-open) real write has
 //     completed — proving the write is genuinely dispatched on its own
@@ -96,7 +98,7 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 	}
 
 	var watchdogCauseVal atomic.Int32
-	watchdogCauseVal.Store(int32(causeIdleStall)) // zero value; must be overwritten
+	watchdogCauseVal.Store(int32(watchdog.CauseIdleStall)) // zero value; must be overwritten
 
 	const sessionID = "sess-243-test"
 	const toolMaxDuration = 5 * time.Second
@@ -104,7 +106,7 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 
 	callReturned := make(chan struct{})
 	go func() {
-		a.handleWatchdogFire(causeToolTimeout, 7*time.Second, sessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
+		a.handleWatchdogFire(watchdog.CauseToolTimeout, 7*time.Second, sessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 		close(callReturned)
 	}()
 
@@ -115,7 +117,7 @@ func TestSessionAgent_HandleWatchdogFire_StoresCauseAndDispatchesDumpAsync(t *te
 	}
 
 	// (1) The real cause must be stored by the time the call returns.
-	assert.Equal(t, int32(causeToolTimeout), watchdogCauseVal.Load(),
+	assert.Equal(t, int32(watchdog.CauseToolTimeout), watchdogCauseVal.Load(),
 		"handleWatchdogFire must store the real fired cause, not leave the zero value, "+
 			"by the time it returns — this is what runTurn's error path reads to build the finish message")
 
@@ -261,12 +263,12 @@ func TestSessionAgent_HandleWatchdogFire_UsesPassedSmartModelSnapshot(t *testing
 
 	var watchdogCauseVal atomic.Int32
 	a.handleWatchdogFire(
-		causeIdleStall, 42*time.Second, "sess-252-test",
+		watchdog.CauseIdleStall, 42*time.Second, "sess-252-test",
 		&watchdogCauseVal, 5*time.Second, 3*time.Minute,
 		snapshotModel,
 	)
 
-	require.Equal(t, int32(causeIdleStall), watchdogCauseVal.Load(),
+	require.Equal(t, int32(watchdog.CauseIdleStall), watchdogCauseVal.Load(),
 		"cause must still be stored regardless of the model-source fix")
 
 	// handleWatchdogFire dispatches the goroutine-dump write on its own

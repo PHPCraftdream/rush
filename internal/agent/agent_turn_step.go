@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 
 	"charm.land/fantasy"
@@ -150,11 +152,11 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 				usedTokens := ts.currentSession.CompletionTokens + ts.currentSession.PromptTokens
 				// Usage reflects the previous request only; add what this step's
 				// prompt appended since (e.g. large tool results).
-				remaining := inputBudget - usedTokens - provauth.UnreportedTailTokens(prepared.Messages, estimateMsgChars)
+				remaining := inputBudget - usedTokens - provauth.UnreportedTailTokens(prepared.Messages, sessionprompt.EstimateMsgChars)
 				threshold := provauth.ContextAutoSummarizeThreshold(cw, inputBudget)
 				if remaining <= threshold {
 					targetTokens := min(int64(float64(inputBudget)*contextSlideRatio), inputBudget)
-					prepared.Messages = trimMessagesToWindow(prepared.Messages, targetTokens)
+					prepared.Messages = sessionprompt.TrimMessagesToWindow(prepared.Messages, targetTokens)
 
 					// Trimmed away content is no longer in the prompt, so what was
 					// read from it is no longer "already in your context" either
@@ -330,7 +332,7 @@ func (ts *turnStream) recordStepHistory(stepResult fantasy.StepResult) {
 // carrying the cache-control wrapper.
 func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fantasy.AgentTool, out *[]fantasy.AgentTool) {
 	async := func() bool {
-		origin := CallOriginFrom(callContext)
+		origin := sessionprompt.CallOriginFrom(callContext)
 		return origin == message.OriginCLI || origin == message.OriginWeb
 	}()
 	// ownWork's source is the bound batch cutover facts (ownWorkBatch), the
