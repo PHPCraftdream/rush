@@ -1,4 +1,4 @@
-package lab
+package process
 
 import (
 	"bytes"
@@ -16,31 +16,45 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
-type processExecutor struct{ ceiling int }
+// ProcessOptions sets a positive retention ceiling; payloads may lower it,
+// never raise it. Retention keeps the newest merged-stream bytes.
+type ProcessOptions struct {
+	MaxRetainedBytes int
+}
 
-type processStartError struct {
+type processPayload struct {
+	Kind           string    `json:"kind"`
+	Program        *string   `json:"program,omitempty"`
+	Args           *[]string `json:"args,omitempty"`
+	Cwd            *string   `json:"cwd,omitempty"`
+	MaxOutputBytes *int      `json:"max_output_bytes,omitempty"`
+}
+
+type ProcessExecutor struct{ ceiling int }
+
+type ProcessStartError struct {
 	code string
 	err  error
 }
 
-func (e *processStartError) Error() string { return e.code }
-func (e *processStartError) Code() string  { return e.code }
-func (e *processStartError) Unwrap() error { return e.err }
+func (e *ProcessStartError) Error() string { return e.code }
+func (e *ProcessStartError) Code() string  { return e.code }
+func (e *ProcessStartError) Unwrap() error { return e.err }
 
 // NewProcessExecutor constructs a direct-argv, isolated process executor.
 func NewProcessExecutor(options ProcessOptions) (jobbatch.Executor, error) {
 	if options.MaxRetainedBytes <= 0 {
 		return nil, jobbatch.ErrInvalidSpec
 	}
-	if !processSupported() {
+	if !ProcessSupported() {
 		return nil, jobbatch.ErrUnsupported
 	}
-	return &processExecutor{ceiling: options.MaxRetainedBytes}, nil
+	return &ProcessExecutor{ceiling: options.MaxRetainedBytes}, nil
 }
 
-type processExecution struct {
-	cmd         *exec.Cmd
-	tree        *processTree
+type ProcessExecution struct {
+	Cmd         *exec.Cmd
+	Tree        *ProcessTree
 	mu          sync.Mutex
 	data        []byte
 	head        uint64
@@ -49,18 +63,18 @@ type processExecution struct {
 	done        chan struct{}
 	drained     chan struct{}
 	reaped      bool
-	leaderDone  chan struct{}
+	LeaderDone  chan struct{}
 	stopped     bool
 	eof         bool
 	disposeOnce sync.Once
 	disposeErr  error
 }
 
-func (p *processExecutor) Start(ctx context.Context, launch jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
+func (p *ProcessExecutor) Start(ctx context.Context, launch jobbatch.Launch, report func(jobbatch.Result)) (jobbatch.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var payload Payload
+	var payload processPayload
 	decoder := json.NewDecoder(bytes.NewReader(launch.Task.Payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
@@ -73,7 +87,7 @@ func (p *processExecutor) Start(ctx context.Context, launch jobbatch.Launch, rep
 		return nil, jobbatch.ErrInvalidSpec
 	}
 	if payload.Program == nil || *payload.Program == "" {
-		return nil, &processStartError{code: "missing_program", err: exec.ErrNotFound}
+		return nil, &ProcessStartError{code: "missing_program", err: exec.ErrNotFound}
 	}
 	capacity := p.ceiling
 	if payload.MaxOutputBytes != nil {
@@ -93,7 +107,7 @@ func (p *processExecutor) Start(ctx context.Context, launch jobbatch.Launch, rep
 	if payload.Cwd != nil {
 		cmd.Dir = *payload.Cwd
 	}
-	tree, err := processPrepare(cmd)
+	tree, err := ProcessPrepare(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +125,7 @@ func (p *processExecutor) Start(ctx context.Context, launch jobbatch.Launch, rep
 	if err := cmd.Start(); err != nil {
 		cleanup()
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-			return nil, &processStartError{code: "missing_program", err: err}
+			return nil, &ProcessStartError{code: "missing_program", err: err}
 		}
 		return nil, err
 	}
@@ -131,15 +145,15 @@ func (p *processExecutor) Start(ctx context.Context, launch jobbatch.Launch, rep
 		cleanup()
 		return nil, err
 	}
-	execution := &processExecution{cmd: cmd, tree: tree, cap: capacity, changed: make(chan struct{}), done: make(chan struct{}), drained: make(chan struct{}), leaderDone: make(chan struct{})}
+	execution := &ProcessExecution{Cmd: cmd, Tree: tree, cap: capacity, changed: make(chan struct{}), done: make(chan struct{}), drained: make(chan struct{}), LeaderDone: make(chan struct{})}
 	go execution.readPipe(reader)
 	go execution.wait(report)
 	return execution, nil
 }
 
-func (p *processExecution) notify() { close(p.changed); p.changed = make(chan struct{}) }
+func (p *ProcessExecution) notify() { close(p.changed); p.changed = make(chan struct{}) }
 
-func (p *processExecution) readPipe(reader *os.File) {
+func (p *ProcessExecution) readPipe(reader *os.File) {
 	defer close(p.drained)
 	defer reader.Close()
 	buffer := make([]byte, 32*1024)
@@ -167,21 +181,21 @@ func (p *processExecution) readPipe(reader *os.File) {
 	}
 }
 
-func (p *processExecution) wait(report func(jobbatch.Result)) {
-	err := p.cmd.Wait()
+func (p *ProcessExecution) wait(report func(jobbatch.Result)) {
+	err := p.Cmd.Wait()
 	p.mu.Lock()
 	p.reaped = true
-	close(p.leaderDone)
+	close(p.LeaderDone)
 	stopped := p.stopped
 	p.mu.Unlock()
-	p.tree.awaitGone()
+	p.Tree.awaitGone()
 	<-p.drained
 	result := jobbatch.Result{State: jobbatch.StateCompleted}
 	if stopped {
 		result.State = jobbatch.StateCancelled
 	} else if err != nil {
 		result.State = jobbatch.StateFailed
-		result.Code = fmt.Sprintf("exit_%d", p.cmd.ProcessState.ExitCode())
+		result.Code = fmt.Sprintf("exit_%d", p.Cmd.ProcessState.ExitCode())
 	}
 	p.mu.Lock()
 	p.eof = true
@@ -192,7 +206,7 @@ func (p *processExecution) wait(report func(jobbatch.Result)) {
 	report(result)
 }
 
-func (p *processExecution) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
+func (p *ProcessExecution) ReadOutput(ctx context.Context, cursor uint64) (jobbatch.OutputChunk, error) {
 	for {
 		p.mu.Lock()
 		oldest := p.head - uint64(len(p.data))
@@ -218,17 +232,17 @@ func (p *processExecution) ReadOutput(ctx context.Context, cursor uint64) (jobba
 	}
 }
 
-func (p *processExecution) Stop(ctx context.Context) error {
+func (p *ProcessExecution) Stop(ctx context.Context) error {
 	p.mu.Lock()
 	if p.eof {
 		p.mu.Unlock()
 		return nil
 	}
-	if !p.reaped && !processLeaderExited(p.cmd) {
+	if !p.reaped && !ProcessLeaderExited(p.Cmd) {
 		p.stopped = true
 	}
 	p.mu.Unlock()
-	if err := p.tree.term(); err != nil {
+	if err := p.Tree.term(); err != nil {
 		return err
 	}
 	timer := time.NewTimer(100 * time.Millisecond)
@@ -237,11 +251,11 @@ func (p *processExecution) Stop(ctx context.Context) error {
 	case <-p.done:
 		return nil
 	case <-ctx.Done():
-		_ = p.tree.kill()
+		_ = p.Tree.kill()
 		return ctx.Err()
 	case <-timer.C:
 	}
-	if err := p.tree.kill(); err != nil {
+	if err := p.Tree.kill(); err != nil {
 		return err
 	}
 	select {
@@ -252,12 +266,12 @@ func (p *processExecution) Stop(ctx context.Context) error {
 	}
 }
 
-func (p *processExecution) Dispose(ctx context.Context) error {
+func (p *ProcessExecution) Dispose(ctx context.Context) error {
 	select {
 	case <-p.done:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	p.disposeOnce.Do(func() { p.disposeErr = p.tree.dispose(); p.mu.Lock(); p.data = nil; p.mu.Unlock() })
+	p.disposeOnce.Do(func() { p.disposeErr = p.Tree.dispose(); p.mu.Lock(); p.data = nil; p.mu.Unlock() })
 	return p.disposeErr
 }
