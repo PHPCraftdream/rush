@@ -23,13 +23,13 @@ import (
 	"charm.land/fantasy/providers/openaicompat"
 	"charm.land/fantasy/providers/openrouter"
 	"charm.land/fantasy/providers/vercel"
-	rushagent "github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	modeluse "github.com/PHPCraftdream/rush/internal/serve/cmd/modelctl/models/use"
@@ -355,7 +355,7 @@ func runPing(cmd *cobra.Command, a *app.App, modelType config.SelectedModelType,
 		if asJSON {
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
-		resetAt, _ := rushagent.QuotaLimitResetTime(err, time.Now())
+		resetAt, _ := usage.QuotaLimitResetTime(err, time.Now())
 		printPingTextError(result, resetAt)
 		journal.ExitWithAudit(1)
 		return nil
@@ -649,7 +649,7 @@ func printPingTextError(r PingResult, resetAt time.Time) {
 	if !resetAt.IsZero() {
 		local := resetAt.Local()
 		if in := time.Until(local).Round(time.Second); in > 0 {
-			fmt.Fprintf(os.Stderr, "limit reset: %s (in %s)\n", local.Format("2006-01-02 15:04:05 -07:00"), rushagent.FormatResetDuration(in))
+			fmt.Fprintf(os.Stderr, "limit reset: %s (in %s)\n", local.Format("2006-01-02 15:04:05 -07:00"), usage.FormatResetDuration(in))
 		} else {
 			fmt.Fprintf(os.Stderr, "limit reset: %s\n", local.Format("2006-01-02 15:04:05 -07:00"))
 		}

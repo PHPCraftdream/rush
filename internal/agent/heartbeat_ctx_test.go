@@ -280,12 +280,12 @@ func TestHbCtx_SilentSummaryAttribution(t *testing.T) {
 func hbKeepaliveEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("RUSH_CACHE_KEEPALIVE", "1")
-	oldInterval := cacheKeepAliveInterval
-	cacheKeepAliveInterval = 10 * time.Millisecond
-	t.Cleanup(func() { cacheKeepAliveInterval = oldInterval })
-	oldExt := cacheKeepAliveMaxExtensions
-	cacheKeepAliveMaxExtensions = 1
-	t.Cleanup(func() { cacheKeepAliveMaxExtensions = oldExt })
+	oldInterval := callbeat.CacheKeepAliveInterval
+	callbeat.CacheKeepAliveInterval = 10 * time.Millisecond
+	t.Cleanup(func() { callbeat.CacheKeepAliveInterval = oldInterval })
+	oldExt := callbeat.CacheKeepAliveMaxExtensions
+	callbeat.CacheKeepAliveMaxExtensions = 1
+	t.Cleanup(func() { callbeat.CacheKeepAliveMaxExtensions = oldExt })
 }
 
 func hbWaitForCalls(t *testing.T, m *hbCtxModel, want int) {
@@ -308,7 +308,7 @@ func TestHbCtx_KeepaliveAttribution(t *testing.T) {
 	sess, err := env.sessions.Create(t.Context(), "New Session")
 	require.NoError(t, err)
 
-	agent.scheduleCacheKeepAlive(sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	agent.ScheduleCacheKeepAlive(agent, sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 	hbWaitForCalls(t, smart.Model.(*hbCtxModel), 1)
 
 	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, sess.ID, "smart", callbeat.HbSourceSlotStart, heartbeat.PurposeKeepalive)
@@ -331,7 +331,7 @@ func TestHbCtx_KeepaliveInheritsTurnRoot(t *testing.T) {
 		SessionID: sess.ID, RootSessionID: "root-parent", AgentID: sess.ID,
 		Purpose: heartbeat.PurposeTurn, Role: "worker", Source: callbeat.HbSourcePerCall,
 	}
-	agent.scheduleCacheKeepAliveFromCtx(turnHB, sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	agent.ScheduleCacheKeepAliveFromCtx(agent, turnHB, sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 	hbWaitForCalls(t, smart.Model.(*hbCtxModel), 1)
 
 	hbAssertCtx(t, smart.Model.(*hbCtxModel).lastCtx(), sess.ID, "root-parent", "worker", callbeat.HbSourcePerCall, heartbeat.PurposeKeepalive)

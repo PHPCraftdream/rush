@@ -1,12 +1,14 @@
 package usage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
@@ -155,16 +157,10 @@ func PeakHoursGuidance(err error) string {
 // the turn-failure path (agent_turn_failure.go). The gate is pre-flight
 // only (task #56): this renders a refusal that blocked the request before
 // it reached the provider.
-func peakHoursStoppedFinishText(err error) (msg, details string) {
+func PeakHoursStoppedFinishText(err error) (msg, details string) {
 	msg = "Stopped: provider entered its peak-hours window mid-session"
 	details = fmt.Sprintf("%s\n\n%s", err.Error(), PeakHoursGuidance(err))
 	return msg, details
-}
-
-// PeakHoursStoppedFinishText is the exported seam over
-// peakHoursStoppedFinishText for adapters outside the package.
-func PeakHoursStoppedFinishText(err error) (msg, details string) {
-	return peakHoursStoppedFinishText(err)
 }
 
 func IsHardQuotaLimit(err error) bool {
@@ -177,4 +173,86 @@ func IsQuotaLimit(providerErr *fantasy.ProviderError) bool {
 
 func isQuotaLimit(providerErr *fantasy.ProviderError) bool {
 	return classifyHardProviderLimit(providerErr, "", time.Now()) == providerLimitHard
+}
+
+type LegacyPeakHoursBypassKey struct{}
+
+type peakHoursRequestProvider struct {
+	fantasy.Provider
+	check func(context.Context) error
+}
+
+func (p *peakHoursRequestProvider) LanguageModel(ctx context.Context, id string) (fantasy.LanguageModel, error) {
+	model, err := p.Provider.LanguageModel(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &peakHoursRequestModel{LanguageModel: model, check: p.check}, nil
+}
+
+type PeakHoursRequestGateHost interface {
+	CheckLivePeakHours(providerID string) error
+	CallOptionsFrom(context.Context) *agentcall.CallOptions
+}
+
+type PeakHoursRequestGateComponent struct {
+	host PeakHoursRequestGateHost
+}
+
+func NewPeakHoursRequestGateComponent(host PeakHoursRequestGateHost) *PeakHoursRequestGateComponent {
+	return &PeakHoursRequestGateComponent{host: host}
+}
+
+func (g *PeakHoursRequestGateComponent) WithPeakHoursRequestGate(provider fantasy.Provider, pc config.ProviderConfig) fantasy.Provider {
+	return &peakHoursRequestProvider{Provider: provider, check: func(ctx context.Context) error {
+		if opts := g.host.CallOptionsFrom(ctx); opts != nil {
+			if opts.AllowPeakHours {
+				return nil
+			}
+		} else if allowed, _ := ctx.Value(LegacyPeakHoursBypassKey{}).(bool); allowed {
+			return nil
+		}
+		if pc.ID == "" {
+			return checkPeakHours(pc)
+		}
+		return g.host.CheckLivePeakHours(pc.ID)
+	}}
+}
+
+type peakHoursRequestModel struct {
+	fantasy.LanguageModel
+	check func(context.Context) error
+}
+
+func (m *peakHoursRequestModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
+	if err := m.check(ctx); err != nil {
+		return nil, err
+	}
+	return m.LanguageModel.Generate(ctx, call)
+}
+
+func (m *peakHoursRequestModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	if err := m.check(ctx); err != nil {
+		return nil, err
+	}
+	return m.LanguageModel.Stream(ctx, call)
+}
+
+func (m *peakHoursRequestModel) GenerateObject(ctx context.Context, call fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
+	if err := m.check(ctx); err != nil {
+		return nil, err
+	}
+	return m.LanguageModel.GenerateObject(ctx, call)
+}
+
+func (m *peakHoursRequestModel) StreamObject(ctx context.Context, call fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
+	if err := m.check(ctx); err != nil {
+		return nil, err
+	}
+	return m.LanguageModel.StreamObject(ctx, call)
+}
+
+// NewPeakHoursRequestModel wraps lm so every call first passes check (test seam).
+func NewPeakHoursRequestModel(lm fantasy.LanguageModel, check func(context.Context) error) fantasy.LanguageModel {
+	return &peakHoursRequestModel{LanguageModel: lm, check: check}
 }

@@ -13,8 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/config/domains/oauth"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +47,7 @@ func TestCacheReadPresenceRequiresNativeEvidenceAndRejectsEstimates(t *testing.T
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			before := maps.Clone(test.metadata)
-			require.Equal(t, test.want, observedCacheReadTokens(test.usage, test.estimate, test.provider, test.metadata))
+			require.Equal(t, test.want, promptcache.ObservedCacheReadTokens(test.usage, test.estimate, test.provider, test.metadata))
 			require.Equal(t, before, test.metadata, "diagnostics must not mutate provider metadata")
 		})
 	}
@@ -131,7 +134,7 @@ func TestNativeCachePresenceThroughFantasyStepNormalizationAndDiagnostic(t *test
 			stored, err := f.env.messages.Get(t.Context(), assistantID)
 			require.NoError(t, err)
 			require.NotNil(t, stored.Usage)
-			if !usageIsZero(step.Usage) {
+			if !usagepolicy.UsageIsZero(step.Usage) {
 				require.Equal(t, step.Usage.InputTokens, stored.Usage.InputTokens, "presence metadata must not change normalized billing input")
 				require.Equal(t, step.Usage.CacheReadTokens, stored.Usage.CacheReadTokens)
 			} else {

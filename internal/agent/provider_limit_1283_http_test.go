@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/azure"
@@ -86,7 +88,7 @@ func TestProviderLimit1283ObserveAdapters(t *testing.T) {
 				require.ErrorAs(t, err, &pe)
 				t.Logf("%s URL=%q Title=%q Message=%q Body=%q Headers=%v", method, pe.URL, pe.Title, pe.Message, pe.ResponseBody, pe.ResponseHeaders)
 				require.Equal(t, 429, pe.StatusCode)
-				require.True(t, IsHardQuotaLimit(err))
+				require.True(t, clibridge.IsHardQuotaLimit(err))
 				if name == "openai" || name == "azure" {
 					require.Contains(t, pe.URL, "/responses")
 				}
@@ -137,7 +139,7 @@ func TestProviderLimit1283CompatRegression(t *testing.T) {
 			var pe *fantasy.ProviderError
 			require.ErrorAs(t, err, &pe)
 			t.Logf("URL=%q Title=%q Message=%q Body=%q Headers=%v", pe.URL, pe.Title, pe.Message, pe.ResponseBody, pe.ResponseHeaders)
-			require.Equal(t, tc.hard, IsHardQuotaLimit(err))
+			require.Equal(t, tc.hard, clibridge.IsHardQuotaLimit(err))
 		})
 	}
 }

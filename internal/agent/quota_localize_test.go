@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
@@ -17,10 +19,10 @@ import (
 // writer reads it through time.Now, so mutating it is a data race.
 func setTestLocal(t *testing.T) {
 	t.Helper()
-	old := quotaResetDisplayZone
+	old := usagepolicy.DisplayZoneProvider
 	zone := time.FixedZone("TEST", 2*3600)
-	quotaResetDisplayZone = func() *time.Location { return zone }
-	t.Cleanup(func() { quotaResetDisplayZone = old })
+	usagepolicy.DisplayZoneProvider = func() *time.Location { return zone }
+	t.Cleanup(func() { usagepolicy.DisplayZoneProvider = old })
 }
 
 func TestLocalizeResetHint(t *testing.T) {
@@ -60,15 +62,15 @@ func TestLocalizeResetHint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := LocalizeResetHint(tc.in, now)
+			got := usagepolicy.LocalizeResetHint(tc.in, now)
 			assert.Equal(t, tc.want, got)
-			assert.Equal(t, got, LocalizeResetHint(got, now), "idempotent")
+			assert.Equal(t, got, usagepolicy.LocalizeResetHint(got, now), "idempotent")
 		})
 	}
 }
 
 func TestParseZAIResetHint_QualifiedStampKeepsItsOffset(t *testing.T) {
-	got, ok := parseZAIResetHint("Your limit will reset at 2026-10-01 14:34:01 +02:00 (in 1m)")
+	got, ok := usagepolicy.ParseZAIResetHint("Your limit will reset at 2026-10-01 14:34:01 +02:00 (in 1m)")
 	require.True(t, ok)
 	assert.True(t, got.Equal(time.Date(2026, 10, 1, 12, 34, 1, 0, time.UTC)))
 }
@@ -78,7 +80,7 @@ func TestLocalizeResetError(t *testing.T) {
 	pe := &fantasy.ProviderError{StatusCode: 429, Message: "Usage limit reached. Your limit will reset at 2026-10-01 20:34:01"}
 	wrapped := fmt.Errorf("retry error: %w", pe)
 
-	got := LocalizeResetError(wrapped)
+	got := usagepolicy.LocalizeResetError(wrapped)
 	assert.NotContains(t, got.Error(), "20:34:01")
 	assert.Contains(t, got.Error(), "14:34:01 +02:00")
 	var back *fantasy.ProviderError
@@ -86,8 +88,8 @@ func TestLocalizeResetError(t *testing.T) {
 	assert.Same(t, pe, back)
 
 	plain := errors.New("boom")
-	assert.Same(t, plain, LocalizeResetError(plain))
-	assert.NoError(t, LocalizeResetError(nil))
+	assert.Same(t, plain, usagepolicy.LocalizeResetError(plain))
+	assert.NoError(t, usagepolicy.LocalizeResetError(nil))
 }
 
 // TestRun_QuotaLimitFinishLocalizesInline: the finish shows the reset once,

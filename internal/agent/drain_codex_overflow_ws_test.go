@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
@@ -298,8 +300,8 @@ func TestCodexWebSocketProviderFailureClassifiesLikeSSE(t *testing.T) {
 			var wsProvider, sseProvider *fantasy.ProviderError
 			require.ErrorAs(t, wsErr, &wsProvider)
 			require.ErrorAs(t, sseErr, &sseProvider)
-			require.Equal(t, tc.hard, IsHardQuotaLimit(sseErr), "SSE reference classification")
-			require.Equal(t, IsHardQuotaLimit(sseErr), IsHardQuotaLimit(wsErr), "WebSocket must classify a hard limit like SSE")
+			require.Equal(t, tc.hard, clibridge.IsHardQuotaLimit(sseErr), "SSE reference classification")
+			require.Equal(t, clibridge.IsHardQuotaLimit(sseErr), clibridge.IsHardQuotaLimit(wsErr), "WebSocket must classify a hard limit like SSE")
 			require.Equal(t, sseProvider.IsContextTooLarge(), wsProvider.IsContextTooLarge())
 			require.True(t, modelkit.ResponsesWSReplayForbidden(wsErr), "a sent WebSocket request must stay non-replayable")
 			require.Equal(t, classTerminal, classifyProviderError(wsErr))

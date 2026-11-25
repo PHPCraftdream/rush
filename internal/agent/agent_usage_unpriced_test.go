@@ -8,6 +8,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 )
@@ -36,7 +37,7 @@ func TestModelUnpriced(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tc.want, modelUnpriced(tc.model, tc.usage, tc.override))
+			require.Equal(t, tc.want, usagepolicy.ModelUnpriced(tc.model, tc.usage, tc.override))
 		})
 	}
 }

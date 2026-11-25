@@ -243,3 +243,7 @@ func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg con
 func hasRefreshableCredential(providerCfg config.ProviderConfig) bool {
 	return providerCfg.OAuthToken != nil || strings.Contains(providerCfg.APIKeyTemplate, "$")
 }
+
+func (c *coordinator) CheckLivePeakHours(providerID string) error {
+	return c.checkLivePeakHours(providerID)
+}

@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"github.com/stretchr/testify/require"
@@ -68,13 +71,13 @@ func TestAnthropicCreditBalance1281(t *testing.T) {
 				var reached *fantasy.ProviderError
 				require.ErrorAs(t, wrappedErr, &reached)
 				require.Same(t, pe, reached)
-				require.True(t, IsHardQuotaLimit(wrappedErr))
+				require.True(t, clibridge.IsHardQuotaLimit(wrappedErr))
 			}
 			t.Logf("StatusCode=%d Title=%q Message=%q", pe.StatusCode, pe.Title, pe.Message)
 			wrapped := fmt.Errorf("probe wrapper: %w", callErr)
-			reset, found := QuotaLimitResetTime(wrapped, time.Now())
-			guidance, guided := QuotaLimitGuidance(wrapped)
-			t.Logf("quota=%v hard=%v rateWait=%v reset=%v/%v guidance=%q/%v", isQuotaLimit(pe), IsHardQuotaLimit(wrapped), isRateLimitError(wrapped), reset, found, guidance, guided)
+			reset, found := usagepolicy.QuotaLimitResetTime(wrapped, time.Now())
+			guidance, guided := usagepolicy.QuotaLimitGuidance(wrapped)
+			t.Logf("quota=%v hard=%v rateWait=%v reset=%v/%v guidance=%q/%v", isQuotaLimit(pe), clibridge.IsHardQuotaLimit(wrapped), isRateLimitError(wrapped), reset, found, guidance, guided)
 			require.False(t, found)
 			require.False(t, guided)
 			require.False(t, isRateLimitError(wrapped))
@@ -112,7 +115,7 @@ func TestHardQuotaBilling1281Guards(t *testing.T) {
 			var reached *fantasy.ProviderError
 			require.ErrorAs(t, err, &reached)
 			require.Same(t, pe, reached)
-			require.Equal(t, tc.want, IsHardQuotaLimit(err))
+			require.Equal(t, tc.want, clibridge.IsHardQuotaLimit(err))
 		})
 	}
 }

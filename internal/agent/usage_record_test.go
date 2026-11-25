@@ -15,6 +15,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -35,7 +36,7 @@ func TestProviderCacheSupport_KnownReportersStayNativeOnZeroCounters(t *testing.
 		provider := provider
 		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
-			got := providerCacheSupport(provider, "", fantasy.Usage{})
+			got := usagepolicy.ProviderCacheSupport(provider, "", fantasy.Usage{})
 			require.Equal(t, message.CacheSupportNative, got)
 		})
 	}
@@ -48,7 +49,7 @@ func TestProviderCacheSupport_KnownReportersStayNativeOnZeroCounters(t *testing.
 func TestProviderCacheSupport_UnknownProviderIsNoneOnZeroCounters(t *testing.T) {
 	t.Parallel()
 
-	got := providerCacheSupport(openaicompat.Name, "local-glm", fantasy.Usage{})
+	got := usagepolicy.ProviderCacheSupport(openaicompat.Name, "local-glm", fantasy.Usage{})
 	require.Equal(t, message.CacheSupportNone, got)
 }
 
@@ -71,7 +72,7 @@ func TestProviderCacheSupport_ObservedActivityIsAlwaysNative(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := providerCacheSupport(openaicompat.Name, tc.providerID, tc.usage)
+			got := usagepolicy.ProviderCacheSupport(openaicompat.Name, tc.providerID, tc.usage)
 			require.Equal(t, message.CacheSupportNative, got)
 		})
 	}
@@ -134,7 +135,7 @@ func TestProviderCacheSupport_OpenAICompatByConfiguredProviderID(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := providerCacheSupport(tc.provider, tc.providerID, tc.usage)
+			got := usagepolicy.ProviderCacheSupport(tc.provider, tc.providerID, tc.usage)
 			require.Equal(t, tc.want, got)
 		})
 	}
@@ -151,7 +152,7 @@ func TestTokenUsageAdd_ZaiWarmupTurnsKeepCacheHitRatio(t *testing.T) {
 
 	// Six warm-up turns (zai reports no cache counters on them) followed by
 	// warm turns with the real ~2.4K input / ~130K cache-read shape.
-	support := providerCacheSupport(openaicompat.Name, "zai", fantasy.Usage{})
+	support := usagepolicy.ProviderCacheSupport(openaicompat.Name, "zai", fantasy.Usage{})
 	total := message.TokenUsage{}
 	for range 6 {
 		total = total.Add(message.TokenUsage{
@@ -164,7 +165,7 @@ func TestTokenUsageAdd_ZaiWarmupTurnsKeepCacheHitRatio(t *testing.T) {
 		InputTokens:     2400,
 		OutputTokens:    500,
 		CacheReadTokens: 130000,
-		CacheSupport:    providerCacheSupport(openaicompat.Name, "zai", fantasy.Usage{CacheReadTokens: 130000}),
+		CacheSupport:    usagepolicy.ProviderCacheSupport(openaicompat.Name, "zai", fantasy.Usage{CacheReadTokens: 130000}),
 	})
 
 	require.Equal(t, message.CacheSupportNative, total.CacheSupport)

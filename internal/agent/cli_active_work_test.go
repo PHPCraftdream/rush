@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/require"
 )
@@ -35,8 +37,8 @@ func TestIsHardQuotaLimit(t *testing.T) {
 		{403, "quota exhausted", false},
 	} {
 		err := fmt.Errorf("wrapped: %w", &fantasy.ProviderError{StatusCode: tc.status, Message: tc.text})
-		require.Equal(t, tc.want, IsHardQuotaLimit(err))
+		require.Equal(t, tc.want, clibridge.IsHardQuotaLimit(err))
 	}
-	require.False(t, IsHardQuotaLimit(nil))
-	require.False(t, IsHardQuotaLimit(fmt.Errorf("quota exhausted HTTP %d", http.StatusTooManyRequests)))
+	require.False(t, clibridge.IsHardQuotaLimit(nil))
+	require.False(t, clibridge.IsHardQuotaLimit(fmt.Errorf("quota exhausted HTTP %d", http.StatusTooManyRequests)))
 }

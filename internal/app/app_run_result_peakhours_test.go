@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/stretchr/testify/assert"
 )
@@ -37,7 +36,7 @@ func TestBuildRunResult_PeakHoursErrorCarriesOperatorMessage(t *testing.T) {
 	}
 
 	t.Run("finish details already holding the guidance are not duplicated", func(t *testing.T) {
-		guidance := agent.PeakHoursGuidance(pe)
+		guidance := usage.PeakHoursGuidance(pe)
 		res := buildRunResult("s1", "", "", "error", pe, false, nil, 0, 0, time.Second, "Stopped", pe.Error()+"\n\n"+guidance, 0, "", "", nil, "")
 		assert.Equal(t, 1, strings.Count(res.Error, pe.Message))
 	})
