@@ -1,8 +1,8 @@
 package lab
 
-import "errors"
+import "github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 
 var (
-	ErrUnknownAttempt = errors.New("batchlab: unknown attempt")
-	ErrAttemptPhase   = errors.New("batchlab: invalid attempt phase")
+	ErrUnknownAttempt = controlled.ErrUnknownAttempt
+	ErrAttemptPhase   = controlled.ErrAttemptPhase
 )

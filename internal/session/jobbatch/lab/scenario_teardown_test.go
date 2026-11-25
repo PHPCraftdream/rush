@@ -16,26 +16,11 @@ func labTestJoinHarness(t *testing.T, h *RunHarness) {
 	if h == nil {
 		return
 	}
-	c := h.Controlled
-	c.mu.Lock()
-	var tokens []uint64
-	for _, a := range c.order {
-		a.holdStop, a.holdDispose, a.holdRead = false, false, false
-		for _, g := range append(append([]*controlledGate{}, a.stops...), a.dispose, a.read) {
-			if g != nil && g.done != nil && !g.released {
-				g.result, g.released = GateOK, true
-				close(g.done)
-			}
-		}
-		if a.phase == controlledAccepted {
-			tokens = append(tokens, a.launch.Token)
-		}
-	}
-	c.signal()
-	c.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	for _, token := range tokens {
+	c := h.Controlled
+	c.TestReleaseGates()
+	for _, token := range c.TestAcceptedTokens() {
 		if err := c.Complete(ctx, token, jobbatch.Result{State: jobbatch.StateInterrupted}); err != nil {
 			t.Errorf("teardown report: %s", ErrorNameOf(err))
 		}
@@ -43,26 +28,12 @@ func labTestJoinHarness(t *testing.T, h *RunHarness) {
 	if err := h.Runner.Close(ctx); err != nil {
 		t.Errorf("teardown Close: %s", ErrorNameOf(err))
 	}
-	// Close joins logical disposal; this additionally joins actual calls whose
-	// logical timeout had already fired.
-	c.mu.Lock()
-	for {
-		live := false
-		for _, a := range c.order {
-			live = live || a.stopActive || a.reads != 0 || a.phase == controlledReported || a.phase == controlledRegistered
-		}
-		if !live {
-			break
-		}
-		changed := c.changed
-		c.mu.Unlock()
+	for c.TestPhysicalLive() {
 		select {
-		case <-changed:
 		case <-ctx.Done():
 			t.Error("teardown physical join bound")
 			return
+		case <-time.After(time.Millisecond):
 		}
-		c.mu.Lock()
 	}
-	c.mu.Unlock()
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
 )
 
@@ -28,7 +29,7 @@ type RunOptions struct {
 type (
 	RunHarness struct {
 		Runner     *jobbatch.Runner
-		Controlled *ControlledExecutor
+		Controlled *controlled.ControlledExecutor
 		Oracle     *Oracle
 	}
 	RunResult struct {
@@ -42,20 +43,13 @@ type (
 		Action   int
 		Error    ErrorName
 		Failures []jobbatch.DisposeFailure
-		Physical []ScenarioPhysicalState
+		Physical []controlled.ScenarioPhysicalState
 	}
-	ScenarioPhysicalState struct {
-		Node            jobbatch.ID
-		Token           uint64
-		StopActive      bool
-		Reads           int
-		DisposeEntered  bool
-		DisposeReturned bool
-	}
+
 	scenarioRun struct {
 		s           *Scenario
 		r           *jobbatch.Runner
-		c           *ControlledExecutor
+		c           *controlled.ControlledExecutor
 		o           *Oracle
 		bound       context.Context
 		bindings    map[string]uint64
@@ -86,8 +80,8 @@ func RunScenario(ctx context.Context, s *Scenario, opts RunOptions) RunResult {
 	if o == nil {
 		o = NewOracle()
 	}
-	c := NewControlledExecutor()
-	c.observe = func(obs controlledObservation) { o.observe(obs.Token, obs.Kind, obs.Call) }
+	c := controlled.NewControlledExecutor()
+	c.SetObserveHook(func(obs controlled.Observation) { o.observe(obs.Token, obs.Kind, obs.Call) })
 	routes := map[string]jobbatch.Executor{"controlled": c}
 	for _, p := range s.Payloads {
 		if p.Kind == "process" {
@@ -200,7 +194,7 @@ func RunScenario(ctx context.Context, s *Scenario, opts RunOptions) RunResult {
 				if errors.As(actionErr, &dispose) {
 					info.Failures = append([]jobbatch.DisposeFailure(nil), dispose.Failures...)
 				}
-				info.Physical = c.scenarioPhysicalState()
+				info.Physical = c.ScenarioPhysicalState()
 				result.CloseFailures = append(result.CloseFailures, info)
 			}
 		}
@@ -229,7 +223,7 @@ func RunScenario(ctx context.Context, s *Scenario, opts RunOptions) RunResult {
 		held := o.reads != 0
 		o.mu.Unlock()
 		if held {
-			c.releaseCleanupReads()
+			c.ReleaseCleanupReads()
 		}
 	}
 	for _, task := range run.async {

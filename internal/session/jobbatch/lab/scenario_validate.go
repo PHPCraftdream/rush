@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 )
 
 func scenarioValidateAction(a Action) error {
@@ -71,7 +72,7 @@ func scenarioValidateAction(a Action) error {
 	if a.Call != nil && *a.Call == 0 {
 		return scenarioInvalid("stop call")
 	}
-	if a.Result != nil && !scenarioGateValid(*a.Result) {
+	if a.Result != nil && !controlled.ScenarioGateValid(*a.Result) {
 		return scenarioInvalid("gate result")
 	}
 	if a.Action == ActionExpectOutput && (a.Contains != nil && a.EOF != nil || a.Contains == nil && a.EOF == nil && a.ExpectError == nil) {
@@ -85,7 +86,7 @@ func scenarioValidateAction(a Action) error {
 		if a.Code != nil {
 			d.Code = *a.Code
 		}
-		if !controlledDecisionValid(d) || (d.Decision != DecisionAcceptComplete && a.State != nil) || ((d.Decision == DecisionAccept || d.Decision == DecisionRefuseCapacity) && a.Code != nil) {
+		if !controlled.DecisionValid(d) || (d.Decision != DecisionAcceptComplete && a.State != nil) || ((d.Decision == DecisionAccept || d.Decision == DecisionRefuseCapacity) && a.Code != nil) {
 			return scenarioInvalid("start decision")
 		}
 	}

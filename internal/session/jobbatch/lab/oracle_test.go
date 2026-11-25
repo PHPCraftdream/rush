@@ -90,7 +90,7 @@ func TestJournalPrivacySentinels(t *testing.T) {
 			if i != 4 {
 				return nil
 			}
-			l := h.Controlled.order[0].launch
+			l := h.Controlled.TestLaunch()
 			if err := h.Runner.Inject(ctx, l.ID, []byte(`{"text":"`+secret+`"}`)); err != nil {
 				return err
 			}

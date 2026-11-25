@@ -1,4 +1,4 @@
-package lab
+package controlled
 
 import (
 	"context"
@@ -69,7 +69,7 @@ func (c *ControlledExecutor) ReturnStop(token uint64, call uint64, result GateRe
 	if err != nil {
 		return err
 	}
-	if call == 0 || call > uint64(len(a.stops)) || !scenarioGateValid(result) {
+	if call == 0 || call > uint64(len(a.stops)) || !ScenarioGateValid(result) {
 		return ErrAttemptPhase
 	}
 	return controlledReleaseGate(a.stops[call-1], result)
@@ -178,7 +178,7 @@ func (c *ControlledExecutor) ReturnDispose(token uint64, result GateResult) erro
 	if err != nil {
 		return err
 	}
-	if a.phase != controlledReported || !scenarioGateValid(result) {
+	if a.phase != controlledReported || !ScenarioGateValid(result) {
 		return ErrAttemptPhase
 	}
 	return controlledReleaseGate(a.dispose, result)
