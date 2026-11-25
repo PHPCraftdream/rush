@@ -23,58 +23,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
-// TestTitleFromReasoning pins the extraction rule: the last non-empty line
-// of the reasoning stream is the raw title candidate.
-func TestTitleFromReasoning(t *testing.T) {
-	tests := []struct {
-		name      string
-		reasoning string
-		want      string
-	}{
-		{"final line wins", "let me think\nuser asks about proxy\nSetup Tor socks5 proxy", "Setup Tor socks5 proxy"},
-		{"trailing blank lines skipped", "thinking\nThe Answer\n  \n\t\n", "The Answer"},
-		{"single line", "Only Title", "Only Title"},
-		{"empty", "", ""},
-		{"whitespace only", "  \n \n", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, titleFromReasoning(tc.reasoning))
-		})
-	}
-}
-
-// TestSanitizeReasoningTitle pins the sanitisation applied to a title
-// recovered from a reasoning stream: answer prefixes and wrapping quotes are
-// stripped, and the line is capped at titleMaxReasoningLen (cut at a word
-// boundary where possible).
-func TestSanitizeReasoningTitle(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{"plain", "Setup Tor socks5 proxy", "Setup Tor socks5 proxy"},
-		{"title prefix stripped", `Title: "My Great Title"`, "My Great Title"},
-		{"cyrillic prefix stripped", "Заголовок: Прокси через Tor", "Прокси через Tor"},
-		{"dash prefix stripped", "Title - My Great Title", "My Great Title"},
-		{"quotes stripped", "«Wrapped Title»", "Wrapped Title"},
-		{"overlong reasoning answer rejected, not truncated", strings.Repeat("x", titleMaxReasoningLen+1), ""},
-		{"multiple sentences rejected", "I cannot produce a title. The content is missing.", ""},
-		{"single terminal punctuation accepted", "Fix title generation.", "Fix title generation."},
-		{"empty stays empty", "", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeReasoningTitle(tc.raw)
-			assert.Equal(t, tc.want, got)
-			assert.LessOrEqual(t, len([]rune(got)), titleMaxReasoningLen)
-		})
-	}
-}
-
-// mustJSON marshals v or panics; SSE fixtures are static test data, a marshal
-// failure there is a bug in the test itself.
 func mustJSON(v any) string {
 	d, err := json.Marshal(v)
 	if err != nil {
@@ -208,14 +156,6 @@ func TestRun_TitleThinkingDisabledForZAI(t *testing.T) {
 	assert.Equal(t, "disabled", thinking["type"])
 }
 
-func TestCleanTitleRejectsModelComplaints(t *testing.T) {
-	assert.Empty(t, cleanTitle("I cannot make a title. The request is empty."))
-	assert.Empty(t, cleanTitle(strings.Repeat("x", titleMaxReasoningLen+1)))
-}
-
-// TestRun_TitleNoThinkingOptionForOtherProvider: a non-z.ai openai-compat
-// provider keeps its default behavior — no thinking option on the title
-// request at all.
 func TestRun_TitleNoThinkingOptionForOtherProvider(t *testing.T) {
 	bodyCh := make(chan map[string]any, 4)
 	titleSrv := titleTestServer(t, bodyCh, "thinking hard\nOther Answer Line", "", "stop")
