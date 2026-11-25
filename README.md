@@ -302,6 +302,8 @@ jq -r '.error' "$out"         # error.message if non-success
 
 #### <a id="worktree-delegation-worktree"></a>Worktree delegation (`--worktree`)
 
+Lane workflow: launch isolated runs with `rush run --worktree <slug> --isolated-store`; read completed output with `rush result <session-id>`, use `--history` to inspect archived results, and pass prior review findings with `--findings-from <session-id>`. See [worktree delegation](docs/worktree-run.md).
+
 One command instead of the manual chain. Before, an orchestrator had
 to run `git worktree add -b <slug> worktrees/<slug> <base>`, `cd` into
 it, invoke `rush run ... < prompt > main/.rush/stdin/<s>.out 2> .err`
@@ -367,7 +369,20 @@ into `<main>/.rush/stdin/task-a.{out,err}` (each capped at the last
   it, honestly reports what remains on disk instead of claiming
   success. Works from any checkout of the repo.
 
-#### Session liveness, batch state, and completion
+#### Serializing heavy commands with `rush lock run`
+
+Use the machine-wide named lock to serialize expensive commands across checkouts and worktrees:
+
+```bash
+rush lock run go-build -- go build ./...
+rush lock run go-test -- go test ./...
+rush lock run go-vet -- go vet ./...
+rush lock run golangci-lint -- golangci-lint run
+```
+
+Waiters enter a FIFO queue. Rush records the holder (PID, command line, start time, and checkout) and diagnoses a stall from lack of CPU/I/O progress (10-minute default idle period), never elapsed wall time alone; a child exiting while its parent hangs also signals stuck. Before any stuck action, a diagnostic snapshot is stored in the lock record and printed to waiter stderr. Default `--on-stuck=wait` never kills: it marks and warns about the holder about once a minute while the queue waits. `--on-stuck=release` quarantines the stuck holder and lets the next waiter proceed while its tree keeps running. `--on-stuck=stop` requests graceful termination; force requires `--force-safe`. `--timeout` is an upper bound that triggers the same handling, not a kill deadline. If the holder tree is gone, the lock is taken over without killing anything. Command exit codes pass through; `rush lock list` shows holders, waiters, ages, and snapshots.
+
+Options: `--wait` bounds queue waiting (default 120m); `--idle` sets the no-progress diagnostic period (default 10m); `--timeout` adds an optional upper bound (default disabled); `--on-stuck=wait|release|stop` selects handling; `--force-safe` permits force termination after graceful stop fails. Bare numeric durations are minutes (`90` means `90m`).
 
 For safe retry, require physical process exit and no live or unknown batch scope; inspect current roots/nodes rather than relying on session-only `why`/`watch` or `end_turn`. Resume in the original checkout with the original role and session. `rush sessions compact` has two meanings: without a session argument it runs SQLite `VACUUM`; with a session ID it summarizes that session's model history.
 

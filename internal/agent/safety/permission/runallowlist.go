@@ -272,6 +272,19 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 	return regexp.Compile(b.String())
 }
 
+// MatchBashCommand reports whether command matches any AllowBash-style pattern.
+// It applies the same compound-command guard used by the restricted-run gate.
+func MatchBashCommand(patterns []string, command string) bool {
+	compiled := make([]compiledBashPattern, 0, len(patterns))
+	for _, raw := range patterns {
+		pattern, err := compileBashPattern(raw)
+		if err == nil {
+			compiled = append(compiled, pattern)
+		}
+	}
+	return bashCommandAllowed(compiled, command)
+}
+
 // bashCommandAllowed reports whether cmd satisfies any of the compiled
 // patterns. An empty pattern list denies everything (restricted mode is
 // deny-by-default).

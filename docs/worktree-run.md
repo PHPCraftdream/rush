@@ -72,7 +72,18 @@ final answer) and everything on stderr are additionally mirrored into
 `rush worktree list` prints a SLUG / BRANCH / SESSION / PATH table for
 every registered worktree directly under `<main>/worktrees`.
 
-## Non-goal
+## Serializing heavy commands
+
+Use `rush lock run` for machine-wide FIFO serialization across checkouts and worktrees; lock names coordinate the same job everywhere:
+
+```bash
+rush lock run go-build -- go build ./...
+rush lock run go-test -- go test ./...
+rush lock run go-vet -- go vet ./...
+rush lock run golangci-lint -- golangci-lint run
+```
+
+A holder is diagnosed from lack of CPU/I/O progress (default 10m idle), never wall-clock age alone; snapshots are recorded and printed before action. Default handling marks/warns about a stuck holder and keeps waiting without killing. `--on-stuck=release` quarantines it and advances the queue while leaving its tree running; `--on-stuck=stop` requests graceful termination, with force only via `--force-safe`. `--timeout` invokes the same stuck handling, not a kill deadline. See [README: serializing heavy commands](../README.md#serializing-heavy-commands-with-rush-lock-run).
 
 This is git-level isolation of the workspace, **not** an OS sandbox —
 see [README: Security — `rush run`
