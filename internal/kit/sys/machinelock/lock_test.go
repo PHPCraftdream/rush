@@ -3,7 +3,6 @@ package machinelock
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -171,10 +170,7 @@ func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
 	require.Contains(t, string(output), "Force-kill skipped: command class is not declared --force-safe.")
 	var holder Record
 	require.NoError(t, readJSON(filepath.Join(lockDir(name), "holder.json"), &holder))
-	proc, err := os.FindProcess(holder.PID)
-	require.NoError(t, err)
-	cleanup := &exec.Cmd{Process: proc}
-	forceStop(cleanup)
+	forceStopPID(holder.PID)
 	_ = os.Remove(filepath.Join(lockDir(name), "holder.json"))
 }
 

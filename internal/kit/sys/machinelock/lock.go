@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 )
 
 const pollInterval = 150 * time.Millisecond
@@ -208,7 +210,7 @@ func RunWithOptions(ctx context.Context, name string, record Record, options Opt
 	}
 	defer h.Release()
 	// The lock owns termination (graceful, diagnosed, opt-in force), so the command must not die with ctx.
-	cmd := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...)
+	cmd := platform.Command(context.WithoutCancel(ctx), argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = stdout, stderr, os.Stdin
 	configureProcess(cmd)
 	if err := cmd.Start(); err != nil {

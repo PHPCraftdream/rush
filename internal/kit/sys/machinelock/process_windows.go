@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"golang.org/x/sys/windows"
 )
 
@@ -54,12 +55,17 @@ func processSnapshot(pid int, record Record, started time.Time) string {
 
 func gracefulStop(cmd *exec.Cmd) {
 	if cmd.Process != nil {
-		_ = exec.CommandContext(context.Background(), "taskkill", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+		_ = platform.Command(context.Background(), "taskkill", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
 	}
 }
 
 func forceStop(cmd *exec.Cmd) {
 	if cmd.Process != nil {
-		_ = exec.CommandContext(context.Background(), "taskkill", "/F", "/T", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+		forceStopPID(cmd.Process.Pid)
 	}
+}
+
+// forceStopPID kills the process tree of pid (also used by tests to clean up a holder).
+func forceStopPID(pid int) {
+	_ = platform.Command(context.Background(), "taskkill", "/F", "/T", "/PID", fmt.Sprint(pid)).Run()
 }
