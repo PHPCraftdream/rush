@@ -3,6 +3,7 @@
 package machinelock
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -29,7 +30,7 @@ func configureProcess(cmd *exec.Cmd) {
 func processCounters(pid int) uint64 { return treeCounter(pid) }
 
 func processSnapshot(pid int, record Record, started time.Time) string {
-	out, err := exec.Command("ps", "-eo", "pid=,ppid=,stat=,etime=,time=,args=").Output()
+	out, err := exec.CommandContext(context.Background(), "ps", "-eo", "pid=,ppid=,stat=,etime=,time=,args=").Output()
 	if err != nil {
 		return fmt.Sprintf("PID %d state=unknown age=%s command=%q checkout=%q; CPU/I/O counters unavailable, using conservative wall-clock fallback.", pid, time.Since(started).Round(time.Second), record.Command, record.Checkout)
 	}
@@ -49,7 +50,7 @@ func processSnapshot(pid int, record Record, started time.Time) string {
 }
 
 func treeCounter(pid int) uint64 {
-	out, err := exec.Command("ps", "-eo", "pid=,ppid=,time=").Output()
+	out, err := exec.CommandContext(context.Background(), "ps", "-eo", "pid=,ppid=,time=").Output()
 	if err != nil {
 		return 0
 	}
