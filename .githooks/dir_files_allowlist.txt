@@ -69,7 +69,7 @@ internal/session 33
 # EX4 service has 43 direct Go files (22 production, 21 tests); components is not counted here; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
 internal/session/service 43
 internal/session/jobbatch 43
-internal/session/jobbatch/lab 45
+internal/session/jobbatch/lab 41
 internal/store/message 26
 # 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
 sdk 46
