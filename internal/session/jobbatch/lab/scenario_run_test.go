@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
@@ -121,7 +122,8 @@ func TestOracleInsideStartIntervals(t *testing.T) {
 	o := NewOracle()
 	c := NewControlledExecutor()
 	ex := &oracleExecutor{o, map[string]jobbatch.Executor{"controlled": c}}
-	ctx := labTestContext(t)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, err := ex.Start(ctx, jobbatch.Launch{ID: "R.1", Token: 1, Task: jobbatch.TaskSpec{Kind: "controlled"}}, func(jobbatch.Result) {})
@@ -133,8 +135,13 @@ func TestOracleInsideStartIntervals(t *testing.T) {
 	if err := c.ReleaseStart(ctx, 1, StartDecision{Decision: DecisionAcceptComplete, State: jobbatch.StateCompleted}); err != nil {
 		t.Fatal(err)
 	}
-	if err := labTestReceive(t, ctx, done); err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("barrier expired")
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()

@@ -103,9 +103,7 @@ func TestPhase2SecondReleaseKeepsFirstDecision(t *testing.T) {
 		case <-ctx.Done():
 			t.Error("report join bound")
 		}
-		c.mu.Lock()
-		code := c.attempts[1].decision.Code
-		c.mu.Unlock()
+		code := c.TestDecisionCode(1)
 		if code != "first" {
 			t.Errorf("first decision overwritten: %q", code)
 		}

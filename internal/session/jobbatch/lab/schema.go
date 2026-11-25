@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
 )
 
@@ -67,27 +68,21 @@ type Payload struct {
 // ProcessOptions is retained as the single parent-facing compatibility alias.
 type ProcessOptions = process.ProcessOptions
 
-type StartDecision struct {
-	Decision Decision       `json:"decision"`
-	State    jobbatch.State `json:"state,omitempty"`
-	Code     string         `json:"code,omitempty"` // Raw; Runtime normalizes it.
-}
-
-type Decision string
-
-const (
-	DecisionAccept         Decision = "accept"
-	DecisionAcceptComplete Decision = "accept_complete"
-	DecisionRefuseCapacity Decision = "refuse_capacity"
-	DecisionFail           Decision = "fail"
+type (
+	StartDecision         = controlled.StartDecision
+	Decision              = controlled.Decision
+	GateResult            = controlled.GateResult
+	ControlledExecutor    = controlled.ControlledExecutor
+	ScenarioPhysicalState = controlled.ScenarioPhysicalState
 )
 
-// GateResult is ok, error:<code>, or panic.
-type GateResult string
-
 const (
-	GateOK    GateResult = "ok"
-	GatePanic GateResult = "panic"
+	DecisionAccept         = controlled.DecisionAccept
+	DecisionAcceptComplete = controlled.DecisionAcceptComplete
+	DecisionRefuseCapacity = controlled.DecisionRefuseCapacity
+	DecisionFail           = controlled.DecisionFail
+	GateOK                 = controlled.GateOK
+	GatePanic              = controlled.GatePanic
 )
 
 type ActionName string

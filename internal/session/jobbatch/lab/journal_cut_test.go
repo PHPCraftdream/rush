@@ -47,7 +47,7 @@ func TestJournalUnfinishedCutAndLaterFinal(t *testing.T) {
 			t.Fatalf("cut replay=%d", code)
 		}
 
-		if err := h.Controlled.Complete(context.Background(), h.Controlled.order[0].launch.Token, jobbatch.Result{State: jobbatch.StateInterrupted}); err != nil {
+		if err := h.Controlled.Complete(context.Background(), h.Controlled.TestToken(), jobbatch.Result{State: jobbatch.StateInterrupted}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -109,11 +109,7 @@ func TestJournalCancelledAttemptedCloseUsesFreshCleanup(t *testing.T) {
 
 				// await_start already consumed registration (§5.2/5.3).
 
-				h.Controlled.mu.Lock()
-
-				launch := h.Controlled.order[0].launch
-
-				h.Controlled.mu.Unlock()
+				launch := jobbatch.Launch{Token: h.Controlled.TestToken()}
 
 				if err := h.Controlled.HoldStop(launch.Token); err != nil {
 					return err
@@ -191,7 +187,7 @@ func TestJournalInvocationCancellationDrainsClosed(t *testing.T) {
 			return nil
 		}
 
-		token := h.Controlled.order[0].launch.Token
+		token := h.Controlled.TestToken()
 
 		go func() {
 			err := h.Controlled.AwaitStop(context.Background(), token, 1)

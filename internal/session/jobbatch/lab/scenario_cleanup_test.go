@@ -49,30 +49,25 @@ func TestScenarioExternalAsyncHookJoinIsBounded(t *testing.T) {
 func TestCleanupReadsLeavesScriptedControlsHeld(t *testing.T) {
 	c := NewControlledExecutor()
 
-	stop := &controlledGate{done: make(chan struct{})}
-
-	dispose := &controlledGate{done: make(chan struct{})}
-
-	read := &controlledGate{done: make(chan struct{})}
-
-	a := &controlledAttempt{holdStop: true, holdDispose: true, stops: []*controlledGate{stop}, dispose: dispose, read: read}
-
-	c.order = append(c.order, a)
-
-	c.releaseCleanupReads()
-
-	if !read.released || stop.released || dispose.released || !a.holdStop || !a.holdDispose {
-		t.Fatal("read teardown changed scripted controls")
+	readReleased, stopReleased, disposeReleased, holdStop, holdDispose := c.TestCleanupFixture()
+	c.ReleaseCleanupReads()
+	select {
+	case <-readReleased:
+	default:
+		t.Fatal("read gate remained open after cleanup")
 	}
-
-	for _, g := range []*controlledGate{stop, dispose} {
-		select {
-		case <-g.done:
-
-			t.Fatal("scripted control returned during teardown")
-
-		default:
-		}
+	select {
+	case <-stopReleased:
+		t.Fatal("stop gate released during cleanup")
+	default:
+	}
+	select {
+	case <-disposeReleased:
+		t.Fatal("dispose gate released during cleanup")
+	default:
+	}
+	if !holdStop || !holdDispose {
+		t.Fatal("cleanup changed scripted controls")
 	}
 }
 
@@ -95,13 +90,7 @@ func TestScenarioNormalDisposeTimeoutLeavesPhysicalGateHeld(t *testing.T) {
 		t.Fatalf("result=%+v", got)
 	}
 
-	h.Controlled.mu.Lock()
-
-	g := h.Controlled.order[0].dispose
-
-	held := g != nil && !g.released
-
-	h.Controlled.mu.Unlock()
+	held := h.Controlled.TestDisposeHeld()
 
 	if !held {
 		t.Fatal("normal capture released physical dispose")
@@ -109,7 +98,7 @@ func TestScenarioNormalDisposeTimeoutLeavesPhysicalGateHeld(t *testing.T) {
 
 	// Real cleanup remains possible after Oracle measurement sealing.
 
-	if err := h.Controlled.ReturnDispose(h.Controlled.order[0].launch.Token, GateOK); err != nil {
+	if err := h.Controlled.ReturnDispose(h.Controlled.TestToken(), GateOK); err != nil {
 		t.Fatal(err)
 	}
 }

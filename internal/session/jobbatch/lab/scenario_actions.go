@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 )
 
 var errScenarioMismatch = errors.New("batchlab: expectation mismatch")
@@ -84,7 +85,7 @@ func (run *scenarioRun) action(parent context.Context, a Action) error {
 		}
 		return err
 	case ActionReleaseStart:
-		return run.c.ReleaseStart(ctx, token, StartDecision{Decision: *a.Decision, State: scenarioValue(a.State), Code: scenarioValue(a.Code)})
+		return run.c.ReleaseStart(ctx, token, controlled.StartDecision{Decision: *a.Decision, State: scenarioValue(a.State), Code: scenarioValue(a.Code)})
 	case ActionComplete:
 		return run.c.Complete(ctx, token, jobbatch.Result{State: *a.State, Code: scenarioValue(a.Code)})
 	case ActionEmit:

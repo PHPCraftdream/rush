@@ -1,9 +1,9 @@
-package lab
+package controlled
 
-// releaseCleanupReads unblocks only physical held reads after cancellation of
+// ReleaseCleanupReads unblocks only physical held reads after cancellation of
 // abandoned async Output. Reports and Stop/Dispose returns remain script-owned;
 // teardown must not invent successful controls or change dispose_pending facts.
-func (c *ControlledExecutor) releaseCleanupReads() {
+func (c *ControlledExecutor) ReleaseCleanupReads() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, a := range c.order {
