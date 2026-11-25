@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
@@ -17,13 +19,13 @@ import (
 func TestUsageIsZero(t *testing.T) {
 	t.Parallel()
 
-	require.True(t, usageIsZero(fantasy.Usage{}))
-	require.False(t, usageIsZero(fantasy.Usage{InputTokens: 1}))
-	require.False(t, usageIsZero(fantasy.Usage{OutputTokens: 1}))
-	require.False(t, usageIsZero(fantasy.Usage{TotalTokens: 1}))
-	require.False(t, usageIsZero(fantasy.Usage{ReasoningTokens: 1}))
-	require.False(t, usageIsZero(fantasy.Usage{CacheCreationTokens: 1}))
-	require.False(t, usageIsZero(fantasy.Usage{CacheReadTokens: 1}))
+	require.True(t, usagepolicy.UsageIsZero(fantasy.Usage{}))
+	require.False(t, usagepolicy.UsageIsZero(fantasy.Usage{InputTokens: 1}))
+	require.False(t, usagepolicy.UsageIsZero(fantasy.Usage{OutputTokens: 1}))
+	require.False(t, usagepolicy.UsageIsZero(fantasy.Usage{TotalTokens: 1}))
+	require.False(t, usagepolicy.UsageIsZero(fantasy.Usage{ReasoningTokens: 1}))
+	require.False(t, usagepolicy.UsageIsZero(fantasy.Usage{CacheCreationTokens: 1}))
+	require.False(t, usagepolicy.UsageIsZero(fantasy.Usage{CacheReadTokens: 1}))
 }
 
 func TestFallbackStepUsageKeepsProviderUsage(t *testing.T) {
@@ -38,7 +40,7 @@ func TestFallbackStepUsageKeepsProviderUsage(t *testing.T) {
 		Response: fantasy.Response{Usage: usage},
 	}
 
-	fallbackUsage, estimated := fallbackStepUsage(nil, step)
+	fallbackUsage, estimated := usagepolicy.FallbackStepUsage(nil, step, provauth.ApproxTokenCount)
 	require.False(t, estimated)
 	require.Equal(t, usage, fallbackUsage)
 }
@@ -57,7 +59,7 @@ func TestFallbackStepUsageEstimatesPromptAndAssistantText(t *testing.T) {
 		},
 	}
 
-	usage, estimated := fallbackStepUsage(messages, step)
+	usage, estimated := usagepolicy.FallbackStepUsage(messages, step, provauth.ApproxTokenCount)
 	require.True(t, estimated)
 	require.Positive(t, usage.InputTokens)
 	require.Positive(t, usage.OutputTokens)
@@ -83,7 +85,7 @@ func TestFallbackStepUsageEstimatesReasoning(t *testing.T) {
 		},
 	}
 
-	usage, estimated := fallbackStepUsage(messages, step)
+	usage, estimated := usagepolicy.FallbackStepUsage(messages, step, provauth.ApproxTokenCount)
 	require.True(t, estimated)
 	require.Positive(t, usage.InputTokens)
 	require.Positive(t, usage.OutputTokens)
@@ -104,7 +106,7 @@ func TestFallbackStepUsageEstimatesToolCalls(t *testing.T) {
 		},
 	}
 
-	usage, estimated := fallbackStepUsage(nil, step)
+	usage, estimated := usagepolicy.FallbackStepUsage(nil, step, provauth.ApproxTokenCount)
 	require.True(t, estimated)
 	require.Zero(t, usage.InputTokens)
 	require.Positive(t, usage.OutputTokens)
@@ -142,7 +144,7 @@ func TestFallbackStepUsageEstimatesToolResults(t *testing.T) {
 		},
 	}
 
-	usage, estimated := fallbackStepUsage(messages, fantasy.StepResult{})
+	usage, estimated := usagepolicy.FallbackStepUsage(messages, fantasy.StepResult{}, provauth.ApproxTokenCount)
 	require.True(t, estimated)
 	require.Positive(t, usage.InputTokens)
 	require.Zero(t, usage.OutputTokens)
@@ -166,7 +168,7 @@ func TestFallbackStepUsageSkipsClientToolResultsAsOutput(t *testing.T) {
 		},
 	}
 
-	usage, estimated := fallbackStepUsage(nil, step)
+	usage, estimated := usagepolicy.FallbackStepUsage(nil, step, provauth.ApproxTokenCount)
 	require.False(t, estimated)
 	require.Zero(t, usage.OutputTokens)
 }
@@ -188,7 +190,7 @@ func TestFallbackStepUsageCountsProviderToolResultsAsOutput(t *testing.T) {
 		},
 	}
 
-	usage, estimated := fallbackStepUsage(nil, step)
+	usage, estimated := usagepolicy.FallbackStepUsage(nil, step, provauth.ApproxTokenCount)
 	require.True(t, estimated)
 	require.Positive(t, usage.OutputTokens)
 	require.Equal(t, usage.OutputTokens, usage.TotalTokens)
@@ -197,9 +199,9 @@ func TestFallbackStepUsageCountsProviderToolResultsAsOutput(t *testing.T) {
 func TestFallbackStepUsageReturnsZeroWithoutContent(t *testing.T) {
 	t.Parallel()
 
-	usage, estimated := fallbackStepUsage(nil, fantasy.StepResult{})
+	usage, estimated := usagepolicy.FallbackStepUsage(nil, fantasy.StepResult{}, provauth.ApproxTokenCount)
 	require.False(t, estimated)
-	require.True(t, usageIsZero(usage))
+	require.True(t, usagepolicy.UsageIsZero(usage))
 }
 
 // Fork merge note: upstream's TestUpdateSessionUsageSkipsEstimatedCost
@@ -364,7 +366,7 @@ func TestCloneFantasyMessagesDeepSnapshot(t *testing.T) {
 		},
 	}
 
-	cloned := cloneFantasyMessages(orig)
+	cloned := usagepolicy.CloneFantasyMessages(orig)
 
 	// Mutate every nested level of the ORIGINAL after the snapshot was
 	// taken. The value-part mutations below deliberately go through

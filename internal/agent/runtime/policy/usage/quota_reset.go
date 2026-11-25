@@ -12,14 +12,14 @@ import (
 	"charm.land/fantasy"
 )
 
-// resetDisplayZone is the zone quota reset times are shown in; read
+// DisplayZoneProvider is the zone quota reset times are shown in; read
 // lazily so no stale snapshot is captured (tests swap the root's callback
 // instead of time.Local, which every time.Now call reads).
-var resetDisplayZone = func() *time.Location { return time.Local }
+var DisplayZoneProvider = func() *time.Location { return time.Local }
 
 // DisplayZone returns the current display zone, reading lazily. Read-only:
 // callers needing a different zone pass one via the WithZone entry points.
-func DisplayZone() *time.Location { return resetDisplayZone() }
+func DisplayZone() *time.Location { return DisplayZoneProvider() }
 
 // QuotaLimitResetTime extracts, from a provider error, the wall-clock time
 // at which a rate-limit/quota window reopens. The hint usually lives in the
@@ -33,7 +33,7 @@ func DisplayZone() *time.Location { return resetDisplayZone() }
 // so `rush run`'s quota-exceeded turn failure can reuse the exact same
 // parsing `rush ping` already relied on, instead of reimplementing it.
 func QuotaLimitResetTime(err error, now time.Time) (reset time.Time, ok bool) {
-	return quotaLimitResetTimeWithZone(err, now, resetDisplayZone)
+	return quotaLimitResetTimeWithZone(err, now, DisplayZoneProvider)
 }
 
 // QuotaLimitResetTimeWithZone extracts reset times using a lazy display-zone provider.
@@ -219,7 +219,7 @@ func parseZAIResetHintWithZone(text string, _ func() *time.Location) (time.Time,
 // without a hint, or whose stamp already carries an offset, is returned
 // unchanged, so applying it twice is a no-op.
 func LocalizeResetHint(text string, now time.Time) string {
-	return LocalizeResetHintWithZone(text, now, resetDisplayZone)
+	return LocalizeResetHintWithZone(text, now, DisplayZoneProvider)
 }
 
 // LocalizeResetHintWithZone localizes reset hints using a lazily read zone provider.
@@ -249,7 +249,7 @@ func (e *localizedResetError) Unwrap() error { return e.err }
 // LocalizeResetError returns err whose text shows the reset hint in local
 // time (see LocalizeResetHint); err itself when there is nothing to rewrite.
 func LocalizeResetError(err error) error {
-	return LocalizeResetErrorWithZone(err, resetDisplayZone)
+	return LocalizeResetErrorWithZone(err, DisplayZoneProvider)
 }
 
 // LocalizeResetErrorWithZone carries err while lazily reading the display zone.
@@ -297,7 +297,7 @@ func FormatResetDuration(d time.Duration) string {
 // to tell the operator when a quota wall reopens (turn finish details,
 // stderr) reuses this one function so the two never drift.
 func QuotaLimitGuidance(err error) (guidance string, ok bool) {
-	return QuotaLimitGuidanceWithZone(err, resetDisplayZone)
+	return QuotaLimitGuidanceWithZone(err, DisplayZoneProvider)
 }
 
 // QuotaLimitGuidanceWithZone computes guidance using a lazily read zone provider.

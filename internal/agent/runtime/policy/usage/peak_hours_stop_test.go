@@ -10,7 +10,7 @@ import (
 func TestPeakHoursStoppedFinishText(t *testing.T) {
 	t.Run("generic error falls back gracefully", func(t *testing.T) {
 		underlying := errors.New("provider zai is in peak hours (08:00–12:00), refusing until 12:00")
-		msg, details := peakHoursStoppedFinishText(underlying)
+		msg, details := PeakHoursStoppedFinishText(underlying)
 
 		if msg == "" {
 			t.Fatal("message must be non-empty — empty message looks identical to a voluntary finish")
@@ -32,7 +32,7 @@ func TestPeakHoursStoppedFinishText(t *testing.T) {
 	t.Run("PeakHoursError yields an exact, cron-ready resume timestamp", func(t *testing.T) {
 		reopensAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.Local)
 		err := &PeakHoursError{ProviderID: "zai", Start: "08:00", End: "12:00", ReopensAt: reopensAt}
-		_, details := peakHoursStoppedFinishText(err)
+		_, details := PeakHoursStoppedFinishText(err)
 
 		if !strings.Contains(details, "RESUME AT") {
 			t.Fatalf("details %q must contain an explicit RESUME AT line an orchestrator can act on", details)
@@ -66,7 +66,7 @@ func TestPeakHoursGuidance_CustomMessage(t *testing.T) {
 
 	t.Run("peakHoursStoppedFinishText carries the custom message through details", func(t *testing.T) {
 		err := &PeakHoursError{ProviderID: "zai", Start: "08:00", End: "12:00", ReopensAt: reopensAt, Message: "See runbook RB-42."}
-		_, details := peakHoursStoppedFinishText(err)
+		_, details := PeakHoursStoppedFinishText(err)
 
 		if !strings.Contains(details, "See runbook RB-42.") {
 			t.Fatalf("details %q must include the custom message (peakHoursStoppedFinishText delegates to PeakHoursGuidance)", details)
@@ -76,7 +76,7 @@ func TestPeakHoursGuidance_CustomMessage(t *testing.T) {
 
 func TestPeakHoursStoppedFinishText_IncludesOperatorMessage(t *testing.T) {
 	pe := &PeakHoursError{ProviderID: "zai", Start: "20:00", End: "23:59", ReopensAt: time.Now().Add(time.Hour), Message: "OPERATOR-NOTE: resume after midnight"}
-	_, details := peakHoursStoppedFinishText(pe)
+	_, details := PeakHoursStoppedFinishText(pe)
 	if !strings.Contains(details, pe.Message) {
 		t.Fatalf("mid-turn stop details %q must carry the operator message", details)
 	}

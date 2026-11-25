@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	batchsession "github.com/PHPCraftdream/rush/internal/session"
@@ -559,17 +560,17 @@ type cliQuotaStop struct {
 }
 
 func (l *cliLoop) latchQuota(err error) {
-	if l.quota != nil || !agent.IsHardQuotaLimit(err) {
+	if l.quota != nil || !clibridge.IsHardQuotaLimit(err) {
 		return
 	}
-	reset, _ := agent.QuotaLimitResetTime(err, time.Now())
+	reset, _ := usage.QuotaLimitResetTime(err, time.Now())
 	l.quota = &cliQuotaStop{cause: err, reset: reset, terminal: map[string]bool{}}
 	l.snapshotQuotaTerminal()
 	fmt.Fprintf(l.errOut(), "rush run: session %q: hard provider quota exhausted; no further own turns; waiting only for active work\n", l.sessionID)
 }
 
 func (l *cliLoop) quotaPhase() cliStepResult {
-	src, ok := l.source.(agent.CLIActiveWorkSource)
+	src, ok := l.source.(clibridge.CLIActiveWorkSource)
 	if !ok {
 		final, err := l.exit(fmt.Errorf("provider quota exhausted: active work reader unavailable: %w", l.quota.cause), "provider_limit")
 		return cliStepResult{ev: evScopeStop, final: final, err: err}

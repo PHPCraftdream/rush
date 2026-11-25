@@ -1,9 +1,10 @@
-package agent
+package clibridge
 
 import (
 	"context"
 	"sort"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -19,64 +20,50 @@ type CLIActiveWorkSource interface {
 	CLIActiveWork(context.Context, string) (bool, error)
 }
 
-// CLIActiveWork excludes schedules, debt, and question-paused delegations, but
-// includes those children's jobs and completion-persistence holds. Batch-only:
-// the live scope comes from batch_nodes (the node-backed fact source bound at
-// install). An UNBOUND coordinator (no bound facts) answers false: no batch
-// runtime means no batch work can be pending for it. A failed read fails
-// closed with the error (the quota loop retries it under its bounded window,
-// never silently reads "idle").
-func (c *coordinator) CLIActiveWork(ctx context.Context, root string) (bool, error) {
-	return (&cliActiveWorkComponent{host: c}).cliActiveWork(ctx, root)
-}
-
 // IsAwaitingAnswerFinish identifies durable question-stop metadata.
 func IsAwaitingAnswerFinish(fp *message.Finish) bool {
-	_, ok := subAgentQuestionBlockFromFinish(fp)
+	_, ok := agentcall.SubAgentQuestionBlockFromFinish(fp)
 	return ok
 }
 
-var _ CLIActiveWorkSource = (*coordinator)(nil)
-
-// cliActiveWorkBatch is CLIActiveWork's flag-ON body: the live scope comes
-// from the bound node-backed facts, and a question-paused delegation whose
-// parent child_question notice is durably committed no longer keeps the CLI
-// active (the OFF branch's exclusion, mirrored through batch facts). A
-// failed read fails closed with the error.
-func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
-	return (&cliActiveWorkComponent{host: c}).cliActiveWorkBatch(ctx, facts, root)
-}
-
 type cliActiveWorkHost interface {
-	cliActiveWorkFacts() BatchCutoverFacts
-	recoverBatchScopeDeadCandidates(ctx context.Context, owner string)
-	backgroundOwnsWork(root string) bool
-	cliActiveWorkMessages() message.Service
-	childSessionBusy(child string) bool
+	BatchCutoverFacts() agentcall.BatchCutoverFacts
+	RecoverBatchScopeDeadCandidates(ctx context.Context, owner string)
+	BackgroundOwnsWork(root string) bool
+	CLIActiveWorkMessages() message.Service
+	ChildSessionBusy(child string) bool
+	UnboundBatchFacts(facts agentcall.BatchCutoverFacts) bool
+	SubAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool)
+	SubAgentQuestionFromFinish(childSessionID string, fp *message.Finish) (string, bool)
+	BatchNodeStateLive(state string) bool
 }
 
-type cliActiveWorkComponent struct{ host cliActiveWorkHost }
+type CliActiveWorkComponent struct{ host cliActiveWorkHost }
 
-func (w *cliActiveWorkComponent) cliActiveWork(ctx context.Context, root string) (bool, error) {
-	facts := w.host.cliActiveWorkFacts()
-	if _, unbound := facts.(unknownBatchCutoverFacts); unbound {
+func NewCliActiveWorkComponent(host cliActiveWorkHost) *CliActiveWorkComponent {
+	return &CliActiveWorkComponent{host: host}
+}
+
+func (w *CliActiveWorkComponent) DoCLIActiveWork(ctx context.Context, root string) (bool, error) {
+	facts := w.host.BatchCutoverFacts()
+	if w.host.UnboundBatchFacts(facts) {
 		return false, nil
 	}
-	return w.cliActiveWorkBatch(ctx, facts, root)
+	return w.DoCLIActiveWorkBatch(ctx, facts, root)
 }
 
-func (w *cliActiveWorkComponent) cliActiveWorkBatch(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
+func (w *CliActiveWorkComponent) DoCLIActiveWorkBatch(ctx context.Context, facts agentcall.BatchCutoverFacts, root string) (bool, error) {
 	// Scope-budgeted recovery (one
 	// 500ms budget, one candidate root attempt): recover the dead hosts this
 	// read is about to count as live, then answer from fresh reads below.
 	// Best-effort; exhaustion keeps the conservative active answer.
-	w.host.recoverBatchScopeDeadCandidates(ctx, root)
+	w.host.RecoverBatchScopeDeadCandidates(ctx, root)
 	own, descendants, err := facts.LiveWorkSummary(ctx, root)
 	if err != nil {
 		return false, err
 	}
 	if own+descendants > 0 {
-		active, err := w.batchActiveAfterQuestionPause(ctx, facts, root)
+		active, err := w.DoBatchActiveAfterQuestionPause(ctx, facts, root)
 		if err != nil {
 			return false, err
 		}
@@ -84,7 +71,7 @@ func (w *cliActiveWorkComponent) cliActiveWorkBatch(ctx context.Context, facts B
 			return true, nil
 		}
 	}
-	if w.host.backgroundOwnsWork(root) {
+	if w.host.BackgroundOwnsWork(root) {
 		return true, nil
 	}
 	return false, nil
@@ -101,7 +88,7 @@ type batchPausedChild struct {
 	busy       bool
 }
 
-// batchActiveAfterQuestionPause answers the live-scope question with the
+// BatchActiveAfterQuestionPause answers the live-scope question with the
 // question-pause exclusion applied at NODE granularity. A delegation child is
 // dormant when its question is paused AND its committed notice is fenced to
 // the CURRENT incarnation (the seam's LiveHeldQuestions rows), or when it is
@@ -112,11 +99,7 @@ type batchPausedChild struct {
 // Dormancy resolves deepest-first: batchLiveReplay appends Descendants in
 // depth order (batch_read_live.go), so a conduit is classified after its
 // nested children.
-func (c *coordinator) batchActiveAfterQuestionPause(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
-	return (&cliActiveWorkComponent{host: c}).batchActiveAfterQuestionPause(ctx, facts, root)
-}
-
-func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Context, facts BatchCutoverFacts, root string) (bool, error) {
+func (w *CliActiveWorkComponent) DoBatchActiveAfterQuestionPause(ctx context.Context, facts agentcall.BatchCutoverFacts, root string) (bool, error) {
 	tree, err := facts.LiveNodes(ctx, root)
 	if err != nil {
 		return false, err
@@ -125,7 +108,7 @@ func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Conte
 	if err != nil {
 		return false, err
 	}
-	if w.host.cliActiveWorkMessages() == nil {
+	if w.host.CLIActiveWorkMessages() == nil {
 		// No history reader: a question-paused child cannot be proven, so
 		// every live node stays active (the fail-closed answer).
 		return true, nil
@@ -161,10 +144,10 @@ func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Conte
 			continue
 		}
 		st := &childState{node: dc.node}
-		if w.host.childSessionBusy(dc.child) {
+		if w.host.ChildSessionBusy(dc.child) {
 			st.busy = true
 		}
-		msgs, err := w.host.cliActiveWorkMessages().List(ctx, dc.child)
+		msgs, err := w.host.CLIActiveWorkMessages().List(ctx, dc.child)
 		if err != nil {
 			return false, err
 		}
@@ -172,7 +155,7 @@ func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Conte
 			if msgs[i].Role != message.Assistant || !msgs[i].IsFinished() {
 				continue
 			}
-			_, st.questionPaused = subAgentQuestionFromFinish(dc.child, msgs[i].FinishPart())
+			_, st.questionPaused = w.host.SubAgentQuestionFromFinish(dc.child, msgs[i].FinishPart())
 			break
 		}
 		if st.busy {
@@ -207,7 +190,7 @@ func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Conte
 				continue
 			}
 			nestedNodes++
-			if dormant[otherChild] && batchNodeStateLive(otherState.node.State) && otherState.node.Kind == "task" {
+			if dormant[otherChild] && w.host.BatchNodeStateLive(otherState.node.State) && otherState.node.Kind == "task" {
 				nestedDormant++
 			}
 		}
@@ -225,7 +208,7 @@ func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Conte
 	}
 	dormantByRoot := make(map[string]int)
 	for child, st := range states {
-		if dormant[child] && batchNodeStateLive(st.node.State) && st.node.Kind == "task" {
+		if dormant[child] && w.host.BatchNodeStateLive(st.node.State) && st.node.Kind == "task" {
 			dormantByRoot[st.node.Ref.RootID]++
 		}
 	}
@@ -243,18 +226,14 @@ func (w *cliActiveWorkComponent) batchActiveAfterQuestionPause(ctx context.Conte
 	return false, nil
 }
 
-// batchCommittedQuestionChildren reports which question-paused children have
+// BatchCommittedQuestionChildren reports which question-paused children have
 // their question durably committed under their IMMEDIATE owner (paused's
 // owner field, not the CLI root). Marker-format notices commit ONLY through
 // LiveHeldQuestions' fenced rows -- each row now carries its marker's child
 // session, so a stale historical marker for the same child can never commit a
 // current incarnation (LiveHeldQuestions filters dead node states and token
 // mismatches).
-func (c *coordinator) batchCommittedQuestionChildren(ctx context.Context, facts BatchCutoverFacts, paused map[string]batchPausedChild) (map[string]bool, error) {
-	return (&cliActiveWorkComponent{host: c}).batchCommittedQuestionChildren(ctx, facts, paused)
-}
-
-func (w *cliActiveWorkComponent) batchCommittedQuestionChildren(ctx context.Context, facts BatchCutoverFacts, paused map[string]batchPausedChild) (map[string]bool, error) {
+func (w *CliActiveWorkComponent) batchCommittedQuestionChildren(ctx context.Context, facts agentcall.BatchCutoverFacts, paused map[string]batchPausedChild) (map[string]bool, error) {
 	committed := make(map[string]bool, len(paused))
 	byOwner := make(map[string][]string)
 	for child, p := range paused {
@@ -275,39 +254,4 @@ func (w *cliActiveWorkComponent) batchCommittedQuestionChildren(ctx context.Cont
 		}
 	}
 	return committed, nil
-}
-
-func (c *coordinator) cliActiveWorkFacts() BatchCutoverFacts {
-	return coordinatorBatchCutoverFacts(c)
-}
-
-// batchFactsInstalled reports whether a concrete (node-backed) batch cutover
-// facts source is bound for the coordinator: true only for a bound node-backed
-// source, so an unbound coordinator keeps the conservative idle answer and
-// never hides live work behind an unbound helper. It is the same rule
-// CLIActiveWork uses (cli_active_work.go).
-func (c *coordinator) batchFactsInstalled() bool {
-	if c == nil {
-		return false
-	}
-	facts := coordinatorBatchCutoverFacts(c)
-	_, unbound := facts.(unknownBatchCutoverFacts)
-	return !unbound
-}
-
-func (c *coordinator) recoverBatchScopeDeadCandidates(ctx context.Context, owner string) {
-	recoverBatchScopeDeadCandidates(ctx, c, owner)
-}
-
-func (c *coordinator) backgroundOwnsWork(root string) bool {
-	return c.background != nil && (c.background.ActiveOwned(root) > 0 || c.background.PendingCompletionsOwned(root) > 0)
-}
-
-func (c *coordinator) cliActiveWorkMessages() message.Service {
-	return c.messages
-}
-
-func (c *coordinator) childSessionBusy(child string) bool {
-	ag := c.agentFor(child)
-	return ag != nil && ag.IsSessionBusy(child)
 }

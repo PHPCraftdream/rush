@@ -31,6 +31,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	mcp "github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/config/providers/discover"
@@ -152,6 +153,14 @@ func (c *coordinator) buildProviderWithValuesAndAuth(cfg *config.Config, provide
 		return nil, err
 	}
 	return c.withPeakHoursRequestGate(callbeat.NewHeartbeatProvider(p), providerCfg), nil
+}
+
+func (c *coordinator) withPeakHoursRequestGate(provider fantasy.Provider, pc config.ProviderConfig) fantasy.Provider {
+	return usage.NewPeakHoursRequestGateComponent(c).WithPeakHoursRequestGate(provider, pc)
+}
+
+func (c *coordinator) CallOptionsFrom(ctx context.Context) *agentcall.CallOptions {
+	return callOptionsFrom(ctx)
 }
 
 func (c *coordinator) buildProviderWithValuesInner(cfg *config.Config, providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool, apiKey, baseURL string, allowAmbientAuth bool) (fantasy.Provider, error) {

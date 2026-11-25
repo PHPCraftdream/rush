@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -79,7 +81,7 @@ func TestCachePrefix_PrepareStepDoesNotMutateRetainedMessagesOrPinnedTools(t *te
 	ts.call.Tools = []fantasy.AgentTool{newProviderOptionsTestTool("zeta"), newProviderOptionsTestTool("alpha")}
 	messages := []fantasy.Message{fantasy.NewSystemMessage("system"), fantasy.NewUserMessage("request")}
 	messages[0].ProviderOptions = cacheOpts()
-	before := cloneFantasyMessages(messages)
+	before := usagepolicy.CloneFantasyMessages(messages)
 	_, prepared, err := ts.prepareStep(context.Background(), fantasy.PrepareStepFunctionOptions{Messages: messages})
 	require.NoError(t, err)
 	require.Equal(t, before, messages, "per-step cache marker clearing must not write through fantasy's retained slice")
@@ -133,9 +135,9 @@ func TestCacheDiagnostic_MapPermutationsPreserveArraysAndSemantics(t *testing.T)
 }
 
 func TestCacheDiagnostic_AmbiguousZeroAndContentFreeLog(t *testing.T) {
-	require.Nil(t, observedCacheReadTokens(fantasy.Usage{}, false, "", nil), "fantasy.Usage alone cannot distinguish omitted cached_tokens from explicit zero")
-	require.Nil(t, observedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, true, "", nil))
-	require.EqualValues(t, 10, *observedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, false, "", nil))
+	require.Nil(t, promptcache.ObservedCacheReadTokens(fantasy.Usage{}, false, "", nil), "fantasy.Usage alone cannot distinguish omitted cached_tokens from explicit zero")
+	require.Nil(t, promptcache.ObservedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, true, "", nil))
+	require.EqualValues(t, 10, *promptcache.ObservedCacheReadTokens(fantasy.Usage{CacheReadTokens: 10}, false, "", nil))
 	var output bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -153,29 +155,29 @@ func TestCacheDiagnostic_AmbiguousZeroAndContentFreeLog(t *testing.T) {
 	require.Contains(t, row["semantic_invalidation_expectation"], "do not identify the cause")
 }
 
-func obs(model, prefix, tools string, digests ...string) *cacheRequestObs {
-	return &cacheRequestObs{prefix: prefix, tools: tools, model: model, digests: digests, at: time.Now()}
+func obs(model, prefix, tools string, digests ...string) *promptcache.CacheRequestObs {
+	return &promptcache.CacheRequestObs{Prefix: prefix, Tools: tools, Model: model, Digests: digests, At: time.Now()}
 }
 
 func TestClassifyCacheMiss(t *testing.T) {
 	base := obs("p/m", "pre", "tools", "a", "b", "c")
 	tests := []struct {
 		name       string
-		prev, cur  *cacheRequestObs
+		prev, cur  *promptcache.CacheRequestObs
 		wantCause  string
 		wantCommon int
 	}{
-		{"first request", nil, obs("p/m", "pre", "tools", "a"), cacheMissFirstRequest, 0},
-		{"history only grew", base, obs("p/m", "pre", "tools", "a", "b", "c", "d"), cacheMissProviderSide, 3},
-		{"model changed", base, obs("p/other", "pre", "tools", "a", "b", "c", "d"), cacheMissModelChanged, 3},
-		{"system prefix changed", base, obs("p/m", "pre2", "tools", "a", "b", "c", "d"), cacheMissPrefixChanged, 3},
-		{"tools changed", base, obs("p/m", "pre", "tools2", "a", "b", "c", "d"), cacheMissToolsChanged, 3},
-		{"history rewritten in the middle", base, obs("p/m", "pre", "tools", "a", "x", "c", "d"), cacheMissHistoryChanged, 1},
-		{"history truncated", base, obs("p/m", "pre", "tools", "a", "b"), cacheMissHistoryChanged, 2},
+		{"first request", nil, obs("p/m", "pre", "tools", "a"), promptcache.CacheMissFirstRequest, 0},
+		{"history only grew", base, obs("p/m", "pre", "tools", "a", "b", "c", "d"), promptcache.CacheMissProviderSide, 3},
+		{"model changed", base, obs("p/other", "pre", "tools", "a", "b", "c", "d"), promptcache.CacheMissModelChanged, 3},
+		{"system prefix changed", base, obs("p/m", "pre2", "tools", "a", "b", "c", "d"), promptcache.CacheMissPrefixChanged, 3},
+		{"tools changed", base, obs("p/m", "pre", "tools2", "a", "b", "c", "d"), promptcache.CacheMissToolsChanged, 3},
+		{"history rewritten in the middle", base, obs("p/m", "pre", "tools", "a", "x", "c", "d"), promptcache.CacheMissHistoryChanged, 1},
+		{"history truncated", base, obs("p/m", "pre", "tools", "a", "b"), promptcache.CacheMissHistoryChanged, 2},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cause, common := classifyCacheMiss(tc.prev, tc.cur)
+			cause, common := promptcache.ClassifyCacheMiss(tc.prev, tc.cur)
 			require.Equal(t, tc.wantCause, cause)
 			require.Equal(t, tc.wantCommon, common)
 		})
@@ -199,23 +201,18 @@ func TestPreparedCacheDiagnostic_MessageDigestsLocateTheChange(t *testing.T) {
 	a := promptcache.PreparedCacheDiagnostic(msgs("sys", "one", "two", "three"), nil)
 	b := promptcache.PreparedCacheDiagnostic(msgs("sys", "one", "TWO", "three"), nil)
 	require.Len(t, a.MessageDigests, 4)
-	require.Equal(t, 2, commonPrefixLen(a.MessageDigests, b.MessageDigests))
+	require.Equal(t, 2, promptcache.CommonPrefixLen(a.MessageDigests, b.MessageDigests))
 	grown := promptcache.PreparedCacheDiagnostic(msgs("sys", "one", "two", "three", "four"), nil)
-	require.Equal(t, 4, commonPrefixLen(a.MessageDigests, grown.MessageDigests))
+	require.Equal(t, 4, promptcache.CommonPrefixLen(a.MessageDigests, grown.MessageDigests))
 }
 
 func TestSwapCacheObs_BoundedAndReturnsPrevious(t *testing.T) {
-	cacheObs.mu.Lock()
-	cacheObs.last = map[string]*cacheRequestObs{}
-	cacheObs.mu.Unlock()
+	promptcache.ResetCacheObsForTest()
 	first := obs("p/m", "p", "t", "a")
-	require.Nil(t, swapCacheObs("s", first))
-	require.Same(t, first, swapCacheObs("s", obs("p/m", "p", "t", "a", "b")))
-	for i := 0; i < cacheObsMaxSessions+40; i++ {
-		swapCacheObs("k"+strconv.Itoa(i), obs("p/m", "p", "t"))
+	require.Nil(t, promptcache.SwapCacheObs("s", first))
+	require.Same(t, first, promptcache.SwapCacheObs("s", obs("p/m", "p", "t", "a", "b")))
+	for i := 0; i < promptcache.CacheObsMaxSessions+40; i++ {
+		promptcache.SwapCacheObs("k"+strconv.Itoa(i), obs("p/m", "p", "t"))
 	}
-	cacheObs.mu.Lock()
-	n := len(cacheObs.last)
-	cacheObs.mu.Unlock()
-	require.LessOrEqual(t, n, cacheObsMaxSessions+1)
+	require.LessOrEqual(t, promptcache.CacheObsSessions(), promptcache.CacheObsMaxSessions+1)
 }

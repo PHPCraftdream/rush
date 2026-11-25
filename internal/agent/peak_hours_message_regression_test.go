@@ -13,7 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+	usage "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,7 @@ func TestCheckPeakHours_CarriesOperatorMessage(t *testing.T) {
 	var pe *usage.PeakHoursError
 	require.True(t, errors.As(err, &pe), "refusal must be a *usage.PeakHoursError")
 	require.Equal(t, regressionPeakMessage, pe.Message, "the window's message must reach the error")
-	require.Contains(t, PeakHoursGuidance(err), regressionPeakMessage, "guidance must append the operator message")
+	require.Contains(t, usage.PeakHoursGuidance(err), regressionPeakMessage, "guidance must append the operator message")
 }
 
 // Mid-turn source: the live check re-reads config edited on disk while the

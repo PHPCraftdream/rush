@@ -9,7 +9,7 @@ import (
 	"charm.land/fantasy/providers/openai"
 )
 
-func usageIsZero(usage fantasy.Usage) bool {
+func UsageIsZero(usage fantasy.Usage) bool {
 	return usage.InputTokens == 0 &&
 		usage.OutputTokens == 0 &&
 		usage.TotalTokens == 0 &&
@@ -21,8 +21,8 @@ func usageIsZero(usage fantasy.Usage) bool {
 // approx is the root's approxTokenCount seam: injected through the entry
 // points below and threaded into every helper that tokenizes text, evaluated
 // at the same point the old direct call happened.
-func fallbackStepUsage(messages []fantasy.Message, step fantasy.StepResult, approx func(string) int64) (fantasy.Usage, bool) {
-	if !usageIsZero(step.Usage) {
+func FallbackStepUsage(messages []fantasy.Message, step fantasy.StepResult, approx func(string) int64) (fantasy.Usage, bool) {
+	if !UsageIsZero(step.Usage) {
 		return step.Usage, false
 	}
 
@@ -62,7 +62,7 @@ func fallbackStepUsage(messages []fantasy.Message, step fantasy.StepResult, appr
 //     switches below: passed through untouched (never dropped) — fantasy's
 //     closed part set and every option type this repo attaches are covered,
 //     and an unknown implementation could not be copied without reflection.
-func cloneFantasyMessages(messages []fantasy.Message) []fantasy.Message {
+func CloneFantasyMessages(messages []fantasy.Message) []fantasy.Message {
 	cloned := make([]fantasy.Message, len(messages))
 	for i, msg := range messages {
 		cloned[i] = msg
@@ -300,18 +300,4 @@ func estimateSourceTokens(source fantasy.SourceContent, approx func(string) int6
 		approx(source.Title) +
 		approx(source.MediaType) +
 		approx(source.Filename)
-}
-
-// UsageIsZero is the exported seam over usageIsZero.
-func UsageIsZero(u fantasy.Usage) bool { return usageIsZero(u) }
-
-// FallbackStepUsage is the exported seam over fallbackStepUsage; approx is
-// the injected tokenizer (root's approxTokenCount).
-func FallbackStepUsage(messages []fantasy.Message, step fantasy.StepResult, approx func(string) int64) (fantasy.Usage, bool) {
-	return fallbackStepUsage(messages, step, approx)
-}
-
-// CloneFantasyMessages is the exported seam over cloneFantasyMessages.
-func CloneFantasyMessages(messages []fantasy.Message) []fantasy.Message {
-	return cloneFantasyMessages(messages)
 }

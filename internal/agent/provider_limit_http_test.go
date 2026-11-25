@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/codexprovider"
@@ -66,7 +69,7 @@ func TestProviderLimit1282CompatHTTP(t *testing.T) {
 			require.Contains(t, string(pe.ResponseBody), "HTTP/1.1")
 			require.Contains(t, string(pe.ResponseBody), tc.body)
 			require.Equal(t, "1", pe.ResponseHeaders["Retry-After"])
-			require.Equal(t, tc.hard, IsHardQuotaLimit(err))
+			require.Equal(t, tc.hard, clibridge.IsHardQuotaLimit(err))
 			t.Logf("URL=%s body=%q headers=%v", pe.URL, pe.ResponseBody, pe.ResponseHeaders)
 		})
 	}
@@ -108,10 +111,10 @@ func TestProviderLimit1282CodexHTTPAndSSE(t *testing.T) {
 				require.Zero(t, pe.StatusCode)
 				require.False(t, pe.IsRetryable())
 			}
-			require.True(t, IsHardQuotaLimit(err))
+			require.True(t, clibridge.IsHardQuotaLimit(err))
 			require.Equal(t, classTerminal, classifyProviderError(err))
 			now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
-			reset, ok := QuotaLimitResetTime(err, now)
+			reset, ok := usagepolicy.QuotaLimitResetTime(err, now)
 			require.True(t, ok)
 			if mode == "response.failed" {
 				require.Equal(t, time.Unix(1900000000, 0), reset)

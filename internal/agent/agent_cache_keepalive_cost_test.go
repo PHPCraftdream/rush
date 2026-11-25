@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -26,7 +28,7 @@ import (
 // in-flight cancel — a cancelCacheKeepAlive call landing in that gap found
 // neither the pending entry (already deleted) nor the in-flight cancel (not
 // yet registered) and was silently lost, letting the stale replay run to
-// completion unopposed and potentially rearm afterward. cacheKeepAliveFireSeam
+// completion unopposed and potentially rearm afterward. callbeat.CacheKeepAliveFireSeam
 // lands the cancel deterministically inside that exact span (now closed: the
 // in-flight cancel is registered atomically with the pending-entry removal,
 // before the seam fires) and asserts the cancel is actually honored.
@@ -40,11 +42,11 @@ func TestFireCacheKeepAlive_CancelDuringMaxCostCheckIsHonored(t *testing.T) {
 
 	seamHit := make(chan struct{})
 	proceed := make(chan struct{})
-	cacheKeepAliveFireSeam = func() { close(seamHit); <-proceed }
-	t.Cleanup(func() { cacheKeepAliveFireSeam = nil })
+	callbeat.CacheKeepAliveFireSeam = func() { close(seamHit); <-proceed }
+	t.Cleanup(func() { callbeat.CacheKeepAliveFireSeam = nil })
 
 	sessionID := "sess-cancel-race"
-	a.scheduleCacheKeepAlive(sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	select {
 	case <-seamHit:
@@ -58,7 +60,7 @@ func TestFireCacheKeepAlive_CancelDuringMaxCostCheckIsHonored(t *testing.T) {
 	// production goroutine's own scheduling could complete its registration
 	// before this goroutine is even scheduled, closing the window before the
 	// cancel has any chance to land inside it.
-	a.cancelCacheKeepAlive(sessionID)
+	a.CancelCacheKeepAlive(sessionID)
 	close(proceed)
 
 	select {
@@ -70,13 +72,13 @@ func TestFireCacheKeepAlive_CancelDuringMaxCostCheckIsHonored(t *testing.T) {
 	// The in-flight entry is cleared only by fireCacheKeepAlive's deferred
 	// cleanup, which runs once Stream has actually RETURNED — not merely been
 	// entered. This must happen promptly (the ctx was already cancelled)
-	// rather than after the full 30s cacheKeepAliveCallTimeout: a test that
+	// rather than after the full 30s callbeat.CacheKeepAliveCallTimeout: a test that
 	// only checked "Stream was entered" (lm.calls>=1, true the instant Stream
 	// starts regardless of whether its ctx is ever cancelled) would pass even
 	// when the call is still hanging in the background well past this test's
 	// own return — this check instead demands the round trip completed.
 	require.Eventually(t, func() bool {
-		_, stillInFlight := a.cacheKeepAliveInFlight.Get(sessionID)
+		_, stillInFlight := a.CacheKeepAliveInFlight.Get(sessionID)
 		return !stillInFlight
 	}, 2*time.Second, 5*time.Millisecond,
 		"cancelled replay must return promptly, not run out the 30s call timeout")
@@ -84,7 +86,7 @@ func TestFireCacheKeepAlive_CancelDuringMaxCostCheckIsHonored(t *testing.T) {
 	// Give any incorrect rearm a chance to fire, then confirm none did.
 	time.Sleep(100 * time.Millisecond)
 	require.EqualValues(t, 1, lm.calls.Load(), "a cancelled fire must not rearm")
-	_, stillScheduled := a.cacheKeepAlive.Get(sessionID)
+	_, stillScheduled := a.CacheKeepAlive.Get(sessionID)
 	require.False(t, stillScheduled, "a cancelled fire must not leave a pending entry behind")
 }
 
@@ -115,7 +117,7 @@ func TestFireCacheKeepAlive_RecordsReplayCost(t *testing.T) {
 		model.CatwalkCfg.CostPer1MOut/1e6*float64(lm.usage.OutputTokens)
 	require.Greater(t, expectedCost, 0.0, "test setup sanity: expected cost must be nonzero")
 
-	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() >= 1
@@ -154,13 +156,13 @@ func TestFireCacheKeepAlive_SkipsDuringProviderPeakHours(t *testing.T) {
 	model := testKeepAliveModel(Model{Model: lm})
 	sess, err := env.sessions.Create(t.Context(), "keepalive peak-hours test")
 	require.NoError(t, err)
-	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	// The short timer deterministically reaches checkLivePeakHours; an
 	// in-window configured provider must be refused before Stream is called.
 	require.Eventually(t, func() bool {
-		_, pending := a.cacheKeepAlive.Get(sess.ID)
-		_, inFlight := a.cacheKeepAliveInFlight.Get(sess.ID)
+		_, pending := a.CacheKeepAlive.Get(sess.ID)
+		_, inFlight := a.CacheKeepAliveInFlight.Get(sess.ID)
 		return !pending && !inFlight
 	}, 2*time.Second, 5*time.Millisecond, "peak-hours refusal should consume the scheduled replay")
 	require.Zero(t, lm.calls.Load(), "keepalive request must be skipped inside provider peak hours")
@@ -182,13 +184,13 @@ func TestFireCacheKeepAlive_SkipsWhenSessionAtMaxCost(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 5.0)
+	a.ScheduleCacheKeepAlive(a, sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 5.0)
 
 	// Give the shrunk interval plenty of time to fire and settle.
 	time.Sleep(200 * time.Millisecond)
 	require.Zero(t, lm.calls.Load(), "session at max cost must never get a replay Stream call")
 
-	_, stillScheduled := a.cacheKeepAlive.Get(sess.ID)
+	_, stillScheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, stillScheduled, "a cost-capped skip must not reschedule")
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
@@ -219,7 +221,7 @@ func TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost(t *testing
 	model.CatwalkCfg.CostPer1MIn = 1.0
 
 	const maxCost = 5.0
-	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, maxCost)
+	a.ScheduleCacheKeepAlive(a, sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, maxCost)
 
 	select {
 	case <-lm.started:
@@ -238,7 +240,7 @@ func TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost(t *testing
 	// interval it would fire, hit the up-front cap check and delete itself
 	// before the check, hiding a missing post-charge cap guard. The write is
 	// ordered before the replay goroutine's read by close(lm.proceed).
-	cacheKeepAliveInterval = time.Hour
+	callbeat.CacheKeepAliveInterval = time.Hour
 
 	close(lm.proceed)
 
@@ -246,12 +248,12 @@ func TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost(t *testing
 	// recorded even though the concurrent charge pushed the session over cap.
 	// It must still not rearm: the max-cost guard prevents future requests.
 	require.Eventually(t, func() bool {
-		_, stillInFlight := a.cacheKeepAliveInFlight.Get(sess.ID)
+		_, stillInFlight := a.CacheKeepAliveInFlight.Get(sess.ID)
 		return !stillInFlight
 	}, 2*time.Second, 5*time.Millisecond, "replay must complete promptly")
 
 	time.Sleep(100 * time.Millisecond)
-	_, stillScheduled := a.cacheKeepAlive.Get(sess.ID)
+	_, stillScheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, stillScheduled, "a mid-flight max-cost crossing must not rearm")
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
@@ -265,7 +267,7 @@ func TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost(t *testing
 // TestCancelCacheKeepAlive_CancelsInFlightReplay proves an in-flight replay
 // (already past admission, blocked inside Stream) is cut off promptly by
 // cancelCacheKeepAlive instead of running out the full 30s
-// cacheKeepAliveCallTimeout. Run with -race -count=10+.
+// callbeat.CacheKeepAliveCallTimeout. Run with -race -count=10+.
 func TestCancelCacheKeepAlive_CancelsInFlightReplay(t *testing.T) {
 	restoreKeepAliveVars(t, 15*time.Millisecond, 3)
 	a, _ := newKeepAliveAgent(t)
@@ -275,7 +277,7 @@ func TestCancelCacheKeepAlive_CancelsInFlightReplay(t *testing.T) {
 	model := testKeepAliveModel(Model{Model: lm})
 
 	sessionID := "sess-inflight-cancel"
-	a.scheduleCacheKeepAlive(sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	select {
 	case <-lm.started:
@@ -286,16 +288,16 @@ func TestCancelCacheKeepAlive_CancelsInFlightReplay(t *testing.T) {
 	// The replay is now blocked inside Stream, in flight. cancelCacheKeepAlive
 	// must cut it off promptly rather than waiting out the 30s call timeout.
 	start := time.Now()
-	a.cancelCacheKeepAlive(sessionID)
+	a.CancelCacheKeepAlive(sessionID)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() == 1
 	}, 5*time.Second, 5*time.Millisecond)
 	elapsed := time.Since(start)
 	require.Less(t, elapsed, 5*time.Second,
-		"in-flight replay must be cancelled promptly, not run out cacheKeepAliveCallTimeout (30s)")
+		"in-flight replay must be cancelled promptly, not run out callbeat.CacheKeepAliveCallTimeout (30s)")
 
-	_, stillInFlight := a.cacheKeepAliveInFlight.Get(sessionID)
+	_, stillInFlight := a.CacheKeepAliveInFlight.Get(sessionID)
 	require.False(t, stillInFlight, "in-flight entry must be cleared after the call returns")
 }
 
@@ -310,7 +312,7 @@ func TestCancelAll_CancelsInFlightReplay(t *testing.T) {
 	model := testKeepAliveModel(Model{Model: lm})
 
 	sessionID := "sess-inflight-cancelall"
-	a.scheduleCacheKeepAlive(sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	select {
 	case <-lm.started:
@@ -395,7 +397,7 @@ func TestFireCacheKeepAlive_SetsToolChoiceNone(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-toolchoice", model,
+	a.ScheduleCacheKeepAlive(a, "sess-toolchoice", model,
 		[]fantasy.Message{fantasy.NewUserMessage("hi")},
 		[]fantasy.AgentTool{echoTool}, nil, 0)
 
@@ -435,7 +437,7 @@ func TestFireCacheKeepAlive_ToolCallNeverExecutes(t *testing.T) {
 	lm := &toolCallingKeepAliveModel{provider: anthropic.Name, toolName: "dangerous"}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-toolexec", model,
+	a.ScheduleCacheKeepAlive(a, "sess-toolexec", model,
 		[]fantasy.Message{fantasy.NewUserMessage("hi")},
 		[]fantasy.AgentTool{spyTool}, nil, 0)
 
@@ -456,7 +458,7 @@ func TestFireCacheKeepAlive_ToolCallNeverExecutes(t *testing.T) {
 // re-arm race (2026-08-26 review): between fireCacheKeepAlive's `if ctx.Err() != nil`
 // early-out and its rearm critical section, a cancelCacheKeepAlive landing in that
 // window must still stop the rearm. The production fix added a BLOCKING test seam
-// `cacheKeepAliveRearmSeam func()` called exactly in that window (after the
+// `callbeat.CacheKeepAliveRearmSeam func()` called exactly in that window (after the
 // ctx.Err() check, before the lock). This test uses the documented `close(signal);
 // <-proceed` blocking pattern — a fire-and-forget seam produces a vacuous test here.
 //
@@ -483,11 +485,11 @@ func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing
 	rearmHit := make(chan struct{})
 	rearmProceed := make(chan struct{})
 	var closeOnce sync.Once
-	cacheKeepAliveRearmSeam = func() { closeOnce.Do(func() { close(rearmHit) }); <-rearmProceed }
-	t.Cleanup(func() { cacheKeepAliveRearmSeam = nil })
+	callbeat.CacheKeepAliveRearmSeam = func() { closeOnce.Do(func() { close(rearmHit) }); <-rearmProceed }
+	t.Cleanup(func() { callbeat.CacheKeepAliveRearmSeam = nil })
 
 	sessionID := "sess-k1-rearm-race"
-	a.scheduleCacheKeepAlive(sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sessionID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	select {
 	case <-rearmHit:
@@ -499,13 +501,13 @@ func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing
 	// already passed with ctx not yet cancelled), land the cancel — this takes
 	// the in-flight registration (the K-1 tombstone) and cancels the ctx,
 	// exactly the interleaving the old code could not see.
-	a.cancelCacheKeepAlive(sessionID)
+	a.CancelCacheKeepAlive(sessionID)
 	close(rearmProceed)
 
 	// Assert the fire finished: the deferred release must have cleared the
 	// in-flight entry.
 	require.Eventually(t, func() bool {
-		_, stillInFlight := a.cacheKeepAliveInFlight.Get(sessionID)
+		_, stillInFlight := a.CacheKeepAliveInFlight.Get(sessionID)
 		return !stillInFlight
 	}, 2*time.Second, 5*time.Millisecond,
 		"fire's deferred release must have cleared the in-flight entry")
@@ -516,7 +518,7 @@ func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing
 	require.EqualValues(t, 1, lm.calls.Load(),
 		"a cancel landing between the ctx.Err() check and the rearm critical section must stop the rearm")
 
-	_, scheduled := a.cacheKeepAlive.Get(sessionID)
+	_, scheduled := a.CacheKeepAlive.Get(sessionID)
 	require.False(t, scheduled,
 		"the stale fire must not leave a re-armed pending entry behind")
 }
@@ -547,7 +549,7 @@ func TestFireCacheKeepAlive_ChargeRecordedWhenDeltaCrossesMaxCost(t *testing.T) 
 
 	const maxCost = 0.10 // up-front check passes (0.09 < 0.10); the paid response still gets charged across the cap
 
-	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, maxCost)
+	a.ScheduleCacheKeepAlive(a, sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, maxCost)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() >= 1
@@ -563,7 +565,7 @@ func TestFireCacheKeepAlive_ChargeRecordedWhenDeltaCrossesMaxCost(t *testing.T) 
 	require.EqualValues(t, 1, lm.calls.Load(),
 		"the cap is checked after accounting, so a crossing charge must stop rearming")
 
-	_, scheduled := a.cacheKeepAlive.Get(sess.ID)
+	_, scheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, scheduled)
 }
 
@@ -596,7 +598,7 @@ func TestFireCacheKeepAlive_ChargeFailureStopsRearm(t *testing.T) {
 
 	// maxCost=0 (unlimited) so the charge goes through IncrementCost, which will
 	// error on the closed DB.
-	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() >= 1
@@ -607,7 +609,7 @@ func TestFireCacheKeepAlive_ChargeFailureStopsRearm(t *testing.T) {
 	require.EqualValues(t, 1, lm.calls.Load(),
 		"a failed charge must stop rearming — no repeated unbilled replays under DB trouble (K-3)")
 
-	_, scheduled := a.cacheKeepAlive.Get(sess.ID)
+	_, scheduled := a.CacheKeepAlive.Get(sess.ID)
 	require.False(t, scheduled,
 		"a failed charge must not leave a re-armed entry behind")
 }

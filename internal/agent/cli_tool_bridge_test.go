@@ -14,6 +14,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -29,7 +30,7 @@ func TestCLIToolBridgePinnedMappingAndMissing(t *testing.T) {
 	built := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{&dispatchProbeTool{name: "view"}, &dispatchProbeTool{name: "mcp_server_tool"}})
 	external := cliprovider.BridgeTool{WireName: "server__tool", CanonicalName: "mcp_server_tool", InputSchema: json.RawMessage(`{"type":"object"}`)}
 	var got fantasy.ToolCall
-	bridge, err := clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, built.Leaves, func(_ context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, func(_ context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		require.Equal(t, call.Name, leaf.Info().Name, "Pinned target not raw factory")
 		got = call
 		return fantasy.NewTextResponse("before\n<!-- crush-claude-init:v9 -->delegate rush<!-- /crush-claude-init -->\nafter"), nil
@@ -48,9 +49,9 @@ func TestCLIToolBridgePinnedMappingAndMissing(t *testing.T) {
 		_, err = bridge.Call(t.Context(), fantasy.ToolCall{Name: name, Input: `{}`})
 		require.Error(t, err, "Missing targets have no substitute")
 	}
-	_, err = clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, built.Leaves, nil, nil)
+	_, err = clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, nil, nil)
 	require.Error(t, err)
-	_, err = clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, built.Leaves, testPinnedInvoke, []cliprovider.BridgeTool{{WireName: "external__read", CanonicalName: "view"}})
+	_, err = clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, testPinnedInvoke, []cliprovider.BridgeTool{{WireName: "external__read", CanonicalName: "view"}})
 	require.Error(t, err, "Ambiguous canonical mapping rejected")
 	snapshot := bridge.Tools()
 	snapshot[0].InputSchema[0] = 'x'
@@ -68,7 +69,7 @@ func TestCLIToolBridgeHooksRewriteDenyOnce(t *testing.T) {
 			}
 			probe := &dispatchProbeTool{name: "bash"}
 			built := toolwrap.NewPolicyToolBuild(toolwrap.DecoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, fmt.Sprintf("printf x >> '%s'; %s", counter, command)), false))
-			bridge, err := clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, built.Leaves, testPinnedInvoke, nil)
+			bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, testPinnedInvoke, nil)
 			require.NoError(t, err)
 			resp, err := bridge.Call(t.Context(), fantasy.ToolCall{ID: "unchanged", Name: "bash", Input: `{"command":"echo denied"}`})
 			require.NoError(t, err)
@@ -106,7 +107,7 @@ func TestCLIToolBridgePermissionGuardIdentityOnce(t *testing.T) {
 		_, err := perms.Request(ctx, permission.CreatePermissionRequest{ToolCallID: call.ID, ToolName: call.Name, SessionID: tools.GetSessionFromContext(ctx)})
 		return fantasy.NewTextErrorResponse("denied"), err
 	})
-	bridge, err := clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, testPinnedInvoke, nil)
+	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, testPinnedInvoke, nil)
 	require.NoError(t, err)
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "owner-session")
 	_, err = bridge.Call(ctx, fantasy.ToolCall{ID: "permission-ref", Name: "bash", Input: `{"command":"echo x"}`})
@@ -128,7 +129,7 @@ func TestCLIToolBridgeTransportNoFallback(t *testing.T) {
 		runs++
 		return fantasy.NewTextResponse("raw fallback"), nil
 	})
-	bridge, err := clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, func(context.Context, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, func(context.Context, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		return fantasy.ToolResponse{}, fmt.Errorf("transport unavailable")
 	}, nil)
 	require.NoError(t, err)
@@ -153,7 +154,7 @@ func TestCLIToolBridgeRestrictedPinnedGenerations(t *testing.T) {
 		built := toolwrap.NewPolicyToolBuild(toolwrap.DecoratePolicyTools([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer), nil, true))
 		generation := fmt.Sprint(allowed)
 		ctx := context.WithValue(context.WithValue(t.Context(), tools.SessionIDContextKey, "session"), privateFetchIngressKey{}, generation)
-		bridge, err := clibridge.NewCLIToolBridge(newCLIToolBridgeForContext, built.Leaves, func(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, func(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			require.Equal(t, generation, ctx.Value(privateFetchIngressKey{}), "Pinned generation retained")
 			expected, err := built.Leaves.Resolve("view")
 			require.NoError(t, err)

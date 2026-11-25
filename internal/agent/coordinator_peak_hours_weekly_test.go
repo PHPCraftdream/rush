@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+	usage "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -197,7 +198,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 			ReopensAt:  time.Date(2026, 11, 9, 18, 0, 0, 0, time.UTC),
 			Timezone:   "Asia/Shanghai",
 		}
-		out := PeakHoursGuidance(err)
+		out := usage.PeakHoursGuidance(err)
 		assert.Contains(t, out, "(timezone: Asia/Shanghai)")
 		assert.Contains(t, out, "--allow-peak-hours",
 			"the bypass warning must still be present")
@@ -213,7 +214,7 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 			End:        "18:00",
 			ReopensAt:  time.Date(2026, 11, 9, 18, 0, 0, 0, time.UTC),
 		}
-		out := PeakHoursGuidance(err)
+		out := usage.PeakHoursGuidance(err)
 		assert.NotContains(t, out, "timezone:",
 			"legacy-shape guidance must stay byte-identical: no timezone suffix at all")
 		assert.Contains(t, out, "--allow-peak-hours")
@@ -228,21 +229,21 @@ func TestPeakHoursGuidanceWeekly(t *testing.T) {
 			ReopensAt:  time.Date(2026, 11, 9, 18, 0, 0, 0, time.UTC),
 		}
 		wrapped := fmt.Errorf("outer: %w", base)
-		out := PeakHoursGuidance(wrapped)
+		out := usage.PeakHoursGuidance(wrapped)
 		assert.Contains(t, out, "2026-11-09 18:00", "errors.As must recover the exact reopen time")
 	})
 
 	t.Run("zero ReopensAt omits the timed resume", func(t *testing.T) {
 		t.Parallel()
 		err := &usage.PeakHoursError{ProviderID: "prov-x", Start: "00:00", End: "24:00"}
-		out := PeakHoursGuidance(err)
+		out := usage.PeakHoursGuidance(err)
 		assert.Contains(t, out, "do not schedule a timed resume")
 		assert.NotContains(t, out, "0001", "the zero time must never be rendered")
 	})
 
 	t.Run("nil error still yields generic guidance", func(t *testing.T) {
 		t.Parallel()
-		out := PeakHoursGuidance(nil)
+		out := usage.PeakHoursGuidance(nil)
 		assert.Contains(t, out, "--allow-peak-hours")
 		assert.NotContains(t, out, "timezone:")
 	})

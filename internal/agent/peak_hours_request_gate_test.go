@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -30,11 +31,7 @@ func TestPeakRequestGateRejectsEveryNewModelCallBeforeUpstream(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inner := &hbFakeModel{provider: "peak-probe", model: "fixture"}
-			provider := &peakHoursRequestProvider{Provider: &hbFakeProvider{m: inner}, check: func(context.Context) error {
-				return errProviderPeakHours
-			}}
-			model, err := provider.LanguageModel(t.Context(), "fixture")
-			require.NoError(t, err)
+			model := usagepolicy.NewPeakHoursRequestModel(inner, func(context.Context) error { return errProviderPeakHours })
 			require.ErrorIs(t, tc.run(model), errProviderPeakHours)
 			require.Zero(t, inner.genCalls.Load())
 			require.Zero(t, inner.streamCalls.Load())
@@ -51,14 +48,12 @@ func TestPeakRequestGateDoesNotCancelAnAlreadyStartedStream(t *testing.T) {
 		{Type: fantasy.StreamPartTypeTextDelta, Delta: "before"},
 		{Type: fantasy.StreamPartTypeTextDelta, Delta: "after"},
 	}}
-	provider := &peakHoursRequestProvider{Provider: &hbFakeProvider{m: inner}, check: func(context.Context) error {
+	model := usagepolicy.NewPeakHoursRequestModel(inner, func(context.Context) error {
 		if blocked.Load() {
 			return errProviderPeakHours
 		}
 		return nil
-	}}
-	model, err := provider.LanguageModel(ctx, "fixture")
-	require.NoError(t, err)
+	})
 	stream, err := model.Stream(ctx, fantasy.Call{})
 	require.NoError(t, err)
 	var text string
@@ -94,7 +89,7 @@ func TestPeakRequestGatePreservesExplicitAndLegacyBypassPrecedence(t *testing.T)
 	allowed := WithCallOptions(t.Context(), &CallOptions{AllowPeakHours: true})
 	_, err = model.Generate(allowed, fantasy.Call{})
 	require.NoError(t, err)
-	legacy := context.WithValue(t.Context(), legacyPeakHoursBypassKey{}, true)
+	legacy := context.WithValue(t.Context(), usagepolicy.LegacyPeakHoursBypassKey{}, true)
 	_, err = model.Generate(legacy, fantasy.Call{})
 	require.NoError(t, err)
 	denied := WithCallOptions(legacy, &CallOptions{AllowPeakHours: false})

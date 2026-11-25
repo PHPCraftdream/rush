@@ -10,6 +10,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -63,7 +64,7 @@ func RunAgentTurnRecovered(
 	result, err := runFn(ctx, sessionID, prompt)
 	if err != nil {
 		done <- AgentTurnResponse{
-			Err: fmt.Errorf("failed to start agent processing stream: %w", agent.LocalizeResetError(err)),
+			Err: fmt.Errorf("failed to start agent processing stream: %w", usage.LocalizeResetError(err)),
 		}
 		return
 	}
@@ -145,7 +146,7 @@ func DrainOutcomeError(sessID string, result runq.DrainResult, drainErr, origina
 			slog.Error("run: DrainSessionNow reported a partial/failed drain with a nil error -- contract violation, treating as failure", "session_id", sessID, "result", result.String())
 			return fmt.Errorf("%w (session=%s)", runq.ErrDrainFailureUnspecified, sessID)
 		}
-		return agent.LocalizeResetError(drainErr)
+		return usage.LocalizeResetError(drainErr)
 	case runq.DrainNoWork:
 		// Nothing ran here. This case covers BOTH the shapes task
 		// #624/F-5 distinguishes: a call that never observed a same-pump

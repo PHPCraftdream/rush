@@ -756,7 +756,7 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 		// identical to the DB finish-message details recorded by peakHoursStoppedFinishText (sessions why / diff, etc.).
 		var peakErr *usage.PeakHoursError
 		if errors.As(runErr, &peakErr) {
-			fmt.Fprintf(s.stderr, "\n%s\n\n", agent.PeakHoursGuidance(peakErr))
+			fmt.Fprintf(s.stderr, "\n%s\n\n", usage.PeakHoursGuidance(peakErr))
 		}
 		if isCanceled {
 			slog.Debug("Non-interactive: agent processing cancelled", "session_id", s.sess.ID)

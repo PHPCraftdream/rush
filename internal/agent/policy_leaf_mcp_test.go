@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -172,7 +173,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 	built, err := coord.buildPolicyTools(ctx, cfg, base, false)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"view", kept}, pinnedToolNames(built.Tools))
-	bridge, err := newCLIToolBridgeForContext(ctx, built.Leaves, testPinnedInvoke, definitions)
+	bridge, err := childagent.NewCLIBridge(ctx, built.Leaves, testPinnedInvoke, definitions)
 	require.NoError(t, err)
 	var advertised []string
 	for _, tool := range bridge.Tools() {
@@ -233,7 +234,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 	scoped, err := coord.buildPolicyTools(scopedCtx, cfg, base, false)
 	require.NoError(t, err)
 	require.Empty(t, scoped.Tools, "folder-scope substitutions and MCP removal cannot widen a durable role cap")
-	scopedBridge, err := newCLIToolBridgeForContext(scopedCtx, scoped.Leaves, testPinnedInvoke, definitions)
+	scopedBridge, err := childagent.NewCLIBridge(scopedCtx, scoped.Leaves, testPinnedInvoke, definitions)
 	require.NoError(t, err)
 	require.Empty(t, scopedBridge.Tools())
 	_, err = scopedBridge.Call(scopedCtx, fantasy.ToolCall{Name: kept, Input: `{}`})
@@ -267,7 +268,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 			built, err := coord.buildPolicyTools(caseCtx, cfg, base, false)
 			require.NoError(t, err)
 			require.ElementsMatch(t, test.want, pinnedToolNames(built.Tools))
-			bridge, err := newCLIToolBridgeForContext(caseCtx, built.Leaves, testPinnedInvoke, definitions)
+			bridge, err := childagent.NewCLIBridge(caseCtx, built.Leaves, testPinnedInvoke, definitions)
 			require.NoError(t, err)
 			var names []string
 			for _, tool := range bridge.Tools() {
@@ -287,7 +288,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 		built, err := coord.buildPolicyTools(caseCtx, cfg, limited, false)
 		require.NoError(t, err)
 		require.Equal(t, []string{"view"}, pinnedToolNames(built.Tools))
-		bridge, err := newCLIToolBridgeForContext(caseCtx, built.Leaves, testPinnedInvoke, definitions)
+		bridge, err := childagent.NewCLIBridge(caseCtx, built.Leaves, testPinnedInvoke, definitions)
 		require.NoError(t, err)
 		require.Len(t, bridge.Tools(), 1)
 		require.Equal(t, "view", bridge.Tools()[0].CanonicalName)

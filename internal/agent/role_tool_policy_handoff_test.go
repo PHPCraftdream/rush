@@ -11,6 +11,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -108,10 +109,7 @@ func TestRunTurnAttachesRoleToolPolicyToEveryConstrainedTurn(t *testing.T) {
 				require.NoError(t, tc.contract.Validate())
 			}
 			model := &rolePolicyCaptureModel{provider: "capture", model: "capture-model"}
-			wrappedModel := &peakHoursRequestModel{
-				LanguageModel: callbeat.WrapLanguageModelForTest(model),
-				check:         func(context.Context) error { return nil },
-			}
+			wrappedModel := usagepolicy.NewPeakHoursRequestModel(callbeat.WrapLanguageModelForTest(model), func(context.Context) error { return nil })
 			modelCfg := config.SelectedModel{Provider: tc.providerID, Model: "chosen-model", ReasoningEffort: "max"}
 			modelRef := Model{Model: wrappedModel, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}, ModelCfg: modelCfg}
 			tool := func(name string) fantasy.AgentTool {

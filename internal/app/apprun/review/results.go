@@ -403,7 +403,7 @@ func BuildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// Peak-hours refusal (pre-flight or mid-turn stop): the envelope must
 	// carry the same guidance as stderr/DB, incl. the operator's message.
 	if peakErr != nil {
-		if guidance := agent.PeakHoursGuidance(peakErr); !strings.Contains(errMsg, guidance) {
+		if guidance := usage.PeakHoursGuidance(peakErr); !strings.Contains(errMsg, guidance) {
 			if errMsg != "" {
 				errMsg += "\n\n"
 			}

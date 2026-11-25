@@ -8,6 +8,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
@@ -246,10 +247,10 @@ func invokeBatchWithCallContext(ctx context.Context, ingress BatchWorkIngress, t
 	return ingress.Invoke(ctx, inv, leaf, call)
 }
 
-// batchPinnedInvoke closes the R7d pinnedInvoke over the ingress and a
+// batchPinnedInvoke closes the R7d childagent.PinnedInvoke over the ingress and a
 // BatchInvocation template. Delegation target for the CLI bridge and the
 // agentic_fetch private tools.
-func batchPinnedInvoke(ingress BatchWorkIngress, tpl BatchInvocation) pinnedInvoke {
+func batchPinnedInvoke(ingress BatchWorkIngress, tpl BatchInvocation) childagent.PinnedInvoke {
 	return installwire.PinnedInvoke(ingress, tpl, invokeBatchWithCallContext)
 }
 

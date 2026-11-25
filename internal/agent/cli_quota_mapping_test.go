@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/clibridge"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/stretchr/testify/require"
@@ -49,12 +52,12 @@ func TestSyntheticCLIQuotaPolicy(t *testing.T) {
 			_, err = model.Generate(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("synthetic test")}})
 			require.Error(t, err)
 			require.Equal(t, classTerminal, classifyProviderError(err))
-			require.Equal(t, tc.hard, IsHardQuotaLimit(err))
+			require.Equal(t, tc.hard, clibridge.IsHardQuotaLimit(err))
 			require.False(t, isRateLimitError(err), "generic rate text remains generic terminal, not retryable")
 			var exit *exec.ExitError
 			require.True(t, errors.As(err, &exit))
 			if tc.name == "usage reset" {
-				reset, ok := QuotaLimitResetTime(err, time.Now())
+				reset, ok := usagepolicy.QuotaLimitResetTime(err, time.Now())
 				require.True(t, ok)
 				cst := time.FixedZone("CST", 8*60*60)
 				expected := time.Date(2026, time.June, 17, 14, 49, 28, 0, cst)
