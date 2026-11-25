@@ -560,8 +560,9 @@ func pdaEquivCases() []pdaEquivCase {
 				defer rows.Close()
 				for rows.Next() {
 					var kind, summary string
-					require.NoError(t, rows.Scan(&kind, &summary))
-					*out = append(*out, kind+"="+summary)
+					var childSessionID sql.NullString
+					require.NoError(t, rows.Scan(&kind, &summary, &childSessionID))
+					*out = append(*out, kind+"="+summary+"="+childSessionID.String)
 				}
 				require.NoError(t, rows.Err())
 			},
