@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -65,7 +67,7 @@ func TestPolicyLeafConstructionBaseline(t *testing.T) {
 			}
 			require.Equal(t, wantNames, names, "pinned filtered order")
 
-			a := NewSessionAgent(SessionAgentOptions{Tools: built, RestrictedRuns: restrictedRunAuthorizer(env.permissions)}).(*sessionAgent)
+			a := NewSessionAgent(SessionAgentOptions{Tools: built, RestrictedRuns: toolwrap.RestrictedRunAuthorizer(env.permissions)}).(*sessionAgent)
 			for i, tool := range a.tools.Copy() {
 				require.Equal(t, append([]string{"logging"}, policyLeafBaselineStack(built[i])...), policyLeafBaselineStack(tool), "constructor stack")
 			}

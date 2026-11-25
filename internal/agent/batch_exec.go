@@ -169,9 +169,9 @@ func prepareBatchLeaf(ctx context.Context, env batchLeafEnv, raw json.RawMessage
 	}
 	dispatchCtx := ctx
 	if p.Policy != nil && p.Policy.RoleContract != nil {
-		dispatchCtx = withRoleToolContract(dispatchCtx, p.Policy.RoleContract)
+		dispatchCtx = toolwrap.WithRoleToolContract(dispatchCtx, p.Policy.RoleContract)
 	}
-	if !roleToolAllowed(dispatchCtx, p.Tool) {
+	if !toolwrap.RoleToolAllowed(dispatchCtx, p.Tool) {
 		return p, nil, batchdispatch.NewStartError(batchdispatch.CodeNoLeaf, toolwrap.GuardRoleContractError(p.Tool))
 	}
 	// A required provider dependency is never accepted with only the

@@ -30,7 +30,7 @@ type fakeBatchIngress struct {
 	invokes  int
 	origin   string
 	inv      BatchInvocation
-	reg      *policyLeafRegistry
+	reg      *toolwrap.PolicyLeafRegistry
 	leafRuns map[string]int
 	regs     map[string]*toolwrap.PolicyLeafRegistry
 }
@@ -304,7 +304,7 @@ func TestNoRawAgentFamilyFactory(t *testing.T) {
 func TestAgentDriverRunsPinnedLeaf(t *testing.T) {
 	fake := &fakeBatchIngress{leafRuns: map[string]int{}}
 	list := batchTestTools("agent")
-	built := newPolicyToolBuild(list)
+	built := toolwrap.NewPolicyToolBuild(list)
 	if _, err := fake.PinLeafRegistry(built.Leaves); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestAgentDriverFailsClosedWithoutBinding(t *testing.T) {
 func TestMCPKindRoutingAndBridgeFallback(t *testing.T) {
 	fake := &fakeBatchIngress{}
 	list := batchTestTools("view", "bash", "mcp_files__read")
-	built := newPolicyToolBuild(list)
+	built := toolwrap.NewPolicyToolBuild(list)
 	bind := &batchCoordinatorBinding{ingress: fake}
 	if _, err := bind.pin(built.Leaves); err != nil {
 		t.Fatalf("pin: %v", err)

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openrouter"
@@ -761,7 +763,7 @@ func (p *modelsComponent) pinCallTools(ctx context.Context, cfg *config.Config) 
 	if pinCallToolsReadyGateSeam != nil {
 		pinCallToolsReadyGateSeam(buildGate)
 	}
-	if required && len(tools) == 0 && !roleToolsConstrained(ctx) {
+	if required && len(tools) == 0 && !toolwrap.RoleToolsConstrained(ctx) {
 		_ = buildGate.Wait()
 		return fail(errors.New("per-call toolset is empty"))
 	}

@@ -24,11 +24,11 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	resp, err := zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-forged", Name: "forged", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
-	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
+	require.Contains(t, resp.Content, toolwrap.ErrRoleToolDenied.Error())
 	resp, err = zeroGuard.Run(context.Background(), fantasy.ToolCall{ID: "zero-canonical", Name: "probe", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError, "an explicit empty list denies the canonical tool too")
-	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
+	require.Contains(t, resp.Content, toolwrap.ErrRoleToolDenied.Error())
 	require.Zero(t, runs, "a denied forged or zero-tools dispatch must not reach the inner tool")
 
 	capturedTools := []string{"probe"}
@@ -37,7 +37,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	resp, err = capturedGuard.Run(context.Background(), fantasy.ToolCall{ID: "captured", Name: "write", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
-	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
+	require.Contains(t, resp.Content, toolwrap.ErrRoleToolDenied.Error())
 	require.Zero(t, runs, "a captured cap still denies after invocation context is lost")
 
 	currentOptions := &CallOptions{RoleContract: captured}
@@ -50,7 +50,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	resp, err = currentGuard.Run(currentCtx, fantasy.ToolCall{ID: "current", Name: "write", Input: `{}`})
 	require.NoError(t, err)
 	require.True(t, resp.IsError)
-	require.Contains(t, resp.Content, ErrRoleToolDenied.Error())
+	require.Contains(t, resp.Content, toolwrap.ErrRoleToolDenied.Error())
 	require.Zero(t, runs, "the current call ceiling denies a mutable shared-set tool")
 
 	shared := []fantasy.AgentTool{newProbe("probe"), newProbe("write")}
@@ -58,7 +58,7 @@ func TestRoleToolGuardEnforcesCapturedAndCurrentCeilings(t *testing.T) {
 	sharedScope := EnsureCallBuildScope(sharedOptions)
 	defer sharedScope.Close()
 	sharedCtx := WithCallOptions(context.Background(), sharedOptions)
-	pruned := filterRoleContractTools(sharedCtx, shared)
+	pruned := toolwrap.FilterRoleContractTools(sharedCtx, shared)
 	require.Len(t, pruned, 1)
 	require.Equal(t, "probe", pruned[0].Info().Name)
 	require.Len(t, shared, 2, "filtering a shared wider tool generation must not mutate its source")

@@ -54,7 +54,7 @@ func (e errorStringFixture) Error() string { return string(e) }
 // NewPolicyToolBuild/CloneLeaves path instead of a removed exported fixture
 // constructor. Placeholders are named after the pinned keys so the clone
 // transform can key each entry back to its fixture leaf unchanged.
-func newTestPolicyLeafRegistry(leaves map[string]testPolicyLeaf) *policyLeafRegistry {
+func newTestPolicyLeafRegistry(leaves map[string]testPolicyLeaf) *toolwrap.PolicyLeafRegistry {
 	names := make([]string, 0, len(leaves))
 	for name := range leaves {
 		names = append(names, name)

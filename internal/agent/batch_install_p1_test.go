@@ -106,7 +106,7 @@ func newBatchP1Env(t *testing.T, leaf fantasy.AgentTool, extraLeaves ...fantasy.
 	if _, err := q.CreateSession(ctx, db.CreateSessionParams{ID: sessionID, Title: sessionID}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	built := newPolicyToolBuild(append([]fantasy.AgentTool{leaf}, extraLeaves...))
+	built := toolwrap.NewPolicyToolBuild(append([]fantasy.AgentTool{leaf}, extraLeaves...))
 	registries := NewBatchLeafRegistryStore()
 	registryID := uuid.NewString()
 	if err := registries.Register(registryID, built.Leaves); err != nil {
@@ -397,8 +397,8 @@ func TestBatchAgentRouterDispatchesByRecordedTool(t *testing.T) {
 func TestCoordinatorBridgeBindsToStampedInvocation(t *testing.T) {
 	leafA := &countingTool{name: "view"}
 	leafB := &countingTool{name: "view"}
-	regA := newPolicyToolBuild([]fantasy.AgentTool{leafA}).Leaves
-	regB := newPolicyToolBuild([]fantasy.AgentTool{leafB}).Leaves
+	regA := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leafA}).Leaves
+	regB := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leafB}).Leaves
 	registries := NewBatchLeafRegistryStore()
 	if err := registries.Register("reg-A", regA); err != nil {
 		t.Fatalf("register A: %v", err)
@@ -533,7 +533,7 @@ func TestBatchExecutorRunContextUsesPinnedPolicy(t *testing.T) {
 		countingTool: countingTool{name: "recorder"},
 		seen:         make(chan context.Context, 1),
 	}
-	reg := newPolicyToolBuild([]fantasy.AgentTool{probe})
+	reg := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{probe})
 	registries := NewBatchLeafRegistryStore()
 	if err := registries.Register("reg-policy", reg.Leaves); err != nil {
 		t.Fatalf("register: %v", err)

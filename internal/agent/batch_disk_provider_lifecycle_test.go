@@ -7,7 +7,7 @@ package agent
 // session.BatchStore attach/done seams, and drives invocations through
 // batchRuntime.Invoke (singleflight → attach probe → submit → delivery).
 // The pinned policy leaf is a capture leaf registered in a real
-// policyLeafRegistry under a real BatchLeafRegistryStore identity; the leaf
+// toolwrap.PolicyLeafRegistry under a real BatchLeafRegistryStore identity; the leaf
 // writes through the CallOptions DiskProvider resolved by the REAL executor
 // owner path (batch_exec.go Start: the Execution owner key acquired against
 // the App capability manager, hasToolset against the pinned construction,
@@ -200,7 +200,7 @@ func lifecycleBaseName(name string) string {
 }
 
 // lifecycleCaptureLeaf is the pinned policy leaf registered in the test's
-// policyLeafRegistry. On Run it reads CallOptions from the executor-built
+// toolwrap.PolicyLeafRegistry. On Run it reads CallOptions from the executor-built
 // run context (callOptionsFrom), then writes through
 // CallOptions.DiskProvider — the provider the REAL executor acquired under
 // the invocation's binding lease. When armed, Run blocks on the test gate
@@ -285,7 +285,7 @@ func (l *lifecycleCaptureLeaf) Run(ctx context.Context, call fantasy.ToolCall) (
 // lifecycleInstall is one real install harness: real Runner (Executor nil →
 // real default batchExecutor), real store/attach/done seams, a custom fake
 // provider registered in the install's own DiskProviderRegistry, and the
-// capture leaf pinned in a real policyLeafRegistry identity.
+// capture leaf pinned in a real toolwrap.PolicyLeafRegistry identity.
 type lifecycleInstall struct {
 	t           *testing.T
 	store       *session.BatchStore

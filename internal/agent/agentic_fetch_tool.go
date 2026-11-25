@@ -195,7 +195,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				scope = newBuildResourceScope()
 				defer scope.Close()
 			}
-			fetchBuild := buildPrivateFetchTools(childCtx, fetchTools, restrictedRunAuthorizer(c.permissions), scope)
+			fetchBuild := buildPrivateFetchTools(childCtx, fetchTools, toolwrap.RestrictedRunAuthorizer(c.permissions), scope)
 
 			// Sub-agent tools run without hook interception. The top-level
 			// `agentic_fetch` call itself is already wrapped from the coder's
@@ -223,7 +223,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				Messages:       c.messages,
 				Config:         c.cfg,
 				Tools:          fetchBuild.Tools,
-				RestrictedRuns: restrictedRunAuthorizer(c.permissions),
+				RestrictedRuns: toolwrap.RestrictedRunAuthorizer(c.permissions),
 			})
 
 			return c.runSubAgent(childCtx, subAgentParams{

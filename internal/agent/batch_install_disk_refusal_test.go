@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
@@ -268,7 +270,7 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 				require.NotNil(t, bridge)
 				resp, err = bridge.Call(stamped, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{"path":"x"}`})
 			case "agentic_fetch":
-				built := armPrivateFetchIngress(ctx, newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), installwire.ProcessBinding(processBatchBinding).ingress, newBuildResourceScope())
+				built := armPrivateFetchIngress(ctx, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{env.leaf}), installwire.ProcessBinding(processBatchBinding).ingress, newBuildResourceScope())
 				resp, err = built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			}
 			require.NoError(t, err)

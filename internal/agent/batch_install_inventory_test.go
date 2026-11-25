@@ -42,7 +42,7 @@ type inventoryCounters struct {
 	perms atomic.Int64
 }
 
-// inventoryHookLeaf mirrors the hookedTool LAYER of decoratePolicyTools
+// inventoryHookLeaf mirrors the hookedTool LAYER of toolwrap.DecoratePolicyTools
 // (hooks outermost, restriction inside) with a counting hook body. The
 // production hooks.Runner is a concrete type with no seam, so the counting
 // fake reproduces the layering contract instead of wrapping it.
@@ -118,7 +118,7 @@ func newBatchInventoryEnvWithExecutor(t *testing.T, tool string, executor jobbat
 	}
 	counters := &inventoryCounters{}
 	leaf := inventoryWrappedLeaf(tool, counters)
-	built := newPolicyToolBuild([]fantasy.AgentTool{leaf})
+	built := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf})
 	registries := NewBatchLeafRegistryStore()
 	registryID := uuid.NewString()
 	if err := registries.Register(registryID, built.Leaves); err != nil {

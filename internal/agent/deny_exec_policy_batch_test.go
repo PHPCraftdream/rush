@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -74,8 +76,8 @@ func TestBatchDenyExecPolicyHelper(t *testing.T) {
 	wd := t.TempDir()
 	bash := tools.NewBashTool(perms, wd, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shellbg.NewBackgroundShellManager())
 	argv := tools.NewRunCommandTool(perms, wd)
-	registry := newPolicyToolBuild([]fantasy.AgentTool{bash, argv}).Leaves
-	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}
+	registry := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{bash, argv}).Leaves
+	env := batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) { return registry, nil }}
 	for _, tc := range []struct {
 		family, tool        string
 		denied, allowed     []byte

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
@@ -97,7 +99,7 @@ func newRound2DriverScopeInstall(t *testing.T) *round2DriverScopeInstall {
 	fingerprint := installwire.ToolsetFingerprint([]fantasy.AgentTool{stub})
 	registryID := "r2reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()
-	require.NoError(t, registries.Register(registryID, newPolicyToolBuild([]fantasy.AgentTool{stub}).Leaves))
+	require.NoError(t, registries.Register(registryID, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{stub}).Leaves))
 	stub.caps = bindings
 	probeConstructionRegistryID = registryID
 	pinTestConstruction(t, bindings, registryID)

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
@@ -137,7 +139,7 @@ func TestBatchIngressInvalidCanonicalInputFailsClosed(t *testing.T) {
 // the single-authority contracts.
 func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	t.Parallel()
-	reg := newPolicyToolBuild([]fantasy.AgentTool{newTestLeaf("bash")}).Leaves
+	reg := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{newTestLeaf("bash")}).Leaves
 	inv := BatchInvocation{SessionID: "sess-1", CallID: "call-model", RegistryID: "reg-1"}
 
 	// Ambiguous: item timeout AND nested input timeout.
