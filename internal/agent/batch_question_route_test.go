@@ -23,14 +23,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -515,7 +514,7 @@ func TestBatchAskWrapperNoRouteWithoutBindingNeverReachesRawAsk(t *testing.T) {
 
 // TestArmBatchQuestionTurnContextReArmsCapability: runTurn's re-arming of
 // the frozen delegation state onto every turn context. Catches a regression
-// where armBatchQuestionTurnContext stopped stamping the route marker,
+// where batchmeta.ArmBatchQuestionTurnContext stopped stamping the route marker,
 // depth or binding from call.BatchQuestion — wake turns arriving on a
 // capability-less background context: a wake Drain would then run as a
 // non-batch session (raw ask reachable) or as a route-less child (answers
@@ -525,7 +524,7 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 	t.Run("nil_state_untouched", func(t *testing.T) {
 		// A non-batch call: nothing is stamped, legacy contracts stand.
 		base := context.WithValue(context.Background(), struct{ k string }{}, "marker")
-		ctx := armBatchQuestionTurnContext(base, SessionAgentCall{})
+		ctx := batchmeta.ArmBatchQuestionTurnContext(base, SessionAgentCall{}, state.WithQuestionContext, withBatchAgentQuestionBinding)
 		_, routeOK := batchmeta.BatchQuestionRouteFrom(ctx)
 		require.False(t, routeOK, "a state-less call must stay a non-batch session (no route marker)")
 		require.Equal(t, 0, state.QuestionDepth(ctx),
@@ -535,7 +534,7 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 	})
 	t.Run("route_ful_state_fully_armed", func(t *testing.T) {
 		call := SessionAgentCall{BatchQuestion: &batchChildQuestionState{Depth: 3, Route: true, Binding: binding, BindingOK: true}}
-		ctx := armBatchQuestionTurnContext(context.Background(), call)
+		ctx := batchmeta.ArmBatchQuestionTurnContext(context.Background(), call, state.WithQuestionContext, withBatchAgentQuestionBinding)
 		route, ok := batchmeta.BatchQuestionRouteFrom(ctx)
 		require.True(t, ok, "the route marker must be stamped for a batch call")
 		require.True(t, route, "the frozen route must re-arm verbatim")
@@ -546,7 +545,7 @@ func TestArmBatchQuestionTurnContextReArmsCapability(t *testing.T) {
 	})
 	t.Run("no_route_no_binding_state", func(t *testing.T) {
 		call := SessionAgentCall{BatchQuestion: &batchChildQuestionState{Depth: 1, Route: false, BindingOK: false}}
-		ctx := armBatchQuestionTurnContext(context.Background(), call)
+		ctx := batchmeta.ArmBatchQuestionTurnContext(context.Background(), call, state.WithQuestionContext, withBatchAgentQuestionBinding)
 		route, ok := batchmeta.BatchQuestionRouteFrom(ctx)
 		require.True(t, ok, "the marker must be stamped even when false: a batch child is not a non-batch session")
 		require.False(t, route, "the frozen false route must re-arm verbatim")

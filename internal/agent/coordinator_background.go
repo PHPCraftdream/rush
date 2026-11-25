@@ -7,10 +7,11 @@ package agent
 import (
 	"context"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
 
-func (c *coordinator) notifyAsyncCompletion(completion AsyncCompletion) {
+func (c *coordinator) notifyAsyncCompletion(completion batchdispatch.AsyncCompletion) {
 	newBackgroundComponent(c).notifyAsyncCompletion(completion)
 }
 

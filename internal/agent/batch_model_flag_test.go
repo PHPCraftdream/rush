@@ -6,6 +6,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/modelcontrol"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
@@ -24,29 +25,29 @@ func TestBatchControlsOnlyAppearWhenAllowedInPinnedToolset(t *testing.T) {
 	full := append(batchTestTools("view", "job_output", "job_kill"), batchTestTools("bash")...)
 	require.Equal(t,
 		[]string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"},
-		batchControlAvailability(full, allowedBatchReadControls))
+		batchinst.ControlAvailability(full, allowedBatchReadControls, batchWorkTarget))
 	// The read/stop controls follow the by-name grant, not the presence of
 	// any command tool: a bash-only build whose AllowedTools carries them
 	// still offers them.
 	require.Equal(t, []string{"batch_run", "batch_add", "batch_status", "batch_output", "batch_stop"},
-		batchControlAvailability(batchTestTools("bash"), allowedBatchReadControls))
+		batchinst.ControlAvailability(batchTestTools("bash"), allowedBatchReadControls, batchWorkTarget))
 	// R12-H1 old-name independence: the legacy control tools NEVER grant
 	// native controls. A revert to the pre-H1 job_output/job_kill presence
 	// lookups fails right here.
-	require.Empty(t, batchControlAvailability(batchTestTools("job_output", "job_kill"), nil))
+	require.Empty(t, batchinst.ControlAvailability(batchTestTools("job_output", "job_kill"), nil, batchWorkTarget))
 	// "view" is a work leaf, so run/add are offered alongside whichever
 	// read/stop controls the final AllowedTools grants by name.
 	require.Equal(t, []string{"batch_run", "batch_add", "batch_status", "batch_output"},
-		batchControlAvailability(batchTestTools("view"), []string{"batch_status", "batch_output"}))
+		batchinst.ControlAvailability(batchTestTools("view"), []string{"batch_status", "batch_output"}, batchWorkTarget))
 	require.Equal(t, []string{"batch_run", "batch_add", "batch_stop"},
-		batchControlAvailability(batchTestTools("view"), []string{"batch_stop"}))
+		batchinst.ControlAvailability(batchTestTools("view"), []string{"batch_stop"}, batchWorkTarget))
 	// D1/D10 allow explicit batches of work the pinned role can already run;
 	// without a by-name grant the view-only leaf registry is not widened.
-	require.Equal(t, []string{"batch_run", "batch_add"}, batchControlAvailability(batchTestTools("view"), nil))
+	require.Equal(t, []string{"batch_run", "batch_add"}, batchinst.ControlAvailability(batchTestTools("view"), nil, batchWorkTarget))
 	require.Equal(t, []string{"await_tasks"},
-		batchControlAvailability(batchTestTools("await_tasks"), nil), "await alone is visible but cannot launch work")
-	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks"), nil), "batch_run")
-	require.NotContains(t, batchControlAvailability(batchTestTools("await_tasks"), nil), "batch_add")
+		batchinst.ControlAvailability(batchTestTools("await_tasks"), nil, batchWorkTarget), "await alone is visible but cannot launch work")
+	require.NotContains(t, batchinst.ControlAvailability(batchTestTools("await_tasks"), nil, batchWorkTarget), "batch_run")
+	require.NotContains(t, batchinst.ControlAvailability(batchTestTools("await_tasks"), nil, batchWorkTarget), "batch_add")
 }
 
 type modelControlInventory struct {
@@ -70,7 +71,7 @@ func TestFlaggedAssemblyRegistersOnlyControlsAllowedByRole(t *testing.T) {
 	coordinatorBatchBindings.Store(c, bind)
 	t.Cleanup(func() { fixtureCoordinatorBatchBindings.Delete(c) })
 	tools := batchTestTools("bash", "job_output", "job_kill")
-	granted := batchControlAvailability(tools, allowedBatchReadControls)
+	granted := batchinst.ControlAvailability(tools, allowedBatchReadControls, batchWorkTarget)
 	for _, name := range granted {
 		if name != "await_tasks" {
 			tools = append(tools, modelcontrol.NewPlaceholder(name))
