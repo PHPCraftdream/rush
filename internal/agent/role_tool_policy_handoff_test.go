@@ -9,6 +9,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
@@ -186,7 +187,7 @@ func TestRunTurnAttachesRoleToolPolicyToEveryConstrainedTurn(t *testing.T) {
 					LogicalCallID:      "logical-" + tc.name,
 					RequestedModelRole: tc.requestedRole,
 				}
-				restoredCall, restoreErr := restoreRootRoleContract(t.Context(), env.sessions, identityCall)
+				restoredCall, restoreErr := delegation.RestoreRootRoleContract(t.Context(), env.sessions, identityCall)
 				require.NoError(t, restoreErr)
 				require.NotNil(t, restoredCall.CallOptions)
 				require.NotNil(t, restoredCall.CallOptions.RoleContract)

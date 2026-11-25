@@ -300,7 +300,7 @@ func (p *toolsComponent) buildToolsAgentConfigForCall(ctx context.Context, cfg *
 	if isSubAgent {
 		allowed := make([]string, len(agent.AllowedTools), len(agent.AllowedTools)+len(workerToolNames))
 		copy(allowed, agent.AllowedTools)
-		for _, name := range workerLayeredToolNames() {
+		for _, name := range batchinst.WorkerToolNames(workerToolNames) {
 			if !slices.Contains(allowed, name) {
 				allowed = append(allowed, name)
 			}
@@ -657,7 +657,7 @@ func (p *toolsComponent) buildPolicyTools(ctx context.Context, cfg *config.Confi
 		}
 	}
 
-	allowedControls := batchControlAvailability(filteredTools, agent.AllowedTools)
+	allowedControls := batchinst.ControlAvailability(filteredTools, agent.AllowedTools, batchWorkTarget)
 	allowedControls = toolwrap.FilterRoleToolNames(ctx, allowedControls)
 	{
 		if bind := coordinatorBatchBindingFor(p.host.coord()); bind != nil && bind.controls != nil {

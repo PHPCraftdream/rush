@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
 )
 
 // Scenario is the version-1 document; ingress wraps only raw root tasks.
@@ -63,11 +64,8 @@ type Payload struct {
 	MaxOutputBytes *int      `json:"max_output_bytes,omitempty"`
 }
 
-// ProcessOptions sets a positive retention ceiling; payloads may lower it,
-// never raise it. Retention keeps the newest merged-stream bytes.
-type ProcessOptions struct {
-	MaxRetainedBytes int
-}
+// ProcessOptions is retained as the single parent-facing compatibility alias.
+type ProcessOptions = process.ProcessOptions
 
 type StartDecision struct {
 	Decision Decision       `json:"decision"`

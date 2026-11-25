@@ -6,6 +6,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
 )
 
 func processTestWaitPID(t *testing.T, pid int) {
@@ -23,10 +25,10 @@ func processTestWaitPID(t *testing.T, pid int) {
 	t.Logf("PID %d confirmed gone", pid)
 }
 
-func processTestMember(t *testing.T, p *processExecution, pid int) {
+func processTestMember(t *testing.T, p *process.ProcessExecution, pid int) {
 	t.Helper()
 	group, err := syscall.Getpgid(pid)
-	if err != nil || group != p.cmd.Process.Pid {
+	if err != nil || group != p.Cmd.Process.Pid {
 		t.Fatalf("PID %d outside process group: %d %v", pid, group, err)
 	}
 }

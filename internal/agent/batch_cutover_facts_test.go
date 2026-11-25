@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -279,7 +280,7 @@ func TestBatchCutoverAdmissionHeldTerminationON(t *testing.T) {
 	env.invokeDetached("call-fact-adm-b", "run_command", argvLeaf)
 	rootB := env.rootID("call-fact-adm-b")
 
-	out := cancelBatchCall(env.ctx, env.install.Runtime.cfg.Runner, jobbatch.ID(rootR))
+	out := batchmeta.CancelCall(env.ctx, env.install.Runtime.cfg.Runner, jobbatch.ID(rootR))
 	require.NoError(t, out.Err)
 	require.True(t, out.Submitted)
 	require.False(t, out.Settled, "Stop never settles: admission stays held")

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -49,7 +50,7 @@ import (
 // child finishes its delegation as FAILED, with the text of its
 // settle-closed (reacted_failed=1) notices instead of that stale message --
 // checked FIRST, before the normal last-message read.
-func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completion AsyncCompletion) AsyncCompletion {
+func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completion batchdispatch.AsyncCompletion) batchdispatch.AsyncCompletion {
 	// Reaction-failure markers come from batch node reads.
 	{
 		facts := coordinatorBatchCutoverFacts(c)

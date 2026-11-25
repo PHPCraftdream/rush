@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -55,7 +56,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			}
 		}
 		var restoreErr error
-		rootCall, restoreErr = restoreRootRoleContract(ctx, c.sessions, rootCall)
+		rootCall, restoreErr = delegation.RestoreRootRoleContract(ctx, c.sessions, rootCall)
 		if restoreErr != nil {
 			return SessionAgentCall{}, nil, restoreErr
 		}

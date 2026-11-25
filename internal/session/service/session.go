@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session/service/components/requirements"
+	"github.com/PHPCraftdream/rush/internal/session/service/components/rolecontract"
 	"github.com/PHPCraftdream/rush/internal/session/service/components/sessguard"
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sesstypes"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/zeebo/xxh3"
@@ -425,6 +429,137 @@ type Service interface {
 	HasSessionCredentialRequirement(ctx context.Context, sessionID string) (bool, error)
 }
 
+// SessionCredentialRequirementStore is an optional capability for persisting
+// whether a session requires credentials. Marker payloads contain no secrets.
+type SessionCredentialRequirementStore interface {
+	StoreSessionCredentialRequirement(ctx context.Context, sessionID string) error
+	HasSessionCredentialRequirement(ctx context.Context, sessionID string) (bool, error)
+}
+
+var _ SessionCredentialRequirementStore = (*service)(nil)
+
+// StoreSessionCredentialRequirement persists a secret-free, terminal metadata row.
+func (s *service) StoreSessionCredentialRequirement(ctx context.Context, sessionID string) error {
+	return requirements.StoreSessionCredentialRequirement(ctx, s.DB, sessionID)
+}
+
+// HasSessionCredentialRequirement reports whether the marker exists; malformed
+// present data is an error rather than an absent marker.
+func (s *service) HasSessionCredentialRequirement(ctx context.Context, sessionID string) (bool, error) {
+	return requirements.HasSessionCredentialRequirement(ctx, s.DB, sessionID)
+}
+
+// SessionCredentialMarkerRowID returns the reserved metadata row ID.
+func SessionCredentialMarkerRowID(sessionID string) string {
+	return sesstypes.SessionCredentialMarkerRowID(sessionID)
+}
+
+// IsSessionCredentialRequirementCallData recognizes the non-executable marker.
+func IsSessionCredentialRequirementCallData(callData string) bool {
+	return requirements.IsSessionCredentialRequirementCallData(callData)
+}
+
+const (
+	SessionCredentialRequirementKind    = requirements.SessionCredentialRequirementKind
+	SessionCredentialRequirementVersion = requirements.SessionCredentialRequirementVersion
+)
+
+const (
+	SessionExecutionRequirementKind    = requirements.SessionExecutionRequirementKind
+	SessionExecutionRequirementVersion = requirements.SessionExecutionRequirementVersion
+)
+
+type SessionExecutionRequirement = sesstypes.SessionExecutionRequirement
+
+var ErrSessionExecutionRequirementMalformed = requirements.ErrSessionExecutionRequirementMalformed
+
+// SessionExecutionRequirementStore is the storage seam for the durable
+// execution fence. The H2 interim adapter stores the fence as one
+// non-executable service row in session_run_queue; H4 replaces the
+// implementation with a sessions.execution_requirement column behind this
+// same interface.
+type SessionExecutionRequirementStore interface {
+	StoreSessionExecutionRequirement(ctx context.Context, sessionID string, req SessionExecutionRequirement) error
+	LoadSessionExecutionRequirement(ctx context.Context, sessionID string) (*SessionExecutionRequirement, error)
+	DeleteSessionExecutionRequirement(ctx context.Context, sessionID string) error
+}
+
+var _ SessionExecutionRequirementStore = (*service)(nil)
+
+func (s *service) StoreSessionExecutionRequirement(ctx context.Context, sessionID string, req SessionExecutionRequirement) error {
+	return requirements.StoreSessionExecutionRequirement(ctx, s.DB, sessionID, req)
+}
+
+func (s *service) DeleteSessionExecutionRequirement(ctx context.Context, sessionID string) error {
+	return requirements.DeleteSessionExecutionRequirement(ctx, s.DB, sessionID)
+}
+
+func (s *service) LoadSessionExecutionRequirement(ctx context.Context, sessionID string) (*SessionExecutionRequirement, error) {
+	return requirements.LoadSessionExecutionRequirement(ctx, s.DB, sessionID)
+}
+
+// IsSessionExecutionRequirementCallData reports whether callData is a
+// fence envelope row rather than a serialized session call.
+func IsSessionExecutionRequirementCallData(callData string) bool {
+	return requirements.IsSessionExecutionRequirementCallData(callData)
+}
+
+// SessionExecutionRequirementRowID returns the deterministic reserved row ID.
+func SessionExecutionRequirementRowID(sessionID string) string {
+	return sesstypes.SessionExecutionRequirementRowID(sessionID)
+}
+
+// BatchDeliveryEnvelope remains available from the service compatibility package.
+type BatchDeliveryEnvelope = sesstypes.BatchDeliveryEnvelope
+
+// ErrBatchProjectionConflict remains available from the service package.
+var ErrBatchProjectionConflict = sesstypes.ErrBatchProjectionConflict
+
+// BatchRequireRow remains available from the service package.
+func BatchRequireRow(n int64, err error) error {
+	return sesstypes.BatchRequireRow(n, err)
+}
+
+const RoleContractVersion = sesstypes.RoleContractVersion
+
+type (
+	RoleContract = sesstypes.RoleContract
+	ModelCfg     = sesstypes.ModelCfg
+)
+
+var ErrSessionRoleContractMismatch = errors.New("session_role_contract_mismatch")
+
+// SessionRoleContractStore binds immutable role/tool/model snapshots to sessions.
+type SessionRoleContractStore interface {
+	GetSessionRoleContract(context.Context, string) (*RoleContract, bool, error)
+	BindSessionRoleContract(context.Context, string, *RoleContract) error
+}
+
+var _ SessionRoleContractStore = (*service)(nil)
+
+// SessionRootRoleContractStore tracks the current logical role execution for a
+// root session; unlike child bindings, a new logical call replaces the prior one.
+// SessionRootRoleContractStore tracks the current logical role execution for a
+// root session; unlike child bindings, a new logical call replaces the prior one.
+type SessionRootRoleContractStore interface {
+	GetRootRoleContract(context.Context, string) (logicalID string, contract *RoleContract, found bool, err error)
+	BindRootRoleContract(context.Context, string, string, *RoleContract) error
+}
+
+var _ SessionRootRoleContractStore = (*service)(nil)
+
+var ErrAgentModelRoleMismatch = errors.New("agent_role_mismatch")
+
+// AgentModelRoleStore preserves immutable delegated role identities. Built-in and
+// empty roles use the legacy model-only table; custom names require the full
+// immutable RoleContract snapshot in session_role_contracts.
+type AgentModelRoleStore interface {
+	GetAgentModelRole(context.Context, string) (string, bool, error)
+	BindAgentModelRole(context.Context, string, string) error
+}
+
+var _ AgentModelRoleStore = (*service)(nil)
+
 // WriterPoolStats reports the writer pool statistics of the store-backed
 // Service; ok is false for any other implementation (run-queue pump
 // deadline diagnostics).
@@ -434,6 +569,14 @@ func WriterPoolStats(svc Service) (st sql.DBStats, ok bool) {
 		return sql.DBStats{}, false
 	}
 	return s.DB.Stats(), true
+}
+
+func (s *service) GetSessionRoleContract(ctx context.Context, id string) (*RoleContract, bool, error) {
+	return rolecontract.GetSessionRoleContract(ctx, s.DB, id)
+}
+
+func (s *service) BindSessionRoleContract(ctx context.Context, id string, contract *RoleContract) error {
+	return rolecontract.BindSessionRoleContract(ctx, s.DB, id, contract, ErrSessionRoleContractMismatch)
 }
 
 type service struct {

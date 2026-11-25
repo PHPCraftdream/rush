@@ -11,6 +11,7 @@ import (
 
 	"charm.land/fantasy"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/config"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -590,7 +591,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		}
 	}
 	if !a.isSubAgent {
-		if err := bindRootRoleContract(runCtx, a.sessions, call); err != nil {
+		if err := delegation.BindRootRoleContract(runCtx, a.sessions, call); err != nil {
 			a.noteRefusal(call.SessionID, err)
 			return nil, notAttempted(call, fmt.Errorf("session %q: bind root role contract: %w", call.SessionID, err))
 		}
@@ -705,11 +706,10 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// the persisted contract for a continuation), then the finalization
 		// driver identity binding (in-memory, idempotent), and only when both
 		// admit the call do the durable writes run: root role binding, then
-		// the per-call model persistence. A failed driver binding therefore
-		// never replaces the root role row nor persists models for a call
-		// that is reported as already attempted below.
+		// the per-call model persistence. A failed driver binding therefore never replaces the
+		// root role row nor persists models for a call that is reported as already attempted below.
 		if call.LogicalCallID != previousCall.LogicalCallID {
-			if restored, restoreErr := restoreRootRoleContract(runCtx, a.sessions, call); restoreErr != nil {
+			if restored, restoreErr := delegation.RestoreRootRoleContract(runCtx, a.sessions, call); restoreErr != nil {
 				return nil, notAttempted(call, restoreErr)
 			} else {
 				call = restored
@@ -718,7 +718,7 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		driverBindingErr := a.bindFinalizationDriverCall(call)
 		if driverBindingErr == nil {
 			if !a.isSubAgent {
-				if err := bindRootRoleContract(runCtx, a.sessions, call); err != nil {
+				if err := delegation.BindRootRoleContract(runCtx, a.sessions, call); err != nil {
 					a.noteRefusal(call.SessionID, err)
 					return nil, notAttempted(call, fmt.Errorf("session %q: bind root role contract: %w", call.SessionID, err))
 				}

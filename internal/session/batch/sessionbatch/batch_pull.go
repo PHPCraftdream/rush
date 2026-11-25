@@ -133,6 +133,7 @@ func scanBatchNodeRow(row *sql.Row) (db.BatchNode, error) {
 // RootID and NodeID identify the incarnation; ToolCallID belongs to the root.
 type BatchNoticeRow struct {
 	RootID, NodeID, ToolCallID                                                    string
+	ChildSessionID                                                                string
 	Kind, State, Cause, OutcomeCode, OutcomeSummary, ResponseEnvelopeRef          string
 	Sequence, Ordinal                                                             int64
 	Pending, Active, Completed, Failed, Cancelled, TimedOut, Interrupted, Skipped int64
@@ -149,7 +150,8 @@ type BatchPulledNotice struct {
 func batchNoticeRow(n, root db.BatchNode) BatchNoticeRow {
 	return BatchNoticeRow{
 		RootID: n.RootID, NodeID: n.NodeID, ToolCallID: root.ToolCallID.String,
-		Kind: n.NoticeKind.String, State: n.NoticeState.String, Cause: n.NoticeCause.String,
+		ChildSessionID: n.ChildSessionID.String,
+		Kind:           n.NoticeKind.String, State: n.NoticeState.String, Cause: n.NoticeCause.String,
 		OutcomeCode: n.OutcomeCode, OutcomeSummary: n.OutcomeSummary, ResponseEnvelopeRef: n.ResponseEnvelopeRef.String,
 		Sequence: n.NoticeSequence.Int64, Ordinal: n.NoticeOrdinal.Int64,
 		Pending: n.NoticePending, Active: n.NoticeActive, Completed: n.NoticeCompleted, Failed: n.NoticeFailed,
@@ -251,11 +253,20 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 	// the same way (batch_adapters.go BatchDeliveryOneItemCompletion).
 	// Multi-task roots, nested structural children, and non-root selected
 	// notices are never borrowed from: they keep the row's own summary.
+	// A root-selected notice also projects one unambiguous bound child ID
+	// from its direct children; multiple distinct bindings are omitted.
 	projected, err := batchProjectSelectedNoticeSummary(ctx, q, owner, n)
 	if err != nil {
 		return BatchPulledNotice{}, false, err
 	}
 	n.OutcomeSummary = projected
+	if n.NodeID == n.RootID {
+		childID, err := batchProjectSelectedNoticeChildID(ctx, q, owner, n)
+		if err != nil {
+			return BatchPulledNotice{}, false, err
+		}
+		n.ChildSessionID = sql.NullString{String: childID, Valid: childID != ""}
+	}
 	msg, err := pdcCreateTx(ctx, q, tx, messages, owner, build(batchNoticeRow(n, r)))
 	if err != nil {
 		return BatchPulledNotice{}, false, err
@@ -304,13 +315,36 @@ func batchProjectSelectedNoticeSummary(ctx context.Context, q *db.Queries, owner
 	return children[0].Summary, nil
 }
 
-// batchChildOutcome is one direct child's kind and outcome summary.
-type batchChildOutcome struct{ Kind, Summary string }
+// batchProjectSelectedNoticeChildID selects a child binding only when all
+// non-empty direct-child bindings identify the same child.
+func batchProjectSelectedNoticeChildID(ctx context.Context, q *db.Queries, owner string, n db.BatchNode) (string, error) {
+	children, err := batchDirectChildOutcomes(ctx, q, owner, n.RootID, n.NodeID)
+	if err != nil {
+		return "", err
+	}
+	childID := ""
+	for _, child := range children {
+		if !child.ChildSessionID.Valid || child.ChildSessionID.String == "" {
+			continue
+		}
+		if childID != "" && childID != child.ChildSessionID.String {
+			return "", nil
+		}
+		childID = child.ChildSessionID.String
+	}
+	return childID, nil
+}
+
+// batchChildOutcome is one direct child's kind, outcome summary and binding.
+type batchChildOutcome struct {
+	Kind, Summary  string
+	ChildSessionID sql.NullString
+}
 
 // pdcBatchDirectChildOutcomesSQL is the direct-child outcome read executed
 // inside the pull transaction; package-level for the PD11C registration and
 // the equivalence test.
-const pdcBatchDirectChildOutcomesSQL = `SELECT kind, outcome_summary FROM batch_nodes
+const pdcBatchDirectChildOutcomesSQL = `SELECT kind, outcome_summary, child_session_id FROM batch_nodes
 WHERE owner_session_id = ? AND root_id = ? AND parent_id = ?`
 
 // batchDirectChildOutcomes reads every direct child of one node in a single
@@ -327,7 +361,7 @@ func batchDirectChildOutcomes(ctx context.Context, q *db.Queries, owner, root, n
 	var out []batchChildOutcome
 	for rows.Next() {
 		var c batchChildOutcome
-		if err := rows.Scan(&c.Kind, &c.Summary); err != nil {
+		if err := rows.Scan(&c.Kind, &c.Summary, &c.ChildSessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

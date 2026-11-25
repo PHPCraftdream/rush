@@ -10,6 +10,8 @@ import (
 	"log/slog"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -437,7 +439,7 @@ func (c *coordinator) RunSessionAgentCall(ctx context.Context, call SessionAgent
 		}
 		call.BatchQuestion = state
 	}
-	ctx = armBatchQuestionTurnContext(ctx, call)
+	ctx = batchmeta.ArmBatchQuestionTurnContext(ctx, call, state.WithQuestionContext, withBatchAgentQuestionBinding)
 	// Durable calls bypass runInternal, so wire both result identities here.
 	// The session callback is also required when a background pump execution is
 	// later observed by DrainSessionNow.

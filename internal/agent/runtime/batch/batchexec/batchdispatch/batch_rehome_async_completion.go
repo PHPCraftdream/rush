@@ -2,11 +2,12 @@ package batchdispatch
 
 // AsyncCompletion is the result of a tool that returned before its work ended.
 type AsyncCompletion struct {
-	SessionID  string
-	ToolCallID string
-	ToolName   string
-	Content    string
-	IsError    bool
+	SessionID      string
+	ToolCallID     string
+	ToolName       string
+	ChildSessionID string
+	Content        string
+	IsError        bool
 	// cli is the origin of the job that produced this completion. Set only
 	// on the wake-callback path, so the woken turn keeps the job's origin.
 	cli bool

@@ -24,7 +24,7 @@
 # left the root; no root file was added or split).
 # 737 -> 736: the same single-file move as dir_entries (turn_effort.go left the root).
 # 736 -> 730: lane L3 deleted six root files (the same six as dir_entries).
-internal/agent 716
+internal/agent 705
 internal/agent/provider/nettransport 22
 internal/agent/tools 163
 # 63 -> 58: same lane: 4 test files moved whole to mcpdial, one core
@@ -67,9 +67,9 @@ internal/serve/server/server 130
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 33
 # EX4 service has 43 direct Go files (22 production, 21 tests); components is not counted here; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
-internal/session/service 43
+internal/session/service 38
 internal/session/jobbatch 43
-internal/session/jobbatch/lab 45
+internal/session/jobbatch/lab 41
 internal/store/message 26
 # 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
 sdk 46

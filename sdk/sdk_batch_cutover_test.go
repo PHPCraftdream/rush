@@ -516,7 +516,7 @@ func waitForBatchNodes(t *testing.T, conn *sql.DB, sessionID string, budget time
 // batch work has been accepted and is observable as persisted batch_nodes
 // state (owner_session_id = the continued session). The run is then
 // cancelled through the caller's context — the production caller-cancel path
-// (agent/batch_cancel.go cancelBatchCall) submits the Runner Stop under a
+// (batchmeta.CancelCall) submits the Runner Stop under a
 // bounded, non-cancelled control context, so a cancelled caller still cancels
 // the accepted root; the tree settles terminal with CauseStop => state
 // 'cancelled' (jobbatch/tree_apply.go causeState) once the physical work

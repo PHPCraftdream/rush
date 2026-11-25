@@ -109,6 +109,29 @@ func TestCachePrefix_PrepareStepDoesNotMutateRetainedMessagesOrPinnedTools(t *te
 	require.Nil(t, observation["cached_tokens"], "a zero counter without presence evidence remains unknown")
 }
 
+// Revert check: re-gating PreparedCacheDiagnostic behind Debug leaves the
+// digests empty at INFO and the miss line never fires.
+func TestCacheMissLine_FiresAtInfoLevel(t *testing.T) {
+	isolateAllGlobalConfigPaths(t)
+	promptcache.ResetCacheObsForTest()
+	t.Cleanup(promptcache.ResetCacheObsForTest)
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	f := newAttemptFixture(t, "cache-miss-info", attemptFixtureOpts{noIdle: true})
+	ts := guardPrepareStream(t, f, f.model, 0)
+	messages := []fantasy.Message{fantasy.NewSystemMessage("system"), fantasy.NewUserMessage("request")}
+	_, _, err := ts.prepareStep(context.Background(), fantasy.PrepareStepFunctionOptions{Messages: messages})
+	require.NoError(t, err)
+	require.NotEmpty(t, ts.cacheDiagnostic.MessageDigests, "digests must be prepared without Debug logging")
+	big := fantasy.Usage{InputTokens: 40_000, CacheReadTokens: 1_000, OutputTokens: 10}
+	ts.noteCacheRequest(big, false, nil)
+	ts.noteCacheRequest(big, false, nil)
+	require.Contains(t, output.String(), "agent: prompt cache miss")
+	require.Contains(t, output.String(), promptcache.CacheMissProviderSide)
+}
+
 func TestCacheDiagnostic_MapPermutationsPreserveArraysAndSemantics(t *testing.T) {
 	mkTool := func(parameters map[string]any, required []string) fantasy.AgentTool {
 		return cacheSchemaTool{AgentTool: newProviderOptionsTestTool("fixture"), info: fantasy.ToolInfo{

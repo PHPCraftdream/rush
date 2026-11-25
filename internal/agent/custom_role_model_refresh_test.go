@@ -107,7 +107,7 @@ func TestCustomRoleDiskRefreshPinsResolvedModelPromptAndTools(t *testing.T) {
 	require.Equal(t, "smart-provider|before-refresh|before-refresh", before.systemPrompt)
 
 	// Finish a build pinned before publication while the store already exposes new config.
-	finished, err := coord.finishCustomRoleResolveSnapshot(ctx, pinned, before.smart, model, callbeat.HbSourceSlotLive, false)
+	finished, err := newModelsComponent(coord).finishCustomRoleResolveSnapshot(ctx, pinned, before.smart, model, callbeat.HbSourceSlotLive, false)
 	require.NoError(t, err)
 	require.Equal(t, "smart-provider|before-refresh|before-refresh", finished.systemPrompt)
 	require.True(t, contract.Equal(callOptionsFrom(ctx).RoleContract))

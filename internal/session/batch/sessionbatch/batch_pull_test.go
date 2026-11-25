@@ -16,6 +16,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBatchNoticeRowCarriesChildSessionID(t *testing.T) {
+	root := db.BatchNode{ToolCallID: sql.NullString{String: "call", Valid: true}}
+	for _, tc := range []struct {
+		name string
+		node db.BatchNode
+		want string
+	}{
+		{name: "agent", node: db.BatchNode{ChildSessionID: sql.NullString{String: "child-123", Valid: true}}, want: "child-123"},
+		{name: "plain", node: db.BatchNode{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := batchNoticeRow(tc.node, root)
+			require.Equal(t, tc.want, got.ChildSessionID)
+		})
+	}
+}
+
 // failingCreateTxMessages wraps a real message.Service and makes CreateTx
 // always fail, so a notice insert error can be injected.
 type failingCreateTxMessages struct {

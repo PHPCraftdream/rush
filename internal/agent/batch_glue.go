@@ -19,6 +19,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -76,7 +77,7 @@ func PscCoordinatorChildReactionFactsLate(get func() Coordinator) state.BatchChi
 			}
 			return src.CLIScope(ctx, childSessionID)
 		},
-		outcome: func(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool) {
+		outcome: func(ctx context.Context, childSessionID string, initial batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
 			cc, ok := get().(*coordinator)
 			if !ok || cc == nil {
 				return initial, false
@@ -364,6 +365,10 @@ func (h coordinatorBatchGlueHost) batchGlueRerunRuntime() (batchcore.RunnerHandl
 
 type batchCutoverGlueComponent struct{ host batchCutoverGlueHost }
 
+// driverMarkerStore is the durable driver-marker store the claim/release
+// path consults: the injected HostStore. It returns a TRUE nil interface
+// when no store is bound -- never a typed nil pointer -- so the caller's
+// nil guard behaves like a concrete-pointer guard.
 func (g *batchCutoverGlueComponent) driverMarkerStore() batchflow.BatchDriverClaimer {
 	if g.host.batchGlueNil() || g.host.batchGlueDriverClaimer() == nil {
 		return nil
@@ -567,7 +572,7 @@ func (g *batchCutoverGlueComponent) batchRerunStopVoided(ctx context.Context, se
 				continue
 			}
 		}
-		out := cancelBatchCall(ctx, runner, jobbatch.ID(v.RootID))
+		out := batchmeta.CancelCall(ctx, runner, jobbatch.ID(v.RootID))
 		if out.Err != nil {
 			slog.Warn("coordinator.BatchRerunStopVoided: stop request failed; the completion commits void",
 				"session_id", sessionID, "root_id", v.RootID, "err", out.Err)

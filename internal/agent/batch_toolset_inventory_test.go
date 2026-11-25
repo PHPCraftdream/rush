@@ -7,12 +7,12 @@ package agent
 //   - internal/config/config.go allToolNames: the append of the five
 //     native names into the coder's AllowedTools (SetupAgents bakes them at
 //     fixture-build time, so the flag is set BEFORE the fixture).
-//   - internal/agent/batch_allowed_controls.go batchControlAvailability: the
+//   - internal/agent/batch_allowed_controls.go batchinst.ControlAvailability: the
 //     by-name grant loop for batch_status/batch_output/batch_stop, the
 //     constructed-presence grant for await_tasks, and the work-leaf grant
 //     for batch_run/batch_add.
 //   - internal/agent/coordinator_tools.go buildToolsAgentConfigForCall +
-//     workerLayeredToolNames grants batch_stop only with trusted
+//     batchinst.WorkerToolNames grants batch_stop only with trusted
 //     descendant-only scope enforced by Stop.
 //   - internal/agent/coordinator_tools.go applyCallFolderScope +
 //     folderScopeCommandToolSet: the flag-on command set carries the native
@@ -370,7 +370,7 @@ func (m modelControlCapture) InstallBatchModelControls(reg *toolwrap.PolicyLeafR
 // independence acceptance test: with the flag ON and the coder's AllowedTools
 // stripped of every native name (while keeping everything else, including
 // job_output and job_kill), the flag-on build must surface NONE of the
-// by-name read controls. A revert of batchControlAvailability to the pre-H1
+// by-name read controls. A revert of batchinst.ControlAvailability to the pre-H1
 // presence lookups (present["job_output"]/present["job_kill"]) fails here
 // naming the control that resolved through the old name.
 func TestNativeControlsNeverResolveThroughOldNames(t *testing.T) {
