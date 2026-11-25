@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
 )
 
 // RunOptions supplies bounded cleanup and public harness observation seams.
@@ -17,7 +18,7 @@ import (
 // and writer methods must honor their own bounded-return contract.
 type RunOptions struct {
 	OpenEvents        func() (io.WriteCloser, error)
-	ProcessOptions    ProcessOptions
+	ProcessOptions    process.ProcessOptions
 	CleanupBound      time.Duration
 	Oracle            *Oracle
 	BeforeAction      func(context.Context, int, *RunHarness) error
@@ -94,7 +95,7 @@ func RunScenario(ctx context.Context, s *Scenario, opts RunOptions) RunResult {
 			if po.MaxRetainedBytes <= 0 {
 				po.MaxRetainedBytes = 1 << 20
 			}
-			ex, err := NewProcessExecutor(po)
+			ex, err := process.NewProcessExecutor(po)
 			if err != nil {
 				return result
 			}
