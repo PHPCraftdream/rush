@@ -49,16 +49,16 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// pinned) re-read the shared slice (updated by SetTools when
 	// MCP tools change). The cache-control marker is re-applied per
 	// step through the same per-step wrapper the turn's initial
-	// tool list uses; withProviderOptionsOnLast clones before
+	// tool list uses; toolwrap.WithProviderOptionsOnLast clones before
 	// writing, so the pinned slice itself is never mutated.
 	pinnedStepTools := ts.call.Tools
 	if pinnedStepTools == nil {
 		pinnedStepTools = ts.a.tools.Copy()
 	}
-	if roleToolsConstrained(callContext) {
+	if toolwrap.RoleToolsConstrained(callContext) {
 		pinnedStepTools = toolwrap.FilterRoleContractTools(callContext, pinnedStepTools)
 	}
-	prepared.Tools = withProviderOptionsOnLast(pinnedStepTools, ts.a.getCacheControlOptions())
+	prepared.Tools = toolwrap.WithProviderOptionsOnLast(pinnedStepTools, ts.a.getCacheControlOptions())
 
 	// stepSplices collects every message THIS step's boundary inserts mid-
 	// turn (mailbox injects, cross-process injects, phase-4 notice pulls) --
@@ -178,7 +178,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	// In-turn progress guard (§2.2 of the in-turn plan). This runs AFTER both
 	// coverage resets above — the snapshot must reflect the coverage the
 	// model will actually see in this step's prompt — and AFTER
-	// withProviderOptionsOnLast, whose per-step cache-control wrapper the
+	// toolwrap.WithProviderOptionsOnLast, whose per-step cache-control wrapper the
 	// guard wrapper sits around (it delegates ProviderOptions, so the marker
 	// still reaches the provider). The snapshot is taken BEFORE the assistant
 	// message is created so the refusal decision belongs to the step it was

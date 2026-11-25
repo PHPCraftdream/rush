@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
@@ -25,7 +27,7 @@ func testPinnedInvoke(ctx context.Context, tool fantasy.AgentTool, call fantasy.
 }
 
 func TestCLIToolBridgePinnedMappingAndMissing(t *testing.T) {
-	built := newPolicyToolBuild([]fantasy.AgentTool{&dispatchProbeTool{name: "view"}, &dispatchProbeTool{name: "mcp_server_tool"}})
+	built := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{&dispatchProbeTool{name: "view"}, &dispatchProbeTool{name: "mcp_server_tool"}})
 	external := cliprovider.BridgeTool{WireName: "server__tool", CanonicalName: "mcp_server_tool", InputSchema: json.RawMessage(`{"type":"object"}`)}
 	var got fantasy.ToolCall
 	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, func(_ context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
@@ -66,7 +68,7 @@ func TestCLIToolBridgeHooksRewriteDenyOnce(t *testing.T) {
 				command = `echo '{"decision":"deny","reason":"blocked"}'`
 			}
 			probe := &dispatchProbeTool{name: "bash"}
-			built := newPolicyToolBuild(decoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, fmt.Sprintf("printf x >> '%s'; %s", counter, command)), false))
+			built := toolwrap.NewPolicyToolBuild(toolwrap.DecoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, fmt.Sprintf("printf x >> '%s'; %s", counter, command)), false))
 			bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, testPinnedInvoke, nil)
 			require.NoError(t, err)
 			resp, err := bridge.Call(t.Context(), fantasy.ToolCall{ID: "unchanged", Name: "bash", Input: `{"command":"echo denied"}`})
@@ -105,7 +107,7 @@ func TestCLIToolBridgePermissionGuardIdentityOnce(t *testing.T) {
 		_, err := perms.Request(ctx, permission.CreatePermissionRequest{ToolCallID: call.ID, ToolName: call.Name, SessionID: tools.GetSessionFromContext(ctx)})
 		return fantasy.NewTextErrorResponse("denied"), err
 	})
-	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, newPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, testPinnedInvoke, nil)
+	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, testPinnedInvoke, nil)
 	require.NoError(t, err)
 	ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "owner-session")
 	_, err = bridge.Call(ctx, fantasy.ToolCall{ID: "permission-ref", Name: "bash", Input: `{"command":"echo x"}`})
@@ -127,7 +129,7 @@ func TestCLIToolBridgeTransportNoFallback(t *testing.T) {
 		runs++
 		return fantasy.NewTextResponse("raw fallback"), nil
 	})
-	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, newPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, func(context.Context, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves, func(context.Context, fantasy.AgentTool, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		return fantasy.ToolResponse{}, fmt.Errorf("transport unavailable")
 	}, nil)
 	require.NoError(t, err)
@@ -149,7 +151,7 @@ func TestCLIToolBridgeRestrictedPinnedGenerations(t *testing.T) {
 		require.NoError(t, err)
 		svc.(permission.SessionRunAllowlistManager).SetSessionRunAllowlist("session", allowlist)
 		probe := &dispatchProbeTool{name: "view"}
-		built := newPolicyToolBuild(decoratePolicyTools([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer), nil, true))
+		built := toolwrap.NewPolicyToolBuild(toolwrap.DecoratePolicyTools([]fantasy.AgentTool{probe}, svc.(permission.RestrictedRunAuthorizer), nil, true))
 		generation := fmt.Sprint(allowed)
 		ctx := context.WithValue(context.WithValue(t.Context(), tools.SessionIDContextKey, "session"), privateFetchIngressKey{}, generation)
 		bridge, err := clibridge.NewCLIToolBridge(childagent.NewCLIBridge, built.Leaves, func(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {

@@ -134,7 +134,7 @@ func buildModelBatchLeaf(it modelcontrol.Item, callPath string, leafCap int, inv
 	if batchControlTarget(it.Tool) {
 		return nil, fmt.Errorf("control-plane tool %q cannot be a batch leaf", it.Tool)
 	}
-	leaf, e := reg.ResolveForContext(withRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
+	leaf, e := reg.ResolveForContext(toolwrap.WithRoleToolContract(context.Background(), inv.Policy.RoleContract), it.Tool)
 	if e != nil || leaf == nil {
 		return nil, fmt.Errorf("tool %q unavailable in calling pinned toolset", it.Tool)
 	}

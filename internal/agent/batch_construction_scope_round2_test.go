@@ -37,11 +37,11 @@ import (
 // workingModelControls installs real controls so scope tests reach their intended boundary.
 type workingModelControls struct{}
 
-func (workingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, modelcontrol.Spec) (jobbatch.ID, error) {
+func (workingModelControls) Run(context.Context, BatchInvocation, *toolwrap.PolicyLeafRegistry, modelcontrol.Spec) (jobbatch.ID, error) {
 	return jobbatch.ID(""), nil
 }
 
-func (workingModelControls) Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []modelcontrol.Item) ([]jobbatch.ID, error) {
+func (workingModelControls) Add(context.Context, string, string, string, BatchInvocation, *toolwrap.PolicyLeafRegistry, []modelcontrol.Item) ([]jobbatch.ID, error) {
 	return nil, nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
@@ -36,7 +38,7 @@ func (t *batchGenericTestTool) Run(ctx context.Context, c fantasy.ToolCall) (fan
 
 func batchGenericTestExecutor(tool fantasy.AgentTool, beforeResolve ...func()) *batchExecutor {
 	family := newBatchGenericFamily()
-	return newBatchExecutor(batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
+	return newBatchExecutor(batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) {
 		for _, before := range beforeResolve {
 			before()
 		}

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -54,15 +56,15 @@ func TestBatchExecutorRoutesByKindAndRejectsBadStarts(t *testing.T) {
 
 func TestBatchLeafResolutionFailsClosed(t *testing.T) {
 	// Mutation: resolving a tool that is not in the pinned set, or swallowing the provider error.
-	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
-		return newPolicyToolBuild(nil).Leaves, nil
+	env := batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) {
+		return toolwrap.NewPolicyToolBuild(nil).Leaves, nil
 	}}
 	_, err := env.resolveLeaf(batchLeafPayload{Tool: "bash", SessionID: "s1"})
 	var coded interface{ Code() string }
 	require.ErrorAs(t, err, &coded)
 	require.Equal(t, batchdispatch.CodeNoLeaf, coded.Code())
 
-	failing := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return nil, errors.New("no session") }}
+	failing := batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) { return nil, errors.New("no session") }}
 	_, err = failing.resolveLeaf(batchLeafPayload{Tool: "bash", SessionID: "s1"})
 	require.ErrorAs(t, err, &coded)
 	require.Equal(t, batchdispatch.CodeNoLeaf, coded.Code())

@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
@@ -43,7 +45,7 @@ func TestBatchExecutorRejectsRoleForbiddenGenericToolBeforeLeaf(t *testing.T) {
 		started = true
 		return fantasy.NewTextResponse("unexpected"), nil
 	}}
-	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
+	env := batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) {
 		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"bash": {Tool: leaf}}), nil
 	}}
 	family := newBatchExecutor(env, map[string]batchLeafFamily{batchdispatch.KindGeneric: newBatchGenericFamily()})

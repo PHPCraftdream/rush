@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -53,10 +55,10 @@ func TestPolicyLeafSessionDecorationOnce(t *testing.T) {
 	probe := &dispatchProbeTool{name: "view"}
 	svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 	authorizer := svc.(permission.RestrictedRunAuthorizer)
-	tools := decoratePolicyTools([]fantasy.AgentTool{probe}, authorizer, nil, true)
+	tools := toolwrap.DecoratePolicyTools([]fantasy.AgentTool{probe}, authorizer, nil, true)
 	agent := NewSessionAgent(SessionAgentOptions{Tools: tools, RestrictedRuns: authorizer}).(*sessionAgent)
 	agent.SetTools(tools)
-	built := newPolicyToolBuild(agent.tools.Copy())
+	built := toolwrap.NewPolicyToolBuild(agent.tools.Copy())
 	leaf, err := built.Leaves.Resolve("view")
 	require.NoError(t, err)
 	require.Equal(t, []string{"logging", "restricted", "tool"}, policyLeafBaselineStack(leaf))

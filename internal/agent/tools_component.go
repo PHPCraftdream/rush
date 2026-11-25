@@ -241,7 +241,7 @@ func (p *toolsComponent) buildAgent(ctx context.Context, prompt *prompt.Prompt, 
 		// builds both; both callees are no-ops for a session with nothing to
 		// react to.
 		OnSessionIdle:      p.host.onSessionIdleHook,
-		RestrictedRuns:     restrictedRunAuthorizer(p.host.permissions()),
+		RestrictedRuns:     toolwrap.RestrictedRunAuthorizer(p.host.permissions()),
 		CheckpointInterval: checkpointInterval, // Fork patch: batch 8
 	})
 
@@ -723,23 +723,23 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 	}
 	if bind := coordinatorBatchBindingFor(p.host.coord()); bind != nil {
 		allowedControls := allowed
-		if roleToolsConstrained(ctx) {
+		if toolwrap.RoleToolsConstrained(ctx) {
 			allowedControls = toolwrap.FilterRoleToolNames(ctx, allowed)
 		}
 		filteredTools = modelcontrol.WithoutPlaceholders(filteredTools)
-		filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
+		filteredTools = toolwrap.DecoratePolicyTools(filteredTools, toolwrap.RestrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
 		filteredTools = toolwrap.FilterRoleContractTools(ctx, filteredTools)
 		buildCtx := ctx
-		if current := roleContractFromContext(ctx); current != nil {
-			buildCtx = withRoleToolContract(buildCtx, current)
+		if current := toolwrap.RoleContractFromContext(ctx); current != nil {
+			buildCtx = toolwrap.WithRoleToolContract(buildCtx, current)
 		}
-		inheritedContracts := roleContractsForTools(filteredTools)
-		if current := roleContractFromContext(buildCtx); current != nil && !toolwrap.HasRoleContract(inheritedContracts, current) {
+		inheritedContracts := toolwrap.RoleContractsForTools(filteredTools)
+		if current := toolwrap.RoleContractFromContext(buildCtx); current != nil && !toolwrap.HasRoleContract(inheritedContracts, current) {
 			inheritedContracts = append(inheritedContracts, current.Clone())
 		}
-		roleContract := roleContractForToolBuild(buildCtx, filteredTools)
+		roleContract := toolwrap.RoleContractForToolBuild(buildCtx, filteredTools)
 		if roleContract != nil {
-			buildCtx = withRoleToolContract(buildCtx, roleContract)
+			buildCtx = toolwrap.WithRoleToolContract(buildCtx, roleContract)
 		}
 		scope := callBuildScopeFrom(ctx)
 		if scope == nil {
@@ -765,7 +765,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 			for i := 0; i < len(built.Tools); i++ {
 				tool := built.Tools[i]
 				name := tool.Info().Name
-				if !roleContractAllowsName(roleContract, name) {
+				if !toolwrap.RoleContractAllowsName(roleContract, name) {
 					built.Tools = append(built.Tools[:i], built.Tools[i+1:]...)
 					i--
 					continue
@@ -798,7 +798,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 		if bind.controls != nil && !shared {
 			effectiveControls := make([]string, 0, len(allowedControls))
 			for _, name := range allowedControls {
-				if roleContractAllowsName(roleContract, name) && roleContractsAllowName(inheritedContracts, name) {
+				if toolwrap.RoleContractAllowsName(roleContract, name) && toolwrap.RoleContractsAllowName(inheritedContracts, name) {
 					effectiveControls = append(effectiveControls, name)
 				}
 			}
@@ -847,7 +847,7 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 						controlContracts = append(controlContracts, roleContract.Clone())
 					}
 					guard := toolwrap.NewRoleGuardTool(control, controlContracts)
-					built.Tools = append(built.Tools, wrapToolsWithHooks(wrapToolsWithRestrictedRun([]fantasy.AgentTool{guard}, restrictedRunAuthorizer(p.host.permissions())), hookRunner, isSubAgent)[0])
+					built.Tools = append(built.Tools, toolwrap.WrapToolsWithHooks(toolwrap.WrapToolsWithRestrictedRun([]fantasy.AgentTool{guard}, toolwrap.RestrictedRunAuthorizer(p.host.permissions())), hookRunner, isSubAgent)[0])
 				}
 			}
 			built.Tools = toolwrap.FilterRoleContractTools(buildCtx, built.Tools)
@@ -875,8 +875,8 @@ func (p *toolsComponent) finishToolAssembly(ctx context.Context, filteredTools [
 	// restricted-run gate at this assembly boundary as well as at the agent
 	// boundary. This keeps every actual dispatch path fail-closed. Hooks are
 	// applied outside this wrapper below so PreToolUse runs first.
-	filteredTools = decoratePolicyTools(filteredTools, restrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
+	filteredTools = toolwrap.DecoratePolicyTools(filteredTools, toolwrap.RestrictedRunAuthorizer(p.host.permissions()), hookRunner, isSubAgent)
 	filteredTools = toolwrap.FilterRoleContractTools(ctx, filteredTools)
 	// The outer role guard must run before hooks and every other policy layer.
-	return newPolicyToolBuild(filteredTools), nil
+	return toolwrap.NewPolicyToolBuild(filteredTools), nil
 }

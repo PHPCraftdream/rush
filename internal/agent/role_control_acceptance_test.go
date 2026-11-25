@@ -6,12 +6,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/stretchr/testify/require"
 )
 
-func task74AcceptanceTool(t *testing.T, built policyToolBuild, name string) fantasy.AgentTool {
+func task74AcceptanceTool(t *testing.T, built toolwrap.PolicyToolBuild, name string) fantasy.AgentTool {
 	t.Helper()
 	for _, tool := range built.Tools {
 		if tool.Info().Name == name {
@@ -56,7 +58,7 @@ func TestTask74InstalledControlsDispatchAgainstCapturedAndCurrentRoleCaps(t *tes
 	})
 	require.NoError(t, err)
 	require.True(t, forged.IsError)
-	require.Contains(t, forged.Content, ErrRoleToolDenied.Error())
+	require.Contains(t, forged.Content, toolwrap.ErrRoleToolDenied.Error())
 
 	_, err = ask.Run(context.Background(), fantasy.ToolCall{
 		ID: "task74-captured-ask", Name: tools.AskQuestionToolName,
@@ -91,7 +93,7 @@ func TestTask74InstalledControlsDispatchAgainstCapturedAndCurrentRoleCaps(t *tes
 			})
 			require.NoError(t, runErr, "valid input is refused by policy, not by input decoding")
 			require.True(t, response.IsError)
-			require.Contains(t, response.Content, ErrRoleToolDenied.Error())
+			require.Contains(t, response.Content, toolwrap.ErrRoleToolDenied.Error())
 			if tc.name == tools.AskQuestionToolName {
 				var deniedAsk *tools.AskQuestionError
 				require.False(t, errors.As(runErr, &deniedAsk))
@@ -139,5 +141,5 @@ func TestTask74InstalledControlFilteringIntersectsMultipleInheritedGroups(t *tes
 	})
 	require.NoError(t, err, "valid input is refused by policy, not by input decoding")
 	require.True(t, denied.IsError)
-	require.Contains(t, denied.Content, ErrRoleToolDenied.Error())
+	require.Contains(t, denied.Content, toolwrap.ErrRoleToolDenied.Error())
 }

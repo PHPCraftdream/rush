@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -137,9 +139,9 @@ func TestBuiltinRoleResumeUsesSlotModelUnderCustomParentCeiling(t *testing.T) {
 		require.EqualValues(t, 103, got.MaxOutputTokens, "call %d", i)
 		require.True(t, stored.Equal(got.RoleContract), "call %d keeps the stored contract", i)
 		require.Equal(t, "reviewer", got.RoleContract.Name, "call %d", i)
-		require.True(t, roleContractAllowsName(got.RoleContract, "view"), "call %d", i)
-		require.False(t, roleContractAllowsName(got.RoleContract, "bash"), "call %d tools stay capped", i)
-		require.False(t, roleContractAllowsName(got.CallOptions.RoleContract, "bash"), "call %d", i)
+		require.True(t, toolwrap.RoleContractAllowsName(got.RoleContract, "view"), "call %d", i)
+		require.False(t, toolwrap.RoleContractAllowsName(got.RoleContract, "bash"), "call %d tools stay capped", i)
+		require.False(t, toolwrap.RoleContractAllowsName(got.CallOptions.RoleContract, "bash"), "call %d", i)
 	}
 }
 

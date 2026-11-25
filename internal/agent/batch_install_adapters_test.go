@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
@@ -367,7 +369,7 @@ func TestBatchLeafRegistryStoreFailsClosed(t *testing.T) {
 	require.Error(t, err, "unknown identity fails closed")
 	require.Error(t, s.Register("", nil), "empty identity is refused")
 	require.Error(t, s.Register("reg-1", nil), "nil registry is refused")
-	registry := newPolicyToolBuild(nil).Leaves
+	registry := toolwrap.NewPolicyToolBuild(nil).Leaves
 	require.NoError(t, s.Register("reg-1", registry))
 	got, err := s.Resolve("reg-1")
 	require.NoError(t, err)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -151,5 +153,5 @@ func WithParentRoleConfigSnapshot(ctx context.Context, cfg *config.Config) conte
 // parentRoleContractFrom deliberately remains a documented graph exception:
 // its authority must come from the root toolwrap accessor (role_policy.go:70).
 func parentRoleContractFrom(ctx context.Context) *session.RoleContract {
-	return roleContractFromContext(ctx)
+	return toolwrap.RoleContractFromContext(ctx)
 }

@@ -25,7 +25,7 @@ type privateFetchIngressTool = toolwrap.PrivateFetchIngressTool
 // shell: the root-owned pinned registry and the pre-built childagent.PinnedInvoke
 // pass through the shell's Registry/Invoke fields — no package-agent
 // identifiers cross into toolwrap.
-func newPrivateFetchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, invoke childagent.PinnedInvoke) *toolwrap.PrivateFetchIngressTool {
+func newPrivateFetchIngressShell(tool fantasy.AgentTool, leaves *toolwrap.PolicyLeafRegistry, invoke childagent.PinnedInvoke) *toolwrap.PrivateFetchIngressTool {
 	return &toolwrap.PrivateFetchIngressTool{
 		AgentTool: tool,
 		Registry:  leaves,
@@ -44,8 +44,8 @@ func withPrivateFetchIngress(ctx context.Context, invoke childagent.PinnedInvoke
 // explicitly — this function reads nothing from ctx for scoping and has NO
 // fallback. A nil scope with an armed ingress fails closed through
 // armPrivateFetchIngress.
-func buildPrivateFetchTools(ctx context.Context, list []fantasy.AgentTool, authorizer permission.RestrictedRunAuthorizer, scope *buildResourceScope) policyToolBuild {
-	built := newPolicyToolBuildForContext(ctx, decoratePolicyTools(list, authorizer, nil, true))
+func buildPrivateFetchTools(ctx context.Context, list []fantasy.AgentTool, authorizer permission.RestrictedRunAuthorizer, scope *buildResourceScope) toolwrap.PolicyToolBuild {
+	built := toolwrap.NewPolicyToolBuildForContext(ctx, toolwrap.DecoratePolicyTools(list, authorizer, nil, true))
 	// R11F (M3) flag-on: resolve the ONE authority (explicit ctx binding
 	// only — the process-global fallback is eliminated, R12-H2 §1.3), pin
 	// this build's leaves under a fresh identity and re-arm every private
@@ -85,7 +85,7 @@ func privateFetchIngressFor(ctx context.Context) BatchWorkIngress {
 // CustomDisk at this arming point.
 // R12-H2 §1.2: the pin takes a Construction owner released in the call's
 // build-resource scope; a missing manager or scope fails closed.
-func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress BatchWorkIngress, scope *buildResourceScope) policyToolBuild {
+func armPrivateFetchIngress(ctx context.Context, built toolwrap.PolicyToolBuild, ingress BatchWorkIngress, scope *buildResourceScope) toolwrap.PolicyToolBuild {
 	registryID, err := ingress.PinLeafRegistry(built.Leaves)
 	if err == nil {
 		// Record the pinned identity on the build so owners of the build can
@@ -122,7 +122,7 @@ func armPrivateFetchIngress(ctx context.Context, built policyToolBuild, ingress 
 		// the comma-joined leaf names), not the registry ID — a
 		// provider-backed private payload must pass hasToolset at the
 		// executor without bypassing it.
-		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: installwire.ToolsetFingerprint(built.Tools), RoleContract: agentcall.CloneRoleContractForCall(roleContractForToolBuild(ctx, built.Tools))},
+		Policy: batchLeafPolicyContext{RegistryID: registryID, RestrictedToolset: installwire.ToolsetFingerprint(built.Tools), RoleContract: agentcall.CloneRoleContractForCall(toolwrap.RoleContractForToolBuild(ctx, built.Tools))},
 	}
 	invoke := batchPinnedInvoke(ingress, tpl)
 	ingressList := make([]fantasy.AgentTool, len(built.Tools))

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
@@ -92,8 +94,8 @@ func TestCustomRoleChildResumeRefreshesModelAndPreservesDurableTools(t *testing.
 	require.Equal(t, callbeat.HbSourceSlotLive, resumed.RequestedModelSource)
 	require.NotNil(t, resumed.CallOptions.RoleContract)
 	require.True(t, contract.Equal(resumed.CallOptions.RoleContract))
-	require.True(t, RoleContractAllowsTool(resumed.CallOptions.RoleContract, "view"))
-	require.False(t, RoleContractAllowsTool(resumed.CallOptions.RoleContract, "bash"))
+	require.True(t, toolwrap.RoleContractAllowsTool(resumed.CallOptions.RoleContract, "view"))
+	require.False(t, toolwrap.RoleContractAllowsTool(resumed.CallOptions.RoleContract, "bash"))
 	persisted, found, err := store.GetSessionRoleContract(t.Context(), childID)
 	require.NoError(t, err)
 	require.True(t, found)
