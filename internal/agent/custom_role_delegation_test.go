@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/config"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/stretchr/testify/require"
@@ -46,20 +47,20 @@ func TestRootRoleBindingScopesContractToLogicalCall(t *testing.T) {
 	first, err := ResolveRoleContract(customRoleResolverConfig(), "analyst", nil)
 	require.NoError(t, err)
 	call := SessionAgentCall{SessionID: root.ID, LogicalCallID: "root-logical-1", CallOptions: &CallOptions{RoleContract: first}}
-	require.NoError(t, bindRootRoleContract(t.Context(), env.sessions, call))
-	restored, err := restoreRootRoleContract(t.Context(), env.sessions, SessionAgentCall{SessionID: root.ID, LogicalCallID: "root-logical-1"})
+	require.NoError(t, delegation.BindRootRoleContract(t.Context(), env.sessions, call))
+	restored, err := delegation.RestoreRootRoleContract(t.Context(), env.sessions, SessionAgentCall{SessionID: root.ID, LogicalCallID: "root-logical-1"})
 	require.NoError(t, err)
 	require.True(t, first.Equal(restored.CallOptions.RoleContract))
 	second, err := ResolveRoleContract(customRoleResolverConfig(), "analyst", &session.RoleContract{Version: session.RoleContractVersion, Tools: &[]string{"view"}})
 	require.NoError(t, err)
 	newCall := SessionAgentCall{SessionID: root.ID, LogicalCallID: "root-logical-2", RoleContract: second}
-	require.NoError(t, bindRootRoleContract(t.Context(), env.sessions, newCall))
+	require.NoError(t, delegation.BindRootRoleContract(t.Context(), env.sessions, newCall))
 	logicalID, current, found, err := store.GetRootRoleContract(t.Context(), root.ID)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "root-logical-2", logicalID)
 	require.True(t, second.Equal(current))
-	stale, err := restoreRootRoleContract(t.Context(), env.sessions, SessionAgentCall{SessionID: root.ID, LogicalCallID: "root-logical-1"})
+	stale, err := delegation.RestoreRootRoleContract(t.Context(), env.sessions, SessionAgentCall{SessionID: root.ID, LogicalCallID: "root-logical-1"})
 	require.NoError(t, err)
 	require.Nil(t, stale.CallOptions, "a prior root execution is not pinned into a new logical call")
 }

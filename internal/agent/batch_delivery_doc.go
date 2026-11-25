@@ -30,13 +30,13 @@ Old -> new:
     implicit default. escape=never ignores the window entirely; escape=auto
     with mode detached behaves as detached. The window wait races via the
     injectable batchDeliveryDeps.Timer seam (nil = time.After).
-  - async cancel-and-wait -> cancelBatchCall: Runner.Stop under a bounded,
+  - async cancel-and-wait -> batchmeta.CancelCall: Runner.Stop under a bounded,
     non-cancelled control context detached from the caller's context; the
     outcome returns promptly; a Stop acknowledgement never settles (Settled is
     always false) and held physical termination keeps the admission unit
     occupied until the root's real report. WIRING: deliverSync is the ONLY
     caller — when the caller's ctx is done BEFORE the root completed it calls
-    cancelBatchCall exactly once and returns the caller's ctx error promptly
+    batchmeta.CancelCall exactly once and returns the caller's ctx error promptly
     (a Stop error is joined alongside it); deliverInline and deliverDetached
     NEVER Stop. The Runner is a REQUIRED batchDeliveryDeps field (fail-closed
     construction), and a Stop acknowledgement is never returned as the root's

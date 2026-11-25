@@ -91,7 +91,7 @@ func TestGuardTurnDiskFence_RefusesOptionslessTurnOnFencedSession(t *testing.T) 
 	_, err = caps.Lookup(bindingC)
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable,
 		"the fixture must model the stale-fence state: bindingC's binding must be dead")
-	ctx = WithExecutionProviderIntent(ctx, "s1", batchlife.ExecutionProviderOS)
+	ctx = batchlife.WithExecutionProviderIntent(ctx, "s1", batchlife.ExecutionProviderOS)
 	err = coord.guardTurnDiskFence(ctx, "s1", &CallOptions{DiskProvider: tools.OSDisk()})
 	require.NoError(t, err)
 	// The normalized OS provider with omitted caller intent is NOT authority

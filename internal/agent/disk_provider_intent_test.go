@@ -22,7 +22,7 @@ func TestGuardTurnDiskFence_NormalizedOSRequiresExplicitIntent(t *testing.T) {
 	require.ErrorIs(t, err, ErrDiskProviderUnavailable,
 		"an omitted provider normalized to OSDisk must not supersede or bypass a persistent fence")
 
-	explicit := WithExecutionProviderIntent(ctx, "s-os-intent", batchlife.ExecutionProviderOS)
+	explicit := batchlife.WithExecutionProviderIntent(ctx, "s-os-intent", batchlife.ExecutionProviderOS)
 	err = coord.guardTurnDiskFence(explicit, "s-os-intent", normalized)
 	require.NoError(t, err,
 		"explicit OSDiskProvider intent is authorized to establish a new epoch")

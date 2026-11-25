@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/stretchr/testify/require"
@@ -100,12 +101,12 @@ func (c *childBGFixture) finishShell() {
 // awaitRelease waits for the release's observable effect (the child's one
 // Drain ran). The deleted ledger-era implementation read the onWebDone
 // delivery channel; batch delivery is the batch executor's.
-func (c *childBGFixture) awaitRelease() AsyncCompletion {
+func (c *childBGFixture) awaitRelease() batchdispatch.AsyncCompletion {
 	c.t.Helper()
 	require.Eventually(c.t, func() bool { return c.runs.runs.Load() >= 1 },
 		10*time.Second, 10*time.Millisecond,
 		"the delegation never released (the child's Drain never ran)")
-	return AsyncCompletion{ToolCallID: "delegate-1"}
+	return batchdispatch.AsyncCompletion{ToolCallID: "delegate-1"}
 }
 
 // TestBGShellDone_DelegatedChildIsWokenWhateverTheClaimSays: the child's shell

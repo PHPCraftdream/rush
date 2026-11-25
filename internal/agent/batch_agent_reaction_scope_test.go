@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -89,8 +90,8 @@ func TestBatchAgentReactionScope_RefreshReplacesStaleYieldWithFinalOutcome(t *te
 	// STALE RESULT CAPTURE: settling with the initial pre-reaction yield
 	// text instead of the child's final outcome.
 	facts := pscChildReactionFacts{
-		outcome: func(context.Context, string, AsyncCompletion) (AsyncCompletion, bool) {
-			return AsyncCompletion{Content: "child done: build output received"}, true
+		outcome: func(context.Context, string, batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
+			return batchdispatch.AsyncCompletion{Content: "child done: build output received"}, true
 		},
 	}
 	got := pscRefreshedTurnResult(facts,
@@ -106,8 +107,8 @@ func TestBatchAgentReactionScope_RefreshDeliversReactionFailureNotStaleSuccess(t
 	// Catches: a permanently failed reaction settlement being reported as
 	// the child's stale success text.
 	facts := pscChildReactionFacts{
-		outcome: func(context.Context, string, AsyncCompletion) (AsyncCompletion, bool) {
-			return AsyncCompletion{Content: "wake_failed: child reaction failed", IsError: true}, true
+		outcome: func(context.Context, string, batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
+			return batchdispatch.AsyncCompletion{Content: "wake_failed: child reaction failed", IsError: true}, true
 		},
 	}
 	got := pscRefreshedTurnResult(facts,
@@ -121,8 +122,8 @@ func TestBatchAgentReactionScope_RefreshDeliversReactionFailureNotStaleSuccess(t
 func TestBatchAgentReactionScope_RefreshKeepsInitialWhenOutcomeUnavailable(t *testing.T) {
 	t.Parallel()
 	facts := pscChildReactionFacts{
-		outcome: func(context.Context, string, AsyncCompletion) (AsyncCompletion, bool) {
-			return AsyncCompletion{}, false
+		outcome: func(context.Context, string, batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
+			return batchdispatch.AsyncCompletion{}, false
 		},
 	}
 	got := pscRefreshedTurnResult(facts,
@@ -151,9 +152,9 @@ func TestBatchAgentReactionScope_RefreshSkippedForTurnErrorNoChildAndUnselected(
 			t.Parallel()
 			var called atomic.Bool
 			facts := pscChildReactionFacts{
-				outcome: func(context.Context, string, AsyncCompletion) (AsyncCompletion, bool) {
+				outcome: func(context.Context, string, batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
 					called.Store(true)
-					return AsyncCompletion{Content: "unrelated"}, true
+					return batchdispatch.AsyncCompletion{Content: "unrelated"}, true
 				},
 			}
 			got := pscRefreshedTurnResult(facts, tc.req, initial, tc.err)
@@ -172,8 +173,8 @@ func TestBatchAgentReactionScope_WatchSettlesRefreshedOutcome(t *testing.T) {
 		deps: batchAgentDeps{
 			Descendants: pscTerminalDescendants{},
 			ChildFacts: pscChildReactionFacts{
-				outcome: func(context.Context, string, AsyncCompletion) (AsyncCompletion, bool) {
-					return AsyncCompletion{Content: "child done: build output received"}, true
+				outcome: func(context.Context, string, batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
+					return batchdispatch.AsyncCompletion{Content: "child done: build output received"}, true
 				},
 			},
 		},

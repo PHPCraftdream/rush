@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
@@ -101,7 +102,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// callback context. Re-arm it for the whole turn and, for a no-route
 	// incarnation, keep even a fallback toolset stripped of the stale
 	// ask tool — fail closed, never a raw ask on an unattended child.
-	ctx = armBatchQuestionTurnContext(ctx, call)
+	ctx = batchmeta.ArmBatchQuestionTurnContext(ctx, call, state.WithQuestionContext, withBatchAgentQuestionBinding)
 	if state := call.BatchQuestion; state != nil && !state.Route {
 		agentTools = batchmeta.StripAskQuestionTools(agentTools)
 		call.Tools = agentTools

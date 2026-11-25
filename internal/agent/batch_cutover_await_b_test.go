@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -72,7 +73,7 @@ func TestAWbStopAdmissionFourBAndDelivery(t *testing.T) {
 	// 3. Stop ACCEPTANCE: accepted, submitted, NEVER settles; R stays live.
 	// The executor Stop is BLOCKED in the gate: acceptance returned, the
 	// dispatched async Stop (runner_control.go) has not.
-	out := cancelBatchCall(env.ctx, env.install.RunnerHandle, jobbatch.ID(rootR))
+	out := batchmeta.CancelCall(env.ctx, env.install.RunnerHandle, jobbatch.ID(rootR))
 	require.NoError(t, out.Err, "Stop accepted")
 	require.True(t, out.Submitted)
 	require.False(t, out.Settled, "a Stop acknowledgement never settles")
@@ -215,7 +216,7 @@ func TestAWbDebtFreeVariant(t *testing.T) {
 	rootR := env.submitBatchRootUnannounced("call-bf-r", 1, gatedView)
 	rCall := leafItemCalls("call-bf-r", 1)[0]
 	gatedView.waitStarted(t, rCall)
-	out := cancelBatchCall(env.ctx, env.install.RunnerHandle, jobbatch.ID(rootR))
+	out := batchmeta.CancelCall(env.ctx, env.install.RunnerHandle, jobbatch.ID(rootR))
 	require.NoError(t, out.Err)
 	require.True(t, out.Submitted)
 	require.False(t, out.Settled)

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/session"
 )
@@ -51,7 +52,7 @@ func (d batchCoordinatorDescendants) DescendantsLive(ctx context.Context, req ba
 
 type pscChildReactionFacts struct {
 	scope   func(context.Context, string) (CLIScopeState, error)
-	outcome func(context.Context, string, AsyncCompletion) (AsyncCompletion, bool)
+	outcome func(context.Context, string, batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool)
 }
 
 func projectChildScope(st CLIScopeState) state.ChildScope {
@@ -71,6 +72,6 @@ func (f pscChildReactionFacts) ChildReactionScopeOpen(ctx context.Context, child
 	return facts.ChildReactionScopeOpen(ctx, childSessionID)
 }
 
-func (f pscChildReactionFacts) ChildFinalOutcome(ctx context.Context, childSessionID string, initial AsyncCompletion) (AsyncCompletion, bool) {
+func (f pscChildReactionFacts) ChildFinalOutcome(ctx context.Context, childSessionID string, initial batchdispatch.AsyncCompletion) (batchdispatch.AsyncCompletion, bool) {
 	return (state.ReactionFacts{Outcome: f.outcome}).ChildFinalOutcome(ctx, childSessionID, initial)
 }

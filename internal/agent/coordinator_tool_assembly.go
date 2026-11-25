@@ -15,7 +15,7 @@ import (
 // restrictions run once here, then every batch-admissible work tool is
 // re-armed through the ONE authority (batchRuntime.Invoke) and the old
 // async/stall wrappers are NOT installed. allowed is the build's control
-// grant list: batchControlAvailability over the final filtered tools and
+// grant list: batchinst.ControlAvailability over the final filtered tools and
 // AllowedTools, computed once in buildPolicyTools.
 func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string, configs ...*config.Config) (toolwrap.PolicyToolBuild, error) {
 	return newToolsComponent(c).finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowed, configs...)
