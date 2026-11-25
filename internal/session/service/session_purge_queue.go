@@ -6,6 +6,8 @@ package session
 
 import (
 	"context"
+
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sesstypes"
 )
 
 // PurgedQueuedWork reports how many durable queued-work rows of one session
@@ -46,7 +48,7 @@ func (s *service) PurgeQueuedWorkForSession(ctx context.Context, sessionID strin
 	}{
 		{
 			`DELETE FROM session_run_queue WHERE session_id = ? AND id NOT IN (?, ?)`,
-			[]any{sessionID, SessionExecutionRequirementRowID(sessionID), SessionCredentialMarkerRowID(sessionID)},
+			[]any{sessionID, sesstypes.SessionExecutionRequirementRowID(sessionID), sesstypes.SessionCredentialMarkerRowID(sessionID)},
 			&purged.RunQueue,
 		},
 		{`DELETE FROM pending_injects WHERE session_id = ?`, []any{sessionID}, &purged.PendingInject},
