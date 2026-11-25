@@ -20,6 +20,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/dev/testguard"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
 )
 
 var processTestBuild struct {
@@ -80,9 +81,9 @@ func processTestLaunch(program string, args []string, cap *int) jobbatch.Launch 
 	return jobbatch.Launch{Task: jobbatch.TaskSpec{Kind: "process", Payload: data}}
 }
 
-func processTestStart(t *testing.T, ceiling int, cap *int, args ...string) (*processExecution, chan jobbatch.Result) {
+func processTestStart(t *testing.T, ceiling int, cap *int, args ...string) (*process.ProcessExecution, chan jobbatch.Result) {
 	t.Helper()
-	executor, err := NewProcessExecutor(ProcessOptions{MaxRetainedBytes: ceiling})
+	executor, err := process.NewProcessExecutor(process.ProcessOptions{MaxRetainedBytes: ceiling})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,22 +94,22 @@ func processTestStart(t *testing.T, ceiling int, cap *int, args ...string) (*pro
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution := handle.(*processExecution)
+	execution := handle.(*process.ProcessExecution)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if processTestAlive(execution.cmd.Process.Pid) {
-			processTestKillPID(execution.cmd.Process.Pid)
+		if processTestAlive(execution.Cmd.Process.Pid) {
+			processTestKillPID(execution.Cmd.Process.Pid)
 		}
-		processTestWaitPID(t, execution.cmd.Process.Pid)
+		processTestWaitPID(t, execution.Cmd.Process.Pid)
 		if err := execution.Stop(ctx); err != nil {
-			t.Errorf("cleanup stop PID %d: %v", execution.cmd.Process.Pid, err)
+			t.Errorf("cleanup stop PID %d: %v", execution.Cmd.Process.Pid, err)
 		}
 		if err := execution.Dispose(ctx); err != nil {
 			t.Errorf("cleanup dispose: %v", err)
 		}
-		if processTestAlive(execution.cmd.Process.Pid) {
-			t.Errorf("leaked PID %d", execution.cmd.Process.Pid)
+		if processTestAlive(execution.Cmd.Process.Pid) {
+			t.Errorf("leaked PID %d", execution.Cmd.Process.Pid)
 		}
 	})
 	return execution, reports
@@ -125,7 +126,7 @@ func processTestReport(t *testing.T, reports <-chan jobbatch.Result) jobbatch.Re
 	return jobbatch.Result{}
 }
 
-func processTestReady(t *testing.T, p *processExecution, needle string) string {
+func processTestReady(t *testing.T, p *process.ProcessExecution, needle string) string {
 	t.Helper()
 	var text string
 	var cursor uint64
@@ -164,7 +165,7 @@ func TestProcessExitsAndMissingProgram(t *testing.T) {
 		default:
 		}
 	}
-	executor, _ := NewProcessExecutor(ProcessOptions{MaxRetainedBytes: 128})
+	executor, _ := process.NewProcessExecutor(process.ProcessOptions{MaxRetainedBytes: 128})
 	missing := filepath.Join(t.TempDir(), "missing-program")
 	handle, err := executor.Start(processTestContext(t), processTestLaunch(missing, nil, nil), func(jobbatch.Result) { t.Error("rejected start reported") })
 	var coded interface{ Code() string }
@@ -206,11 +207,11 @@ func TestProcessMergedOutputRetention(t *testing.T) {
 func TestProcessLiveOutputAndRepeatStop(t *testing.T) {
 	// Catches null-stdin termination, false live EOF and non-idempotent cancellation.
 	p, reports := processTestStart(t, 128, nil, "hold")
-	if p.cmd.Stdin != nil {
+	if p.Cmd.Stdin != nil {
 		t.Fatal("stdin must be nil")
 	}
 	text := processTestReady(t, p, "ready ")
-	pid := p.cmd.Process.Pid
+	pid := p.Cmd.Process.Pid
 	if !strings.Contains(text, fmt.Sprintf("ready %d\n", pid)) || !processTestAlive(pid) {
 		t.Fatalf("ready: %q", text)
 	}
@@ -305,10 +306,10 @@ func TestProcessTreeIsolation(t *testing.T) {
 	if result := processTestReport(t, reports); result.State != jobbatch.StateCancelled {
 		t.Fatalf("result: %+v", result)
 	}
-	if processTestAlive(descendant) || processTestAlive(tree.cmd.Process.Pid) {
+	if processTestAlive(descendant) || processTestAlive(tree.Cmd.Process.Pid) {
 		t.Fatal("tree alive at report")
 	}
-	if !processTestAlive(sentinel.Process.Pid) || !processTestAlive(sibling.cmd.Process.Pid) {
+	if !processTestAlive(sentinel.Process.Pid) || !processTestAlive(sibling.Cmd.Process.Pid) {
 		t.Fatal("collateral kill")
 	}
 	if sentinelOutput != fmt.Sprintf("ready %d\n", sentinel.Process.Pid) {
@@ -323,7 +324,7 @@ func TestProcessTreeIsolation(t *testing.T) {
 		t.Fatal("sibling reported")
 	default:
 	}
-	t.Logf("PID checks: leader %d and descendant %d gone; sentinel %d and sibling %d alive", tree.cmd.Process.Pid, descendant, sentinel.Process.Pid, sibling.cmd.Process.Pid)
+	t.Logf("PID checks: leader %d and descendant %d gone; sentinel %d and sibling %d alive", tree.Cmd.Process.Pid, descendant, sentinel.Process.Pid, sibling.Cmd.Process.Pid)
 }
 
 func TestProcessLeaderGoneReportBarrier(t *testing.T) {
@@ -343,12 +344,12 @@ func TestProcessLeaderGoneReportBarrier(t *testing.T) {
 		}
 	})
 	processTestMember(t, p, descendant)
-	if err := p.cmd.Process.Kill(); err != nil {
+	if err := p.Cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	processTestWaitPID(t, p.cmd.Process.Pid)
+	processTestWaitPID(t, p.Cmd.Process.Pid)
 	select {
-	case <-p.leaderDone:
+	case <-p.LeaderDone:
 	case <-processTestContext(t).Done():
 		t.Fatal("leader not reaped")
 	}
@@ -371,12 +372,12 @@ func TestProcessLeaderGoneReportBarrier(t *testing.T) {
 		t.Fatalf("natural leader outcome lost: %+v", result)
 	}
 	processTestWaitPID(t, descendant)
-	t.Logf("report barrier confirmed for leader %d descendant %d", p.cmd.Process.Pid, descendant)
+	t.Logf("report barrier confirmed for leader %d descendant %d", p.Cmd.Process.Pid, descendant)
 }
 
 func TestProcessBlockingCallbackAndCancelledStart(t *testing.T) {
 	// Catches callback-blocked Start and side effects on pre-cancelled setup.
-	executor, _ := NewProcessExecutor(ProcessOptions{MaxRetainedBytes: 128})
+	executor, _ := process.NewProcessExecutor(process.ProcessOptions{MaxRetainedBytes: 128})
 	entered, release := make(chan struct{}), make(chan struct{})
 	defer close(release)
 	returned := make(chan jobbatch.Execution, 1)
@@ -404,7 +405,7 @@ func TestProcessBlockingCallbackAndCancelledStart(t *testing.T) {
 	if err := p.(jobbatch.Disposer).Dispose(processTestContext(t)); err != nil {
 		t.Fatal(err)
 	}
-	if processTestAlive(p.(*processExecution).cmd.Process.Pid) {
+	if processTestAlive(p.(*process.ProcessExecution).Cmd.Process.Pid) {
 		t.Fatal("leaked callback process")
 	}
 	ctx, cancel := context.WithCancel(context.Background())

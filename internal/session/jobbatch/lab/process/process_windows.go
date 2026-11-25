@@ -1,6 +1,6 @@
 //go:build windows
 
-package lab
+package process
 
 import (
 	"fmt"
@@ -11,10 +11,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type processTree struct{ job windows.Handle }
+type ProcessTree struct{ Job windows.Handle }
 
-func processSupported() bool { return true }
-func processPrepare(cmd *exec.Cmd) (*processTree, error) {
+func ProcessSupported() bool { return true }
+func ProcessPrepare(cmd *exec.Cmd) (*ProcessTree, error) {
 	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -26,16 +26,16 @@ func processPrepare(cmd *exec.Cmd) (*processTree, error) {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
-	return &processTree{job: job}, nil
+	return &ProcessTree{Job: job}, nil
 }
 
-func (t *processTree) attach(cmd *exec.Cmd) error {
+func (t *ProcessTree) attach(cmd *exec.Cmd) error {
 	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		return err
 	}
 	defer windows.CloseHandle(process)
-	if err := windows.AssignProcessToJobObject(t.job, process); err != nil {
+	if err := windows.AssignProcessToJobObject(t.Job, process); err != nil {
 		return err
 	}
 	// Go closes the primary thread handle; resume the assigned process via NT.
@@ -49,9 +49,9 @@ func (t *processTree) attach(cmd *exec.Cmd) error {
 	}
 	return nil
 }
-func (t *processTree) term() error { return t.kill() }
-func (t *processTree) kill() error { return windows.TerminateJobObject(t.job, 1) }
-func (t *processTree) awaitGone() {
+func (t *ProcessTree) term() error { return t.kill() }
+func (t *ProcessTree) kill() error { return windows.TerminateJobObject(t.Job, 1) }
+func (t *ProcessTree) awaitGone() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -59,7 +59,7 @@ func (t *processTree) awaitGone() {
 			UserTime, KernelTime, PeriodUserTime, PeriodKernelTime           int64
 			PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses uint32
 		}
-		err := windows.QueryInformationJobObject(t.job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
+		err := windows.QueryInformationJobObject(t.Job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil)
 		if err == nil && info.ActiveProcesses == 0 {
 			return
 		}
@@ -67,7 +67,7 @@ func (t *processTree) awaitGone() {
 	}
 }
 
-func processLeaderExited(cmd *exec.Cmd) bool {
+func ProcessLeaderExited(cmd *exec.Cmd) bool {
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		return false
@@ -77,4 +77,4 @@ func processLeaderExited(cmd *exec.Cmd) bool {
 	return err == nil && status == windows.WAIT_OBJECT_0
 }
 
-func (t *processTree) dispose() error { return windows.CloseHandle(t.job) }
+func (t *ProcessTree) dispose() error { return windows.CloseHandle(t.Job) }

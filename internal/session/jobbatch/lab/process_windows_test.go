@@ -7,6 +7,8 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/process"
+
 	"golang.org/x/sys/windows"
 )
 
@@ -27,7 +29,7 @@ func processTestWaitPID(t *testing.T, pid int) {
 	t.Logf("PID %d confirmed dead", pid)
 }
 
-func processTestMember(t *testing.T, p *processExecution, pid int) {
+func processTestMember(t *testing.T, p *process.ProcessExecution, pid int) {
 	t.Helper()
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
@@ -36,7 +38,7 @@ func processTestMember(t *testing.T, p *processExecution, pid int) {
 	defer windows.CloseHandle(handle)
 	var member int32
 	call := windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
-	ok, _, err := call.Call(uintptr(handle), uintptr(p.tree.job), uintptr(unsafe.Pointer(&member)))
+	ok, _, err := call.Call(uintptr(handle), uintptr(p.Tree.Job), uintptr(unsafe.Pointer(&member)))
 	if ok == 0 || member == 0 {
 		t.Fatalf("PID %d outside execution job: %v", pid, err)
 	}
