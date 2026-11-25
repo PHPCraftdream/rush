@@ -16,9 +16,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PHPCraftdream/rush/internal/app/appbatch"
-
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/app/appbatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -219,7 +219,7 @@ func pp4PullNotices(t *testing.T, application *App, owner string) int {
 // pp4BuildBatchNoticeParams mirrors the production buildBatchNoticeMessage
 func pp4BuildBatchNoticeParams(row session.BatchNoticeRow) message.CreateMessageParams {
 	recovered := row.State == "interrupted" || row.OutcomeCode == "host_lost"
-	completion := agent.AsyncCompletion{
+	completion := batchdispatch.AsyncCompletion{
 		ToolCallID: row.ToolCallID,
 		ToolName:   "",
 		Content:    row.OutcomeSummary,

@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +65,7 @@ func assertCallbackGracefulJoin(t *testing.T, notify bool) {
 		}
 		if notify {
 			c.notifyCallbackHook = hook
-			c.notifyAsyncCompletion(AsyncCompletion{SessionID: "completion"})
+			c.notifyAsyncCompletion(batchdispatch.AsyncCompletion{SessionID: "completion"})
 		} else {
 			c.releaseCallbackHook = hook
 			releaseJoinReservation(t, a)
@@ -97,7 +98,7 @@ func assertCallbackGracefulJoin(t *testing.T, notify bool) {
 		}
 		require.False(t, <-returned, "callback completion must allow graceful shutdown")
 		if notify {
-			c.notifyAsyncCompletion(AsyncCompletion{SessionID: "late-completion"})
+			c.notifyAsyncCompletion(batchdispatch.AsyncCompletion{SessionID: "late-completion"})
 			c.notifyWG.Wait()
 			require.EqualValues(t, 1, calls.Load(), "late durable completion must not spawn a wake")
 		}

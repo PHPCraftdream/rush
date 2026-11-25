@@ -384,7 +384,7 @@ func TestBuildTools_WorkerResolvedToolsetByName(t *testing.T) {
 
 	// The worker's complete expected toolset, by name: read-only base
 	// (resolveReadOnlyTools) plus the worker layering
-	// (workerLayeredToolNames -> workerToolNamesBatch,
+	// (batchinst.WorkerToolNames -> workerToolNamesBatch,
 	// batch_allowed_controls.go), which grants the native
 	// batch_status/batch_output read names in AllowedTools on top of the
 	// base list.

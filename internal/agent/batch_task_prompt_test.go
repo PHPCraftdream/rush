@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,7 @@ func TestTaskPromptRendersBatchLifecycleGuidance(t *testing.T) {
 	require.Contains(t, got, "use `batch_stop` only for batches you own or that belong to descendants.")
 
 	for _, name := range []string{"await_tasks", "batch_status", "batch_output", "batch_stop"} {
-		require.Contains(t, workerLayeredToolNames(), name, "task-worker guidance must refer to a wired tool")
+		require.Contains(t, batchinst.WorkerToolNames(workerToolNames), name, "task-worker guidance must refer to a wired tool")
 	}
 	storeBatch, conn, ctx := newTestBatchStore(t)
 	deps := installTestDeps(t, storeBatch, conn, "ok")

@@ -7,6 +7,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +43,7 @@ func TestRefreshSubAgentCompletion_NoFinalTextUsesFixedWording(t *testing.T) {
 	coord := newBatchRuntimeCoordinator()
 	coord.messages = env.messages
 
-	captured := AsyncCompletion{Content: "child yielded: gate still running", ToolCallID: "parent-call"}
+	captured := batchdispatch.AsyncCompletion{Content: "child yielded: gate still running", ToolCallID: "parent-call"}
 	got := coord.refreshSubAgentCompletion(child.ID, captured)
 
 	require.Equal(t, "завершено без итогового ответа", got.Content)
@@ -63,6 +64,6 @@ func TestRefreshSubAgentCompletion_TextStillWins(t *testing.T) {
 	coord := newBatchRuntimeCoordinator()
 	coord.messages = env.messages
 
-	got := coord.refreshSubAgentCompletion(child.ID, AsyncCompletion{Content: "stale"})
+	got := coord.refreshSubAgentCompletion(child.ID, batchdispatch.AsyncCompletion{Content: "stale"})
 	require.Equal(t, "the real final answer", got.Content)
 }

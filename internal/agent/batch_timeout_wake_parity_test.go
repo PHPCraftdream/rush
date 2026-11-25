@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -126,7 +127,7 @@ func TestBatchTimeoutWakeParity_TerminatedNodeCommitsTimeoutNoticeWake(t *testin
 	require.Equal(t, root, pulled[0].RootID)
 	require.Equal(t, child, pulled[0].NodeID)
 	require.True(t, pulled[0].Wake, "the delivered notice carries the wake to the owner (legacy: notifyAsyncCompletion's Drain wake)")
-	expected := FormatAsyncCompletion(AsyncCompletion{ToolCallID: callID, Content: "fixture timeout", TimedOut: true})
+	expected := FormatAsyncCompletion(batchdispatch.AsyncCompletion{ToolCallID: callID, Content: "fixture timeout", TimedOut: true})
 	require.Equal(t, expected, pulled[0].Message.FullText(), "the batch timeout delivery uses the same formatter/wording as the legacy timed_out completion")
 	require.NotContains(t, pulled[0].Message.FullText(), "still running", "a TERMINAL timeout notice never uses the wake_only check-in wording")
 

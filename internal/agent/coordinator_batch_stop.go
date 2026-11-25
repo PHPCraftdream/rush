@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
@@ -35,7 +36,7 @@ func (c *coordinator) stopBatchOwners(ids []string) {
 		if target.Host != "" && (localHost == "" || target.Host != localHost) {
 			continue
 		}
-		if out := cancelBatchCall(stopCtx, runtimeRunner, jobbatch.ID(target.Root)); out.Err != nil {
+		if out := batchmeta.CancelCall(stopCtx, runtimeRunner, jobbatch.ID(target.Root)); out.Err != nil {
 			// A failed cancellation must leave the durable request pending for retry.
 			slog.Error("coordinator.Cancel: batch stop failed", "owner", target.Owner, "root", target.Root, "err", out.Err)
 			continue

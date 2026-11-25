@@ -67,7 +67,7 @@ func (h coordinatorDrainHost) sessionNoticeStore() *session.SessionNoticeStore {
 }
 
 func (h coordinatorDrainHost) driverMarkerStore() batchflow.BatchDriverClaimer {
-	return h.coordinator.driverMarkerStore()
+	return newBatchCutoverGlueComponent(h.coordinator).driverMarkerStore()
 }
 
 func (h coordinatorDrainHost) sessionsService() coresession.Service { return h.coordinator.sessions }

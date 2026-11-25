@@ -6,6 +6,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 )
 
@@ -21,7 +22,7 @@ type batchDeliveryDeps struct {
 	Done  batchDoneSource
 	Elect batchcore.Elector
 	// Runner is the engine handle; SYNC caller cancellation submits Stop
-	// through it (cancelBatchCall). Required, fails closed without it.
+	// through it (batchmeta.CancelCall). Required, fails closed without it.
 	Runner batchcore.RunnerHandle
 	// ArmSupervision arms (or resumes) the owner session's supervision
 	// timer when this delivery answers with the STARTED response — the
@@ -50,7 +51,7 @@ func newBatchDelivery(d batchDeliveryDeps) (*batchDeliveryImpl, error) {
 	deps := batchcore.DeliveryDeps{Owner: d.Owner, Done: d.Done, Elect: d.Elect, Timer: d.Timer, ArmSupervision: d.ArmSupervision}
 	if d.Runner != nil {
 		deps.Cancel = func(ctx context.Context, root jobbatch.ID) error {
-			return cancelBatchCall(ctx, d.Runner, root).Err
+			return batchmeta.CancelCall(ctx, d.Runner, root).Err
 		}
 	}
 	if d.ToolResultReceipt != nil {

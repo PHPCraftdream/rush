@@ -160,7 +160,7 @@ func (b *Delivery) DeliverBatch(ctx context.Context, root jobbatch.ID, inv Deliv
 // data/type, metadata, IsError) is forwarded, never collapsed to text.
 //
 // Caller cancellation: if the CALLER's ctx is done BEFORE the root completed,
-// cancelBatchCall submits Stop exactly once under a bounded noncancelled
+// batchmeta.CancelCall submits Stop exactly once under a bounded noncancelled
 // control context and the caller's ctx error is returned promptly — never a
 // Stop-derived envelope, and Settled stays false. ONLY sync does this: an
 // inline or detached caller leaving never cancels the root.

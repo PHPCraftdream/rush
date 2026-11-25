@@ -81,7 +81,7 @@ func TestBatchCancelControlContextSurvivesCallerCancel(t *testing.T) {
 		require.True(t, hasDeadline, "control context must carry its own bound")
 		close(runner.release)
 	}()
-	out := cancelBatchCall(caller, fakeStopOnlyRunner{runner}, "root-1")
+	out := batchmeta.CancelCall(caller, fakeStopOnlyRunner{runner}, "root-1")
 	require.NoError(t, out.Err)
 	require.True(t, out.Submitted)
 	require.Equal(t, jobbatch.ID("root-1"), <-runner.stopRoot)
@@ -95,7 +95,7 @@ func TestBatchCancelHeldTerminationDoesNotSettle(t *testing.T) {
 	t.Parallel()
 	runner := newFakeCancelRunner()
 	out := make(chan batchmeta.CancelOutcome, 1)
-	go func() { out <- cancelBatchCall(context.Background(), fakeStopOnlyRunner{runner}, "root-1") }()
+	go func() { out <- batchmeta.CancelCall(context.Background(), fakeStopOnlyRunner{runner}, "root-1") }()
 	<-runner.gotCtx // Stop submitted.
 	// The root keeps running: doneRoot stays open. The caller must still get
 	// its outcome only after Stop returns, and the outcome must not claim
@@ -124,7 +124,7 @@ func TestBatchCancelStopErrorReported(t *testing.T) {
 		<-runner.gotCtx
 		close(runner.release)
 	}()
-	out := cancelBatchCall(context.Background(), fakeStopOnlyRunner{runner}, "root-1")
+	out := batchmeta.CancelCall(context.Background(), fakeStopOnlyRunner{runner}, "root-1")
 	require.Error(t, out.Err)
 	require.False(t, out.Submitted)
 	require.False(t, out.Settled)
@@ -133,7 +133,7 @@ func TestBatchCancelStopErrorReported(t *testing.T) {
 // A nil runner fails closed with a typed outcome rather than panicking.
 func TestBatchCancelNilRunner(t *testing.T) {
 	t.Parallel()
-	require.Panics(t, func() { cancelBatchCall(context.Background(), nil, "root-1") },
+	require.Panics(t, func() { batchmeta.CancelCall(context.Background(), nil, "root-1") },
 		"nil runner is a programming error; R11F wires the handle")
 }
 

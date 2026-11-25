@@ -13,6 +13,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -192,7 +193,7 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 			RoleContract:       rootContract.Clone(),
 			CallOptions:        &CallOptions{RoleContract: rootContract.Clone()},
 		}
-		require.NoError(t, bindRootRoleContract(ctx, sessions, rootCall))
+		require.NoError(t, delegation.BindRootRoleContract(ctx, sessions, rootCall))
 		childID := sessions.CreateAgentToolSessionID("process-role-message", "process-role-tool-call")
 		child, createErr := sessions.CreateTaskSession(ctx, childID, root.ID, "process-lifetime custom-role child")
 		require.NoError(t, createErr)
@@ -258,7 +259,7 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 		}
 		require.Nil(t, identityCall.RoleContract, "restoration input must not supply the queued contract")
 		require.Nil(t, identityCall.CallOptions.RoleContract, "restoration input must not supply queued role options")
-		rootCall, restoreErr := restoreRootRoleContract(ctx, sessions, identityCall)
+		rootCall, restoreErr := delegation.RestoreRootRoleContract(ctx, sessions, identityCall)
 		require.NoError(t, restoreErr)
 		require.NotNil(t, rootCall.RoleContract, "owning restore must load the durable root binding")
 		require.NotNil(t, rootCall.CallOptions)
