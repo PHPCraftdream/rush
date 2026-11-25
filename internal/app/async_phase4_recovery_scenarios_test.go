@@ -87,9 +87,11 @@ func newRecoveryTwoAppHarness(t *testing.T, handlerA, handlerB http.HandlerFunc)
 	t.Setenv("RUSH_GLOBAL_CONFIG", isolationConfigDir)
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 	dataDir := t.TempDir()
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(dataDir))
-	})
+	// Retried: a released session lock's metadata cleanup (lock.go Release,
+	// bounded to releaseMetadataCleanupBound) can outlive Shutdown under
+	// load and hold the .gen sidecar open when the removal starts, which
+	// Windows reports as a sharing violation.
+	t.Cleanup(func() { pcrRemoveAllEventually(t, dataDir) })
 
 	srvA := httptest.NewServer(handlerA)
 	t.Cleanup(srvA.Close)

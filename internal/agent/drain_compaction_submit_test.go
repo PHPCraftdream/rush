@@ -16,6 +16,7 @@ import (
 	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -303,7 +304,7 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	// delivery wakes the owner through notifyAsyncCompletion once its
 	// wake=1 row is committed -- drive that same wake here (the Drain hint
 	// the coordinator_background.go doc describes), then wait it out.
-	coord.notifyAsyncCompletion(AsyncCompletion{SessionID: sess.ID, Wake: true})
+	coord.notifyAsyncCompletion(batchdispatch.AsyncCompletion{SessionID: sess.ID, Wake: true})
 	coord.waitRecheckWakes()
 
 	require.Eventually(t, func() bool {

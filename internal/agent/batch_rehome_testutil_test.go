@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/stretchr/testify/require"
@@ -29,8 +30,8 @@ func batchFixtureConn(t *testing.T) (*sql.DB, string) {
 }
 
 // drainCompletions collects every completion sent on ch, non-blockingly.
-func drainCompletions(ch chan AsyncCompletion) []AsyncCompletion {
-	got := make([]AsyncCompletion, 0, 4)
+func drainCompletions(ch chan batchdispatch.AsyncCompletion) []batchdispatch.AsyncCompletion {
+	got := make([]batchdispatch.AsyncCompletion, 0, 4)
 	for {
 		select {
 		case c := <-ch:

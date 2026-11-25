@@ -541,7 +541,7 @@ func (mb *Mailbox) ClearAll() {
 	mb.Injects = nil
 	mb.Mu.Unlock()
 
-	const reason = "the session's Queue was explicitly cleared"
+	const reason = "the session's queue was explicitly cleared"
 	// Package L round 2: close any retained queued-call build scope on the
 	// way out (release is idempotent; no-op for unmarked calls).
 	ReleaseQueuedCallsBuildOwnership(dropped)

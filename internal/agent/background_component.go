@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -140,7 +141,7 @@ func (h coordinatorBackgroundHost) arb() *arbiter { return &h.coordinator.arb }
 
 // FormatAsyncCompletion makes a completed job visible to the model and UI.
 // It preserves the agent API; batchmeta owns the formatting rules.
-func FormatAsyncCompletion(completion AsyncCompletion) string {
+func FormatAsyncCompletion(completion batchdispatch.AsyncCompletion) string {
 	return batchmeta.FormatAsyncCompletion(completion)
 }
 
@@ -153,7 +154,7 @@ func FormatAsyncCompletion(completion AsyncCompletion) string {
 // call to the session's owning driver iff the committed row wants a wake.
 // See wakeSession's own doc for why a driver-owned child session's wake must
 // never run on c.host.currentAgent() (task #1049).
-func (c *backgroundComponent) notifyAsyncCompletion(completion AsyncCompletion) {
+func (c *backgroundComponent) notifyAsyncCompletion(completion batchdispatch.AsyncCompletion) {
 	// No ctx tagging needed anymore: a Drain call's own constructor
 	// (newDrainCall) unconditionally stamps AutoResumed/BackgroundJobNotice/
 	// NoticeKind itself, and a Drain never creates a user message (empty

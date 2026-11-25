@@ -13,10 +13,9 @@ import (
 	"log/slog"
 	"time"
 
-	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
-
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -234,10 +233,9 @@ func interruptTickStopsFor(err error) bool {
 // documented. The goroutine also exits when ctx is cancelled (turn finished/
 // aborted), so it never outlives the turn either way.
 //
-// Returns a channel that is closed when the ticker goroutine exits. Callers
-// should defer a receive from this channel to ensure the goroutine has fully
-// joined before returning, avoiding in-flight handleInterruptTick execution
-// after context cancellation and DB cleanup.
+// Returns a channel closed when the ticker goroutine exits. Callers should defer
+// a receive from it so the goroutine has fully joined before returning, avoiding
+// in-flight handleInterruptTick execution after context cancellation and DB cleanup.
 func (c *coordinator) startInterruptTicker(ctx context.Context, sessionID string) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
@@ -475,7 +473,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		if idlePrep != nil {
 			idlePrep.release()
 		}
-		return false, fmt.Errorf("failed to serialize call data for interrupt In: %w", marshalErr)
+		return false, fmt.Errorf("failed to serialize call data for interrupt inject: %w", marshalErr)
 	}
 
 	// Now atomically consume (delete) and enqueue in one transaction, matching
@@ -492,7 +490,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 		if idlePrep != nil {
 			idlePrep.release()
 		}
-		return false, fmt.Errorf("failed to enqueue interrupt In: %w", enqueueErr)
+		return false, fmt.Errorf("failed to enqueue interrupt inject: %w", enqueueErr)
 	}
 	if enqueuedPi == nil {
 		// Row vanished between peek and enqueue — handled gracefully
@@ -528,7 +526,7 @@ func (c *coordinator) handleInterruptTickObserved(ctx context.Context, sessionID
 			idlePrep.release()
 		}
 		if reconcileErr := c.reconcileInterruptInjectEnqueue(ctx, *enqueuedPi, idempotencyKey); reconcileErr != nil {
-			return false, fmt.Errorf("failed to reconcile undelivered interrupt In: %w", reconcileErr)
+			return false, fmt.Errorf("failed to reconcile undelivered interrupt inject: %w", reconcileErr)
 		}
 		return false, nil
 	}
@@ -946,7 +944,7 @@ func (c *coordinator) InjectMessage(ctx context.Context, sessionID, prompt strin
 	// Resolve the session's model configuration before building the call.
 	pinned, err := c.resolveSessionModels(ctx, sessionID)
 	if err != nil {
-		return message.Message{}, fmt.Errorf("failed to resolve session models for In: %w", err)
+		return message.Message{}, fmt.Errorf("failed to resolve session models for inject: %w", err)
 	}
 
 	call, err := c.buildCall(ctx, sessionID, prompt, pinned, attachments)

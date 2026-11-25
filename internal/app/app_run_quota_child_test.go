@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +25,7 @@ import (
 )
 
 // Revert-check: removing decidePhase's quota branch starts a root Drain after child completion.
+// Revert-check of the gate: a fixed sleep could finish before the latch under load, dropping the job from finished_work via snapshotQuotaTerminal.
 func TestCLIQuotaLiveChildAndBash(t *testing.T) {
 	t.Run("finished", func(t *testing.T) { testCLIQuotaLiveChildAndBash(t, false) })
 	t.Run("question", func(t *testing.T) { testCLIQuotaLiveChildAndBash(t, true) })
@@ -40,17 +44,80 @@ func quotaRetryWait() time.Duration {
 	return retryWait
 }
 
-// workMargin keeps each live-work fixture comfortably past the quota latch.
+// workMargin keeps the child handler alive past the quota latch.
 const workMargin = 4 * time.Second
 
-// quotaBashSeconds sizes the root bash job to span the latch (rounded up).
-var quotaBashSeconds = int((quotaRetryWait() + workMargin) / time.Second)
+type quotaDiagnosticWriter struct {
+	out    io.Writer
+	record func(string)
+}
+
+func (w quotaDiagnosticWriter) Write(p []byte) (int, error) {
+	line := string(p)
+	if strings.Contains(line, "hard provider quota exhausted") {
+		w.record("stderr latch: " + strings.TrimSpace(line))
+	}
+	if strings.Contains(line, "database is closed") {
+		w.record("stderr db closed: " + strings.TrimSpace(line))
+	}
+	if w.out == nil {
+		return len(p), nil
+	}
+	return w.out.Write(p)
+}
 
 func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	var rootRequests, childRequests atomic.Int32
 	var childStarted atomic.Bool
 	var workerModel atomic.Bool
-	application, sid := newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
+	marker := filepath.ToSlash(filepath.Join(t.TempDir(), "quota-bash-gate"))
+	var timelineMu sync.Mutex
+	var timeline []string
+	record := func(event string) {
+		timelineMu.Lock()
+		timeline = append(timeline, time.Now().Format(time.RFC3339Nano)+" "+event)
+		timelineMu.Unlock()
+	}
+	var out syncBuffer
+	origStderr := cliLoopStderr
+	cliLoopStderr = quotaDiagnosticWriter{out: origStderr, record: record}
+	t.Cleanup(func() { cliLoopStderr = origStderr })
+	var application *App
+	var sid string
+	dumpFailure := func() {
+		if !t.Failed() {
+			return
+		}
+		timelineMu.Lock()
+		defer timelineMu.Unlock()
+		t.Logf("failure diagnostics: output:\n%s", out.String())
+		for _, event := range timeline {
+			t.Logf("timeline: %s", event)
+		}
+		if application != nil {
+			rows, err := application.DB().QueryContext(context.Background(),
+				`SELECT node_id, root_id, kind, state, announced, outcome_summary FROM batch_nodes WHERE owner_session_id = ?`, sid)
+			if err != nil {
+				t.Logf("batch nodes query: %v", err)
+			} else {
+				defer rows.Close()
+				for rows.Next() {
+					var nodeID, rootID, kind, state, outcome string
+					var announced bool
+					if err := rows.Scan(&nodeID, &rootID, &kind, &state, &announced, &outcome); err != nil {
+						t.Logf("batch node scan: %v", err)
+						break
+					}
+					t.Logf("batch node: node=%s root=%s kind=%s state=%s announced=%t outcome=%q", nodeID, rootID, kind, state, announced, outcome)
+				}
+				if err := rows.Err(); err != nil {
+					t.Logf("batch nodes rows: %v", err)
+				}
+			}
+		}
+		// Shell job registry state is not exposed to this package's tests.
+	}
+	application, sid = newAdmissionRaceApp(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		system, lastUser, _ := lastTurnParts(body)
 		if strings.Contains(lastUser, "Generate a concise title") {
@@ -58,6 +125,7 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 			return
 		}
 		if strings.Contains(system, "an agent for Rush") {
+			record("child request served")
 			childStarted.Store(true)
 			workerModel.Store(strings.Contains(string(body), `"model":"worker-probe"`))
 			childRequests.Add(1)
@@ -75,10 +143,13 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 			}
 			return
 		}
-		switch rootRequests.Add(1) {
+		requestNo := rootRequests.Add(1)
+		record(fmt.Sprintf("root request %d served", requestNo))
+		switch requestNo {
 		case 1:
+			command := fmt.Sprintf(`i=0; while [ "$i" -lt 150 ]; do if [ -f '%s' ]; then break; fi; sleep 0.2; i=$((i+1)); done; echo quota-bash-output`, marker)
 			admissionWriteSSE(w, []string{
-				admissionSSEToolCall("root", "bash-job", "bash", fmt.Sprintf(`{"command":"sleep %d && echo quota-bash-output","description":"quota job","run_in_background":true}`, quotaBashSeconds)),
+				admissionSSEToolCall("root", "bash-job", "bash", fmt.Sprintf(`{"command":%q,"description":"quota job","run_in_background":true}`, command)),
 				admissionSSEStop("root", "tool_calls"),
 			})
 		case 2:
@@ -91,11 +162,26 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 			// + initial attempt + 2 pinned retries, all quota-latched.
 			require.Eventually(t, childStarted.Load, 10*time.Second, 10*time.Millisecond)
 			quotaResponse(w)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			if requestNo == 5 {
+				// The final response triggers the quota latch. Releasing the
+				// bash gate only after this delay makes its completion causally
+				// later than the latch, independent of scheduler load.
+				time.Sleep(2 * time.Second)
+				if err := os.WriteFile(filepath.FromSlash(marker), []byte("released"), 0o644); err != nil {
+					t.Errorf("write bash gate marker: %v", err)
+				} else {
+					record("bash gate marker written")
+				}
+			}
 		default:
 			t.Errorf("unexpected own request after quota")
 			loopText(w, "extra", "unexpected", 1, 1)
 		}
 	})
+	t.Cleanup(dumpFailure)
 	cfg := application.config.Config()
 	p, _ := cfg.Providers.Get("openaicompat")
 	p.Models = append(p.Models, catwalk.Model{ID: "worker-probe", Name: "worker-probe", ContextWindow: 200000, DefaultMaxTokens: 1000})
@@ -106,14 +192,12 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	// retryWait = InitialDelayIn * (BackoffFactor^i - 1) summed over the
 	// pinned retries = 5s+10s = 15s with ProviderMaxRetries = 2.
 	retryWait := quotaRetryWait()
-	// Bash runs workMargin longer than the child handler sleep, so the
-	// budget is the pre-latch wait plus the longest live work plus a
-	// scheduling margin.
-	const schedulingMargin = 15 * time.Second
+	// The gate removes bash duration from the budget; allow the child sleep,
+	// post-latch wait, and generous scheduling/cleanup margin.
+	const schedulingMargin = 30 * time.Second
 	timeout := retryWait + (retryWait + workMargin) + schedulingMargin
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
-	var out syncBuffer
 	res, err := application.RunNonInteractiveWithResult(ctx, &out, "delegate and run bash", RunOverrides{Origin: message.OriginCLI}, true, RunModeJSON, sid, false)
 	require.Error(t, err)
 	require.Equal(t, "provider_limit", res.ExitReason)

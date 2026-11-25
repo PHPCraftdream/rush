@@ -208,9 +208,8 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 		prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(ts.promptPrefix)}, prepared.Messages...)
 	}
 
-	if slog.Default().Enabled(callContext, slog.LevelDebug) {
-		ts.cacheDiagnostic = promptcache.PreparedCacheDiagnostic(prepared.Messages, prepared.Tools)
-	}
+	// Always: the INFO-level cache-miss line needs these digests.
+	ts.cacheDiagnostic = promptcache.PreparedCacheDiagnostic(prepared.Messages, prepared.Tools)
 	ts.cachePreparedAt = time.Now()
 	ts.cachePrepareDuration = ts.cachePreparedAt.Sub(prepareStarted)
 
