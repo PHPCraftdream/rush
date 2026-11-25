@@ -33,6 +33,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
@@ -381,7 +383,7 @@ func TestTurnTitleJoinerWaitPaths(t *testing.T) {
 				turnTitleJoinAfterDisarmSeam = nil
 			})
 
-			joiner := newTurnTitleJoiner(streamWatchdog{disarm: func() {}}, done, grace, "timeout")
+			joiner := newTurnTitleJoiner(watchdog.StreamWatchdog{Disarm: func() {}}, done, grace, "timeout")
 			go func() {
 				joiner.join()
 				close(returned)
@@ -423,7 +425,7 @@ func TestTurnTitleJoinerWaitPaths(t *testing.T) {
 				turnTitleJoinAfterDisarmSeam = nil
 			})
 
-			joiner := newTurnTitleJoiner(streamWatchdog{disarm: func() {}}, done, time.Minute, "done")
+			joiner := newTurnTitleJoiner(watchdog.StreamWatchdog{Disarm: func() {}}, done, time.Minute, "done")
 			go func() {
 				joiner.join()
 				close(returned)

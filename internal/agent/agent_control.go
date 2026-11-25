@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -33,12 +35,12 @@ func (a *sessionAgent) Cancel(sessionID string) {
 	// fallback preserves it (the task #206 "Cancel must never find a dead
 	// placeholder" invariant).
 	mb := a.getMailbox(sessionID)
-	mb.mu.Lock()
-	genCancel := mb.current.cancel
+	mb.Mu.Lock()
+	genCancel := mb.Current.Cancel
 	if genCancel == nil {
-		genCancel = mb.dispatcherCancel
+		genCancel = mb.DispatcherCancel
 	}
-	mb.mu.Unlock()
+	mb.Mu.Unlock()
 	if genCancel != nil {
 		slog.Debug("Request cancellation initiated", "session_id", sessionID)
 		genCancel()
@@ -51,11 +53,11 @@ func (a *sessionAgent) ClearQueue(sessionID string) {
 	// under its lock. Cancel no longer touches any of these; only this
 	// method does.
 	slog.Debug("Clearing queued prompts", "session_id", sessionID)
-	a.getMailbox(sessionID).clearAll()
+	a.getMailbox(sessionID).ClearAll()
 }
 
 func (a *sessionAgent) QueueMessage(call SessionAgentCall) {
-	a.getMailbox(call.SessionID).queue(call)
+	a.getMailbox(call.SessionID).Queue(call)
 }
 
 // InterruptAndReplace is the coordinator's single entry point for "interrupt
@@ -68,7 +70,7 @@ func (a *sessionAgent) QueueMessage(call SessionAgentCall) {
 // actually interrupted; false when the session was idle (nothing to cancel —
 // the caller should queue call for the next Run itself).
 func (a *sessionAgent) InterruptAndReplace(sessionID string, call SessionAgentCall) bool {
-	cancelFn, hadOwner := a.getMailbox(sessionID).interruptAndReplace(call)
+	cancelFn, hadOwner := a.getMailbox(sessionID).InterruptAndReplace(call)
 	if !hadOwner {
 		return false
 	}
@@ -82,28 +84,28 @@ func (a *sessionAgent) InterruptAndReplace(sessionID string, call SessionAgentCa
 // Coordinator control paths use this to preserve non-serializable options
 // during an interrupt; ordinary queueing never exposes the call.
 func (a *sessionAgent) ActiveCall(sessionID string) (SessionAgentCall, bool) {
-	return a.getMailbox(sessionID).currentCallSnapshot()
+	return a.getMailbox(sessionID).CurrentCallSnapshot()
 }
 
 // ActiveCallState reports ownership separately from active-call publication.
 // An owned mailbox with no published snapshot is a retryable admission window,
 // not permission to route an interrupt through the durable queue.
 func (a *sessionAgent) ActiveCallState(sessionID string) (SessionAgentCall, bool, bool) {
-	return a.getMailbox(sessionID).currentCallState()
+	return a.getMailbox(sessionID).CurrentCallState()
 }
 
 // ActiveCallStateWithToken is the internal compare-and-act snapshot used by
 // coordinator interrupt delivery. ActiveCallState remains unchanged for
 // compatibility with existing control implementations and test doubles.
-func (a *sessionAgent) ActiveCallStateWithToken(sessionID string) (SessionAgentCall, activeCallToken, bool, bool) {
-	return a.getMailbox(sessionID).currentCallStateWithToken()
+func (a *sessionAgent) ActiveCallStateWithToken(sessionID string) (SessionAgentCall, mailboxpkg.ActiveCallToken, bool, bool) {
+	return a.getMailbox(sessionID).CurrentCallStateWithToken()
 }
 
 // InterruptAndReplaceIfCurrent delivers an interrupt only when token still
 // identifies the mailbox's current published generation. It returns false for
 // an owner or generation transition without touching the newer call.
-func (a *sessionAgent) InterruptAndReplaceIfCurrent(sessionID string, call SessionAgentCall, token activeCallToken) bool {
-	cancelFn, matched := a.getMailbox(sessionID).interruptAndReplaceIfCurrent(token, call)
+func (a *sessionAgent) InterruptAndReplaceIfCurrent(sessionID string, call SessionAgentCall, token mailboxpkg.ActiveCallToken) bool {
+	cancelFn, matched := a.getMailbox(sessionID).InterruptAndReplaceIfCurrent(token, call)
 	if !matched {
 		return false
 	}
@@ -126,12 +128,12 @@ func (a *sessionAgent) InjectMessage(ctx context.Context, call SessionAgentCall)
 	if err != nil {
 		return message.Message{}, err
 	}
-	// Atomic busy-check + inject under one mb.mu hold (design §5, stage 2.4):
+	// Atomic busy-check + inject under one mb.Mu hold (design §5, stage 2.4):
 	// replaces the non-atomic IsSessionBusy + injectQueue.Append pair that
 	// had a window between check and append where the owner could finish and
 	// release to mbIdle. When the session is idle, the message lives only in
 	// the DB and is picked up by the next Run's preamble naturally.
-	a.getMailbox(call.SessionID).injectIfBusy(msg)
+	a.getMailbox(call.SessionID).InjectIfBusy(msg)
 	return msg, nil
 }
 
@@ -185,11 +187,11 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 	// drain in the window between this sweep and process exit, must be
 	// refused as well.
 	for _, mb := range a.mailboxes.Seq2() {
-		dispatcherCancel, genCancel := mb.hardStop()
+		dispatcherCancel, genCancel := mb.HardStop()
 		// Generation first, then dispatcher: the generation cancel is what
 		// promptly unblocks an in-flight provider stream, and cancelling
 		// the dispatcher afterwards tears down the Run() that owns it.
-		// Both are invoked outside mb.mu — hardStop has already returned.
+		// Both are invoked outside mb.Mu — hardStop has already returned.
 		if genCancel != nil {
 			genCancel()
 		}
@@ -247,14 +249,14 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 // true forever after any session's first turn completed, which meant
 // CancelAll's 5-second drain loop (App.Shutdown, reached by every `rush
 // run` via `defer a.Shutdown()`) always ran to its full timeout instead of
-// returning immediately once genuinely idle. mailboxes.state is the
+// returning immediately once genuinely idle. mailboxes.State is the
 // post-migration source of truth for "does this session have a live
 // owner" (see IsSessionBusy's doc) and is correctly reset to mbIdle on
 // release, so it does not have this staleness problem.
 //
-// `mb.state != mbIdle` (NOT `mb.state == mbOwned`) is deliberate as of
+// `mb.State != mailboxpkg.MbIdle` (NOT `mb.State == mbOwned`) is deliberate as of
 // #296/P1-C: mbReleasing means drainOrReleaseFinal's release() — the OS
-// session-lock teardown — is running with mb.mu NOT held, on some OTHER
+// session-lock teardown — is running with mb.Mu NOT held, on some OTHER
 // goroutine than this one. If IsBusy() treated mbReleasing as "not busy",
 // CancelAll's 5-second drain loop could see every mailbox as idle and
 // return WHILE that release() disk I/O (and the whole-process DB teardown
@@ -263,9 +265,9 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 // the shutdown path instead of a same-process "become the new owner" path.
 func (a *sessionAgent) IsBusy() bool {
 	for _, mb := range a.mailboxes.Seq2() {
-		mb.mu.Lock()
-		busy := mb.state != mbIdle
-		mb.mu.Unlock()
+		mb.Mu.Lock()
+		busy := mb.State != mailboxpkg.MbIdle
+		mb.Mu.Unlock()
 		if busy {
 			return true
 		}
@@ -274,10 +276,10 @@ func (a *sessionAgent) IsBusy() bool {
 }
 
 // IsSessionBusy reports whether sessionID currently has an owner (design §2's
-// mapping table: mailbox.state != mbIdle replaces the old
+// mapping table: mailbox.State != mbIdle replaces the old
 // activeRequests.Get(sessionID) busy check). This is now the ONLY source of
-// truth for the main-session busy state: releaseSessionReservation (via
-// mailbox.drainOrRelease) no longer touches activeRequests at all, so
+// truth for the main-session busy St: releaseSessionReservation (via
+// mailbox.DrainOrRelease) no longer touches activeRequests at all, so
 // activeRequests entries for a plain sessionID key would otherwise never be
 // cleared. activeRequests itself is untouched by this migration and remains
 // the cancel-target lookup Cancel/CancelAll/the peak-hours abort path use —
@@ -285,9 +287,9 @@ func (a *sessionAgent) IsBusy() bool {
 // design doc's §7 migration plan).
 func (a *sessionAgent) IsSessionBusy(sessionID string) bool {
 	mb := a.getMailbox(sessionID)
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	return mb.state != mbIdle
+	mb.Mu.Lock()
+	defer mb.Mu.Unlock()
+	return mb.State != mailboxpkg.MbIdle
 }
 
 // QueuedPrompts reports how many calls are waiting for sessionID's current
@@ -297,9 +299,9 @@ func (a *sessionAgent) IsSessionBusy(sessionID string) bool {
 // truth.
 func (a *sessionAgent) QueuedPrompts(sessionID string) int {
 	mb := a.getMailbox(sessionID)
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	return len(mb.submitted)
+	mb.Mu.Lock()
+	defer mb.Mu.Unlock()
+	return len(mb.Submitted)
 }
 
 // QueuedPromptsList is QueuedPrompts' list counterpart — see its doc. A
@@ -307,9 +309,9 @@ func (a *sessionAgent) QueuedPrompts(sessionID string) int {
 // text of its own and is not user-facing queued work.
 func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	mb := a.getMailbox(sessionID)
-	mb.mu.Lock()
-	mailboxCalls := append([]SessionAgentCall(nil), mb.submitted...)
-	mb.mu.Unlock()
+	mb.Mu.Lock()
+	mailboxCalls := append([]SessionAgentCall(nil), mb.Submitted...)
+	mb.Mu.Unlock()
 
 	if len(mailboxCalls) == 0 {
 		return nil

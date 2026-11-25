@@ -8,6 +8,8 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 
 	"charm.land/fantasy"
@@ -122,7 +124,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 	if callOpts != nil {
 		EnsureCallBuildScope(callOpts)
 	}
-	autoResumed, backgroundJobNotice := noticeFlagsFrom(ctx)
+	autoResumed, backgroundJobNotice := sessionprompt.NoticeFlagsFrom(ctx)
 
 	call := SessionAgentCall{
 		SessionID:            sessionID,
@@ -149,13 +151,13 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 		LogicalCallID:       uuid.New().String(), // P2-1: generate stable ID once
 		AutoResumed:         autoResumed,
 		BackgroundJobNotice: backgroundJobNotice,
-		IsDrain:             isDrainCallFrom(ctx),
+		IsDrain:             sessionprompt.IsDrainCallFrom(ctx),
 	}
 	// Stamp the entry-channel origin at BUILD time, not message-creation
 	// time: the call may be queued as an InterruptAndSend replacement and
 	// drained much later under a DIFFERENT turn's context, so the sender's
 	// origin must travel on the call struct itself.
-	call.Origin = CallOriginFrom(ctx)
+	call.Origin = sessionprompt.CallOriginFrom(ctx)
 	// R12-H2b §2.2: a run armed with an execution requirement envelope
 	// stamps it onto the built call so durable producers can persist and
 	// carry it (diskRequirementForCall reads this field first).

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
@@ -236,7 +238,7 @@ func TestDrainCodexStructuredContextOverflowIsTerminalAndPreservesHistory(t *tes
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	f.seedDebt(ctx, "call-codex-overflow", false)
-	_, err := f.coord.runInternal(WithDrainCall(ctx), f.sessID, "", pinned)
+	_, err := f.coord.runInternal(sessionprompt.WithDrainCall(ctx), f.sessID, "", pinned)
 	require.Error(t, err, "requests=%d", diagnostics.requestCount())
 	require.EqualValues(t, 1, diagnostics.requestCount(), "terminal overflow must not replay; requests=%d", diagnostics.requestCount())
 	require.Equal(t, "gpt-5-codex", diagnostics.observedModelID(), "selected model in provider request; requests=%d", diagnostics.requestCount())

@@ -11,6 +11,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/cliprovider"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -174,7 +176,7 @@ func prepareExecuteRun(env RunEnv, ctx context.Context, req RunRequest) (_ conte
 	// reads it to persist the origin on a freshly created session, and
 	// buildCall stamps it onto the call so createUserMessage persists it
 	// on the user message. Empty/unspecified leaves both untouched.
-	ctx = agent.WithCallOrigin(ctx, req.Origin)
+	ctx = sessionprompt.WithCallOrigin(ctx, req.Origin)
 
 	// CLI-origin runs with their own stderr get the rate-limit wait
 	// diagnostics on THAT stderr (the CLI loop passes l.errOut(), so the

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 )
 
 // titleGenRegistry tracks the cancel funcs of in-flight title-generation
@@ -194,9 +196,9 @@ func startTitleGeneration(a *sessionAgent, genCtx context.Context, needsTitle bo
 // just inside the cap over it -- firing a stall dump for a turn that had
 // already finished, and cancelling the very title being waited for. The
 // goroutine still exits on genCtx and is still joined by the caller's own
-// deferred `<-wd.done` regardless of disarm.
+// deferred `<-wd.Done` regardless of disarm.
 type turnTitleJoiner struct {
-	wd            streamWatchdog
+	wd            watchdog.StreamWatchdog
 	done          chan struct{}
 	overrideGrace time.Duration
 	sessionID     string
@@ -207,13 +209,13 @@ type turnTitleJoiner struct {
 // Test-only seam; nil in production.
 var turnTitleJoinAfterDisarmSeam func()
 
-func newTurnTitleJoiner(wd streamWatchdog, done chan struct{}, overrideGrace time.Duration, sessionID string) *turnTitleJoiner {
+func newTurnTitleJoiner(wd watchdog.StreamWatchdog, done chan struct{}, overrideGrace time.Duration, sessionID string) *turnTitleJoiner {
 	return &turnTitleJoiner{wd: wd, done: done, overrideGrace: overrideGrace, sessionID: sessionID}
 }
 
 func (j *turnTitleJoiner) join() {
 	j.once.Do(func() {
-		j.wd.disarm()
+		j.wd.Disarm()
 		if turnTitleJoinAfterDisarmSeam != nil {
 			turnTitleJoinAfterDisarmSeam()
 		}

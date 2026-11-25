@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
@@ -249,7 +251,7 @@ func (c *backgroundComponent) notifyBackgroundJobDone(sessionID string, sh *shel
 		slog.Info("Phase 4: resuming session on background job completion",
 			"session_id", sessionID, "shell_id", sh.ID, "delegated_child", driven,
 			"consecutive", c.host.consecutiveResume(sessionID))
-		ctx := WithBackgroundJobNotice(context.Background())
+		ctx := sessionprompt.WithBackgroundJobNotice(context.Background())
 		// The slot was spent ONCE, synchronously, at admission (before the
 		// wake's goroutine spawns), so a burst of near-simultaneous
 		// completions is bounded deterministically: at most

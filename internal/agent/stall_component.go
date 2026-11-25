@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 )
 
@@ -14,7 +16,7 @@ func stallSetPhase(sessionID, kind, name string) { drainctl.StallSetPhase(sessio
 
 // stallAbortClosure builds the abort closure armed onto the turn's stall
 // clock: it marks the watchdog stalled (so handleStreamFailure takes the
-// watchdog-stall branch), stores causeStall through the existing fire path
+// watchdog-stall branch), stores watchdog.CauseStall through the existing fire path
 // (finish part written there), and cancels genCtx to unblock the turn.
 func (a *sessionAgent) stallAbortClosure(
 	sessionID string,
@@ -28,7 +30,7 @@ func (a *sessionAgent) stallAbortClosure(
 		if forceStall != nil {
 			forceStall()
 		}
-		a.handleWatchdogFire(causeStall, elapsed, sessionID, watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
+		a.handleWatchdogFire(watchdog.CauseStall, elapsed, sessionID, watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 		cancel()
 	}
 }

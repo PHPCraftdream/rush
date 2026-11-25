@@ -17,6 +17,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/promptcache"
 
@@ -173,7 +174,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// agent.Stream returns, and we never got there). Recover it now
 		// so the loop runs it as the next turn.
 		if errors.Is(err, context.Canceled) {
-			if next, ok := a.getMailbox(call.SessionID).drainAfterCancel(); ok {
+			if next, ok := a.getMailbox(call.SessionID).DrainAfterCancel(); ok {
 				return nil, next, true, nil
 			}
 		}
@@ -282,7 +283,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if err != nil {
 		preambleCancel()
 		if errors.Is(err, context.Canceled) {
-			if next, ok := a.getMailbox(call.SessionID).drainAfterCancel(); ok {
+			if next, ok := a.getMailbox(call.SessionID).DrainAfterCancel(); ok {
 				return nil, next, true, nil
 			}
 		}
@@ -351,7 +352,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		if err != nil {
 			preambleCancel()
 			if errors.Is(err, context.Canceled) {
-				if next, ok := a.getMailbox(call.SessionID).drainAfterCancel(); ok {
+				if next, ok := a.getMailbox(call.SessionID).DrainAfterCancel(); ok {
 					return nil, next, true, nil
 				}
 			}
@@ -399,7 +400,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// beginGeneration(runCancel) only for the brief preamble window this
 	// call closes; from here until the turn returns, THIS is the live
 	// cancel an interrupt must hit.
-	genID := a.getMailbox(call.SessionID).beginGeneration(cancel)
+	genID := a.getMailbox(call.SessionID).BeginGeneration(cancel)
 
 	// Launches the title-generation goroutine; joined later via
 	// turnTitleJoiner once the stream watchdog exists. See
@@ -411,7 +412,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// below, which by LIFO makes it run BEFORE it. That ordering is the
 	// whole point — see the comment at the join itself.
 
-	// Stream-progress watchdog (see streamWatchdog doc in stream_watchdog.go
+	// Stream-progress watchdog (see watchdog.StreamWatchdog doc in stream_watchdog.go
 	// for the invariant). Every fantasy stream callback below calls
 	// bumpActivity(); if no callback fires for idleTimeout, the watchdog
 	// cancels genCtx and the agent.Stream call below returns with
@@ -432,8 +433,8 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// extension, no cap" CallOptions fall through to the shared fields,
 	// possibly another run's.
 	timeoutExtends, timeoutHardCap := a.watchdogTimeoutPolicyForCall(call.CallOptions)
-	var watchdogCauseVal atomic.Int32 // stores watchdogCause
-	wd := startStreamWatchdog(
+	var watchdogCauseVal atomic.Int32 // stores watchdog.Cause
+	wd := watchdog.StartStreamWatchdog(
 		genCtx, cancel, idleTimeout, a.effectiveStreamWatchdogTick(),
 		// The closure itself is deliberately a thin dispatch to a named
 		// method (task #243): a unit test can construct a minimal
@@ -441,7 +442,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// the REAL cause-store/dump-capture/dump-write ordering instead of
 		// a test-local copy of this shape that could silently drift from
 		// what agent.go actually does.
-		func(elapsed time.Duration, cause watchdogCause) {
+		func(elapsed time.Duration, cause watchdog.Cause) {
 			a.handleWatchdogFire(cause, elapsed, call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
 		},
 		timeoutExtends,                    // Fork patch: batch 8 (per-call via CallOptions, R1-1)
@@ -451,27 +452,27 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		func() { notifyActivity(genCtx) }, // task #222/#300: recordActivity is
 		// invoked on every REAL bump() (stream progress) only — deliberately
 		// NOT on a timer while a tool is merely in flight. See
-		// startStreamWatchdog's recordActivity doc for why the tool-tick case
+		// watchdog.StartStreamWatchdog's recordActivity doc for why the tool-tick case
 		// was removed.
 	)
 	// The watchdog now calls recordActivity (== notifyActivity(genCtx))
-	// internally on every bump(), so this wrapper can be just wd.bump.
-	bumpActivity := func() { stall.MarkByte(); wd.bump() } // stall.MarkByte mirrors the watchdog's liveness clock for the stall sampler
+	// internally on every bump(), so this wrapper can be just wd.Bump.
+	bumpActivity := func() { stall.MarkByte(); wd.Bump() } // stall.MarkByte mirrors the watchdog's liveness clock for the stall sampler
 	// Turn-stall abort seam: the stall policy's abort closure routes through
-	// the existing watchdog fire path (causeStall → finish part) and then
+	// the existing watchdog fire path (watchdog.CauseStall → finish part) and then
 	// cancels genCtx. See turn_stall_policy.go.
-	stall.ArmStallAbort(a.stallAbortClosure(call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel, cancel, wd.forceStall))
-	// Store wd.bump in genCtx so runSummarizeBody and runSummarizeSilent
+	stall.ArmStallAbort(a.stallAbortClosure(call.SessionID, &watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel, cancel, wd.ForceStall))
+	// Store wd.Bump in genCtx so runSummarizeBody and runSummarizeSilent
 	// can report LLM streaming progress during compaction (task #310).
-	genCtx = withWatchdogBump(genCtx, wd.bump)
+	genCtx = withWatchdogBump(genCtx, wd.Bump)
 	// toolStarted/toolFinished bracket tool execution so the watchdog pauses
-	// its idle timer while a (possibly long) tool runs — see streamWatchdog.
-	toolStarted := wd.toolStarted
-	toolFinished := wd.toolFinished
-	// Defer order matters: <-wd.done is deferred FIRST so it runs LAST
+	// its idle timer while a (possibly long) tool runs — see watchdog.StreamWatchdog.
+	toolStarted := wd.ToolStarted
+	toolFinished := wd.ToolFinished
+	// Defer order matters: <-wd.Done is deferred FIRST so it runs LAST
 	// (LIFO), AFTER cancel() has signalled the goroutine to exit.
 	// Without this the wait would deadlock the function return.
-	defer func() { <-wd.done }()
+	defer func() { <-wd.Done }()
 	defer cancel()
 
 	// Bounded join (P1-B) for the title goroutine.

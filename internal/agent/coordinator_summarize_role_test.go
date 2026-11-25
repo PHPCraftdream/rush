@@ -98,7 +98,7 @@ func TestStandaloneSummarizer_BusyAdmissionAndOSLockRefuseWithoutQueueOrWrite(t 
 			require.NoError(t, err)
 			standaloneAgent := NewSessionAgent(SessionAgentOptions{SmartModel: model, FastModel: model, Sessions: sessions, Messages: messages, DataDirectory: cfg.Options.DataDirectory}).(*sessionAgent)
 			if mailboxBusy {
-				_, ok := standaloneAgent.getMailbox(sessionID).beginCompact(func() {})
+				_, ok := standaloneAgent.getMailbox(sessionID).BeginCompact(func() {})
 				require.True(t, ok)
 			} else {
 				lock, lockErr := sessionlock.TryAcquireSessionLock(cfg.Options.DataDirectory, sessionID)

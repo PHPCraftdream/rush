@@ -13,6 +13,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
@@ -401,7 +403,7 @@ func providerTurnFailed(err error, turnCtxDone bool) bool {
 // prompt-string entry points: the launch gate is paced and the error says the
 // Drain never reached the provider. Any other call keeps its error as is.
 func (w *drainComponent) drainRefused(ctx context.Context, sessionID string, err error) error {
-	if err == nil || !isDrainCallFrom(ctx) {
+	if err == nil || !sessionprompt.IsDrainCallFrom(ctx) {
 		return err
 	}
 	w.noteDrainRefused(sessionID, err)

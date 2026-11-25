@@ -465,7 +465,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 //
 // CRITERION: Detached run creates user message → fails via ErrCallAlreadyAttempted
 //
-//	→ entry deleted, len(mb.submitted)==0 AND exactly ONE persistent user message.
+//	→ entry deleted, len(mb.Submitted)==0 AND exactly ONE persistent user message.
 //
 // This test specifically targets the ErrCallAlreadyAttempted fast path (not
 // max-attempts exhaustion). We verify this by:
@@ -486,7 +486,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 // entry, just slower (~1s of retries vs. one ~100-300ms pump tick), and by
 // the time any observation window this test could reasonably use elapses,
 // the outcome is indistinguishable from the outside (same len(pending)==0,
-// same message count, same mb.submitted==0). A wall-clock-timing assertion
+// same message count, same mb.Submitted==0). A wall-clock-timing assertion
 // was tried and discarded: require.Eventually's own poll can itself
 // false-positive on a transiently-'leased' (not yet re-Nacked) row, making
 // "time to first pending==0" an unreliable proxy for "which mechanism fired"
@@ -495,7 +495,7 @@ func TestReleaseGate_3_CrossProcessInterruptAutoResumed(t *testing.T) {
 // What this test DOES prove, unconditionally regardless of which mechanism
 // fires: under a double-failure (owner turn's persisted call + this
 // detached run's failure), the system never silently drops the call
-// (mb.submitted stays empty) and never persists it twice (exactly one user
+// (mb.Submitted stays empty) and never persists it twice (exactly one user
 // message). That is the actual safety property criterion 9 cares about; it
 // holds by construction whichever of the two mechanisms resolves the entry.
 // The ErrCallAlreadyAttempted-specific fast path itself is separately
@@ -632,11 +632,11 @@ func TestReleaseGate_9_DoubleFailureNoDuplicate(t *testing.T) {
 	entryID := pendingEntries[0].ID
 	t.Logf("Entry enqueued: %s", entryID)
 
-	// Verify mb.submitted is EMPTY (no double registration via QueueMessage).
+	// Verify mb.Submitted is EMPTY (no double registration via QueueMessage).
 	mb := sessionAgent.getMailbox(sessionID)
 	require.NotNil(t, mb, "mailbox should exist")
-	require.Equal(t, 0, len(mb.submitted),
-		"mb.submitted should be empty - no double registration")
+	require.Equal(t, 0, len(mb.Submitted),
+		"mb.Submitted should be empty - no double registration")
 
 	// Start pump with TestTick - it will AUTONOMOUSLY execute the queued call.
 	pump := runq.NewRunQueuePump(runq.RunQueuePumpConfig{
@@ -712,9 +712,9 @@ func TestReleaseGate_9_DoubleFailureNoDuplicate(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, pending, "entry should be deleted from queue")
 
-	// CRITICAL VERIFICATION 1: len(mb.submitted) == 0 - nothing lost in in-memory queue
-	require.Equal(t, 0, len(mb.submitted),
-		"mb.submitted should be empty - nothing lost in in-memory queue")
+	// CRITICAL VERIFICATION 1: len(mb.Submitted) == 0 - nothing lost in in-memory queue
+	require.Equal(t, 0, len(mb.Submitted),
+		"mb.Submitted should be empty - nothing lost in in-memory queue")
 
 	// CRITICAL VERIFICATION 2: Exactly ONE user message with call B's content in history (not zero, not duplicate)
 	// Use env.messages (not mockMessages) since mockMessages is already failing

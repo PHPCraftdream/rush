@@ -44,10 +44,10 @@ func TestAbandonOwnershipWithHandoff_MailboxLevel(t *testing.T) {
 	require.Equal(t, 3, sessionAgent.QueuedPrompts(sessionID), "all three calls must be queued")
 
 	// Simulate abandonOwnership being called (e.g., after an error).
-	// abandonOwnership leaves work in mb.submitted, so popAllSubmitted
+	// abandonOwnership leaves work in mb.Submitted, so popAllSubmitted
 	// should be able to retrieve it.
 	mb := sessionAgent.getMailbox(sessionID)
-	all := mb.popAllSubmitted()
+	all := mb.PopAllSubmitted()
 
 	require.Len(t, all, 3, "must return all three queued calls")
 	require.Equal(t, "first", all[0].Prompt)
@@ -213,7 +213,7 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionError(t *testing.T) {
 
 // TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_UsesPlainAbandon is a
 // UNIT TEST for the mailbox primitives popAllSubmitted/abandonOwnership. It
-// directly calls mb.abandonOwnership(epoch) and verifies the queue is preserved,
+// directly calls mb.AbandonOwnership(epoch) and verifies the queue is preserved,
 // which proves that plain abandonOwnership (as opposed to abandonOwnershipWithHandoff)
 // does not clear the queue.
 //
@@ -280,7 +280,7 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_UsesPlainAbandon(t 
 	// queued call1..call3 after a FIXED 10ms sleep, assuming the first Run
 	// was still genuinely owning the session at that point, then called
 	// Cancel() to interrupt it. Direct instrumentation (t.Logf of
-	// mb.state/current.cancel right before that Cancel call) showed the
+	// mb.State/current.cancel right before that Cancel call) showed the
 	// opposite is true in the overwhelming common case: the mailbox was
 	// ALREADY mbIdle (state=0, both cancels nil) every single time locally —
 	// the no-model turn had already self-released well under 10ms, making
@@ -292,13 +292,13 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_UsesPlainAbandon(t 
 	// The rare CI failure is the inverse ordering: under heavy scheduling
 	// contention the first Run can still be genuinely mbOwned when the old
 	// code queued+cancelled. Cancel() then interrupts a truly live
-	// generation with 3 calls already in mb.submitted, and
+	// generation with 3 calls already in mb.Submitted, and
 	// drainAfterCancel (mailbox_interrupt.go) hands the first queued call
 	// back to runOwned's turn loop as the NEXT turn instead of releasing
 	// ownership — deliberate, documented mailbox behavior (see
 	// drainAfterCancel's own doc), not a bug. Since each of those queued
 	// calls is itself a no-model turn that also fails instantly, the loop
-	// keeps consuming mb.submitted turn by turn until empty, only THEN
+	// keeps consuming mb.Submitted turn by turn until empty, only THEN
 	// reaching mbIdle — exactly the observed "actual 0".
 	//
 	// This test's actual subject is plain abandonOwnership's queue-
@@ -321,28 +321,28 @@ func TestAbandonOwnershipWithHandoff_ManualCompactionSuccess_UsesPlainAbandon(t 
 	// Now the session should be idle. Get the mailbox and simulate the
 	// SUCCESS path of runSummarize: plain abandonOwnership (not handoff).
 	mb := sessionAgent.getMailbox(sessionID)
-	epoch := mb.epoch // Current epoch after the first Run released
+	epoch := mb.Epoch // Current epoch after the first Run released
 
 	// Verify we have 3 calls in submitted.
-	require.Equal(t, 3, len(mb.submitted), "must have 3 calls in submitted")
+	require.Equal(t, 3, len(mb.Submitted), "must have 3 calls in submitted")
 
 	// Simulate SUCCESS path: call plain abandonOwnership (like runSummarize does).
-	hadWork := mb.abandonOwnership(epoch)
+	hadWork := mb.AbandonOwnership(epoch)
 	require.True(t, hadWork, "abandonOwnership should report hadWork=true")
 
 	// CRITICAL: after plain abandonOwnership, the queue should STILL BE POPULATED.
 	// This is what distinguishes it from abandonOwnershipWithHandoff, which
 	// calls popAllSubmitted() and clears the queue.
-	require.Equal(t, 3, len(mb.submitted), "queue must still be populated after plain abandonOwnership")
+	require.Equal(t, 3, len(mb.Submitted), "queue must still be populated after plain abandonOwnership")
 
 	// Now popFirstSubmitted should work and return the first entry.
-	firstQueued, hasNext := mb.popFirstSubmitted()
+	firstQueued, hasNext := mb.PopFirstSubmitted()
 	require.True(t, hasNext, "popFirstSubmitted must find work")
 	require.Equal(t, "first queued", firstQueued.Prompt, "popFirstSubmitted must return the first call")
 
 	// The remaining calls should still be in the queue.
-	require.Equal(t, 2, len(mb.submitted), "two calls must remain after popFirstSubmitted")
-	require.Equal(t, "second queued", mb.submitted[0].Prompt, "second call should be first now")
+	require.Equal(t, 2, len(mb.Submitted), "two calls must remain after popFirstSubmitted")
+	require.Equal(t, "second queued", mb.Submitted[0].Prompt, "second call should be first now")
 
 	// This test proves that on the SUCCESS path, popFirstSubmitted works correctly.
 	// With the bug (unconditional abandonOwnershipWithHandoff), popAllSubmitted

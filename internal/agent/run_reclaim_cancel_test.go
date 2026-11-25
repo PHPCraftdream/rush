@@ -23,7 +23,7 @@ import (
 // Before the fix, drainOrReleaseMerged's legacy-queue reclaim (the same
 // mechanism TestRun_LegacyQueueMessageDuringFinalDrain_DoesNotWedgeAcrossTurns
 // exercises for HIGH-1 of round 10) called `mb.reclaimSameEra(epoch, nil)` —
-// note the literal nil. reclaimSameEra set mb.state back to mbOwned and
+// note the literal nil. reclaimSameEra set mb.state back to mailboxpkg.MbOwned and
 // mb.dispatcherCancel to that nil, but never touched mb.current.cancel
 // (already nilled out by the preceding drainOrRelease call). So immediately
 // after a legacy-queue reclaim, BOTH mailbox cancel handles were nil, and
@@ -46,11 +46,11 @@ import (
 // It uses TWO test-only seams, in sequence, to make the interleaving
 // deterministic rather than racy:
 //
-//  1. mailbox.testDrainSeam fires inside drainOrReleaseFinal, strictly
+//  1. mailbox.TestDrainSeam fires inside drainOrReleaseFinal, strictly
 //     before the legacy-queue reclaim runs. Released immediately — it only
 //     signals "the reclaim is about to happen", so the test can then wait
 //     for seam 2 instead of guessing with a sleep.
-//  2. mailbox.testLoopRearmSeam fires in Run's turn loop (agent.go),
+//  2. mailbox.TestLoopRearmSeam fires in Run's turn loop (agent.go),
 //     strictly AFTER the reclaim's critical section has already run to
 //     completion (dispatcherCancel populated, current.cancel nil'd) and
 //     mb.mu released, and strictly BEFORE that same loop iteration calls
@@ -192,18 +192,18 @@ func TestRun_CancelDuringLegacyReclaimWindow_ActuallyCancelsTurn2(t *testing.T) 
 	// crash instead of a clean, informative assertion failure below.
 	seamEntered := make(chan struct{})
 	var seamOnce sync.Once
-	mb.testDrainSeam = func() {
+	mb.TestDrainSeam = func() {
 		seamOnce.Do(func() { close(seamEntered) })
 	}
 
 	// Arm the SECOND seam (#289 fix for this test's own flakiness):
-	// mailbox.testLoopRearmSeam fires in Run's turn loop (agent.go) at the
+	// mailbox.TestLoopRearmSeam fires in Run's turn loop (agent.go) at the
 	// top of EVERY iteration, including turn 1's — so the FIRST call is
 	// turn 1's own loop entry (long before the reclaim this test cares
 	// about even exists) and must pass straight through as a no-op. Only
 	// the SECOND call is the one this test wants: it fires strictly AFTER
 	// the reclaim's critical section above has already run and released
-	// mb.mu (state == mbOwned, dispatcherCancel populated, current.cancel
+	// mb.mu (state == mailboxpkg.MbOwned, dispatcherCancel populated, current.cancel
 	// nil — the fixed post-reclaim state), and strictly BEFORE that same
 	// loop iteration calls beginGeneration(turnCancel) to re-arm
 	// current.cancel for turn 2. Without this seam there is a genuine,
@@ -218,7 +218,7 @@ func TestRun_CancelDuringLegacyReclaimWindow_ActuallyCancelsTurn2(t *testing.T) 
 	loopRearmEntered := make(chan struct{})
 	releaseLoopRearm := make(chan struct{})
 	var loopRearmCalls atomic.Int64
-	mb.testLoopRearmSeam = func() {
+	mb.TestLoopRearmSeam = func() {
 		if loopRearmCalls.Add(1) == 2 {
 			close(loopRearmEntered)
 			<-releaseLoopRearm
@@ -248,7 +248,7 @@ func TestRun_CancelDuringLegacyReclaimWindow_ActuallyCancelsTurn2(t *testing.T) 
 	// uses for HIGH-1, so it can only be picked up by the end-of-turn drain's
 	// legacy-queue fallback (the reclaim path this test targets), not folded
 	// into turn 1's own PrepareStep.
-	sa.getMailbox(sess.ID).queue(SessionAgentCall{
+	sa.getMailbox(sess.ID).Queue(SessionAgentCall{
 		SessionID:       sess.ID,
 		Prompt:          "queued via the legacy path, to be reclaimed as turn 2",
 		MaxOutputTokens: 1000,
@@ -269,7 +269,7 @@ func TestRun_CancelDuringLegacyReclaimWindow_ActuallyCancelsTurn2(t *testing.T) 
 
 	// Wait for the loop to reach testLoopRearmSeam: by construction this can
 	// only happen AFTER drainOrReleaseFinal's reclaim critical section has
-	// already run to completion and released mb.mu (state == mbOwned,
+	// already run to completion and released mb.mu (state == mailboxpkg.MbOwned,
 	// dispatcherCancel == the freshly-passed reclaim cancel,
 	// current.cancel == nil — see drainOrReleaseFinal's own doc for why),
 	// and STRICTLY BEFORE this same loop iteration calls

@@ -65,7 +65,7 @@ func (*blockingErrorModel) Model() string    { return "blocking-error" }
 // TestRunAwaitingAdmission_OrphanedQueuedCallResolvesInsteadOfHanging
 // reproduces the hang: call1 becomes the mailbox owner and blocks mid-turn;
 // call2 is submitted via runAwaitingAdmission while call1 is still busy, so
-// it queues into mb.submitted with onQueueResolved set; call1 then fails
+// it queues into mb.Submitted with onQueueResolved set; call1 then fails
 // with a non-cancel provider error, triggering runOwned's deferred
 // abandonOwnershipWithHandoff -> abandonOwnershipAndPopSubmitted ->
 // restartOrphanedWithRetry with call2 still queued. Without the fix, call2's
@@ -125,7 +125,7 @@ func TestRunAwaitingAdmission_OrphanedQueuedCallResolvesInsteadOfHanging(t *test
 	}()
 
 	// call2's own Run attempt is a fast, lock-only mailbox append -- no need
-	// to wait on call1's own progress for it to land in mb.submitted.
+	// to wait on call1's own progress for it to land in mb.Submitted.
 	require.Eventually(t, func() bool {
 		return agentIface.QueuedPrompts(sess.ID) > 0
 	}, 2*time.Second, 10*time.Millisecond, "call2 must be queued behind the busy mailbox")
@@ -151,29 +151,29 @@ func TestRunAwaitingAdmission_OrphanedQueuedCallResolvesInsteadOfHanging(t *test
 }
 
 // TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks pins the ClearQueue path
-// named in the orchestrator's review: a call sitting in mb.submitted with
+// named in the orchestrator's review: a call sitting in mb.Submitted with
 // onQueueResolved set must be resolved with errQueuedTurnNotRun, not merely
 // dropped, when the queue is explicitly cleared.
 //
-// Revert-check performed: reverted clearAll to the pre-fix body (`mb.mu.Lock();
-// defer mb.mu.Unlock(); mb.submitted = nil; mb.replacement = nil; mb.injects =
+// Revert-check performed: reverted clearAll to the pre-fix body (`mb.Mu.Lock();
+// defer mb.Mu.Unlock(); mb.Submitted = nil; mb.Replacement = nil; mb.Injects =
 // nil`) -- this test FAILED (resolved channel stayed empty). Restored the
 // fix; re-ran, passed.
 func TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks(t *testing.T) {
-	mb := &mailbox{}
+	mb := &mailboxpkg.Mailbox{}
 	owner := SessionAgentCall{SessionID: "s1", Prompt: "owner"}
-	becomeOwner, _ := mb.submit(owner, func() {})
+	becomeOwner, _ := mb.Submit(owner, func() {})
 	require.True(t, becomeOwner)
 
 	resolved := make(chan error, 1)
 	queued := SessionAgentCall{SessionID: "s1", Prompt: "queued", OnQueueResolved: func(_ *fantasy.AgentResult, e error) {
 		resolved <- e
 	}}
-	becomeOwner2, _ := mb.submit(queued, func() {})
+	becomeOwner2, _ := mb.Submit(queued, func() {})
 	require.False(t, becomeOwner2)
-	require.Len(t, mb.submitted, 1)
+	require.Len(t, mb.Submitted, 1)
 
-	mb.clearAll()
+	mb.ClearAll()
 
 	select {
 	case err := <-resolved:
@@ -182,7 +182,7 @@ func TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks(t *testing.T) {
 	default:
 		t.Fatal("clearAll must resolve a dropped call's onQueueResolved hook")
 	}
-	require.Empty(t, mb.submitted)
+	require.Empty(t, mb.Submitted)
 }
 
 // TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook pins
@@ -192,28 +192,28 @@ func TestMailbox_ClearAll_ResolvesQueuedCallsWithHooks(t *testing.T) {
 // silently discarded via the bare pointer overwrite.
 //
 // Revert-check performed: reverted interruptAndReplaceLocked to the pre-fix
-// body (`if !call.FromDurableQueue { mb.replacement = &call }`, no resolve
+// body (`if !call.FromDurableQueue { mb.Replacement = &call }`, no resolve
 // call) -- this test FAILED (resolvedA channel stayed empty). Restored the
 // fix; re-ran, passed.
 func TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook(t *testing.T) {
-	mb := &mailbox{}
+	mb := &mailboxpkg.Mailbox{}
 	owner := SessionAgentCall{SessionID: "s1", Prompt: "owner"}
-	becomeOwner, _ := mb.submit(owner, func() {})
+	becomeOwner, _ := mb.Submit(owner, func() {})
 	require.True(t, becomeOwner)
 
 	resolvedA := make(chan error, 1)
 	callA := SessionAgentCall{SessionID: "s1", Prompt: "replacement A", OnQueueResolved: func(_ *fantasy.AgentResult, e error) {
 		resolvedA <- e
 	}}
-	_, hadOwner := mb.interruptAndReplace(callA)
+	_, hadOwner := mb.InterruptAndReplace(callA)
 	require.True(t, hadOwner)
-	require.NotNil(t, mb.replacement)
+	require.NotNil(t, mb.Replacement)
 
 	resolvedB := make(chan error, 1)
 	callB := SessionAgentCall{SessionID: "s1", Prompt: "replacement B", OnQueueResolved: func(_ *fantasy.AgentResult, e error) {
 		resolvedB <- e
 	}}
-	_, hadOwner2 := mb.interruptAndReplace(callB)
+	_, hadOwner2 := mb.InterruptAndReplace(callB)
 	require.True(t, hadOwner2)
 
 	select {
@@ -228,5 +228,5 @@ func TestMailbox_InterruptAndReplace_ResolvesOverwrittenReplacementHook(t *testi
 		t.Fatal("the NEW replacement's hook must not be resolved yet -- it hasn't run or been dropped")
 	default:
 	}
-	require.Equal(t, callB.Prompt, mb.replacement.Prompt)
+	require.Equal(t, callB.Prompt, mb.Replacement.Prompt)
 }

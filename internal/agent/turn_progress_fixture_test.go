@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -33,7 +35,7 @@ import (
 // synchronous branch and BLOCK on the held job. This is the same distinction
 // §3 draws: a CLI/web launch returns at once, an SDK sleep really waits.
 func guardCLICtx(ctx context.Context) context.Context {
-	return WithCallOrigin(ctx, message.OriginCLI)
+	return sessionprompt.WithCallOrigin(ctx, message.OriginCLI)
 }
 
 // guardSeedNotice gives the session one delivered job notice (visible batch

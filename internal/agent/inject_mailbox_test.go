@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/require"
@@ -20,9 +22,9 @@ import (
 // for ("new tests don't exercise agent.go's actual closure"). Production was
 // therefore extracted into drainDueInjects so this helper can be a thin
 // adapter instead of a second implementation.
-func drainAndSpliceInjects(mb *mailbox, genID uint64, historyIDs map[string]struct{}) []message.Message {
+func drainAndSpliceInjects(mb *mailboxpkg.Mailbox, genID uint64, historyIDs map[string]struct{}) []message.Message {
 	const sessionID = "inject-test-session"
-	a := &sessionAgent{mailboxes: csync.NewMap[string, *mailbox]()}
+	a := &sessionAgent{mailboxes: csync.NewMap[string, *mailboxpkg.Mailbox]()}
 	a.mailboxes.Set(sessionID, mb)
 	return a.drainDueInjects(sessionID, genID, historyIDs)
 }
@@ -41,15 +43,15 @@ func drainAndSpliceInjects(mb *mailbox, genID uint64, historyIDs map[string]stru
 // historyIDs and skips the splice. The message appears exactly once (via the
 // DB-loaded history, zero times via the splice).
 func TestInject_NoDuplicate_WhenAlreadyInHistory(t *testing.T) {
-	mb := &mailbox{
-		state:   mbOwned,
-		current: generation{id: 1, cancel: func() {}},
+	mb := &mailboxpkg.Mailbox{
+		State:   mailboxpkg.MbOwned,
+		Current: mailboxpkg.Generation{ID: 1, Cancel: func() {}},
 	}
 
 	// InjectMessage during a busy session: DB write + injectIfBusy.
 	msg := message.Message{ID: "msg-dup", Role: message.User}
-	require.True(t, mb.injectIfBusy(msg),
-		"session is busy (mbOwned) → inject must succeed")
+	require.True(t, mb.InjectIfBusy(msg),
+		"session is busy (mailboxpkg.MbOwned) → inject must succeed")
 
 	// The preamble loaded this same row from the DB (DB write was before
 	// getSessionMessages), so it is in the history set.
@@ -60,7 +62,7 @@ func TestInject_NoDuplicate_WhenAlreadyInHistory(t *testing.T) {
 	require.Empty(t, spliced,
 		"a message already in history must be spliced zero times — "+
 			"without the ID check it would appear twice (once via history, once via splice)")
-	require.Empty(t, mb.injects,
+	require.Empty(t, mb.Injects,
 		"the entry must be consumed by drainInjects regardless of the ID check")
 }
 
@@ -68,7 +70,7 @@ func TestInject_NoDuplicate_WhenAlreadyInHistory(t *testing.T) {
 // LOSS/DELAY symptom of P1-1 (mailbox stage 2.4):
 //
 // An inject that lands AFTER the owner's last PrepareStep but BEFORE the
-// owner releases must survive in mb.injects and be picked up by the VERY
+// owner releases must survive in mb.Injects and be picked up by the VERY
 // NEXT turn's drainInjects — not stranded with no owner to drain it. The
 // generation stamp ensures the entry (stamped with gen 1) is returned by
 // drainInjects(gen2) in the next turn (1 ≤ 2). The ID check then decides
@@ -81,38 +83,38 @@ func TestInject_NoDuplicate_WhenAlreadyInHistory(t *testing.T) {
 // TakeAll AND preamble DB read would both deliver it — duplication. And if
 // no next Run was triggered, the message sat indefinitely until one was.
 func TestInject_NoLoss_SurvivesToNextTurn(t *testing.T) {
-	mb := &mailbox{
-		state:            mbOwned,
-		epoch:            1,
-		dispatcherCancel: func() {},
-		current:          generation{id: 1, cancel: func() {}},
+	mb := &mailboxpkg.Mailbox{
+		State:            mailboxpkg.MbOwned,
+		Epoch:            1,
+		DispatcherCancel: func() {},
+		Current:          mailboxpkg.Generation{ID: 1, Cancel: func() {}},
 	}
 
 	// Turn 1's PrepareStep: nothing queued yet.
-	due1 := mb.drainInjects(1)
+	due1 := mb.DrainInjects(1)
 	require.Empty(t, due1, "no injects before turn 1's PrepareStep")
 
 	// InjectMessage lands AFTER turn 1's PrepareStep (stamped with gen 1).
 	msg := message.Message{ID: "msg-late", Role: message.User}
-	require.True(t, mb.injectIfBusy(msg),
+	require.True(t, mb.InjectIfBusy(msg),
 		"session still owned → inject must succeed")
 
 	// Turn 1 finishes, nothing else queued → owner releases.
-	_, hasNext, _, _ := mb.drainOrReleaseFinal(1, nil)
+	_, hasNext, _, _ := mb.DrainOrReleaseFinal(1, nil)
 	require.False(t, hasNext)
-	require.Equal(t, mbIdle, mb.state, "owner released")
+	require.Equal(t, mailboxpkg.MbIdle, mb.State, "owner released")
 
 	// The inject entry MUST survive the release.
-	require.Len(t, mb.injects, 1,
-		"late inject must survive in mb.injects across the release")
+	require.Len(t, mb.Injects, 1,
+		"late inject must survive in mb.Injects across the release")
 
 	// A new Run starts: submit → become owner under a new epoch.
-	becomeOwner, newEpoch := mb.submit(SessionAgentCall{SessionID: "s1"}, func() {})
+	becomeOwner, newEpoch := mb.Submit(SessionAgentCall{SessionID: "s1"}, func() {})
 	require.True(t, becomeOwner)
 	require.NotEqual(t, uint64(1), newEpoch, "new era must have a distinct epoch")
 
 	// Turn 2: beginGeneration bumps to gen 2.
-	genID2 := mb.beginGeneration(func() {})
+	genID2 := mb.BeginGeneration(func() {})
 
 	// Turn 2's PrepareStep: drainInjects must find the late inject
 	// (stamp=1 ≤ genID2=2). The preamble did NOT load it from DB, so
@@ -121,47 +123,47 @@ func TestInject_NoLoss_SurvivesToNextTurn(t *testing.T) {
 	require.Len(t, spliced, 1,
 		"the late inject must be delivered to the next turn — not stranded")
 	require.Equal(t, "msg-late", spliced[0].ID)
-	require.Empty(t, mb.injects, "the entry must be consumed by drainInjects")
+	require.Empty(t, mb.Injects, "the entry must be consumed by drainInjects")
 }
 
 // TestInjectIfBusy_AtomicWithOwnerRelease is the concurrency regression test
-// for the atomicity half of the P1-1 fix: injectIfBusy must hold mb.mu for
+// for the atomicity half of the P1-1 fix: injectIfBusy must hold mb.Mu for
 // the entire busy-check + inject, so a concurrent drainOrReleaseFinal cannot
-// flip the state to mbIdle between the check and the inject.
+// flip the state to mailboxpkg.MbIdle between the check and the inject.
 //
 // Without this atomicity (the old separate IsSessionBusy + injectQueue.Append),
-// IsSessionBusy could observe mbOwned, then the owner could release to mbIdle,
+// IsSessionBusy could observe mailboxpkg.MbOwned, then the owner could release to mailboxpkg.MbIdle,
 // and the append would strand the message in the queue of a session that was
 // already idle — with the row also in the DB, the next Run would duplicate it.
 //
-// This test uses mailbox.testDrainSeam to deterministically reproduce the
+// This test uses mailbox.TestDrainSeam to deterministically reproduce the
 // exact window: drainOrReleaseFinal is paused mid-critical-section (holding
-// mb.mu), and injectIfBusy is fired concurrently. The test verifies:
-//  1. injectIfBusy blocks while mb.mu is held (the critical sections are
+// mb.Mu), and injectIfBusy is fired concurrently. The test verifies:
+//  1. injectIfBusy blocks while mb.Mu is held (the critical sections are
 //     mutually exclusive).
-//  2. After drainOrReleaseFinal flips to idle and releases mb.mu, injectIfBusy
-//     correctly observes mbIdle and does NOT inject — no stranded entry.
+//  2. After drainOrReleaseFinal flips to idle and releases mb.Mu, injectIfBusy
+//     correctly observes mailboxpkg.MbIdle and does NOT inject — no stranded entry.
 func TestInjectIfBusy_AtomicWithOwnerRelease(t *testing.T) {
-	mb := &mailbox{
-		state:            mbOwned,
-		epoch:            1,
-		dispatcherCancel: func() {},
-		current:          generation{id: 1, cancel: func() {}},
+	mb := &mailboxpkg.Mailbox{
+		State:            mailboxpkg.MbOwned,
+		Epoch:            1,
+		DispatcherCancel: func() {},
+		Current:          mailboxpkg.Generation{ID: 1, Cancel: func() {}},
 	}
 
 	seamEntered := make(chan struct{})
 	releaseSeam := make(chan struct{})
-	mb.testDrainSeam = func() {
+	mb.TestDrainSeam = func() {
 		close(seamEntered)
 		<-releaseSeam
 	}
 
-	// Owner's final drain: pauses inside testDrainSeam (holding mb.mu),
-	// right before flipping state to mbIdle.
+	// Owner's final drain: pauses inside testDrainSeam (holding mb.Mu),
+	// right before flipping state to mailboxpkg.MbIdle.
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		_, _, _, _ = mb.drainOrReleaseFinal(1, nil)
+		_, _, _, _ = mb.DrainOrReleaseFinal(1, nil)
 	}()
 
 	select {
@@ -170,28 +172,28 @@ func TestInjectIfBusy_AtomicWithOwnerRelease(t *testing.T) {
 		t.Fatal("drainOrReleaseFinal never reached the test seam")
 	}
 
-	// Fire injectIfBusy concurrently. It must block on mb.mu.
+	// Fire injectIfBusy concurrently. It must block on mb.Mu.
 	injectDone := make(chan bool, 1)
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		injectDone <- mb.injectIfBusy(message.Message{ID: "m-race"})
+		injectDone <- mb.InjectIfBusy(message.Message{ID: "m-race"})
 	})
 
 	select {
 	case <-injectDone:
-		t.Fatal("injectIfBusy returned before drainOrReleaseFinal released mb.mu — critical sections overlapped")
+		t.Fatal("injectIfBusy returned before drainOrReleaseFinal released mb.Mu — critical sections overlapped")
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	// Release the seam → drainOrReleaseFinal flips to idle, releases mb.mu.
+	// Release the seam → drainOrReleaseFinal flips to idle, releases mb.Mu.
 	close(releaseSeam)
 	<-drainDone
 
-	// injectIfBusy must now see mbIdle → return false (no inject).
+	// injectIfBusy must now see mailboxpkg.MbIdle → return false (no inject).
 	injected := <-injectDone
 	require.False(t, injected,
 		"after the owner released to idle, injectIfBusy must NOT inject — "+
 			"the non-atomic old code would have left a stranded entry here")
-	require.Empty(t, mb.injects,
+	require.Empty(t, mb.Injects,
 		"no stranded entry when the session is idle — the message lives only in the DB")
 }

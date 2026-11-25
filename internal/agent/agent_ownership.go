@@ -33,7 +33,7 @@ type ownershipHost interface {
 
 type sessionOwnership struct {
 	host                    ownershipHost
-	mailboxes               func() *csync.Map[string, *mailbox]
+	mailboxes               func() *csync.Map[string, *mailboxpkg.Mailbox]
 	sessions                func() coresession.Service
 	hasSummarizeQueue       func() bool
 	armQueuedBuildRetention func() func(*SessionAgentCall)
@@ -43,17 +43,17 @@ type sessionOwnership struct {
 // lazily on first touch. Mirrors activeRequests' "one map, lazily
 // populated, entries live forever" lifetime — see mailbox.go and
 // docs/plans/2026-08-04-session-owner-mailbox-design.md §1.
-func (a *sessionAgent) getMailbox(sessionID string) *mailbox {
+func (a *sessionAgent) getMailbox(sessionID string) *mailboxpkg.Mailbox {
 	return a.sessionOwnershipComponent().getMailbox(sessionID)
 }
 
-func (a *sessionOwnership) getMailbox(sessionID string) *mailbox {
-	return a.mailboxes().GetOrSet(sessionID, func() *mailbox {
-		return &mailbox{armQueuedBuild: a.armQueuedBuildRetention()}
+func (a *sessionOwnership) getMailbox(sessionID string) *mailboxpkg.Mailbox {
+	return a.mailboxes().GetOrSet(sessionID, func() *mailboxpkg.Mailbox {
+		return &mailboxpkg.Mailbox{ArmQueuedBuild: a.armQueuedBuildRetention()}
 	})
 }
 
-// tryReserveSession is now a thin wrapper around mailbox.submit (design §3,
+// tryReserveSession is now a thin wrapper around mailbox.Submit (design §3,
 // stage 2 step 1 of the migration — see
 // docs/plans/2026-08-04-session-owner-mailbox-design.md §7). Historically
 // this used sessionStartMu + activeRequests directly; that had a real
@@ -64,7 +64,7 @@ func (a *sessionOwnership) getMailbox(sessionID string) *mailbox {
 // is what closes that window.
 //
 // call must be the REAL call Run() received, not a placeholder: when the
-// mailbox is already owned, submit appends call verbatim to mb.submitted for
+// mailbox is already owned, submit appends call verbatim to mb.Submitted for
 // the current owner's end-of-turn drain to pick up as the next turn's
 // SessionAgentCall — a placeholder with an empty Prompt would silently
 // replace the caller's actual prompt with an empty one once drained.
@@ -75,14 +75,14 @@ func (a *sessionOwnership) getMailbox(sessionID string) *mailbox {
 // makes for the lifetime of this Run() call, so a stale/duplicate release
 // (Run's cleanup defer firing after the era already legitimately ended) can
 // never be mistaken for "release MY still-current ownership" and clobber a
-// different, later owner's state. See mailbox.epoch's doc for the full
+// different, later owner's state. See mailbox.Epoch's doc for the full
 // rationale.
 func (a *sessionAgent) tryReserveSession(call SessionAgentCall, reserveCancel context.CancelFunc) (becomeOwner bool, epoch uint64) {
 	return a.sessionOwnershipComponent().tryReserveSession(call, reserveCancel)
 }
 
 func (a *sessionOwnership) tryReserveSession(call SessionAgentCall, reserveCancel context.CancelFunc) (becomeOwner bool, epoch uint64) {
-	return a.getMailbox(call.SessionID).submit(call, reserveCancel)
+	return a.getMailbox(call.SessionID).Submit(call, reserveCancel)
 }
 
 // ReserveExclusive atomically claims exclusive ownership of sessionID's
@@ -96,7 +96,7 @@ func (a *sessionOwnership) tryReserveSession(call SessionAgentCall, reserveCance
 //
 // This is a single atomic operation, not "check IsSessionBusy, then
 // reserve": the check and the mbIdle->mbOwned transition happen inside one
-// mailbox.mu critical section (mailbox.beginCompact), so there is no window
+// mailbox.Mu critical section (mailbox.beginCompact), so there is no window
 // between "observed idle" and "became owner" for a concurrent submit() to
 // slip through. Returns ok=false (fail closed) if the session is already
 // owned (a turn or compaction in progress) or the mailbox has been
@@ -136,7 +136,7 @@ func (a *sessionOwnership) tryReserveSession(call SessionAgentCall, reserveCance
 // style leak, not a functional signal). The rebind must win the epoch
 // check before anything of the old era is torn down — see
 // rebindDispatcher's own doc for why the swap is necessary and why it does
-// not reopen any gap (rebindDispatcher never changes mb.epoch/state, only
+// not reopen any gap (rebindDispatcher never changes mb.Epoch/state, only
 // which CancelFunc is live for the still-continuous era).
 func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	return a.sessionOwnershipComponent().reserveExclusive(ctx, sessionID)
@@ -145,7 +145,7 @@ func (a *sessionAgent) ReserveExclusive(ctx context.Context, sessionID string) (
 func (s *sessionOwnership) reserveExclusive(ctx context.Context, sessionID string) (holdCtx context.Context, epoch uint64, cancel context.CancelFunc, ok bool) {
 	holdCtx, holdCancel := context.WithCancel(ctx)
 	mb := s.getMailbox(sessionID)
-	epoch, ok = mb.beginCompact(holdCancel)
+	epoch, ok = mb.BeginCompact(holdCancel)
 	if !ok {
 		holdCancel()
 		return nil, 0, nil, false
@@ -174,7 +174,7 @@ func (s *sessionOwnership) releaseExclusive(sessionID string, epoch uint64, canc
 
 // releaseSessionReservation clears the busy slot claimed by
 // tryReserveSession, atomically checking for and returning any call queued
-// in the meantime via mailbox.drainOrRelease (design §3). Before this, the
+// in the meantime via mailbox.DrainOrRelease (design §3). Before this, the
 // old activeRequests.Del(sessionID) was strictly a release with no way to
 // observe a concurrent submit that raced into the gap between the caller's
 // own final "nothing queued" check and this release running — that gap is
@@ -186,7 +186,7 @@ func (s *sessionOwnership) releaseExclusive(sessionID string, epoch uint64, canc
 // handled.
 //
 // epoch must be the era id tryReserveSession (or a prior drainOrRelease
-// call within the same era) returned. See mailbox.drainOrRelease's doc for
+// call within the same era) returned. See mailbox.DrainOrRelease's doc for
 // what a mismatch means.
 //
 // Not used by runTurn's own end-of-turn drain any more (see
@@ -200,14 +200,14 @@ func (a *sessionAgent) releaseSessionReservation(sessionID string, epoch uint64)
 }
 
 func (a *sessionOwnership) releaseSessionReservation(sessionID string, epoch uint64) (SessionAgentCall, bool) {
-	return a.getMailbox(sessionID).drainOrRelease(epoch)
+	return a.getMailbox(sessionID).DrainOrRelease(epoch)
 }
 
 // drainOrReleaseMerged is runTurn's end-of-turn drain, folding in the OS-level
 // session lock release (round 11 review, HIGH-1).
 //
 // Before this, the mailbox flipped to mbIdle — making IsSessionBusy/
-// IsBusy/submit(), all same-process, in-memory reads under mb.mu, observe
+// IsBusy/submit(), all same-process, in-memory reads under mb.Mu, observe
 // "not busy" — strictly BEFORE lk (the OS-level inter-process session lock)
 // was actually released: that only happened much later, once runTurn
 // returned, its own deferred wg.Wait() (title generation, up to several
@@ -229,27 +229,27 @@ func (a *sessionOwnership) releaseSessionReservation(sessionID string, epoch uin
 // window would silently no-op (Cancel) or falsely report success while
 // cancelling nothing (InterruptAndReplace).
 //
-// The whole operation is one mailbox.drainOrReleaseFinal call, with exactly
+// The whole operation is one mailbox.DrainOrReleaseFinal call, with exactly
 // FOUR possible outcomes (corrected here — #297 review: an earlier version
 // of this doc claimed only three cases and asserted "lk is simply never
 // released for [a same-era reclaim] handoff" as the invariant covering
 // every hasNext==true return, which #296/P1-C's first draft violated by
 // adding a hand-back that returned hasNext==true AFTER lk had already been
 // released):
-//  1. mb.replacement (checked first — matching drainAfterCancel's priority,
-//     see mailbox_interrupt.go) or mb.submitted is non-empty at the
+//  1. mb.Replacement (checked first — matching drainAfterCancel's priority,
+//     see mailbox_interrupt.go) or mb.Submitted is non-empty at the
 //     time of the call, BEFORE any release attempt: pop and return it;
 //     state stays mbOwned; lk is NOT touched (still held for the reclaimed
 //     turn). The caller's loop runs it as the next turn under the SAME lk.
 //  2. Both empty: this is the end-of-turn handoff — proceed to case 3.
-//  3. Both mb.submitted and mb.replacement are empty: release lk (if non-nil) — now OUTSIDE mb.mu (#296/
-//     P1-C: mb.state == mbReleasing stands in for the mutex so a hung
-//     filesystem cannot stall the control plane) — then flip mb.state to
+//  3. Both mb.Submitted and mb.Replacement are empty: release lk (if non-nil) — now OUTSIDE mb.Mu (#296/
+//     P1-C: mb.State == mbReleasing stands in for the mutex so a hung
+//     filesystem cannot stall the control plane) — then flip mb.State to
 //     mbIdle. No same-process observer can see "not busy" until the OS lock
 //     genuinely is gone (mbReleasing reads as busy throughout), closing the
 //     HIGH-1 window described above.
-//  4. Work (a submit()/interruptAndReplace()) races into mb.submitted/
-//     mb.replacement WHILE case 3's release() is running, OR a hardStop
+//  4. Work (a submit()/interruptAndReplace()) races into mb.Submitted/
+//     mb.Replacement WHILE case 3's release() is running, OR a hardStop
 //     landed during that window. This is the ONLY case where
 //     drainOrReleaseFinal itself CANNOT decide "keep this turn loop running"
 //     — by the time it notices, release() has ALREADY run and lk is gone
@@ -264,7 +264,7 @@ func (a *sessionOwnership) releaseSessionReservation(sessionID string, epoch uin
 //     DIFFERENT signal: "this work has no lock and no turn loop; someone
 //     must start a fresh one for it", handled below exactly like
 //     coordinator.startDetachedRun's existing P0-B idle-session contract
-//     (mailbox.interruptAndReplace's own doc: "the caller should instead
+//     (mailbox.InterruptAndReplace's own doc: "the caller should instead
 //     start a fresh Run() with call directly" — case 4 is that same
 //     contract, reached via a different door). Never treat orphaned as a
 //     queue the CURRENT lk can serve.
@@ -290,7 +290,7 @@ func (a *sessionOwnership) drainOrReleaseMerged(sessionID string, epoch uint64, 
 	if lk != nil {
 		release = lk.Release
 	}
-	next, hasNext, orphaned, releaseErr := a.getMailbox(sessionID).drainOrReleaseFinal(epoch, release)
+	next, hasNext, orphaned, releaseErr := a.getMailbox(sessionID).DrainOrReleaseFinal(epoch, release)
 	if releaseErr != nil {
 		slog.Debug("agent.drainOrReleaseMerged: release session lock failed", "session_id", sessionID, "err", releaseErr)
 	}
@@ -324,9 +324,9 @@ func (a *sessionOwnership) drainOrReleaseMerged(sessionID string, epoch uint64, 
 // tail drained this queue, leaving summarise stranded if the session became idle
 // through any other entry point.
 //
-// P2-5 fix: uses the atomic mb.abandonOwnershipAndPopSubmitted method instead
-// of separately calling mb.abandonOwnership(epoch) followed by
-// mb.popAllSubmitted(). The two-call sequence had a race window where a new
+// P2-5 fix: uses the atomic mb.AbandonOwnershipAndPopSubmitted method instead
+// of separately calling mb.AbandonOwnership(epoch) followed by
+// mb.PopAllSubmitted(). The two-call sequence had a race window where a new
 // owner could submit() (transitioning mbIdle -> mbOwned with a new epoch) and
 // then queue() work, which popAllSubmitted would incorrectly hand off to
 // restartOrphanedWithRetry instead of leaving it for the new owner's own drain.
@@ -342,7 +342,7 @@ func (a *sessionAgent) abandonOwnershipWithHandoff(sessionID string, epoch uint6
 
 func (a *sessionOwnership) abandonOwnershipWithHandoff(sessionID string, epoch uint64) {
 	mb := a.getMailbox(sessionID)
-	popped := mb.abandonOwnershipAndPopSubmitted(epoch)
+	popped := mb.AbandonOwnershipAndPopSubmitted(epoch)
 	// Phase 3's by-construction release trigger (sessionAgent.onSessionIdle's
 	// doc): this is the single point every Run()/RunWithReservedOwnership/
 	// ReleaseExclusive exit funnels through, so it fires regardless of which
@@ -794,7 +794,7 @@ type reservedOwnershipContextKey struct{}
 // BEFORE any per-run side effects (round-2 SDK review R2-1/R2-3), then
 // publishes on the run's context. sessionAgent.Run consumes it to continue
 // that era — the same RunWithReservedOwnership-shaped handoff — instead of
-// racing a fresh mailbox.submit() that would either double-reserve or lose
+// racing a fresh mailbox.Submit() that would either double-reserve or lose
 // to the era this very caller already holds.
 //
 // The token is deliberately ONE-SHOT (claimed): the coordinator's
@@ -846,7 +846,7 @@ func reservedOwnershipFrom(ctx context.Context) *reservedOwnership {
 
 // ClearReservedOwnership returns a child of ctx on which reservedOwnershipFrom
 // finds no token (a typed nil under the same key): a later Run on that context
-// takes the normal mailbox.submit path even though an ancestor context carried
+// takes the normal mailbox.Submit path even though an ancestor context carried
 // an era. Used by ExecuteRun's reviewer pass — a second turn on the same
 // session in the same process must queue like any fresh call, never continue
 // (or stale-claim) the primary turn's one-shot era token.

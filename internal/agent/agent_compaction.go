@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"time"
 
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
@@ -28,7 +30,7 @@ var ErrSummarizeQueued = errors.New("summarize queued")
 type contextBudgetHost interface {
 	compactionHost
 	tryAdmitRun() (done func(), ok bool)
-	getMailbox(sessionID string) *mailbox
+	getMailbox(sessionID string) *mailboxpkg.Mailbox
 	Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
 	abandonOwnershipWithHandoff(sessionID string, epoch uint64)
 	effectiveStreamWatchdogTick() time.Duration
@@ -124,7 +126,7 @@ func (t *turnBudget) summarizeNow(h contextBudgetHost, ctx context.Context, sess
 }
 
 func (t *turnBudget) summarize(h contextBudgetHost, ctx context.Context, sessionID string, snapshot *SummarizeSnapshot, queueWhenBusy bool) error {
-	var mb *mailbox
+	var mb *mailboxpkg.Mailbox
 	return turnstep.SummarizeAdmit(turnstep.SummarizeAdmission{
 		Queue:       t.summarizeQueue,
 		TryAdmitRun: h.tryAdmitRun,
@@ -133,7 +135,7 @@ func (t *turnBudget) summarize(h contextBudgetHost, ctx context.Context, session
 		BusyErr:     func() error { return ErrSessionBusy },
 		BeginCompact: func(sessionID string, cancel context.CancelFunc) (uint64, bool) {
 			mb = h.getMailbox(sessionID)
-			return mb.beginCompact(cancel)
+			return mb.BeginCompact(cancel)
 		},
 		RunSummarize: func(ctx, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
 			return t.runSummarize(h, ctx, genCtx, sessionID, snapshot, mb, epoch, cancel, queueOnLockFailure)
@@ -144,7 +146,7 @@ func (t *turnBudget) summarize(h contextBudgetHost, ctx context.Context, session
 // runSummarize runs a manual /compact under mailbox ownership acquired by
 // Summarize's beginCompact call. After the compaction body completes, it
 // releases ownership via abandonOwnership (handing back any Run that queued
-// behind it via mailbox.submit during the stream) and starts a fresh Run for
+// behind it via mailbox.Submit during the stream) and starts a fresh Run for
 // the first queued call — the same drain shape the old runSummarizeCore tail
 // had, now operating on mailbox ownership instead of a synthetic
 // activeRequests key.
@@ -162,7 +164,7 @@ func (t *turnBudget) summarize(h contextBudgetHost, ctx context.Context, session
 // Run() call. No deadlock is possible because those paths never acquire a
 // second lock.
 //
-// OS lock acquisition happens AFTER beginCompact succeeds and mb.mu is
+// OS lock acquisition happens AFTER beginCompact succeeds and mb.Mu is
 // released, avoiding #296's I/O-under-mu anti-pattern. The lock is held for
 // the entire runSummarizeBody call to protect both the LLM stream and the
 // commit phase, matching Run()'s lock-hold semantics.
@@ -171,16 +173,16 @@ func (t *turnBudget) summarize(h contextBudgetHost, ctx context.Context, session
 // prefix resolved from the target session (or shared state for sessions without
 // overrides), ensuring the entire summarize operation uses consistent
 // configuration regardless of concurrent SetModels calls (task #341, P1-1).
-func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
+func (a *sessionAgent) runSummarize(ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailboxpkg.Mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
 	return a.turnBudget.runSummarize(a, ctx, genCtx, sessionID, snapshot, mb, epoch, cancel, queueOnLockFailure)
 }
 
-func (t *turnBudget) runSummarize(h contextBudgetHost, ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
+func (t *turnBudget) runSummarize(h contextBudgetHost, ctx context.Context, genCtx context.Context, sessionID string, snapshot *SummarizeSnapshot, mb *mailboxpkg.Mailbox, epoch uint64, cancel context.CancelFunc, queueOnLockFailure bool) error {
 	// Resolve the idle timeout for the summarization stream watchdog (config
 	// read, once, at the original point); the body itself lives in the
 	// turnstep leaf as turnstep.RunSummarize — this wrapper is pure
 	// adaptation: it resolves the leaf's deps (including narrow closures
-	// over the package-private *mailbox, whose test seams are read lazily
+	// over the package-private *mailboxpkg.Mailbox, whose test seams are read lazily
 	// inside the closures) and forwards.
 	idleTimeout := streamIdleTimeoutDefault
 	if h.streamIdleTimeoutCfg() > 0 {
@@ -212,20 +214,20 @@ func (t *turnBudget) runSummarize(h contextBudgetHost, ctx context.Context, genC
 		},
 
 		PreSnapshotSeam: func() {
-			if mb.testPreSnapshotConsumeSeam != nil {
-				mb.testPreSnapshotConsumeSeam()
+			if mb.TestPreSnapshotConsumeSeam != nil {
+				mb.TestPreSnapshotConsumeSeam()
 			}
 		},
 		PreAbandonSeam: func() {
-			if mb.testPreAbandonSeam != nil {
-				mb.testPreAbandonSeam()
+			if mb.TestPreAbandonSeam != nil {
+				mb.TestPreAbandonSeam()
 			}
 		},
-		BeginRelease:   mb.beginRelease,
-		FinishRelease:  func(epoch uint64) { mb.finishRelease(epoch) },
+		BeginRelease:   mb.BeginRelease,
+		FinishRelease:  func(epoch uint64) { mb.FinishRelease(epoch) },
 		AbandonHandoff: func() { h.abandonOwnershipWithHandoff(sessionID, epoch) },
 		AbandonPopFirst: func() (SessionAgentCall, bool) {
-			return mb.abandonOwnershipAndPopFirstSubmitted(epoch)
+			return mb.AbandonOwnershipAndPopFirstSubmitted(epoch)
 		},
 
 		RunQueued: func(runCtx context.Context, call SessionAgentCall) error {
