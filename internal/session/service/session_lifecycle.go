@@ -12,11 +12,28 @@ import (
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/session/service/components/rolecontract"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
 	sqlitedriver "modernc.org/sqlite"
 )
+
+func (s *service) GetRootRoleContract(ctx context.Context, sessionID string) (string, *RoleContract, bool, error) {
+	return rolecontract.GetRootRoleContract(ctx, s.DB, sessionID)
+}
+
+func (s *service) BindRootRoleContract(ctx context.Context, sessionID, logicalID string, contract *RoleContract) error {
+	return rolecontract.BindRootRoleContract(ctx, s.DB, sessionID, logicalID, contract, ErrSessionRoleContractMismatch)
+}
+
+func (s *service) GetAgentModelRole(ctx context.Context, id string) (string, bool, error) {
+	return rolecontract.GetAgentModelRole(ctx, s.DB, id)
+}
+
+func (s *service) BindAgentModelRole(ctx context.Context, id, role string) error {
+	return rolecontract.BindAgentModelRole(ctx, s.DB, id, role, ErrAgentModelRoleMismatch)
+}
 
 // bindWorkspace is the ONE place a new session row is bound to the process
 // that creates it (#1142 step C, invariant WS-1): workspace_root is the

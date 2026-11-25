@@ -67,7 +67,7 @@ internal/serve/server/server 130
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 33
 # EX4 service has 43 direct Go files (22 production, 21 tests); components is not counted here; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
-internal/session/service 43
+internal/session/service 38
 internal/session/jobbatch 43
 internal/session/jobbatch/lab 41
 internal/store/message 26

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/service/components/finqueue"
+	"github.com/PHPCraftdream/rush/internal/session/service/components/sesstypes"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
@@ -44,30 +45,20 @@ type RunQueueEntry struct {
 // between the two at the durable-serialization boundary
 // (call_data_conversion.go); keep the fields in sync with
 // permission.RunAllowlistSpec.
-type RunAllowlistSpec struct {
-	// Restrict enables the restricted permission model. When false the
-	// spec is inert (the run auto-approves everything). Kept explicit so
-	// "policy present but inert" is distinguishable in the durable row.
-	Restrict   bool     `json:"restrict,omitempty"`
-	AllowTools []string `json:"allow_tools,omitempty"`
-	AllowBash  []string `json:"allow_bash,omitempty"`
-}
+type RunAllowlistSpec = sesstypes.RunAllowlistSpec
 
 // FileOp is the session-mirror of permission.FileOp: one filesystem
 // operation a folder scope can grant. The string values are identical to
 // the permission package's constants; the type is duplicated for the
 // same reason the rest of this mirror exists (session cannot import
 // permission).
-type FileOp string
+type FileOp = sesstypes.FileOp
 
 // FolderScopeEntry is the session-mirror of permission.FolderScopeEntry:
 // one directory subtree plus the operations granted inside it. Dir is
 // absolute or relative to the spec's WorkingDir. Ops empty means a deny
 // carve-out, exactly as in the permission package.
-type FolderScopeEntry struct {
-	Dir string   `json:"dir"`
-	Ops []FileOp `json:"ops,omitempty"`
-}
+type FolderScopeEntry = sesstypes.FolderScopeEntry
 
 // FolderScopeSpec is a JSON-serializable mirror of
 // permission.FolderScopeSpec (the uncompiled folder-scope set). It
@@ -77,22 +68,12 @@ type FolderScopeEntry struct {
 // an import cycle). The agent package converts between the two at the
 // durable-serialization boundary (call_data_conversion.go); keep the
 // fields in sync with permission.FolderScopeSpec.
-type FolderScopeSpec struct {
-	// WorkingDir resolves relative Dir entries. It is persisted from the
-	// compiling run's working directory so a restart recompiles the
-	// scope EXACTLY as it was first compiled, independent of where the
-	// rebuilding process runs.
-	WorkingDir string `json:"working_dir,omitempty"`
-	// Entries are the scopes. KeepCommandTools records that
-	// command-executing tools stay in the scoped toolset.
-	Entries          []FolderScopeEntry `json:"entries,omitempty"`
-	KeepCommandTools bool               `json:"keep_command_tools,omitempty"`
-}
+type FolderScopeSpec = sesstypes.FolderScopeSpec
 
 // CallOptionsSpecVersion is the current schema version. Version 1 predates
 // WebTurnOptIn, version 2 adds it, and version 3 adds the fail-closed
 // custom-role contract snapshot.
-const CallOptionsSpecVersion = 3
+const CallOptionsSpecVersion = sesstypes.CallOptionsSpecVersion
 
 // CallOptionsSpec is a JSON-serializable mirror of the replay-relevant
 // subset of agent.CallOptions (R5-3, P0 security review). It exists for
@@ -118,49 +99,7 @@ const CallOptionsSpecVersion = 3
 //   - DiskProvider has no serializable form at all, and a call carrying
 //     one is refused before it ever reaches the durable queue (see
 //     HostDiskProvider below).
-type CallOptionsSpec struct {
-	Version int `json:"version"`
-	// DisableSubAgents mirrors agent.CallOptions.DisableSubAgents: strips
-	// the delegation tools (agent, agentic_fetch) from the top-level coder
-	// toolset for this call. Losing this on a durable restart was the
-	// R5-3 finding's headline risk: a call originally declared
-	// single-agent (--agents single) could silently regain delegation
-	// after a restart.
-	DisableSubAgents bool `json:"disable_sub_agents,omitempty"`
-	// ModelRole mirrors agent.CallOptions.ModelRole (config.SelectedModelType,
-	// stored here as a plain string since session cannot import config
-	// either — see ModelCfg above for the same constraint). Empty means
-	// unset, exactly like the zero value of config.SelectedModelType.
-	ModelRole string `json:"model_role,omitempty"`
-	// TimeoutOptionsSet/TimeoutExtendsOnProgress/TimeoutHardCap mirror the
-	// three agent.CallOptions timeout-watchdog fields together, including
-	// the R3-6 distinction between "unset" and "deliberately zero":
-	// TimeoutOptionsSet must round-trip on its own even when the two
-	// fields it guards are both zero, or a call that asked for "no
-	// extension, no cap, on purpose" would be indistinguishable from a
-	// legacy row that never set timeouts at all.
-	TimeoutOptionsSet        bool          `json:"timeout_options_set,omitempty"`
-	TimeoutExtendsOnProgress bool          `json:"timeout_extends_on_progress,omitempty"`
-	TimeoutHardCap           time.Duration `json:"timeout_hard_cap,omitempty"`
-	// IdleTimeout mirrors agent.CallOptions.IdleTimeout: this call's
-	// stream-watchdog idle-stall override. Zero is "unset — fall back to
-	// the shared/default policy"; a positive value is the override AND
-	// makes an idle stall terminal for the call. A deliberately disabled
-	// backstop arrives as the CLI's large positive sentinel
-	// (idleTimeoutDisabledSentinel in internal/cmd), never as a special
-	// conversion-side value, so a plain duration round-trip preserves all
-	// three states (F7). Additive field: rows persisted before it existed
-	// decode as zero, which is the unset semantics they were written
-	// with, so CallOptionsSpecVersion stays at 3.
-	IdleTimeout   time.Duration `json:"idle_timeout,omitempty"`
-	WebTurnOptIn  bool          `json:"web_turn_opt_in,omitempty"`
-	MaxAgentDepth int           `json:"max_agent_depth,omitempty"`
-	AgentDepthSet bool          `json:"agent_depth_set,omitempty"`
-	// RoleContract is a versioned immutable custom-role/model/tool-cap snapshot.
-	// It is a separate envelope so the role contract can evolve without
-	// changing the surrounding CallOptionsSpec version again.
-	RoleContract *RoleContract `json:"role_contract,omitempty"`
-}
+type CallOptionsSpec = sesstypes.CallOptionsSpec
 
 // SessionAgentCallData is a durable, serializable subset of agent.SessionAgentCall
 // that can be stored in the run queue and reconstructed after process restart.
