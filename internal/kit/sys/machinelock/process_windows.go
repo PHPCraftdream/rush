@@ -3,6 +3,7 @@
 package machinelock
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"time"
@@ -53,12 +54,12 @@ func processSnapshot(pid int, record Record, started time.Time) string {
 
 func gracefulStop(cmd *exec.Cmd) {
 	if cmd.Process != nil {
-		_ = exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+		_ = exec.CommandContext(context.Background(), "taskkill", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
 	}
 }
 
 func forceStop(cmd *exec.Cmd) {
 	if cmd.Process != nil {
-		_ = exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
+		_ = exec.CommandContext(context.Background(), "taskkill", "/F", "/T", "/PID", fmt.Sprint(cmd.Process.Pid)).Run()
 	}
 }

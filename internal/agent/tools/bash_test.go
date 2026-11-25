@@ -482,9 +482,9 @@ func TestBashTool_OnBackgroundCompleteFires(t *testing.T) {
 
 func TestBashToolRoutesLockWrapExitCode(t *testing.T) {
 	token := strconv.FormatInt(time.Now().UnixNano(), 10)
-	command := "sh -c 'exit 7' " + token
+	command, wantExit := "false "+token, "Exit code 1"
 	if runtime.GOOS == "windows" {
-		command = "cmd /c exit 7 " + token
+		command, wantExit = "cmd /c exit 7 "+token, "Exit code 7"
 	}
 	pattern := "exact:" + command
 	lockwrap.SetLockWrapPatterns([]string{pattern})
@@ -492,5 +492,5 @@ func TestBashToolRoutesLockWrapExitCode(t *testing.T) {
 	tool := newBashToolForTest(t.TempDir())
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "lock-wrap-routing-test")
 	resp := runBashTool(t, tool, ctx, BashParams{Command: command})
-	require.Contains(t, resp.Content, "Exit code 7")
+	require.Contains(t, resp.Content, wantExit)
 }

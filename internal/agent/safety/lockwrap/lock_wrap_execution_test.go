@@ -2,13 +2,18 @@ package lockwrap
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestRunLockedCommandExitCode(t *testing.T) {
-	stdout, stderr, code, err := RunLockedCommand(context.Background(), "lane117-exit-code-test", "cmd /c exit 3", t.TempDir(), []string{"cmd", "/c", "exit", "3"})
+	raw, argv := "sh -c \"exit 3\"", []string{"sh", "-c", "exit 3"}
+	if runtime.GOOS == "windows" {
+		raw, argv = "cmd /c exit 3", []string{"cmd", "/c", "exit", "3"}
+	}
+	stdout, stderr, code, err := RunLockedCommand(context.Background(), "lane117-exit-code-test", raw, t.TempDir(), argv)
 	require.NoError(t, err)
 	require.Equal(t, 3, code)
 	require.Empty(t, stdout)

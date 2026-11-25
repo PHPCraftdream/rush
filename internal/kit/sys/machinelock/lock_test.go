@@ -73,7 +73,7 @@ func TestFIFOConcurrentAcquire(t *testing.T) {
 
 func TestRunExitCode(t *testing.T) {
 	t.Parallel()
-	argv := testSleepCommand("")
+	var argv []string
 	if runtime.GOOS == "windows" {
 		argv = []string{"cmd", "/c", "exit 3"}
 	} else {

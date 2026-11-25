@@ -207,7 +207,8 @@ func RunWithOptions(ctx context.Context, name string, record Record, options Opt
 		return 1, err
 	}
 	defer h.Release()
-	cmd := exec.Command(argv[0], argv[1:]...)
+	// The lock owns termination (graceful, diagnosed, opt-in force), so the command must not die with ctx.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = stdout, stderr, os.Stdin
 	configureProcess(cmd)
 	if err := cmd.Start(); err != nil {
