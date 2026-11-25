@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 )
 
 // Oracle observes physical calls, never admission or scheduling. Labels remain
@@ -181,7 +182,7 @@ func (e *oracleExecutor) Start(ctx context.Context, l jobbatch.Launch, report fu
 	}
 	o.mu.Unlock()
 	base := &oracleExecution{Execution: execution, o: o, token: l.Token}
-	_, base.controlled = ex.(*ControlledExecutor)
+	_, base.controlled = ex.(*controlled.ControlledExecutor)
 	return oracleCapabilities(base), nil
 }
 

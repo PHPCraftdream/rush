@@ -1,6 +1,9 @@
-package lab
+package controlled
 
-// scenarioPhysicalState copies fixture observations, not Runtime internals or
+func (c *ControlledExecutor) ScenarioPhysicalState() []ScenarioPhysicalState {
+	return c.scenarioPhysicalState()
+}
+
 // error text. It cannot release gates or authorize calls.
 func (c *ControlledExecutor) scenarioPhysicalState() []ScenarioPhysicalState {
 	c.mu.Lock()

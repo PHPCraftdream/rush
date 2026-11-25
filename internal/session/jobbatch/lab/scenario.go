@@ -8,10 +8,10 @@ import (
 	"io"
 	"math"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch/lab/controlled"
 )
 
 func LoadScenario(r io.Reader) (*Scenario, error) {
@@ -325,6 +325,4 @@ func (s *Scenario) ResolveMessage(name string) (json.RawMessage, error) {
 	return append(json.RawMessage(nil), msg...), nil
 }
 
-func scenarioGateValid(r GateResult) bool {
-	return r == GateOK || r == GatePanic || strings.HasPrefix(string(r), "error:")
-}
+func scenarioGateValid(r GateResult) bool { return controlled.ScenarioGateValid(r) }

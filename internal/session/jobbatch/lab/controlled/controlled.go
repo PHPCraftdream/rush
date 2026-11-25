@@ -1,8 +1,10 @@
-package lab
+package controlled
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync"
 
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -84,7 +86,7 @@ func (c *ControlledExecutor) attempt(token uint64) (*controlledAttempt, error) {
 	return a, nil
 }
 
-func controlledDecisionValid(d StartDecision) bool {
+func DecisionValid(d StartDecision) bool {
 	switch d.Decision {
 	case DecisionAccept, DecisionRefuseCapacity:
 		return d.State == "" && d.Code == ""
@@ -183,7 +185,7 @@ func (c *ControlledExecutor) AwaitStart(ctx context.Context, id jobbatch.ID) (jo
 func (c *ControlledExecutor) ReleaseStart(ctx context.Context, token uint64, d StartDecision) error {
 	c.mu.Lock()
 	a, err := c.attempt(token)
-	if err == nil && (a.phase != controlledRegistered || a.decision != nil || !controlledDecisionValid(d)) {
+	if err == nil && (a.phase != controlledRegistered || a.decision != nil || !DecisionValid(d)) {
 		err = ErrAttemptPhase
 	}
 	if err != nil {
@@ -302,3 +304,55 @@ var (
 	_ jobbatch.Messenger    = (*controlledAttempt)(nil)
 	_ jobbatch.Disposer     = (*controlledAttempt)(nil)
 )
+
+type (
+	StartDecision struct {
+		Decision Decision       `json:"decision"`
+		State    jobbatch.State `json:"state,omitempty"`
+		Code     string         `json:"code,omitempty"`
+	}
+	Decision string
+)
+
+const (
+	DecisionAccept         Decision = "accept"
+	DecisionAcceptComplete Decision = "accept_complete"
+	DecisionRefuseCapacity Decision = "refuse_capacity"
+	DecisionFail           Decision = "fail"
+)
+
+type GateResult string
+
+const (
+	GateOK    GateResult = "ok"
+	GatePanic GateResult = "panic"
+)
+
+var (
+	ErrUnknownAttempt = errors.New("batchlab: unknown attempt")
+	ErrAttemptPhase   = errors.New("batchlab: invalid attempt phase")
+)
+
+type (
+	Observation struct {
+		Token uint64
+		Kind  string
+		Call  uint64
+	}
+	ScenarioPhysicalState struct {
+		Node            jobbatch.ID
+		Token           uint64
+		StopActive      bool
+		Reads           int
+		DisposeEntered  bool
+		DisposeReturned bool
+	}
+)
+
+func (c *ControlledExecutor) SetObserveHook(f func(Observation)) {
+	c.observe = func(o controlledObservation) { f(Observation(o)) }
+}
+
+func ScenarioGateValid(r GateResult) bool {
+	return r == GateOK || r == GatePanic || strings.HasPrefix(string(r), "error:")
+}
