@@ -153,7 +153,9 @@ func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
 	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	require.NoError(t, err)
 	defer stderr.Close()
-	argv := []string{"sh", "-c", "sleep 30 & wait"}
+	// The Unix fixture ignores SIGTERM (children inherit the ignore), like a Windows console
+	// program survives a graceful taskkill: only then does the stuck command outlive the stop.
+	argv := []string{"sh", "-c", "trap '' TERM; sleep 30 & wait"}
 	if runtime.GOOS == "windows" {
 		argv = []string{"cmd", "/c", "ping -n 30 127.0.0.1 >NUL"}
 	}
