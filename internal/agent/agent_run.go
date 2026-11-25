@@ -706,9 +706,8 @@ func (a *sessionAgent) runOwned(ctx, runCtx context.Context, call SessionAgentCa
 		// the persisted contract for a continuation), then the finalization
 		// driver identity binding (in-memory, idempotent), and only when both
 		// admit the call do the durable writes run: root role binding, then
-		// the per-call model persistence. A failed driver binding therefore
-		// never replaces the root role row nor persists models for a call
-		// that is reported as already attempted below.
+		// the per-call model persistence. A failed driver binding therefore never replaces the
+		// root role row nor persists models for a call that is reported as already attempted below.
 		if call.LogicalCallID != previousCall.LogicalCallID {
 			if restored, restoreErr := delegation.RestoreRootRoleContract(runCtx, a.sessions, call); restoreErr != nil {
 				return nil, notAttempted(call, restoreErr)
