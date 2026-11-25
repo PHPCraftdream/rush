@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"sync"
 	"testing"
 	"time"
@@ -162,7 +163,7 @@ func newCutoverEnvDeps(t *testing.T, limits jobbatch.Limits, wrapExecutor func(j
 	if _, err := q.CreateSession(ctx, db.CreateSessionParams{ID: sessionID, Title: sessionID}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	built := newPolicyToolBuild(leaves)
+	built := toolwrap.NewPolicyToolBuild(leaves)
 	registries := NewBatchLeafRegistryStore()
 	registryID := uuid.NewString()
 	if err := registries.Register(registryID, built.Leaves); err != nil {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 
 	"charm.land/fantasy"
@@ -19,13 +20,13 @@ type modelControlFake struct {
 	addedNotify string
 }
 
-func (f *modelControlFake) Run(_ context.Context, i BatchInvocation, _ *policyLeafRegistry, s modelcontrol.Spec) (jobbatch.ID, error) {
+func (f *modelControlFake) Run(_ context.Context, i BatchInvocation, _ *toolwrap.PolicyLeafRegistry, s modelcontrol.Spec) (jobbatch.ID, error) {
 	f.ran = s
 	f.inv = i
 	return "root", nil
 }
 
-func (f *modelControlFake) Add(_ context.Context, _, _, _ string, _ BatchInvocation, _ *policyLeafRegistry, _ []modelcontrol.Item) ([]jobbatch.ID, error) {
+func (f *modelControlFake) Add(_ context.Context, _, _, _ string, _ BatchInvocation, _ *toolwrap.PolicyLeafRegistry, _ []modelcontrol.Item) ([]jobbatch.ID, error) {
 	f.addedNotify = "each"
 	return []jobbatch.ID{"node"}, nil
 }
@@ -42,7 +43,7 @@ func (f *modelControlFake) Stop(context.Context, string, string, string) (any, e
 	return nil, nil
 }
 
-func modelRegistry(names ...string) *policyLeafRegistry {
+func modelRegistry(names ...string) *toolwrap.PolicyLeafRegistry {
 	leaves := map[string]testPolicyLeaf{}
 	for _, n := range names {
 		leaves[n] = testPolicyLeaf{Tool: batchTestTools(n)[0]}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"strings"
 
 	"charm.land/fantasy"
@@ -257,7 +258,7 @@ func batchLeafRunContext(base context.Context, p batchLeafPayload) context.Conte
 			FolderScope: q.FolderScope, RunAllowlist: q.RunAllowlist, CustomDisk: q.CustomDisk,
 		}
 		if q.RoleContract != nil {
-			policy.WithRole = func(ctx context.Context) context.Context { return withRoleToolContract(ctx, q.RoleContract) }
+			policy.WithRole = func(ctx context.Context) context.Context { return toolwrap.WithRoleToolContract(ctx, q.RoleContract) }
 		}
 	}
 	return batchdispatch.LeafRunContext(base, p.SessionID, p.AgentDepth, WithAgentDepth, policy, p.diskProvider)

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"sync"
 	"testing"
 	"time"
@@ -268,7 +269,7 @@ func TestDiskProviderSupportedThroughModelFacingIngressRoutes(t *testing.T) {
 				require.NotNil(t, bridge)
 				resp, err = bridge.Call(stamped, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{"path":"x"}`})
 			case "agentic_fetch":
-				built := armPrivateFetchIngress(ctx, newPolicyToolBuild([]fantasy.AgentTool{env.leaf}), installwire.ProcessBinding(processBatchBinding).ingress, newBuildResourceScope())
+				built := armPrivateFetchIngress(ctx, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{env.leaf}), installwire.ProcessBinding(processBatchBinding).ingress, newBuildResourceScope())
 				resp, err = built.Tools[0].Run(ctx, fantasy.ToolCall{ID: "disk-route", Name: "view", Input: `{}`})
 			}
 			require.NoError(t, err)

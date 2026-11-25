@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,8 +29,8 @@ func TestRoleCapCollectionPreservesEmptyGroupsAndDetachedIntersections(t *testin
 
 	// The role-group API keeps the intersection deny-all for the collected
 	// ceilings: an explicit empty inherited cap denies every name.
-	require.False(t, RoleContractAllowsTool(contract, "view"))
-	require.False(t, RoleContractAllowsTool(contract, "bash"))
+	require.False(t, toolwrap.RoleContractAllowsTool(contract, "view"))
+	require.False(t, toolwrap.RoleContractAllowsTool(contract, "bash"))
 
 	inherited[0][0] = "bash"
 	inherited[2][0] = "bash"

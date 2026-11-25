@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
@@ -110,8 +111,8 @@ func TestCustomRoleCredentialsDispatchUsesExactTenantSlotWithoutChangingPolicy(t
 	// the caller's builtin slot or the operator-admitted tool ceiling.
 	require.Equal(t, config.SelectedModelTypeSmart, opts.ModelRole)
 	require.Equal(t, []string{"view"}, *opts.RoleContract.Tools)
-	require.True(t, RoleContractAllowsTool(opts.RoleContract, "view"))
-	require.False(t, RoleContractAllowsTool(opts.RoleContract, "bash"))
+	require.True(t, toolwrap.RoleContractAllowsTool(opts.RoleContract, "view"))
+	require.False(t, toolwrap.RoleContractAllowsTool(opts.RoleContract, "bash"))
 	require.False(t, coord.workerSubAgentActiveForCall(ctx, coord.cfg.Config()), "a custom role must not activate the worker cascade")
 	require.False(t, resolved.orchestrator)
 
@@ -150,7 +151,7 @@ func TestCustomRoleCredentialsDispatchUsesExactTenantSlotWithoutChangingPolicy(t
 	require.Equal(t, parentDepth-1, dispatched.CallOptions.MaxAgentDepth, "choosing a custom tenant model cannot reset delegation depth")
 	require.True(t, contract.Equal(dispatched.RoleContract))
 	require.True(t, contract.Equal(dispatched.CallOptions.RoleContract))
-	require.False(t, RoleContractAllowsTool(dispatched.RoleContract, "write"))
+	require.False(t, toolwrap.RoleContractAllowsTool(dispatched.RoleContract, "write"))
 }
 
 func TestCustomRoleCredentialsMissingExactSlotFailsBeforeDelegationEffects(t *testing.T) {

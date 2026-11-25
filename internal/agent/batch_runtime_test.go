@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func testRuntimeConfig() batchRuntimeConfig {
 		Host:       "host-1",
 		RunnerID:   "runner-1",
 		Profile:    profile,
-		Leaves:     func(string) (*policyLeafRegistry, error) { return nil, errors.New("unused") },
+		Leaves:     func(string) (*toolwrap.PolicyLeafRegistry, error) { return nil, errors.New("unused") },
 		Attach:     newFakeAttach(),
 		RootLeases: NewBatchRootLeaseStore(caps),
 	}
@@ -69,7 +70,7 @@ func TestNewBatchRuntimeNoSideEffects(t *testing.T) {
 	before := goroutineIDSnapshot()
 	leafCalls := 0
 	cfg := testRuntimeConfig()
-	cfg.Leaves = func(string) (*policyLeafRegistry, error) {
+	cfg.Leaves = func(string) (*toolwrap.PolicyLeafRegistry, error) {
 		leafCalls++
 		return nil, errors.New("unused")
 	}
@@ -126,7 +127,7 @@ func TestConcurrentInvocationsNoPolicyCollision(t *testing.T) {
 	toolInA, toolInB := newTestLeaf("view"), newTestLeaf("view")
 	leafA := newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"view": {Tool: toolInA}})
 	leafB := newTestPolicyLeafRegistry(map[string]testPolicyLeaf{"view": {Tool: toolInB}})
-	cfg.Leaves = func(registryID string) (*policyLeafRegistry, error) {
+	cfg.Leaves = func(registryID string) (*toolwrap.PolicyLeafRegistry, error) {
 		if registryID == "reg-a" {
 			return leafA, nil
 		}

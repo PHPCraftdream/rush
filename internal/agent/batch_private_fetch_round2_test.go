@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -97,7 +98,7 @@ func newRound2DriverScopeInstall(t *testing.T) *round2DriverScopeInstall {
 	fingerprint := installwire.ToolsetFingerprint([]fantasy.AgentTool{stub})
 	registryID := "r2reg-" + uuid.NewString()[:8]
 	registries := NewBatchLeafRegistryStore()
-	require.NoError(t, registries.Register(registryID, newPolicyToolBuild([]fantasy.AgentTool{stub}).Leaves))
+	require.NoError(t, registries.Register(registryID, toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{stub}).Leaves))
 	stub.caps = bindings
 	probeConstructionRegistryID = registryID
 	pinTestConstruction(t, bindings, registryID)

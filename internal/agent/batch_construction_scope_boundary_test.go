@@ -66,11 +66,11 @@ type failingModelControls struct{ err error }
 
 // BatchModelControl interface; the test never reaches these — the install
 // step always fails first.
-func (f failingModelControls) Run(context.Context, BatchInvocation, *policyLeafRegistry, modelcontrol.Spec) (jobbatch.ID, error) {
+func (f failingModelControls) Run(context.Context, BatchInvocation, *toolwrap.PolicyLeafRegistry, modelcontrol.Spec) (jobbatch.ID, error) {
 	return jobbatch.ID(""), f.err
 }
 
-func (f failingModelControls) Add(context.Context, string, string, string, BatchInvocation, *policyLeafRegistry, []modelcontrol.Item) ([]jobbatch.ID, error) {
+func (f failingModelControls) Add(context.Context, string, string, string, BatchInvocation, *toolwrap.PolicyLeafRegistry, []modelcontrol.Item) ([]jobbatch.ID, error) {
 	return nil, f.err
 }
 

@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"reflect"
 	"sync"
 	"testing"
@@ -177,7 +178,7 @@ func newMarkerModelControlEnv(t *testing.T) *markerModelControlEnv {
 	deps := installTestDeps(t, store, conn, "unused")
 	deps.Executor = executor
 	registries := deps.Registries
-	require.NoError(t, registries.Register(markerModelRegistryID, newPolicyToolBuild(tools).Leaves))
+	require.NoError(t, registries.Register(markerModelRegistryID, toolwrap.NewPolicyToolBuild(tools).Leaves))
 	pinTestConstruction(t, deps.DiskBindings, markerModelRegistryID)
 	install, err := InstallBatchRuntime(context.Background(), deps)
 	require.NoError(t, err)

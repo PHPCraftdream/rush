@@ -13,6 +13,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func newCLIMarkerInstall(t *testing.T) (*BatchInstall, *escrowAgentExecutor, *es
 	t.Helper()
 	registryStore := NewBatchLeafRegistryStore()
 	tool := &escrowTestTool{started: make(chan context.Context, 4), release: make(chan struct{})}
-	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
+	registry := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
 	require.NoError(t, registryStore.Register("registry", registry))
 	ingress := escrowTestIngress{store: registryStore}
 	executor := &escrowAgentExecutor{deps: CoordinatorBatchAgentDeps(), ingress: ingress, launched: make(chan struct{}, 4)}

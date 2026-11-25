@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"log"
 	"log/slog"
 	"strings"
@@ -62,10 +63,10 @@ func TestPrivateFetchPolicyBindingOmissionLogging(t *testing.T) {
 			svc := permission.NewPermissionService(t.Context(), t.TempDir(), false, nil, nil)
 			authorizer := &fetchCountingAuthorizer{RestrictedRunAuthorizer: svc.(permission.RestrictedRunAuthorizer)}
 			probe := stubTool{name: "view", resp: fantasy.NewTextErrorResponse("fetch failure")}
-			child := decoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, `echo '{"decision":"deny"}'`), true)
+			child := toolwrap.DecoratePolicyTools([]fantasy.AgentTool{probe}, nil, newRunner(t, `echo '{"decision":"deny"}'`), true)
 			ctx := context.WithValue(t.Context(), tools.SessionIDContextKey, "fetch-session")
 			ingressCalls := 0
-			var registry *policyLeafRegistry
+			var registry *toolwrap.PolicyLeafRegistry
 			if bound {
 				ctx = withPrivateFetchIngress(ctx, func(ctx context.Context, leaf fantasy.AgentTool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 					ingressCalls++

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"math"
 	"os"
 	"os/signal"
@@ -95,8 +96,8 @@ func batchArgvPayload(t *testing.T, mode string) batchLeafPayload {
 }
 
 func batchArgvEnv(tool fantasy.AgentTool) batchLeafEnv {
-	return batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
-		return newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves, nil
+	return batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) {
+		return toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves, nil
 	}}
 }
 
@@ -204,7 +205,10 @@ func TestBatchArgvResponseAndOutput(t *testing.T) {
 
 func TestBatchArgvCancelledStartAndValidation(t *testing.T) {
 	var resolutions atomic.Int32
-	env := batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { resolutions.Add(1); return nil, errors.New("missing") }}
+	env := batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) {
+		resolutions.Add(1)
+		return nil, errors.New("missing")
+	}}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	ex, err := (batchArgvFamily{}).start(ctx, env, jobbatch.Launch{}, batchArgvPayload(t, "output"), func(jobbatch.Result) { t.Error("report on rejected Start") })
@@ -223,7 +227,7 @@ func TestBatchArgvCancelledStartAndValidation(t *testing.T) {
 		t.Error("wrong leaf ran")
 		return fantasy.ToolResponse{}, nil
 	})
-	env.Leaves = func(string) (*policyLeafRegistry, error) {
+	env.Leaves = func(string) (*toolwrap.PolicyLeafRegistry, error) {
 		// The pinned name stays RunCommandToolName while the leaf is a
 		// different tool: the mismatch must fail closed (identity preserved).
 		return newTestPolicyLeafRegistry(map[string]testPolicyLeaf{tools.RunCommandToolName: {Tool: wrong}}), nil

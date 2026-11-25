@@ -328,7 +328,7 @@ func TestCustomRoleProcessLifetimeHelper(t *testing.T) {
 		denied, runErr := guardedWrite.Run(dispatchCtx, fantasy.ToolCall{ID: "durable-denied-write", Name: "write", Input: string(deniedInput)})
 		require.NoError(t, runErr)
 		require.True(t, denied.IsError)
-		require.Contains(t, denied.Content, ErrRoleToolDenied.Error())
+		require.Contains(t, denied.Content, toolwrap.ErrRoleToolDenied.Error())
 		_, statErr := os.Stat(filepath.Join(workDir, "forbidden-role-write.txt"))
 		require.True(t, errors.Is(statErr, os.ErrNotExist), "denied native dispatch must not create files")
 		result.Dispatch = "view-allowed;write-denied;grep-denied"

@@ -2,7 +2,7 @@ package agent
 
 // R12-H1 restricted-run POLICY dispatch coverage for the NATIVE batch
 // controls: each control is wrapped by the production restricted-run gate
-// (restricted_tool.go wrapToolsWithRestrictedRun -> restrictedTool.Run) with
+// (restricted_tool.go toolwrap.WrapToolsWithRestrictedRun -> restrictedTool.Run) with
 // a real permission service carrying a recording inner implementation, and
 // dispatched with an armed run allowlist. This is dispatch-behaviour
 // coverage and lives SEPARATELY from batch_toolset_inventory_test.go, which

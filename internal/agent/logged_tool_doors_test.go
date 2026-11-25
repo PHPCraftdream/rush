@@ -5,7 +5,7 @@ package agent
 // doors (NewSessionAgent / SetTools), not the wrapper itself. The concrete
 // logged wrapper type is now unexported in toolwrap, so identity is checked
 // through the wrapper's own idempotency port instead of a type assertion:
-// wrapToolsWithErrorLogging returns the input unchanged exactly when it is
+// toolwrap.WrapToolsWithErrorLogging returns the input unchanged exactly when it is
 // already the logged wrapper, so Same proves the door installed it — and a
 // bare stub would be re-wrapped, failing the Same check.
 

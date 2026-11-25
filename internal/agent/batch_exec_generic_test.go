@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,7 +37,7 @@ func (t *batchGenericTestTool) Run(ctx context.Context, c fantasy.ToolCall) (fan
 
 func batchGenericTestExecutor(tool fantasy.AgentTool, beforeResolve ...func()) *batchExecutor {
 	family := newBatchGenericFamily()
-	return newBatchExecutor(batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) {
+	return newBatchExecutor(batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) {
 		for _, before := range beforeResolve {
 			before()
 		}

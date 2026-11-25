@@ -95,7 +95,7 @@ func (f batchAgentFamily) start(ctx context.Context, env batchLeafEnv, l jobbatc
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	e.cancel = cancel
 	if p.Policy != nil && p.Policy.RoleContract != nil {
-		runCtx = withRoleToolContract(runCtx, p.Policy.RoleContract)
+		runCtx = toolwrap.WithRoleToolContract(runCtx, p.Policy.RoleContract)
 	}
 	if p.Policy != nil && p.Policy.DiskBindingID != "" && p.diskProvider == nil {
 		cancel()

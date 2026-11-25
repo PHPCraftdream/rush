@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 	"time"
 
@@ -19,8 +20,8 @@ import (
 func batchShellEnv(t *testing.T) batchLeafEnv {
 	env := testEnv(t)
 	tool := tools.NewBashTool(env.permissions, env.workingDir, &config.Attribution{TrailerStyle: config.TrailerStyleNone}, "test", nil, shellbg.NewBackgroundShellManager())
-	registry := newPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
-	return batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}
+	registry := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{tool}).Leaves
+	return batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) { return registry, nil }}
 }
 
 func batchShellStart(t *testing.T, ctx context.Context, env batchLeafEnv, command string) (*batchexec.ShellExecution, <-chan jobbatch.Result) {
@@ -131,8 +132,8 @@ func TestBatchShellEarlyStopPolicyGateStartsNoProcess(t *testing.T) {
 		<-release
 		return underlying.Run(ctx, call)
 	})
-	registry := newPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves
-	e, reports := batchShellStart(t, t.Context(), batchLeafEnv{Leaves: func(string) (*policyLeafRegistry, error) { return registry, nil }}, "echo must-not-spawn")
+	registry := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves
+	e, reports := batchShellStart(t, t.Context(), batchLeafEnv{Leaves: func(string) (*toolwrap.PolicyLeafRegistry, error) { return registry, nil }}, "echo must-not-spawn")
 	<-entered
 	require.NoError(t, e.Stop(t.Context()))
 	close(release)

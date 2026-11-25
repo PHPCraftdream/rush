@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"log/slog"
 	"strings"
 	"sync"
@@ -57,7 +58,7 @@ type turnStreamConfig struct {
 	// att is the Drain leg being accounted (nil for any other call).
 	att *drainAttempt
 	// fatalTools records the turn-ending tool error (tool_fatal_error.go).
-	fatalTools *fatalToolCollector
+	fatalTools *toolwrap.FatalToolCollector
 
 	smartModel      Model
 	promptPrefix    string
@@ -121,7 +122,7 @@ type turnStream struct {
 	stall  *activeStallClock
 	att    *drainAttempt
 
-	fatalTools *fatalToolCollector
+	fatalTools *toolwrap.FatalToolCollector
 
 	finalization      *finalize.FinalizationExecution
 	finalizationStamp gate.Stamp
@@ -303,7 +304,7 @@ func (ts *turnStream) prepareStepWithToolReceipts(ctx context.Context, opts fant
 	if err != nil {
 		return updated, prepared, err
 	}
-	prepared.Tools = withFatalToolErrors(prepared.Tools, ts.fatalTools)
+	prepared.Tools = toolwrap.WithFatalToolErrors(prepared.Tools, ts.fatalTools)
 	return context.WithValue(updated, toolReceiptContextKey{}, sink), prepared, nil
 }
 

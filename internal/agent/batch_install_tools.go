@@ -20,7 +20,7 @@ type batchInvocationSpec struct{ inv BatchInvocation }
 func (s batchInvocationSpec) RegistryID() string { return s.inv.RegistryID }
 
 func (s batchInvocationSpec) DispatchContext(ctx context.Context) context.Context {
-	return withRoleToolContract(ctx, s.inv.Policy.RoleContract)
+	return toolwrap.WithRoleToolContract(ctx, s.inv.Policy.RoleContract)
 }
 
 // ForIdentity names id on both registry identities and defaults an empty
@@ -88,7 +88,7 @@ func (o diskConstructionOwners) Release(registryID, instance string) {
 // narrow DeferredBuild/Invocation ports. deferred selects the deferred
 // (shared default toolset) binding shape; the pinned shape carries the
 // captured task-agent child scope instead.
-func newBatchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, bind *batchCoordinatorBinding, inv BatchInvocation, deferred bool) *toolwrap.BatchIngressTool {
+func newBatchIngressShell(tool fantasy.AgentTool, leaves *toolwrap.PolicyLeafRegistry, bind *batchCoordinatorBinding, inv BatchInvocation, deferred bool) *toolwrap.BatchIngressTool {
 	shell := &toolwrap.BatchIngressTool{
 		AgentTool: tool,
 		Registry:  leaves,
@@ -182,11 +182,11 @@ func (t errBatchIngressTool) Run(ctx context.Context, call fantasy.ToolCall) (fa
 }
 
 // newBatchWorkToolBuild uses the default context for shared tool assembly.
-func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (policyToolBuild, error) {
+func newBatchWorkToolBuild(bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (toolwrap.PolicyToolBuild, error) {
 	return newBatchWorkToolBuildForContext(context.Background(), bind, list, scope, deferred)
 }
 
-func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (policyToolBuild, error) {
+func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinatorBinding, list []fantasy.AgentTool, scope *buildResourceScope, deferred bool) (toolwrap.PolicyToolBuild, error) {
 	var registerRelease func(func())
 	if scope != nil {
 		registerRelease = scope.Register
@@ -194,15 +194,15 @@ func newBatchWorkToolBuildForContext(ctx context.Context, bind *batchCoordinator
 	return installwire.BuildWorkTools(ctx, list, registerRelease, deferred, installwire.WorkToolPorts[*session.RoleContract]{
 		Pin:     bind.pin,
 		Owners:  diskConstructionOwners{bind},
-		Role:    roleContractForToolBuild,
-		Allows:  roleContractAllowsName,
+		Role:    toolwrap.RoleContractForToolBuild,
+		Allows:  toolwrap.RoleContractAllowsName,
 		Control: batchControlTarget,
 		IO:      batchinst.IsIOTool,
 		WrapQuestion: func(tool fantasy.AgentTool) fantasy.AgentTool {
 			return batchAgentAskQuestionTool{AgentTool: tool}
 		},
 		NoWindow: func() bool { return inlineWindowDisabledFor(bind) },
-		Arm: func(tool fantasy.AgentTool, leaves *policyLeafRegistry, role *session.RoleContract, template installwire.WorkToolTemplate, deferred bool) fantasy.AgentTool {
+		Arm: func(tool fantasy.AgentTool, leaves *toolwrap.PolicyLeafRegistry, role *session.RoleContract, template installwire.WorkToolTemplate, deferred bool) fantasy.AgentTool {
 			inv := BatchInvocation{
 				RegistryID:       template.RegistryID,
 				Origin:           "coordinator",

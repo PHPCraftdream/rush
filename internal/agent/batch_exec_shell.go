@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec"
@@ -39,7 +40,7 @@ func (batchShellFamily) start(ctx context.Context, env batchLeafEnv, l jobbatch.
 	// from the payload's immutable policy transport.
 	runCtx = batchLeafRunContext(runCtx, p)
 	if p.Policy != nil && p.Policy.RoleContract != nil {
-		runCtx = withRoleToolContract(runCtx, p.Policy.RoleContract)
+		runCtx = toolwrap.WithRoleToolContract(runCtx, p.Policy.RoleContract)
 	}
 	if p.SelectedRoleContract != nil {
 		runCtx = WithSelectedRoleContract(runCtx, p.SelectedRoleContract)

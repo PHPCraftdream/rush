@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestBatchIngressInvalidCanonicalInputFailsClosed(t *testing.T) {
 // the single-authority contracts.
 func TestBatchModelLeafTimeoutAmbiguityRejected(t *testing.T) {
 	t.Parallel()
-	reg := newPolicyToolBuild([]fantasy.AgentTool{newTestLeaf("bash")}).Leaves
+	reg := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{newTestLeaf("bash")}).Leaves
 	inv := BatchInvocation{SessionID: "sess-1", CallID: "call-model", RegistryID: "reg-1"}
 
 	// Ambiguous: item timeout AND nested input timeout.

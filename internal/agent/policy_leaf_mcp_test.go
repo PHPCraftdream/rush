@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -201,7 +202,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 				forged, forgedErr := leaf.Run(ctx, fantasy.ToolCall{ID: "forged", Name: denied, Input: `{}`})
 				require.NoError(t, forgedErr)
 				require.True(t, forged.IsError)
-				require.Contains(t, forged.Content, ErrRoleToolDenied.Error())
+				require.Contains(t, forged.Content, toolwrap.ErrRoleToolDenied.Error())
 			}
 			require.NoError(t, err)
 			require.False(t, response.IsError, "%s", response.Content)
@@ -220,7 +221,7 @@ func TestRoleContractRestartRebuildDispatchesOnlyAdmittedNativeAndMCPTools(t *te
 	}
 	closed := WithCallRoleContract(ctx, &session.RoleContract{Version: session.RoleContractVersion, Tools: &[]string{}})
 	_, err = bridge.Call(closed, fantasy.ToolCall{Name: kept, Input: `{}`})
-	require.ErrorIs(t, err, ErrRoleToolDenied, "a stale bridge must honor the current narrower ceiling")
+	require.ErrorIs(t, err, toolwrap.ErrRoleToolDenied, "a stale bridge must honor the current narrower ceiling")
 	require.EqualValues(t, 2, keptRuns.Load())
 	require.Zero(t, deniedRuns.Load())
 	require.True(t, contract.Equal(restored), "dispatch and config cap removal cannot rewrite durable authority")

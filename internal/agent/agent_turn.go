@@ -84,7 +84,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	if call.CallOptions != nil && call.CallOptions.RoleContract != nil {
 		ctx = WithCallRoleContract(ctx, call.CallOptions.RoleContract)
 	}
-	if len(roleToolContractsFrom(ctx)) > 0 {
+	if len(toolwrap.RoleToolContractsFrom(ctx)) > 0 {
 		agentTools = toolwrap.FilterRoleContractTools(ctx, agentTools)
 		call.Tools = agentTools
 	}
@@ -127,7 +127,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	smartModel := cfg.smartModel
 	systemPrompt := cfg.systemPrompt
 	promptPrefix := cfg.promptPrefix
-	if roleToolsConstrained(ctx) {
+	if toolwrap.RoleToolsConstrained(ctx) {
 		allowed := make([]string, 0, len(agentTools))
 		for _, tool := range agentTools {
 			allowed = append(allowed, tool.Info().Name)
@@ -142,11 +142,11 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// SetProviderOptions on the shared tool object: a.tools' ELEMENTS are one
 	// set of pointers shared by every concurrent turn on this agent, and two
 	// turns marking "their" last tool wrote the same field (a real -race
-	// finding). See withProviderOptionsOnLast.
+	// finding). See toolwrap.WithProviderOptionsOnLast.
 	recoveryTools := append([]fantasy.AgentTool{}, agentTools...)
-	agentTools = withProviderOptionsOnLast(agentTools, a.getCacheControlOptions())
-	fatalTools := &fatalToolCollector{}
-	agentTools = withFatalToolErrors(agentTools, fatalTools)
+	agentTools = toolwrap.WithProviderOptionsOnLast(agentTools, a.getCacheControlOptions())
+	fatalTools := &toolwrap.FatalToolCollector{}
+	agentTools = toolwrap.WithFatalToolErrors(agentTools, fatalTools)
 
 	agent := fantasy.NewAgent(
 		smartModel.Model,

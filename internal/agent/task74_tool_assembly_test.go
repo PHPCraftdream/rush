@@ -83,7 +83,7 @@ func task74ToolNames(tools []fantasy.AgentTool) []string {
 	return names
 }
 
-func task74AssertInstalledStatus(t *testing.T, ctx context.Context, built policyToolBuild, callID string) {
+func task74AssertInstalledStatus(t *testing.T, ctx context.Context, built toolwrap.PolicyToolBuild, callID string) {
 	t.Helper()
 	var status fantasy.AgentTool
 	for _, tool := range built.Tools {

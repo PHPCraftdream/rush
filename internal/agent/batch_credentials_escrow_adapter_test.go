@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"testing"
 
 	"charm.land/fantasy"
@@ -13,7 +14,7 @@ import (
 
 func TestBatchLeafRegistryCredentialsAreStoreLocal(t *testing.T) {
 	leaf := &installCredentialTestTool{}
-	registry := newPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves
+	registry := toolwrap.NewPolicyToolBuild([]fantasy.AgentTool{leaf}).Leaves
 	one, two := NewBatchLeafRegistryStore(), NewBatchLeafRegistryStore()
 	require.NoError(t, one.Register("r", registry))
 	require.NoError(t, two.Register("r", registry))
