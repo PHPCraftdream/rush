@@ -209,6 +209,81 @@ type turnStream struct {
 	toolResultErr error
 }
 
+func (ts *turnStream) logCacheStepUsage(usage fantasy.Usage, estimated bool, metadata fantasy.ProviderMetadata) {
+	ts.noteCacheRequest(usage, estimated, metadata)
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	d := ts.cacheDiagnostic
+	provider := ""
+	if ts.smartModel.Model != nil {
+		provider = ts.smartModel.Model.Provider()
+	}
+	var cachedTokens any
+	if observed := promptcache.ObservedCacheReadTokens(usage, estimated, provider, metadata); observed != nil {
+		cachedTokens = *observed
+	}
+	slog.Debug("agent: prompt cache observation",
+		"session_hash", coresession.HashID(ts.call.SessionID),
+		"provider", ts.smartModel.ModelCfg.Provider,
+		"model", ts.smartModel.ModelCfg.Model,
+		"prefix_fingerprint", d.PrefixFingerprint,
+		"tools_fingerprint", d.ToolsFingerprint,
+		"prefix_logical_bytes", d.PrefixBytes,
+		"tools_logical_bytes", d.ToolsBytes,
+		"message_logical_bytes", d.MessageBytes,
+		"tool_count", d.ToolCount,
+		"prepare_ms", ts.cachePrepareDuration.Milliseconds(),
+		"step_elapsed_ms", time.Since(ts.cachePreparedAt).Milliseconds(),
+		"cached_tokens", cachedTokens,
+		"estimated", estimated,
+		"semantic_invalidation_expectation", "changed prefix or tool definitions may invalidate reuse; counters do not identify the cause",
+		"byte_measurement", "logical JSON, not wire bytes or cache savings")
+}
+
+// A request whose provider-reported cache read is below cacheMissRatioPercent of
+// its prompt, on a prompt of at least cacheMissMinPromptTokens, is logged once
+// as a miss together with what changed since the previous request of the same
+// session. The log line answers the one question usage counters cannot: did we
+// send a different prefix, or did the provider drop a prefix we kept stable.
+func (ts *turnStream) noteCacheRequest(usage fantasy.Usage, estimated bool, metadata fantasy.ProviderMetadata) {
+	d := ts.cacheDiagnostic
+	if d.PrefixFingerprint == "" && len(d.MessageDigests) == 0 {
+		return
+	}
+	model := ts.smartModel.ModelCfg.Provider + "/" + ts.smartModel.ModelCfg.Model
+	cur := &promptcache.CacheRequestObs{Prefix: d.PrefixFingerprint, Tools: d.ToolsFingerprint, Model: model, Digests: d.MessageDigests, At: time.Now()}
+	sessionHash := coresession.HashID(ts.call.SessionID)
+	prev := promptcache.SwapCacheObs(sessionHash, cur)
+
+	provider := ""
+	if ts.smartModel.Model != nil {
+		provider = ts.smartModel.Model.Provider()
+	}
+	observed := promptcache.ObservedCacheReadTokens(usage, estimated, provider, metadata)
+	if observed == nil {
+		return
+	}
+	prompt := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
+	if prompt < promptcache.CacheMissMinPromptTokens || *observed*100 >= prompt*promptcache.CacheMissRatioPercent {
+		return
+	}
+	cause, common := promptcache.ClassifyCacheMiss(prev, cur)
+	attrs := []any{
+		"session_hash", sessionHash,
+		"model", model,
+		"prompt_tokens", prompt,
+		"cached_tokens", *observed,
+		"cause", cause,
+		"messages", len(cur.Digests),
+		"common_prefix_messages", common,
+	}
+	if prev != nil {
+		attrs = append(attrs, "idle_s", int64(cur.At.Sub(prev.At).Seconds()), "prev_messages", len(prev.Digests))
+	}
+	slog.Info("agent: prompt cache miss", attrs...)
+}
+
 func newTurnStream(cfg turnStreamConfig) *turnStream {
 	return &turnStream{
 		a:                  cfg.a,

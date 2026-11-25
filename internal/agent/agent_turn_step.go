@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
@@ -211,7 +213,7 @@ func (ts *turnStream) prepareStep(callContext context.Context, options fantasy.P
 	ts.cachePrepareDuration = ts.cachePreparedAt.Sub(prepareStarted)
 
 	ts.mu.Lock()
-	ts.stepMessages = cloneFantasyMessages(prepared.Messages)
+	ts.stepMessages = usagepolicy.CloneFantasyMessages(prepared.Messages)
 	ts.stepTools = append([]fantasy.AgentTool(nil), prepared.Tools...)
 	ts.mu.Unlock()
 
@@ -337,7 +339,7 @@ func (ts *turnStream) armProgressGuard(callContext context.Context, pinned []fan
 	// without an installed runtime answers idle instead of hiding live work).
 	var ownWork bool
 	if async {
-		if ts.a.coord != nil && ts.a.coord.batchFactsInstalled() {
+		if ts.a.coord != nil && ts.a.coord.BatchFactsInstalled() {
 			ownWork = ts.a.ownWorkBatch(callContext, ts.call.SessionID)
 		}
 	}
@@ -633,7 +635,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// usage chunk, use upstream's token estimator so our sliding
 	// context window stays accurate. We drop the "estimated" flag
 	// (TUI marker — see CHANGELOG.fork.md Section 2).
-	usage, estimated := fallbackStepUsage(ts.stepMessages, stepResult)
+	usage, estimated := usagepolicy.FallbackStepUsage(ts.stepMessages, stepResult, provauth.ApproxTokenCount)
 	// Normalize once, upstream of both updateSessionUsage and
 	// recordMessageUsage, so InputTokens is exclusive-of-cache for
 	// every provider before either consumer sees it.
@@ -665,7 +667,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	ts.mu.Unlock()
 	ts.a.recordMessageUsage(ts.ctx, assistantID, ts.smartModel, usage, costDelta, estimated)
 	if usage.CacheCreationTokens > 0 {
-		ts.a.scheduleCacheKeepAliveFromCtx(heartbeat.FromContext(ts.genCtx), ts.call.SessionID, ts.smartModel, ts.stepMessages, ts.stepTools, ts.call.ProviderOptions, ts.call.MaxCost)
+		ts.a.ScheduleCacheKeepAliveFromCtx(ts.a, heartbeat.FromContext(ts.genCtx), ts.call.SessionID, ts.smartModel, ts.stepMessages, ts.stepTools, ts.call.ProviderOptions, ts.call.MaxCost)
 	}
 	ts.currentSession = updatedSession
 	return updatedSession, nil

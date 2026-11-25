@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -21,10 +22,10 @@ type privateFetchIngressKey struct{}
 type privateFetchIngressTool = toolwrap.PrivateFetchIngressTool
 
 // newPrivateFetchIngressShell arms one private tool through the moved
-// shell: the root-owned pinned registry and the pre-built pinnedInvoke
+// shell: the root-owned pinned registry and the pre-built childagent.PinnedInvoke
 // pass through the shell's Registry/Invoke fields — no package-agent
 // identifiers cross into toolwrap.
-func newPrivateFetchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, invoke pinnedInvoke) *toolwrap.PrivateFetchIngressTool {
+func newPrivateFetchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegistry, invoke childagent.PinnedInvoke) *toolwrap.PrivateFetchIngressTool {
 	return &toolwrap.PrivateFetchIngressTool{
 		AgentTool: tool,
 		Registry:  leaves,
@@ -34,7 +35,7 @@ func newPrivateFetchIngressShell(tool fantasy.AgentTool, leaves *policyLeafRegis
 	}
 }
 
-func withPrivateFetchIngress(ctx context.Context, invoke pinnedInvoke) context.Context {
+func withPrivateFetchIngress(ctx context.Context, invoke childagent.PinnedInvoke) context.Context {
 	return context.WithValue(ctx, privateFetchIngressKey{}, invoke)
 }
 
@@ -48,13 +49,13 @@ func buildPrivateFetchTools(ctx context.Context, list []fantasy.AgentTool, autho
 	// R11F (M3) flag-on: resolve the ONE authority (explicit ctx binding
 	// only — the process-global fallback is eliminated, R12-H2 §1.3), pin
 	// this build's leaves under a fresh identity and re-arm every private
-	// tool through the R7d pinnedInvoke. No binding leaves the legacy
+	// tool through the R7d childagent.PinnedInvoke. No binding leaves the legacy
 	// in-process tools.
 	ingress := privateFetchIngressFor(ctx)
 	if ingress != nil {
 		return armPrivateFetchIngress(ctx, built, ingress, scope)
 	}
-	invoke, _ := ctx.Value(privateFetchIngressKey{}).(pinnedInvoke)
+	invoke, _ := ctx.Value(privateFetchIngressKey{}).(childagent.PinnedInvoke)
 	if invoke == nil {
 		return built
 	}

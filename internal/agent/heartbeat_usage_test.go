@@ -284,7 +284,7 @@ func TestHbUsage_KeepaliveRecorded(t *testing.T) {
 	sess, err := env.sessions.Create(t.Context(), "New Session")
 	require.NoError(t, err)
 
-	agent.scheduleCacheKeepAlive(sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	agent.ScheduleCacheKeepAlive(agent, sess.ID, smart, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 	hbWaitForCalls(t, smart.Model.(*hbCtxModel), 1)
 	hbWaitUsageRecorded(t, sess.ID, "anthropic", "hb-smart")
 

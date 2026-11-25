@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
@@ -187,7 +189,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		c.runLimitsMu.Unlock()
 	}
 	if callOpts == nil && allowPeak {
-		ctx = context.WithValue(ctx, legacyPeakHoursBypassKey{}, true)
+		ctx = context.WithValue(ctx, usage.LegacyPeakHoursBypassKey{}, true)
 	}
 	if !allowPeak {
 		if err := checkPeakHours(providerCfg); err != nil {

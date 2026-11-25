@@ -1,6 +1,6 @@
 // Tests for the idle cache keep-alive (agent_cache_keepalive.go). Real
-// timers are exercised by shrinking cacheKeepAliveInterval /
-// cacheKeepAliveMaxExtensions — the package's established test-seam idiom
+// timers are exercised by shrinking callbeat.CacheKeepAliveInterval /
+// callbeat.CacheKeepAliveMaxExtensions — the package's established test-seam idiom
 // (see streamStallRetryBaseBackoff in coordinator_run.go) — instead of
 // sleeping through the real ~5-minute delay.
 package agent
@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -82,7 +84,7 @@ func (m *usageKeepAliveModel) Provider() string { return m.provider }
 
 // blockingKeepAliveModel's Stream blocks until ctx is Done, then returns
 // ctx.Err() — used to test that an in-flight replay can actually be
-// cancelled early instead of running out cacheKeepAliveCallTimeout.
+// cancelled early instead of running out callbeat.CacheKeepAliveCallTimeout.
 type blockingKeepAliveModel struct {
 	mockModel
 	provider string
@@ -186,13 +188,13 @@ func newKeepAliveAgent(t *testing.T) (*sessionAgent, fakeEnv) {
 // restores them on cleanup, so tests never leak a mutated global.
 func restoreKeepAliveVars(t *testing.T, interval time.Duration, maxExt int) {
 	t.Helper()
-	origInterval := cacheKeepAliveInterval
-	origMaxExt := cacheKeepAliveMaxExtensions
-	cacheKeepAliveInterval = interval
-	cacheKeepAliveMaxExtensions = maxExt
+	origInterval := callbeat.CacheKeepAliveInterval
+	origMaxExt := callbeat.CacheKeepAliveMaxExtensions
+	callbeat.CacheKeepAliveInterval = interval
+	callbeat.CacheKeepAliveMaxExtensions = maxExt
 	t.Cleanup(func() {
-		cacheKeepAliveInterval = origInterval
-		cacheKeepAliveMaxExtensions = origMaxExt
+		callbeat.CacheKeepAliveInterval = origInterval
+		callbeat.CacheKeepAliveMaxExtensions = origMaxExt
 	})
 }
 
@@ -207,7 +209,7 @@ func TestScheduleCacheKeepAlive_FiresReplayAfterInterval(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-1", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, "sess-1", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() >= 1
@@ -222,9 +224,9 @@ func TestScheduleCacheKeepAlive_SkipsNonExplicitCacheProvider(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: "openai"}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-2", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, "sess-2", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
-	_, scheduled := a.cacheKeepAlive.Get("sess-2")
+	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-2")
 	require.False(t, scheduled, "non-explicit-cache provider must not get a scheduled timer")
 
 	time.Sleep(100 * time.Millisecond)
@@ -239,9 +241,9 @@ func TestScheduleCacheKeepAlive_SkipsWhenCacheDisabled(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-3", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, "sess-3", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
-	_, scheduled := a.cacheKeepAlive.Get("sess-3")
+	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-3")
 	require.False(t, scheduled, "must not schedule when RUSH_DISABLE_ANTHROPIC_CACHE is set")
 
 	time.Sleep(100 * time.Millisecond)
@@ -256,12 +258,12 @@ func TestCancelCacheKeepAlive_StopsPendingTimer(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-4", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	_, scheduled := a.cacheKeepAlive.Get("sess-4")
+	a.ScheduleCacheKeepAlive(a, "sess-4", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-4")
 	require.True(t, scheduled)
 
-	a.cancelCacheKeepAlive("sess-4")
-	_, stillScheduled := a.cacheKeepAlive.Get("sess-4")
+	a.CancelCacheKeepAlive("sess-4")
+	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-4")
 	require.False(t, stillScheduled)
 
 	// Advance well past the shrunk interval and confirm no replay fired.
@@ -277,16 +279,16 @@ func TestScheduleCacheKeepAlive_NewWriteResetsExtensionCounter(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-5", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	entry, ok := a.cacheKeepAlive.Get("sess-5")
+	a.ScheduleCacheKeepAlive(a, "sess-5", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	entry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-5")
 	require.True(t, ok)
-	entry.extension = 2 // simulate having already extended twice
+	entry.Extension = 2 // simulate having already extended twice
 
 	// A fresh cache-writing turn re-schedules and must reset the counter.
-	a.scheduleCacheKeepAlive("sess-5", model, []fantasy.Message{fantasy.NewUserMessage("hi again")}, nil, nil, 0)
-	entry, ok = a.cacheKeepAlive.Get("sess-5")
+	a.ScheduleCacheKeepAlive(a, "sess-5", model, []fantasy.Message{fantasy.NewUserMessage("hi again")}, nil, nil, 0)
+	entry, ok = a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-5")
 	require.True(t, ok)
-	require.Equal(t, 0, entry.extension, "a fresh cache write must reset the extension counter to 0")
+	require.Equal(t, 0, entry.Extension, "a fresh cache write must reset the extension counter to 0")
 }
 
 func TestFireCacheKeepAlive_StopsAtExtensionCap(t *testing.T) {
@@ -297,9 +299,9 @@ func TestFireCacheKeepAlive_StopsAtExtensionCap(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-6", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, "sess-6", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
-	// cacheKeepAliveMaxExtensions=2: the initial fire (extension 0) succeeds
+	// callbeat.CacheKeepAliveMaxExtensions=2: the initial fire (extension 0) succeeds
 	// and reschedules once (extension 1), then that fire succeeds too but
 	// extension+1 (2) >= max (2), so it stops. Expect exactly 2 calls total.
 	require.Eventually(t, func() bool {
@@ -311,7 +313,7 @@ func TestFireCacheKeepAlive_StopsAtExtensionCap(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.EqualValues(t, 2, lm.calls.Load(), "must stop firing once the extension cap is reached")
 
-	_, stillScheduled := a.cacheKeepAlive.Get("sess-6")
+	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-6")
 	require.False(t, stillScheduled)
 }
 
@@ -323,7 +325,7 @@ func TestFireCacheKeepAlive_FailureDoesNotReschedule(t *testing.T) {
 	lm := &erroringKeepAliveModel{}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-7", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	a.ScheduleCacheKeepAlive(a, "sess-7", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() >= 1
@@ -332,7 +334,7 @@ func TestFireCacheKeepAlive_FailureDoesNotReschedule(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	require.EqualValues(t, 1, lm.calls.Load(), "a failed replay must not reschedule")
 
-	_, stillScheduled := a.cacheKeepAlive.Get("sess-7")
+	_, stillScheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-7")
 	require.False(t, stillScheduled)
 }
 
@@ -343,14 +345,14 @@ func TestCancelAll_StopsPendingKeepAliveTimers(t *testing.T) {
 	lm := &keepAliveCountingModel{provider: anthropic.Name}
 	model := testKeepAliveModel(Model{Model: lm})
 
-	a.scheduleCacheKeepAlive("sess-8", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
-	_, scheduled := a.cacheKeepAlive.Get("sess-8")
+	a.ScheduleCacheKeepAlive(a, "sess-8", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	_, scheduled := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-8")
 	require.True(t, scheduled)
 
 	stillBusy := a.CancelAll()
 	require.False(t, stillBusy)
 
-	require.Zero(t, a.cacheKeepAlive.Len(), "CancelAll must sweep all pending keep-alive timers")
+	require.Zero(t, a.CacheKeepAliveComponent.CacheKeepAlive.Len(), "CancelAll must sweep all pending keep-alive timers")
 
 	// Even past the shrunk interval, no replay should fire: the timer was
 	// stopped AND tryAdmitRunWg refuses post-shutdown admission as a backstop.
@@ -393,7 +395,7 @@ func TestFireCacheKeepAlive_ReplayMatchesTriggeringTurnShape(t *testing.T) {
 		fantasy.NewUserMessage("hi"),
 	}
 
-	a.scheduleCacheKeepAlive("sess-shape", model, triggerMessages, tools, nil, 0)
+	a.ScheduleCacheKeepAlive(a, "sess-shape", model, triggerMessages, tools, nil, 0)
 
 	require.Eventually(t, func() bool {
 		return lm.calls.Load() >= 1
@@ -554,10 +556,10 @@ func TestFireCacheKeepAlive_GenerationGuardSurvivesRace(t *testing.T) {
 	oldMessages := []fantasy.Message{fantasy.NewUserMessage("old turn")}
 	newMessages := []fantasy.Message{fantasy.NewUserMessage("new turn")}
 
-	a.scheduleCacheKeepAlive("sess-race", model, oldMessages, nil, nil, 0)
-	oldEntry, ok := a.cacheKeepAlive.Get("sess-race")
+	a.ScheduleCacheKeepAlive(a, "sess-race", model, oldMessages, nil, nil, 0)
+	oldEntry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-race")
 	require.True(t, ok)
-	oldGen := oldEntry.generation
+	oldGen := oldEntry.Generation
 
 	// Race: a stale fire for the OLD generation (simulating a timer callback
 	// that already started running before being superseded) against a fresh
@@ -566,11 +568,11 @@ func TestFireCacheKeepAlive_GenerationGuardSurvivesRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		a.fireCacheKeepAlive("sess-race", model, oldMessages, nil, nil, 0, oldGen, 0)
+		a.FireCacheKeepAlive(a, "sess-race", model, oldMessages, nil, nil, 0, oldGen, 0)
 	}()
 	go func() {
 		defer wg.Done()
-		a.scheduleCacheKeepAlive("sess-race", model, newMessages, nil, nil, 0)
+		a.ScheduleCacheKeepAlive(a, "sess-race", model, newMessages, nil, nil, 0)
 	}()
 	wg.Wait()
 
@@ -580,9 +582,9 @@ func TestFireCacheKeepAlive_GenerationGuardSurvivesRace(t *testing.T) {
 	// new schedule's entry is present — the old generation must never be the
 	// one left standing, and the map must never end up empty when the new
 	// schedule ran (scheduleCacheKeepAlive always leaves an entry behind).
-	entry, ok := a.cacheKeepAlive.Get("sess-race")
+	entry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-race")
 	require.True(t, ok, "the new schedule must always leave an entry behind")
-	require.NotEqual(t, oldGen, entry.generation,
+	require.NotEqual(t, oldGen, entry.Generation,
 		"surviving entry must never be the stale pre-race generation")
 
 	// The Stream call, if the stale fire's admit+replay actually ran, must
@@ -590,8 +592,26 @@ func TestFireCacheKeepAlive_GenerationGuardSurvivesRace(t *testing.T) {
 	// in-flight replay for the turn that scheduled it). What must NOT happen
 	// is the stored entry regressing to old messages/generation afterward.
 	time.Sleep(50 * time.Millisecond) // let any in-flight stale replay finish
-	entry, ok = a.cacheKeepAlive.Get("sess-race")
 	require.True(t, ok, "entry must still be present after any stale in-flight replay settles")
-	require.NotEqual(t, oldGen, entry.generation,
+	require.NotEqual(t, oldGen, entry.Generation,
 		"stale callback's tail must not clobber the new entry after settling")
+}
+
+// TestShutdownCancelAllSweepsKeepAlive is the revert check for the DM3
+// regression where (*sessionAgent).CancelAll called itself instead of the
+// embedded callbeat component's CancelAll: a re-entrant body recurses until
+// stack exhaustion, so this test passing proves the sweep reaches the maps.
+func TestShutdownCancelAllSweepsKeepAlive(t *testing.T) {
+	a, _ := newKeepAliveAgent(t)
+	lm := &keepAliveCountingModel{provider: anthropic.Name}
+	model := testKeepAliveModel(Model{Model: lm})
+	a.ScheduleCacheKeepAlive(a, "sess-shutdown-sweep", model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+	entry, ok := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-shutdown-sweep")
+	require.True(t, ok)
+	a.CancelAll()
+	_, stillPending := a.CacheKeepAliveComponent.CacheKeepAlive.Get("sess-shutdown-sweep")
+	require.False(t, stillPending, "sessionAgent.CancelAll must sweep the keep-alive component's pending timers")
+	if entry.Timer != nil {
+		require.False(t, entry.Timer.Stop(), "the pending timer should have been stopped by the sweep")
+	}
 }

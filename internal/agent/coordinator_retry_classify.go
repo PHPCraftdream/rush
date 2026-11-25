@@ -14,7 +14,7 @@ import (
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -81,12 +81,12 @@ const (
 // classifyProviderError delegates to the drainctl classifier. The seams
 // carry the agent-package predicates: the WS-replay refusal and the hard
 // provider-limit check, whose body is the original usage call shape
-// (time.Now() and quotaResetDisplayZone read at the original point).
+// (time.Now() and usagepolicy.DisplayZoneProvider read at the original point).
 func classifyProviderError(err error) retryClass {
 	return drainctl.ClassifyProviderError(err, errProviderPeakHours, drainctl.Seams{
 		ReplayForbidden: modelkit.ResponsesWSReplayForbidden,
 		HardProviderLimit: func(err error) bool {
-			return usage.ClassifyHardProviderLimit(err, "", time.Now(), quotaResetDisplayZone) == usage.ProviderLimitHard
+			return usagepolicy.ClassifyHardProviderLimit(err, "", time.Now(), usagepolicy.DisplayZoneProvider) == usagepolicy.ProviderLimitHard
 		},
 	})
 }
@@ -116,7 +116,7 @@ func turnAttemptRefused(err error) bool {
 // the order of hours) rather than a momentary overload. The two share
 // status 429, so we discriminate on the provider's message text.
 func isQuotaLimit(providerErr *fantasy.ProviderError) bool {
-	return usage.IsQuotaLimit(providerErr)
+	return usagepolicy.IsQuotaLimit(providerErr)
 }
 
 // turnMadeProgress reports whether the assistant message carries any real

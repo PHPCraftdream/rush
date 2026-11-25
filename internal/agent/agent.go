@@ -17,6 +17,7 @@ import (
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -427,7 +428,7 @@ type sessionAgent struct {
 	// explicitly deleted — same "one map, lazily populated, entries live
 	// forever" lifetime as activeRequests today.
 	mailboxes *csync.Map[string, *mailbox]
-	cacheKeepAliveComponent
+	*callbeat.CacheKeepAliveComponent
 
 	// runAllowlists, when non-nil, lets the turn loop activate each call's
 	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at
@@ -488,27 +489,24 @@ func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
 	return &sessionAgent{
-		smartModel:           csync.NewValue(opts.SmartModel),
-		fastModel:            csync.NewValue(opts.FastModel),
-		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
-		systemPrompt:         csync.NewValue(opts.SystemPrompt),
-		config:               opts.Config,
-		isSubAgent:           opts.IsSubAgent,
-		sessions:             opts.Sessions,
-		messages:             opts.Messages,
-		disableAutoSummarize: opts.DisableAutoSummarize,
-		tools:                csync.NewSliceFrom(toolwrap.DecorateSessionTools(opts.Tools, opts.RestrictedRuns)),
-		coord:                opts.Coord,
-		onSessionIdle:        opts.OnSessionIdle,
-		isYolo:               opts.IsYolo,
-		notify:               opts.Notify,
-		activeRequests:       csync.NewMap[string, context.CancelFunc](),
-		turnBudget:           turnBudget{summarizeQueue: csync.NewMap[string, *SummarizeSnapshot]()},
-		mailboxes:            csync.NewMap[string, *mailbox](),
-		cacheKeepAliveComponent: cacheKeepAliveComponent{
-			cacheKeepAlive:         csync.NewMap[string, *cacheKeepAliveEntry](),
-			cacheKeepAliveInFlight: csync.NewMap[string, cacheKeepAliveInFlightEntry](),
-		},
+		smartModel:                 csync.NewValue(opts.SmartModel),
+		fastModel:                  csync.NewValue(opts.FastModel),
+		systemPromptPrefix:         csync.NewValue(opts.SystemPromptPrefix),
+		systemPrompt:               csync.NewValue(opts.SystemPrompt),
+		config:                     opts.Config,
+		isSubAgent:                 opts.IsSubAgent,
+		sessions:                   opts.Sessions,
+		messages:                   opts.Messages,
+		disableAutoSummarize:       opts.DisableAutoSummarize,
+		tools:                      csync.NewSliceFrom(toolwrap.DecorateSessionTools(opts.Tools, opts.RestrictedRuns)),
+		coord:                      opts.Coord,
+		onSessionIdle:              opts.OnSessionIdle,
+		isYolo:                     opts.IsYolo,
+		notify:                     opts.Notify,
+		activeRequests:             csync.NewMap[string, context.CancelFunc](),
+		turnBudget:                 turnBudget{summarizeQueue: csync.NewMap[string, *SummarizeSnapshot]()},
+		mailboxes:                  csync.NewMap[string, *mailbox](),
+		CacheKeepAliveComponent:    callbeat.NewComponent(),
 		streamIdleTimeout:          opts.StreamIdleTimeout,
 		streamWatchdogTick:         opts.StreamWatchdogTick,
 		titleJoinGrace:             opts.TitleJoinGrace,

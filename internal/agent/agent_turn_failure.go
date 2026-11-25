@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
@@ -183,7 +184,7 @@ func (ts *turnStream) handleStreamFailure(
 	}
 	var fantasyErr *fantasy.Error
 	var providerErr *fantasy.ProviderError
-	var peakErr *usage.PeakHoursError
+	var peakErr *usagepolicy.PeakHoursError
 	var awaitingErr *AwaitingAnswerError
 	const defaultTitle = "Provider Error"
 	// None of the branches below perform I/O — they only decide which
@@ -245,9 +246,9 @@ func (ts *turnStream) handleStreamFailure(
 			// message exactly as before -- graceful degradation, no panic.
 			// An inline stamp is rewritten in place (one reset, one time);
 			// the extra line is only for resets that came from headers.
-			details := LocalizeResetHint(providerErr.Message, time.Now())
+			details := usagepolicy.LocalizeResetHint(providerErr.Message, time.Now())
 			if details == providerErr.Message {
-				if guidance, ok := QuotaLimitGuidance(err); ok {
+				if guidance, ok := usagepolicy.QuotaLimitGuidance(err); ok {
 					details = fmt.Sprintf("%s\n\n%s", providerErr.Message, guidance)
 				}
 			}
@@ -263,7 +264,7 @@ func (ts *turnStream) handleStreamFailure(
 		// without this branch the generic `else` below would
 		// overwrite the useful message with a bare "Provider Error:
 		// <terse text>" that drops the resume-time guidance entirely.
-		peakMsg, peakDetails := peakHoursStoppedFinishText(err)
+		peakMsg, peakDetails := usagepolicy.PeakHoursStoppedFinishText(err)
 		ts.currentAssistant.AddFinish(message.FinishReasonError, peakMsg, peakDetails)
 	} else if errors.As(err, &awaitingErr) {
 		// Same rationale as the peakErr branch above: without this,
@@ -279,7 +280,7 @@ func (ts *turnStream) handleStreamFailure(
 		// R2-5: this generic finish is the diagnostic path that persists
 		// raw error text into the transcript's finish details; redact
 		// URL secrets (userinfo/query) before it lands on disk.
-		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, modelkit.RedactNetworkURLs(LocalizeResetHint(err.Error(), time.Now())))
+		ts.currentAssistant.AddFinish(message.FinishReasonError, defaultTitle, modelkit.RedactNetworkURLs(usagepolicy.LocalizeResetHint(err.Error(), time.Now())))
 	}
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()

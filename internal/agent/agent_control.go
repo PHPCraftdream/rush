@@ -198,7 +198,7 @@ func (a *sessionAgent) CancelAll() (stillBusy bool) {
 		}
 	}
 
-	a.cancelAll()
+	a.CacheKeepAliveComponent.CancelAll()
 
 	// Stop every in-flight title-generation goroutine too. Their contexts
 	// are deliberately detached from each turn's own cancel (see

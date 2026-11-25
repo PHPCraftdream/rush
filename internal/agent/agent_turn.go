@@ -64,7 +64,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// A real turn is starting: any stale keep-alive scheduled for this
 	// session's prior idle state is moot and must not race this turn's own
 	// request.
-	a.cancelCacheKeepAlive(call.SessionID)
+	a.CancelCacheKeepAlive(call.SessionID)
 	stall := drainctl.ArmTurnStall(call.SessionID, call.CallOptions, batchlife.StallToolStalled)
 	defer drainctl.DisarmTurnStall(call.SessionID)
 

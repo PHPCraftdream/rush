@@ -12,7 +12,9 @@ import (
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
+	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
@@ -63,6 +65,33 @@ func (a *sessionAgent) tryAdmitRun() (done func(), ok bool) {
 		return nil, false
 	}
 	return a.runWg.Done, true
+}
+
+func (a *sessionAgent) TryAdmitRun() (func(), bool) { return a.tryAdmitRun() }
+func (a *sessionAgent) openrouterCost(m fantasy.ProviderMetadata) *float64 {
+	return usagepolicy.OpenrouterCost(m)
+}
+
+func (a *sessionAgent) updateSessionUsage(model Model, sess *coresession.Session, u fantasy.Usage, overrideCost *float64) float64 {
+	return usagepolicy.UpdateSessionUsage(model, sess, u, overrideCost)
+}
+
+func (a *sessionAgent) OpenrouterCost(m fantasy.ProviderMetadata) *float64 {
+	return usagepolicy.OpenrouterCost(m)
+}
+
+func (a *sessionAgent) recordMessageUsage(ctx context.Context, messageID string, model Model, usageValue fantasy.Usage, costDelta float64, estimated bool) {
+	usagepolicy.NewMessageUsageComponent(a).RecordMessageUsage(ctx, messageID, model, usageValue, costDelta, estimated)
+}
+
+func (a *sessionAgent) RecordMessageUsageStore() usagepolicy.MessageUsageStore { return a.messages }
+
+func (a *sessionAgent) CacheKeepAliveSessions() coresession.Service { return a.sessions }
+func (a *sessionAgent) CacheKeepAlivePeakHours() callbeat.CacheKeepAlivePeakHoursChecker {
+	if a.coord == nil {
+		return nil
+	}
+	return a.coord
 }
 
 func (a *sessionAgent) streamIdleTimeoutCfg() time.Duration      { return a.streamIdleTimeout }

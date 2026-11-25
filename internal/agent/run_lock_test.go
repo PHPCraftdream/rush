@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
@@ -44,19 +46,16 @@ import (
 // cancelCacheKeepAlive unconditionally at turn start (agent_cache_keepalive.go).
 func newLockTestSessionAgent(dataDir string, isSubAgent bool) *sessionAgent {
 	return &sessionAgent{
-		dataDir:        dataDir,
-		isSubAgent:     isSubAgent,
-		activeRequests: csync.NewMap[string, context.CancelFunc](),
-		mailboxes:      csync.NewMap[string, *mailbox](),
-		cacheKeepAliveComponent: cacheKeepAliveComponent{
-			cacheKeepAlive:         csync.NewMap[string, *cacheKeepAliveEntry](),
-			cacheKeepAliveInFlight: csync.NewMap[string, cacheKeepAliveInFlightEntry](),
-		},
-		tools:              csync.NewSliceFrom[fantasy.AgentTool](nil),
-		smartModel:         csync.NewValue(Model{}),
-		fastModel:          csync.NewValue(Model{}),
-		systemPrompt:       csync.NewValue(""),
-		systemPromptPrefix: csync.NewValue(""),
+		dataDir:                 dataDir,
+		isSubAgent:              isSubAgent,
+		activeRequests:          csync.NewMap[string, context.CancelFunc](),
+		mailboxes:               csync.NewMap[string, *mailbox](),
+		CacheKeepAliveComponent: callbeat.NewComponent(),
+		tools:                   csync.NewSliceFrom[fantasy.AgentTool](nil),
+		smartModel:              csync.NewValue(Model{}),
+		fastModel:               csync.NewValue(Model{}),
+		systemPrompt:            csync.NewValue(""),
+		systemPromptPrefix:      csync.NewValue(""),
 	}
 }
 
