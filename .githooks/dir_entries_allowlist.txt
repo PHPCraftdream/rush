@@ -83,7 +83,6 @@ internal/app 23
 internal/config 32
 # 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
 # internal/config/discover 13 -> 5: the D2-3 tail merged probe/enricher files in-package (the planned discover+local subpackage split is blocked: the local probe files call the parent package's unexported doRequest/Config plumbing, which a sub-package may not import); row retired.
-internal/session/jobbatch/lab 18
 internal/session 9
 # EX4: 22 direct production Go sources plus the components directory = 23 direct elements; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
 # internal/config/domains/datadir 9 -> 7: the D2-6 tail merged export.go into datadir.go and global_testguard.go into global_dir.go; row retired.
