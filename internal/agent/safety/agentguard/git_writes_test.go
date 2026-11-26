@@ -179,8 +179,60 @@ func TestIsLinkedWorktree(t *testing.T) {
 // TestCheckGitWritesArgs pins the argv counterpart of CheckGitWrites:
 // same denylist and same shell-runner/wrapper recursion, but the head is
 // resolved on the already-split arguments so no token boundary is lost.
-func TestCheckGitWritesArgs(t *testing.T) {
+func TestCheckGitWritesStringRushLockRun(t *testing.T) {
+	cases := []struct {
+		name    string
+		direct  string
+		wrapped string
+		wantErr bool
+	}{
+		{"commit denied", "git commit -m x", "rush lock run job -- git commit -m x", true},
+		{"push denied", "git push", "rush lock run job -- git push", true},
+		{"status allowed", "git status", "rush lock run job -- git status", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			directErr := CheckGitWrites(tc.direct)
+			wrappedErr := CheckGitWrites(tc.wrapped)
+			require.Equal(t, directErr != nil, wrappedErr != nil, "wrapped verdict should match direct verdict")
+			if tc.wantErr {
+				require.Error(t, wrappedErr)
+				var writeErr *GitWriteError
+				require.ErrorAs(t, wrappedErr, &writeErr)
+			} else {
+				require.NoError(t, wrappedErr)
+			}
+		})
+	}
+}
+
+func TestCheckGitWritesCompositions(t *testing.T) {
 	t.Parallel()
+	compositions := [][]string{
+		{"env", "rush", "lock", "run", "x", "--", "git", "commit", "-m", "x"},
+		{"rush", "lock", "run", "x", "--", "env", "git", "commit", "-m", "x"},
+		{"nice", "env", "rush", "lock", "run", "x", "--", "rush", "lock", "run", "y", "--", "git", "commit", "-m", "x"},
+		{"rush", "lock", "run", "x", "--", "bash", "-c", "git commit -m x"},
+	}
+	for _, wrapped := range compositions {
+		require.Error(t, CheckGitWritesArgs(wrapped), "%q", wrapped)
+	}
+	for _, argv := range [][]string{
+		{"env", "rush", "lock", "run", "x", "--", "git", "status"},
+		{"rush", "lock", "run", "x", "--", "env", "git", "status"},
+		{"nice", "env", "rush", "lock", "run", "x", "--", "rush", "lock", "run", "y", "--", "git", "status"},
+		{"rush", "lock", "run", "x", "--", "bash", "-c", "git status"},
+	} {
+		require.NoError(t, CheckGitWritesArgs(argv))
+	}
+	deep := []string{"rush", "lock", "run", "a", "--", "rush", "lock", "run", "b", "--", "rush", "lock", "run", "c", "--", "rush", "lock", "run", "d", "--", "rush", "lock", "run", "e", "--", "rush", "lock", "run", "f", "--", "rush", "lock", "run", "g", "--", "rush", "lock", "run", "h", "--", "rush", "lock", "run", "i", "--", "git", "commit"}
+	require.Error(t, CheckGitWritesArgs(deep), "depth exhaustion must fail closed")
+	for _, command := range []string{"env rush lock run x -- git commit -m x", "rush lock run x -- env git commit -m x", "nice env rush lock run x -- rush lock run y -- git commit -m x", "rush lock run x -- bash -c 'git commit -m x'"} {
+		require.Error(t, CheckGitWrites(command), "%s", command)
+	}
+	for _, command := range []string{"env rush lock run x -- git status", "rush lock run x -- env git status", "nice env rush lock run x -- rush lock run y -- git status", "rush lock run x -- bash -c 'git status'"} {
+		require.NoError(t, CheckGitWrites(command), "%s", command)
+	}
 
 	tests := []struct {
 		name string
@@ -308,6 +360,20 @@ func TestCheckGitWritesArgs(t *testing.T) {
 			name: "wrapper recursion",
 			argv: []string{"iex", "git checkout -- f"},
 			sub:  "checkout",
+		},
+		{
+			name: "rush lock wrapped commit",
+			argv: []string{"rush", "lock", "run", "job", "--", "git", "commit", "-m", "x"},
+			sub:  "commit",
+		},
+		{
+			name: "rush lock wrapped push",
+			argv: []string{"rush.exe", "lock", "run", "job", "--", "git", "push"},
+			sub:  "push",
+		},
+		{
+			name: "rush lock wrapped status",
+			argv: []string{"rush", "lock", "run", "job", "--", "git", "status"},
 		},
 		{
 			name: "empty argv",

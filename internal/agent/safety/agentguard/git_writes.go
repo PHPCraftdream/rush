@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 )
 
 // gitWriteSubcommands is the denylist of git subcommands that mutate
@@ -75,15 +77,20 @@ func CheckGitWrites(command string) error {
 		return nil
 	}
 	for _, segment := range splitChained(command) {
-		if err := checkSegmentGitWrites(segment); err != nil {
-			return err
+		tokens := tokenize(segment)
+		for _, candidate := range shell.CommandCandidatesForPlatform(tokens, true) {
+			if len(candidate) == 0 {
+				continue
+			}
+			if strings.HasPrefix(candidate[0], "\x00") {
+				return &GitWriteError{Subcommand: "opaque", Snippet: segment}
+			}
+			if err := checkGitWritesTokens(candidate, segment); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
-}
-
-func checkSegmentGitWrites(segment string) error {
-	return checkGitWritesTokens(tokenize(segment), segment)
 }
 
 // CheckGitWritesArgs is CheckGitWrites's counterpart for structured argv:
@@ -95,7 +102,18 @@ func CheckGitWritesArgs(argv []string) error {
 	if len(argv) == 0 {
 		return nil
 	}
-	return checkGitWritesTokens(argv, strings.Join(argv, " "))
+	for _, candidate := range shell.CommandCandidatesForPlatform(argv, true) {
+		if len(candidate) == 0 {
+			continue
+		}
+		if strings.HasPrefix(candidate[0], "\x00") {
+			return &GitWriteError{Subcommand: "opaque", Snippet: strings.Join(argv, " ")}
+		}
+		if err := checkGitWritesTokens(candidate, strings.Join(argv, " ")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // checkGitWritesTokens is the shared core of both entry points: the string

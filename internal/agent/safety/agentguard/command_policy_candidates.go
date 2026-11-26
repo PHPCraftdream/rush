@@ -199,3 +199,21 @@ func isPrefixOperand(head, token string) bool {
 	}
 	return false
 }
+
+func isDynamicCommandHead(head string) bool {
+	if head == policyDynamicArg {
+		return true
+	}
+	if strings.HasPrefix(head, "${") && strings.HasSuffix(head, "}") && len(head) > 3 {
+		return true
+	}
+	if len(head) < 2 || head[0] != '$' {
+		return false
+	}
+	for _, r := range head[1:] {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
