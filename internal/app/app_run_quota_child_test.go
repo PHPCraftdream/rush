@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,19 +97,20 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 		}
 		if application != nil {
 			rows, err := application.DB().QueryContext(context.Background(),
-				`SELECT node_id, root_id, kind, state, announced, outcome_summary FROM batch_nodes WHERE owner_session_id = ?`, sid)
+				`SELECT node_id, root_id, kind, state, announced, outcome_summary, announce_message_id, datetime(updated_at, 'unixepoch'), delivery FROM batch_nodes WHERE owner_session_id = ?`, sid)
 			if err != nil {
 				t.Logf("batch nodes query: %v", err)
 			} else {
 				defer rows.Close()
 				for rows.Next() {
-					var nodeID, rootID, kind, state, outcome string
+					var nodeID, rootID, kind, state, outcome, updatedAt, delivery string
 					var announced bool
-					if err := rows.Scan(&nodeID, &rootID, &kind, &state, &announced, &outcome); err != nil {
+					var announceID sql.NullString
+					if err := rows.Scan(&nodeID, &rootID, &kind, &state, &announced, &outcome, &announceID, &updatedAt, &delivery); err != nil {
 						t.Logf("batch node scan: %v", err)
 						break
 					}
-					t.Logf("batch node: node=%s root=%s kind=%s state=%s announced=%t outcome=%q", nodeID, rootID, kind, state, announced, outcome)
+					t.Logf("batch node: node=%s root=%s kind=%s state=%s announced=%t announce_msg=%v updated_at=%s delivery=%s outcome=%q", nodeID, rootID, kind, state, announced, announceID, updatedAt, delivery, outcome)
 				}
 				if err := rows.Err(); err != nil {
 					t.Logf("batch nodes rows: %v", err)
