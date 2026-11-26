@@ -442,7 +442,7 @@ func TestConfigStorePeakHoursScopes(t *testing.T) {
 		globalDataPath: globalPath,
 		workspacePath:  wsPath,
 	})
-	s.workingDir = root
+	(*s.WorkingDirForTest()) = root
 
 	policy := &PeakHoursPolicy{
 		Timezone: "UTC",

@@ -49,7 +49,7 @@ func TestRemoveConfigFieldBestEffort_BoundedByInternalTimeout(t *testing.T) {
 		configTestHooks.Unlock()
 	})
 
-	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, key)
 	require.Equal(t, internalConfigWriteLockTimeout, observedTimeout,
 		"best-effort removal must inject the internal lock timeout")
 	require.Equal(t, 1, acquireCalls, "best-effort removal must make one controlled acquisition")
@@ -88,7 +88,7 @@ func TestRemoveConfigFieldBestEffort_PreservesContentWhenExternalLockHeld(t *tes
 	})
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: configPath})
-	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, key)
 
 	data, rerr := os.ReadFile(configPath)
 	require.NoError(t, rerr)
@@ -136,7 +136,7 @@ func TestRemoveConfigFieldBestEffort_SucceedsQuicklyWhenLockFree(t *testing.T) {
 		configTestHooks.Unlock()
 	})
 
-	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, key)
 	require.Equal(t, 1, attempts, "lock-free removal must make one acquisition call")
 	lockPath := normalizeReloadPath(configPath) + ".lock"
 	require.Equal(t, lockPath, <-entered)

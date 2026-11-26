@@ -22,7 +22,7 @@ func TestConfigureProviders_CodexOAuthWithUnavailableCatalogKeepsConfigLoadable(
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	resolver := NewShellVariableResolver(env.NewFromMap(nil))
-	err := configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).removeConfigFieldBestEffort, nil)
+	err := configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).RemoveConfigFieldBestEffort, nil)
 	require.NoError(t, err)
 
 	provider, ok := cfg.Providers.Get("openai-codex")

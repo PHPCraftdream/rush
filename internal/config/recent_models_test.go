@@ -52,7 +52,7 @@ func TestRecordRecentModel_AddsAndPersists(t *testing.T) {
 	setDefaults(cfg, dir, "")
 	store := testStoreWithPath(cfg, dir)
 
-	err := store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"})
+	err := store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"})
 	require.NoError(t, err)
 
 	// in-memory state
@@ -61,7 +61,7 @@ func TestRecordRecentModel_AddsAndPersists(t *testing.T) {
 	require.Equal(t, "gpt-4o", store.Config().RecentModels[SelectedModelTypeSmart][0].Model)
 
 	// persisted state
-	rm := readRecentModels(t, store.globalDataPath)
+	rm := readRecentModels(t, *store.GlobalDataPathForTest())
 	smart, ok := rm[string(SelectedModelTypeSmart)].([]any)
 	require.True(t, ok)
 	require.Len(t, smart, 1)
@@ -80,10 +80,10 @@ func TestRecordRecentModel_DedupeAndMoveToFront(t *testing.T) {
 	store := testStoreWithPath(cfg, dir)
 
 	// Add two entries
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"}))
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "anthropic", Model: "claude"}))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"}))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "anthropic", Model: "claude"}))
 	// Re-add first; should move to front and not duplicate
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"}))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "openai", Model: "gpt-4o"}))
 
 	got := store.Config().RecentModels[SelectedModelTypeSmart]
 	require.Len(t, got, 2)
@@ -109,7 +109,7 @@ func TestRecordRecentModel_TrimsToMax(t *testing.T) {
 		{Provider: "p6", Model: "m6"},
 	}
 	for _, e := range entries {
-		require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, e))
+		require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, e))
 	}
 
 	// in-memory state
@@ -123,7 +123,7 @@ func TestRecordRecentModel_TrimsToMax(t *testing.T) {
 	require.Equal(t, SelectedModel{Provider: "p2", Model: "m2"}, got[4])
 
 	// persisted state: verify trimmed to 5 and newest-first order
-	rm := readRecentModels(t, store.globalDataPath)
+	rm := readRecentModels(t, *store.GlobalDataPathForTest())
 	smart, ok := rm[string(SelectedModelTypeSmart)].([]any)
 	require.True(t, ok)
 	require.Len(t, smart, 5)
@@ -145,9 +145,9 @@ func TestRecordRecentModel_SkipsEmptyValues(t *testing.T) {
 	store := testStoreWithPath(cfg, dir)
 
 	// Missing provider
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "", Model: "m"}))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "", Model: "m"}))
 	// Missing model
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "p", Model: ""}))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, SelectedModel{Provider: "p", Model: ""}))
 
 	_, ok := store.Config().RecentModels[SelectedModelTypeSmart]
 	// Map may be initialized, but should have no entries
@@ -155,8 +155,8 @@ func TestRecordRecentModel_SkipsEmptyValues(t *testing.T) {
 		require.Len(t, store.Config().RecentModels[SelectedModelTypeSmart], 0)
 	}
 	// No file should be written (stat via fs.FS)
-	baseDir := filepath.Dir(store.globalDataPath)
-	fileName := filepath.Base(store.globalDataPath)
+	baseDir := filepath.Dir(*store.GlobalDataPathForTest())
+	fileName := filepath.Base(*store.GlobalDataPathForTest())
 	_, err := fs.Stat(os.DirFS(baseDir), fileName)
 	require.True(t, os.IsNotExist(err))
 }
@@ -170,9 +170,9 @@ func TestRecordRecentModel_NoPersistOnNoop(t *testing.T) {
 	store := testStoreWithPath(cfg, dir)
 
 	entry := SelectedModel{Provider: "openai", Model: "gpt-4o"}
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, entry))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, entry))
 
-	activePath := selectConfigSlot(store.globalDataPath)
+	activePath := selectConfigSlot(*store.GlobalDataPathForTest())
 	baseDir := filepath.Dir(activePath)
 	fileName := filepath.Base(activePath)
 	before, err := fs.ReadFile(os.DirFS(baseDir), fileName)
@@ -184,7 +184,7 @@ func TestRecordRecentModel_NoPersistOnNoop(t *testing.T) {
 	beforeMod := stBefore.ModTime()
 
 	// Re-record same entry should be a no-op (no write)
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, entry))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, entry))
 
 	after, err := fs.ReadFile(os.DirFS(baseDir), fileName)
 	require.NoError(t, err)
@@ -212,7 +212,7 @@ func TestUpdatePreferredModel_UpdatesRecents(t *testing.T) {
 	require.Len(t, store.Config().RecentModels[SelectedModelTypeFast], 1)
 
 	// persisted (read via fs.FS)
-	rm := readRecentModels(t, store.globalDataPath)
+	rm := readRecentModels(t, *store.GlobalDataPathForTest())
 	fast, ok := rm[string(SelectedModelTypeFast)].([]any)
 	require.True(t, ok)
 	require.Len(t, fast, 1)
@@ -230,8 +230,8 @@ func TestRecordRecentModel_TypeIsolation(t *testing.T) {
 	smartModel := SelectedModel{Provider: "openai", Model: "gpt-4o"}
 	fastModel := SelectedModel{Provider: "anthropic", Model: "claude"}
 
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, smartModel))
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeFast, fastModel))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, smartModel))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeFast, fastModel))
 
 	// in-memory: verify types maintain separate histories
 	require.Len(t, store.Config().RecentModels[SelectedModelTypeSmart], 1)
@@ -241,14 +241,14 @@ func TestRecordRecentModel_TypeIsolation(t *testing.T) {
 
 	// Add another to large, verify small unchanged
 	anotherSmart := SelectedModel{Provider: "google", Model: "gemini"}
-	require.NoError(t, store.recordRecentModel(ScopeGlobal, SelectedModelTypeSmart, anotherSmart))
+	require.NoError(t, store.RecordRecentModel(ScopeGlobal, SelectedModelTypeSmart, anotherSmart))
 
 	require.Len(t, store.Config().RecentModels[SelectedModelTypeSmart], 2)
 	require.Len(t, store.Config().RecentModels[SelectedModelTypeFast], 1)
 	require.Equal(t, fastModel, store.Config().RecentModels[SelectedModelTypeFast][0])
 
 	// persisted state: verify both types exist with correct lengths and contents
-	rm := readRecentModels(t, store.globalDataPath)
+	rm := readRecentModels(t, *store.GlobalDataPathForTest())
 
 	smart, ok := rm[string(SelectedModelTypeSmart)].([]any)
 	require.True(t, ok)

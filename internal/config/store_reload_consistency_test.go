@@ -25,14 +25,14 @@ func TestConfigStoreReloadUnstableDiskStopsAtRetryBudget(t *testing.T) {
 	require.False(t, store.ConfigStaleness().Dirty)
 
 	attempts := 0
-	store.reloadAfterDiskRead = func() {
+	*store.ReloadAfterDiskReadForTest() = func() {
 		attempts++
 		writeReloadAttemptConfig(t, configPath, attempts)
-		store.reloadPendingMu.Lock()
-		store.reloadPending = true
-		store.reloadPendingMu.Unlock()
+		store.ReloadPendingMuForTest().Lock()
+		*store.ReloadPendingForTest() = true
+		store.ReloadPendingMuForTest().Unlock()
 	}
-	err := store.autoReloadAfterWrite(context.Background())
+	err := store.AutoReloadAfterWrite(context.Background())
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrConfigReloadUnstable)
 	require.ErrorIs(t, err, errReloadDiskChanged)
@@ -41,17 +41,17 @@ func TestConfigStoreReloadUnstableDiskStopsAtRetryBudget(t *testing.T) {
 	require.Same(t, oldConfig, store.Config())
 	require.Equal(t, oldGeneration, store.Generation())
 	require.True(t, store.ConfigStaleness().Dirty)
-	require.True(t, store.reloadMu.TryLock(), "bounded reload must release reloadMu")
-	store.reloadMu.Unlock()
-	store.reloadPendingMu.Lock()
-	require.True(t, store.reloadPending, "exhaustion must preserve a queued writer")
-	store.reloadPendingMu.Unlock()
+	require.True(t, store.ReloadMuForTest().TryLock(), "bounded reload must release reloadMu")
+	store.ReloadMuForTest().Unlock()
+	store.ReloadPendingMuForTest().Lock()
+	require.True(t, *store.ReloadPendingForTest(), "exhaustion must preserve a queued writer")
+	store.ReloadPendingMuForTest().Unlock()
 
-	store.reloadAfterDiskRead = nil
+	*store.ReloadAfterDiskReadForTest() = nil
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
-	store.reloadPendingMu.Lock()
-	require.False(t, store.reloadPending, "the later stable reload must consume the queued writer")
-	store.reloadPendingMu.Unlock()
+	store.ReloadPendingMuForTest().Lock()
+	require.False(t, *store.ReloadPendingForTest(), "the later stable reload must consume the queued writer")
+	store.ReloadPendingMuForTest().Unlock()
 	latest, ok := store.MCPConfig("attempt")
 	require.True(t, ok)
 	require.Equal(t, fmt.Sprintf("http://attempt-%d.example", reloadMaxAttempts), latest.URL)
@@ -115,7 +115,7 @@ func runExternalMutationDuringReload(t *testing.T, store *ConfigStore, mutate fu
 	read := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	store.reloadAfterExternalRead = func() {
+	*store.ReloadAfterExternalReadForTest() = func() {
 		once.Do(func() {
 			close(read)
 			<-release
@@ -130,7 +130,7 @@ func runExternalMutationDuringReload(t *testing.T, store *ConfigStore, mutate fu
 	mutate()
 	close(release)
 	require.NoError(t, <-done)
-	store.reloadAfterExternalRead = nil
+	*store.ReloadAfterExternalReadForTest() = nil
 }
 
 func writeReloadAttemptConfig(t *testing.T, path string, attempt int) {

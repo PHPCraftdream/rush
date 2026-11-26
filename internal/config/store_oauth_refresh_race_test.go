@@ -125,9 +125,9 @@ func runOAuthRefreshSingleUseRace(t *testing.T, callers int, separateStores bool
 	}}
 
 	// Real exchange decoding; global seams require serial tests.
-	originalRefresh := codexRefreshTokenFn
-	codexRefreshTokenFn = codex.Refresh
-	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
+	originalRefresh := *codexRefreshTokenFn
+	*codexRefreshTokenFn = codex.Refresh
+	t.Cleanup(func() { *codexRefreshTokenFn = originalRefresh })
 	serialized := make(chan struct{}, callers)
 	restoreWaiter := oauthcred.SetCodexRefreshWaiterHookForTest(func() {
 		select {
@@ -208,7 +208,7 @@ func runOAuthRefreshSingleUseRace(t *testing.T, callers int, separateStores bool
 	waitOAuthJournalIdle(t, idle)
 	require.Equal(t, int32(1), exchanges.Load(), "a single-use token must be exchanged exactly once")
 	for _, store := range stores {
-		current, ok := store.loadSnapshot().config.Providers.Get("openai-codex")
+		current, ok := (*store.LoadSnapshot().SnapConfig()).Providers.Get("openai-codex")
 		require.True(t, ok)
 		require.NotNil(t, current.OAuthToken)
 		require.Equal(t, "single-use-new-access", current.OAuthToken.AccessToken)
@@ -217,7 +217,7 @@ func runOAuthRefreshSingleUseRace(t *testing.T, callers int, separateStores bool
 		require.False(t, current.OAuthToken.IsExpired())
 		require.Empty(t, current.APIKey)
 	}
-	diskToken, err := stores[0].oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "openai-codex")
+	diskToken, err := stores[0].OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "openai-codex")
 	require.NoError(t, err)
 	require.NotNil(t, diskToken)
 	require.Equal(t, "single-use-new-access", diskToken.AccessToken)

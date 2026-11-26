@@ -80,12 +80,12 @@ func TestUnrecognizedLockSourceErrorsStayGeneric(t *testing.T) {
 	fixture := `{"sync_rev":"pbkdf2-sha256$bad$!!!$bad"}`
 	require.NoError(t, os.WriteFile(path, []byte(fixture), 0o600))
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path})
-	s.workingDir = filepath.Join(root, "workspace")
+	(*s.WorkingDirForTest()) = filepath.Join(root, "workspace")
 	SetProcessPassword("")
 	t.Cleanup(func() { SetProcessPassword("") })
 
 	var unrecognized *ErrSettingsLockUnrecognized
-	err := SettingsWriteAllowed(s.workingDir)
+	err := SettingsWriteAllowed((*s.WorkingDirForTest()))
 	require.ErrorAs(t, err, &unrecognized)
 	require.ErrorIs(t, err, ErrSettingsLocked)
 	require.Equal(t, path, unrecognized.Path)

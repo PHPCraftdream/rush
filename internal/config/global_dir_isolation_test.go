@@ -96,7 +96,7 @@ func TestGlobalDirIsolationNoFallbackImports(t *testing.T) {
 	require.NoError(t, store.SetConfigField(ScopeGlobal, "options.debug", true))
 
 	// --- real OAuth journal write through the production disk layer ---
-	journalPath := selectOAuthJournalPath(store.globalDataPath, "anthropic-claude", true)
+	journalPath := selectOAuthJournalPath(*store.GlobalDataPathForTest(), "anthropic-claude", true)
 	// Canonical forms: Windows temp dirs may come back as 8.3 short names.
 	require.Equal(t,
 		normalizeReloadPath(filepath.Join(os.Getenv(GlobalDirEnv), "data")),

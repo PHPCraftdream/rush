@@ -93,7 +93,7 @@ func TestSettingsLock_BestEffortRemovalHonorsLockWithoutAudit(t *testing.T) {
 	audits := 0
 	SetSettingsAuditSink(func(SettingsEvent) { audits++ })
 	t.Cleanup(func() { SetSettingsAuditSink(nil) })
-	s.removeConfigFieldBestEffort(ScopeGlobal, "legacy")
+	s.RemoveConfigFieldBestEffort(ScopeGlobal, "legacy")
 	require.Equal(t, before, fileBytes(t, p))
 	require.Zero(t, audits)
 }

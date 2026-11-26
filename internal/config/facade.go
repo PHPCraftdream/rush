@@ -34,6 +34,7 @@ import (
 	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
 	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
 	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
@@ -665,3 +666,66 @@ func CachedConfirmedModels(pc ProviderConfig, providerID string, resolver Variab
 func ConfigureSelectedModels(cfg *Config, knownProviders []catwalk.Provider) error {
 	return provresolve.ConfigureSelectedModels(cfg, knownProviders)
 }
+
+// ---------------------------------------------------------------------------
+// cfgstore domain: the config store engine moved to
+// internal/config/store/cfgstore; the root keeps a stable facade.
+// ---------------------------------------------------------------------------
+
+// Types re-exported from cfgstore. Type aliases preserve the *ConfigStore
+// method sets on config.ConfigStore.
+type (
+	// RuntimeOverrides holds per-session settings that are never persisted.
+	RuntimeOverrides = cfgstore.RuntimeOverrides
+	// ConfigStore is the config store engine.
+	ConfigStore = cfgstore.ConfigStore
+	// InitialSnapshot seeds a store from already-loaded config data.
+	InitialSnapshot = cfgstore.InitialSnapshot
+	// ModelsChange describes a models-key mutation during a write.
+	ModelsChange = cfgstore.ModelsChange
+	// ConfigDiskSyncOptions parameterizes the config disk-sync write path.
+	ConfigDiskSyncOptions = cfgstore.ConfigDiskSyncOptions
+	// ConfigDiskSyncResult reports the outcome of a config disk sync.
+	ConfigDiskSyncResult = cfgstore.ConfigDiskSyncResult
+	// CustomRoleUpdate is a single custom-role write instruction.
+	CustomRoleUpdate = cfgstore.CustomRoleUpdate
+	// StalenessResult reports reload staleness diagnostics.
+	StalenessResult = cfgstore.StalenessResult
+	// ConfigWriteTarget is the write-target descriptor shared with the leaf.
+	ConfigWriteTarget = cfgstore.ConfigWriteTarget
+)
+
+// Constructors re-exported from cfgstore.
+var (
+	NewStore                 = cfgstore.NewStore
+	NewTestStore             = cfgstore.NewTestStore
+	NewTestStoreWithResolver = cfgstore.NewTestStoreWithResolver
+	NewLibraryStore          = cfgstore.NewLibraryStore
+)
+
+// Docker MCP availability functions re-exported from cfgstore.
+func IsDockerMCPAvailable() bool                { return cfgstore.IsDockerMCPAvailable() }
+func DockerMCPAvailabilityCached() (bool, bool) { return cfgstore.DockerMCPAvailabilityCached() }
+func RefreshDockerMCPAvailability() bool        { return cfgstore.RefreshDockerMCPAvailability() }
+func DockerMCPConfig() MCPConfig                { return cfgstore.DockerMCPConfig() }
+
+// MCP mutation/admission types and sentinel errors re-exported from cfgstore
+// (moved with the store engine; internal/agent/tools/mcp depends on them).
+type (
+	MCPMutationResult    = cfgstore.MCPMutationResult
+	MCPAdmissionSnapshot = cfgstore.MCPAdmissionSnapshot
+	MCPAdmissionGuard    = cfgstore.MCPAdmissionGuard
+)
+
+// MCP sentinel errors (vars preserve single error identity).
+var (
+	ErrMCPNotFound         = cfgstore.ErrMCPNotFound
+	ErrMCPExternal         = cfgstore.ErrMCPExternal
+	ErrMCPAmbiguous        = cfgstore.ErrMCPAmbiguous
+	ErrMCPUnwritableOrigin = cfgstore.ErrMCPUnwritableOrigin
+	ErrMCPTargetExists     = cfgstore.ErrMCPTargetExists
+	ErrMCPStale            = cfgstore.ErrMCPStale
+	ErrMCPCommitUncertain  = cfgstore.ErrMCPCommitUncertain
+	ErrMCPMutationStale    = cfgstore.ErrMCPMutationStale
+	ErrMCPHardLinkTopology = cfgstore.ErrMCPHardLinkTopology
+)

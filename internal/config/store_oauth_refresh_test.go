@@ -49,9 +49,9 @@ func writeCodexRefreshDisk(t *testing.T, path string, token *oauth.Token) {
 
 func stubCodexRefresh(t *testing.T, fn func(context.Context, *http.Client, string) (*oauth.Token, error)) {
 	t.Helper()
-	old := codexRefreshTokenFn
-	codexRefreshTokenFn = fn
-	t.Cleanup(func() { codexRefreshTokenFn = old })
+	old := *codexRefreshTokenFn
+	*codexRefreshTokenFn = fn
+	t.Cleanup(func() { *codexRefreshTokenFn = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 }
 
@@ -104,11 +104,11 @@ func startCodexRefresh(t *testing.T, ctx context.Context, f codexRefreshFixture)
 
 func assertCodexRefreshTokens(t *testing.T, f codexRefreshFixture, memory, disk *oauth.Token) {
 	t.Helper()
-	pc, ok := f.store.loadSnapshot().config.Providers.Get(f.used.ID)
+	pc, ok := (*f.store.LoadSnapshot().SnapConfig()).Providers.Get(f.used.ID)
 	require.True(t, ok)
 	require.Equal(t, memory, pc.OAuthToken)
 	require.Empty(t, pc.APIKey)
-	actual, err := f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
+	actual, err := f.store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 	require.NoError(t, err)
 	require.Equal(t, disk, actual)
 }
@@ -168,7 +168,7 @@ func TestOAuthRefresh_EqualExpiryNewCredentialRejectsStaleClient(t *testing.T) {
 	})
 
 	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, &http.Client{})
-	require.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
+	require.ErrorIs(t, err, f.store.OAuthCredStore().ErrCredentialCAS())
 	require.Zero(t, calls, "a stale client must not exchange a replacement credential")
 }
 
@@ -190,7 +190,7 @@ func TestOAuthRefresh_NewerExpiredDiskNotYetInMemoryIsAdoptedThenExchanged(t *te
 
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, &http.Client{}))
 	require.Equal(t, 1, calls)
-	pc, ok := f.store.loadSnapshot().config.Providers.Get(f.used.ID)
+	pc, ok := (*f.store.LoadSnapshot().SnapConfig()).Providers.Get(f.used.ID)
 	require.True(t, ok)
 	require.Equal(t, f.next, pc.OAuthToken)
 }
@@ -214,7 +214,7 @@ func TestOAuthRefresh_ExpiredNewerCredentialRejectsStaleClient(t *testing.T) {
 	})
 
 	err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, client)
-	require.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
+	require.ErrorIs(t, err, f.store.OAuthCredStore().ErrCredentialCAS())
 	require.Zero(t, calls, "a stale client must not carry the newer credential")
 }
 
@@ -315,13 +315,13 @@ func TestOAuthRefresh_PersistIOExhaustion(t *testing.T) {
 	hookOAuthJournalFastRetry(t)
 	failed := make(chan struct{})
 	terminated := make(chan struct{}, 1)
-	oldDone := oauthJournalWorkerDone
-	oauthJournalWorkerDone = func(store *ConfigStore, _ string) {
+	oldDone := *oauthJournalWorkerDone
+	*oauthJournalWorkerDone = func(store *ConfigStore, _ string) {
 		if store == f.store {
 			terminated <- struct{}{}
 		}
 	}
-	t.Cleanup(func() { oauthJournalWorkerDone = oldDone })
+	t.Cleanup(func() { *oauthJournalWorkerDone = oldDone })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	var attemptCount atomic.Int32
 	resume := make(chan struct{})
@@ -495,7 +495,7 @@ func TestOAuthRefresh_CanceledSingleflightWaiter(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 	close(release)
 	require.NoError(t, awaitCodexResult(t, leader))
-	exists := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
+	exists := f.store.OAuthCredStore().CodexRefreshActiveForTest(f.used.ID)
 	require.False(t, exists)
 }
 
@@ -529,13 +529,13 @@ func TestOAuthRefresh_CanceledDiskWaitRetainsToken(t *testing.T) {
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 	idle := hookOAuthJournalIdle(t, f.store)
 	terminated := make(chan struct{}, 1)
-	oldDone := oauthJournalWorkerDone
-	oauthJournalWorkerDone = func(store *ConfigStore, _ string) {
+	oldDone := *oauthJournalWorkerDone
+	*oauthJournalWorkerDone = func(store *ConfigStore, _ string) {
 		if store == f.store {
 			terminated <- struct{}{}
 		}
 	}
-	t.Cleanup(func() { oauthJournalWorkerDone = oldDone })
+	t.Cleanup(func() { *oauthJournalWorkerDone = oldDone })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	entered, release := pauseCodexPendingPersist(t)
 	t.Cleanup(release)
@@ -550,7 +550,7 @@ func TestOAuthRefresh_CanceledDiskWaitRetainsToken(t *testing.T) {
 	select {
 	case <-idle:
 	case <-terminated:
-		disk, err := f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
+		disk, err := f.store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 		require.NoError(t, err)
 		require.Equal(t, f.next, disk, "caller cancellation stopped persistence")
 	case <-time.After(5 * time.Second):

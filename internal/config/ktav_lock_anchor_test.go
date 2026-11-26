@@ -46,11 +46,11 @@ func TestKtavWriteLockAnchorAliasUnification(t *testing.T) {
 		// fail the test, not silently drop the alias coverage).
 		aliasPath := filepath.Join(canonicalDir, "alias.ktav")
 		require.NoError(t, os.Symlink(realPath, aliasPath))
-		realTarget, err := s.resolveConfigWriteTarget(realPath)
+		realTarget, err := s.ResolveConfigWriteTarget(realPath)
 		require.NoError(t, err)
-		aliasTarget, err := s.resolveConfigWriteTarget(aliasPath)
+		aliasTarget, err := s.ResolveConfigWriteTarget(aliasPath)
 		require.NoError(t, err)
-		require.Equal(t, realTarget.lockPath, aliasTarget.lockPath,
+		require.Equal(t, realTarget.WTLockPath(), aliasTarget.WTLockPath(),
 			"a symlink alias of one rush.ktav must share one write sidecar")
 	} else {
 		// Documented Windows alternative (symlink creation usually needs
@@ -60,11 +60,11 @@ func TestKtavWriteLockAnchorAliasUnification(t *testing.T) {
 		// resolve to the same physical rush.ktav and therefore the same
 		// sidecar.
 		mixedPath := filepath.Join(canonicalDir, "rush.KTAV")
-		realTarget, err := s.resolveConfigWriteTarget(realPath)
+		realTarget, err := s.ResolveConfigWriteTarget(realPath)
 		require.NoError(t, err)
-		mixedTarget, err := s.resolveConfigWriteTarget(mixedPath)
+		mixedTarget, err := s.ResolveConfigWriteTarget(mixedPath)
 		require.NoError(t, err)
-		require.Equal(t, realTarget.lockPath, mixedTarget.lockPath,
+		require.Equal(t, realTarget.WTLockPath(), mixedTarget.WTLockPath(),
 			"case-alias spellings of one rush.ktav must share one write sidecar")
 	}
 

@@ -15,7 +15,7 @@ import (
 
 // TestRemoveProviderAPIKey_OldSnapshotUnaffected is a regression test for
 // P1-2: RemoveProviderAPIKey used to do
-// `s.loadSnapshot().config.Providers.Del(providerID)` directly after
+// `s.LoadSnapshot().config.Providers.Del(providerID)` directly after
 // RemoveConfigField's own reload had already published a new snapshot. That
 // Del call mutated the *csync.Map belonging to the just-published snapshot
 // in place, with no generation bump of its own and no cache invalidation,
@@ -25,7 +25,7 @@ import (
 // SetProviderRuntimeConfig in task #341 (P1-3).
 //
 // REVERT CHECK: temporarily change RemoveProviderAPIKey back to
-// `s.loadSnapshot().config.Providers.Del(providerID)` (no publishLocked,
+// `s.LoadSnapshot().config.Providers.Del(providerID)` (no publishLocked,
 // operating on the shared, already-published *Config). This test fails
 // because oldSnapshotCfg.Providers.Get no longer finds the provider despite
 // being captured before the call (i.e. the old snapshot's view changes

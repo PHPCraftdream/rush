@@ -40,25 +40,25 @@ func TestTask1292Engine_SameRefreshExpiryAuthority(t *testing.T) {
 				f.store.SetProviderRuntimeConfig(f.used.ID, f.used)
 				task1292WriteDisk(t, f.path, f.used.ID, &a, a.AccessToken)
 				record := &oauthJournalRecord{Token: &b}
-				require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true, record))
+				require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true, record))
 				want := &b
 				if delta >= 0 {
 					want = &a
 				}
 				switch route {
 				case "pending":
-					f.store.publishMu.Lock()
-					candidate := f.store.loadSnapshot().clone()
-					candidate.config = &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{f.used.ID: f.used})}
-					f.store.overlayPendingOAuthLocked(candidate)
-					_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-					f.store.publishMu.Unlock()
-					pc, _ := candidate.config.Providers.Get(f.used.ID)
+					f.store.PublishMuForTest().Lock()
+					candidate := f.store.LoadSnapshot().Clone()
+					*candidate.SnapConfigForTest() = &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{f.used.ID: f.used})}
+					f.store.OverlayPendingOAuthLocked(candidate)
+					_, pending := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+					f.store.PublishMuForTest().Unlock()
+					pc, _ := (*candidate.SnapConfig()).Providers.Get(f.used.ID)
 					require.Equal(t, want, pc.OAuthToken)
 					require.Equal(t, delta < 0, pending)
 				case "outbox":
-					entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-					settled, err := f.store.settleOAuthOutbox(context.Background(), f.path, f.used.ID, entry)
+					entry := f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+					settled, err := f.store.SettleOAuthOutbox(context.Background(), f.path, f.used.ID, entry)
 					require.NoError(t, err)
 					require.Equal(t, delta >= 0, settled)
 					pc, _ := f.store.Config().Providers.Get(f.used.ID)
@@ -100,11 +100,11 @@ func TestTask1292Engine_LogoutClearsOwnership(t *testing.T) {
 	pc, _ := f.store.Config().Providers.Get(f.used.ID)
 	require.Nil(t, pc.OAuthToken)
 	require.Empty(t, pc.APIKey)
-	f.store.publishMu.Lock()
-	_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-	f.store.publishMu.Unlock()
+	f.store.PublishMuForTest().Lock()
+	_, pending := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+	f.store.PublishMuForTest().Unlock()
 	require.False(t, pending)
-	require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+	require.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 	require.Equal(t, 1, calls)
 }
 
@@ -123,20 +123,20 @@ func TestTask1292Engine_OptionalDigestValidationAndHistoryBuilders(t *testing.T)
 	require.NoError(t, err)
 	require.Empty(t, read.PredecessorRefreshTokenSHA256)
 	history := &oauthJournalRecord{Token: &b, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&a), BurnedRefreshTokenSHA256: []string{oauthRefreshTokenSHA256(&c), oauthRefreshTokenSHA256(&c)}}
-	entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, history)
+	entry := f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, history)
 	require.Equal(t, []string{oauthRefreshTokenSHA256(&c)}, entry.Record.BurnedRefreshTokenSHA256)
-	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true, history))
+	require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true, history))
 	next := b
 	next.AccessToken = "fixture-B2-access"
 	next.ExpiresAt += 60
-	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &b, &next, &b, true))
-	f.store.publishMu.Lock()
-	pending, _ := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-	f.store.publishMu.Unlock()
+	require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, &b, &next, &b, true))
+	f.store.PublishMuForTest().Lock()
+	pending, _ := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+	f.store.PublishMuForTest().Unlock()
 	require.Empty(t, pending.Record.PredecessorRefreshTokenSHA256)
 	require.ElementsMatch(t, []string{oauthRefreshTokenSHA256(&a), oauthRefreshTokenSHA256(&c)}, pending.Record.BurnedRefreshTokenSHA256)
 	require.NotContains(t, pending.Record.BurnedRefreshTokenSHA256, oauthRefreshTokenSHA256(&b))
-	owned := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, &oauthJournalRecord{Token: &next, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&b)})
+	owned := f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, &oauthJournalRecord{Token: &next, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&b)})
 	require.Empty(t, owned.Record.PredecessorRefreshTokenSHA256)
 	require.ElementsMatch(t, pending.Record.BurnedRefreshTokenSHA256, owned.Record.BurnedRefreshTokenSHA256)
 }
@@ -163,21 +163,21 @@ func TestTask1292Engine_JournalFailureRetainsPendingOutbox(t *testing.T) {
 	b.RefreshToken = f.used.OAuthToken.RefreshToken
 	task1292Descriptor(t, false, func(context.Context, *http.Client, string) (*oauth.Token, error) { return &b, nil })
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
-	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+	entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 	require.NotNil(t, entry)
 	require.Empty(t, entry.Record.PredecessorRefreshTokenSHA256)
 	pc, _ := f.store.Config().Providers.Get(f.used.ID)
 	require.Equal(t, &b, pc.OAuthToken)
-	f.store.publishMu.Lock()
-	pending, _ := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-	f.store.publishMu.Unlock()
+	f.store.PublishMuForTest().Lock()
+	pending, _ := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+	f.store.PublishMuForTest().Unlock()
 	require.Equal(t, &b, pending.Record.Token)
 	// Repair and hand off to a fresh store without invoking external discovery.
 	oauthjournal.OAuthJournalAtomicWrite = oldWrite
 	lockPath := oauthRefreshLockPath(f.path, f.used.ID)
 	lock, err := acquireConfigFileLock(context.Background(), lockPath)
 	require.NoError(t, err)
-	require.NoError(t, f.store.flushOAuthOutbox(context.Background(), f.path, f.used.ID))
+	require.NoError(t, f.store.FlushOAuthOutbox(context.Background(), f.path, f.used.ID))
 	require.NoError(t, releaseConfigFileLock(lockPath, lock))
 	data, err := os.ReadFile(journal)
 	require.NoError(t, err)

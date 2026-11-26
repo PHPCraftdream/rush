@@ -14,6 +14,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 )
@@ -48,8 +49,8 @@ func TestConfigDiskSyncNaturalTickSeesForeignKtavSiblingWrite(t *testing.T) {
 	require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model)
 	require.NoFileExists(t, globalPath)
 
-	var st configDiskSyncState
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "an unchanged disk must not reload")
 
@@ -59,18 +60,18 @@ func TestConfigDiskSyncNaturalTickSeesForeignKtavSiblingWrite(t *testing.T) {
 	writeSignedKtavFixture(t, ktavSiblingOf(globalPath),
 		`{"fast":{"provider":"openai","model":"gpt-global"}}`)
 
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded,
 		"a natural tick must reload when the Ktav sibling of a tracked slot appears")
 	require.Equal(t, "gpt-global", s.Config().Models[SelectedModelTypeFast].Model,
 		"the foreign Ktav write must reach the store")
-	require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths,
+	require.True(t, slices.Contains((*s.LoadSnapshot().SnapTrackedConfigPaths()),
 		canonicalConfigPath(ktavSiblingOf(globalPath))),
 		"the Ktav sibling must join the tracked set")
 
 	// Settled again: a further natural tick stays quiescent.
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "drift must be exactly-once per event")
 }
@@ -89,8 +90,8 @@ func TestConfigDiskSyncForeignLegacyWriteKeepsKtavContentAndPollerLive(t *testin
 	t.Cleanup(func() { s.StopConfigDiskSync() })
 	require.Equal(t, "gpt-ktav", s.Config().Models[SelectedModelTypeSmart].Model)
 
-	var st configDiskSyncState
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "an unchanged disk must not reload")
 
@@ -98,7 +99,7 @@ func TestConfigDiskSyncForeignLegacyWriteKeepsKtavContentAndPollerLive(t *testin
 	writeSignedModelsFixture(t, globalPath,
 		`{"smart":{"provider":"openai","model":"gpt-legacy-json"}}`)
 
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded,
 		"a natural tick must consume the foreign legacy write instead of ignoring it")
@@ -106,7 +107,7 @@ func TestConfigDiskSyncForeignLegacyWriteKeepsKtavContentAndPollerLive(t *testin
 		"the active Ktav content must survive the foreign legacy write")
 
 	// Settled again: a further natural tick stays quiescent.
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "the poller must not loop on the same foreign write")
 }

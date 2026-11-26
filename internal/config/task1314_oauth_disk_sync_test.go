@@ -26,16 +26,16 @@ func task1314DiskNoExchange(t *testing.T) *atomic.Int32 {
 	t.Helper()
 	calls := &atomic.Int32{}
 	base := oauthProviderDescriptors()
-	old := oauthProviderDescriptorsOverride
+	old := *oauthProviderDescriptorsOverride
 	for index := range base {
 		base[index] = base[index].WithExchangeForTest(func(context.Context, *http.Client, string) (*oauth.Token, error) {
 			calls.Add(1)
 			return nil, errors.New("unexpected task1314 exchange")
 		})
 	}
-	oauthProviderDescriptorsOverride = func() []oauthProviderDescriptor { return base }
+	*oauthProviderDescriptorsOverride = func() []oauthProviderDescriptor { return base }
 	t.Cleanup(func() {
-		oauthProviderDescriptorsOverride = old
+		*oauthProviderDescriptorsOverride = old
 		require.Zero(t, calls.Load(), "disk polling must never exchange")
 	})
 	joinOAuthJournalTestStoresBeforeRestore(t)
@@ -78,12 +78,12 @@ func TestTask1314OAuthDiskSyncRealProviderMatrix(t *testing.T) {
 			require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, id))
 			before := f.store.Generation()
 			var state oauthcred.DiskSyncState
-			f.store.syncOAuthFromDisk(t.Context(), &state)
+			f.store.SyncOAuthFromDisk(t.Context(), &state)
 			require.Equal(t, &replacement, diskSyncLive(t, f.store, id))
 			require.Equal(t, before+1, f.store.Generation())
 			// A fresh state forces an actual equal-token read, not a stat-gate skip.
 			var equalState oauthcred.DiskSyncState
-			f.store.syncOAuthFromDisk(t.Context(), &equalState)
+			f.store.SyncOAuthFromDisk(t.Context(), &equalState)
 			require.True(t, equalState.SettledForTest())
 			require.Equal(t, before+1, f.store.Generation())
 			// Stat-gate identity/size/mtime and tick-12 fallback are pinned by
@@ -155,7 +155,7 @@ func TestTask1314OAuthDiskSyncUncertainRealProviders(t *testing.T) {
 				}
 				before := f.store.Generation()
 				var state oauthcred.DiskSyncState
-				f.store.syncOAuthFromDisk(t.Context(), &state)
+				f.store.SyncOAuthFromDisk(t.Context(), &state)
 				require.Equal(t, f.used.OAuthToken, diskSyncLive(t, f.store, id))
 				require.Equal(t, before, f.store.Generation())
 			})
@@ -186,7 +186,7 @@ func TestTask1314OAuthDiskSyncLegacyExpiryAndProviderBoundary(t *testing.T) {
 				task1292WriteDisk(t, f.path, id, &disk, "")
 				before := f.store.Generation()
 				var state oauthcred.DiskSyncState
-				f.store.syncOAuthFromDisk(t.Context(), &state)
+				f.store.SyncOAuthFromDisk(t.Context(), &state)
 				if expired {
 					require.Equal(t, &live, diskSyncLive(t, f.store, id))
 					require.Equal(t, before, f.store.Generation())
@@ -214,7 +214,7 @@ func TestTask1314OAuthDiskSyncLegacyExpiryAndProviderBoundary(t *testing.T) {
 			before := f.store.Config().Providers.Copy()
 			generation := f.store.Generation()
 			var state oauthcred.DiskSyncState
-			f.store.syncOAuthFromDisk(t.Context(), &state)
+			f.store.SyncOAuthFromDisk(t.Context(), &state)
 			require.Equal(t, before, f.store.Config().Providers.Copy())
 			require.Equal(t, generation, f.store.Generation())
 		})
@@ -229,11 +229,11 @@ func TestTask1314OAuthDiskSyncBurnedCodexPredecessor(t *testing.T) {
 	burned.ExpiresAt = f.next.ExpiresAt + 3600
 	record := &oauthJournalRecord{Token: f.next, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken), BurnedRefreshTokenSHA256: []string{oauthRefreshTokenSHA256(&burned)}}
 	require.NoError(t, writeOAuthJournalOnce(oauthJournalPath(f.path, f.used.ID), record))
-	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true, record))
+	require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true, record))
 	task1292WriteDisk(t, f.path, f.used.ID, &burned, "")
 	before := f.store.Generation()
 	var state oauthcred.DiskSyncState
-	f.store.syncOAuthFromDisk(t.Context(), &state)
+	f.store.SyncOAuthFromDisk(t.Context(), &state)
 	require.Equal(t, f.next, diskSyncLive(t, f.store, f.used.ID))
 	require.Equal(t, before, f.store.Generation())
 	require.False(t, state.SettledForTest())

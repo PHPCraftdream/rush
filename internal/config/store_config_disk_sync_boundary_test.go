@@ -21,8 +21,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,8 +45,8 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		t.Cleanup(func() { s.StopConfigDiskSync() })
 		require.Equal(t, "gpt-global", s.Config().Models[SelectedModelTypeSmart].Model)
 
-		var st configDiskSyncState
-		result, err := s.syncConfigFromDisk(context.Background(), &st)
+		st := cfgstore.NewConfigDiskSyncStateForTest(false)
+		result, err := s.SyncConfigFromDisk(context.Background(), &st)
 		require.NoError(t, err)
 		require.False(t, result.Reloaded, "an unchanged candidate set must not reload")
 		gen := s.Generation()
@@ -56,18 +56,18 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		require.NoError(t, os.Remove(configPath))
 		writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-project"}}`)
 
-		st2 := configDiskSyncState{force: true}
-		result, err = s.syncConfigFromDisk(context.Background(), &st2)
+		st2 := cfgstore.NewConfigDiskSyncStateForTest(true)
+		result, err = s.SyncConfigFromDisk(context.Background(), &st2)
 		require.NoError(t, err)
 		require.True(t, result.Reloaded, "path-set drift must reload on its own")
 		require.Greater(t, s.Generation(), gen)
 		require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model,
 			"the new eligible config must reach the store")
-		require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(configPath)),
+		require.True(t, slices.Contains((*s.LoadSnapshot().SnapTrackedConfigPaths()), canonicalConfigPath(configPath)),
 			"the new candidate must join the tracked set")
 
 		// Drift cleared: a later forced tick does not reload again.
-		result, err = s.syncConfigFromDisk(context.Background(), &st2)
+		result, err = s.SyncConfigFromDisk(context.Background(), &st2)
 		require.NoError(t, err)
 		require.False(t, result.Reloaded, "drift must be exactly-once per event")
 	})
@@ -80,7 +80,7 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { s.StopConfigDiskSync() })
 		require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model)
-		require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(configPath)))
+		require.True(t, slices.Contains((*s.LoadSnapshot().SnapTrackedConfigPaths()), canonicalConfigPath(configPath)))
 		gen := s.Generation()
 
 		// The eligible project config leaves the candidate set: a directory
@@ -89,14 +89,14 @@ func TestConfigDiskSyncPathSetDriftReloads(t *testing.T) {
 		require.NoError(t, os.Remove(configPath))
 		require.NoError(t, os.Mkdir(configPath, 0o755))
 
-		st := configDiskSyncState{force: true}
-		result, err := s.syncConfigFromDisk(context.Background(), &st)
+		st := cfgstore.NewConfigDiskSyncStateForTest(true)
+		result, err := s.SyncConfigFromDisk(context.Background(), &st)
 		require.NoError(t, err)
 		require.True(t, result.Reloaded, "the removed candidate must leave the merge")
 		require.Greater(t, s.Generation(), gen)
 		require.Equal(t, "gpt-global", s.Config().Models[SelectedModelTypeSmart].Model,
 			"the removed file's models must revert to the remaining sources")
-		require.False(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, canonicalConfigPath(configPath)),
+		require.False(t, slices.Contains((*s.LoadSnapshot().SnapTrackedConfigPaths()), canonicalConfigPath(configPath)),
 			"the removed candidate must leave the tracked set")
 	})
 }
@@ -126,29 +126,29 @@ func TestConfigDiskSyncDriftFailureRecoversWhenFileFixed(t *testing.T) {
 	require.NoError(t, os.Remove(configPath))
 	require.NoError(t, os.WriteFile(configPath, []byte("{not json"), 0o600))
 
-	st := configDiskSyncState{force: true}
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(true)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.Error(t, result.ReloadErr)
 	require.False(t, result.Reloaded)
-	require.EqualValues(t, 1, st.reloadAttempts)
+	require.EqualValues(t, 1, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st))
 	require.Equal(t, gen, s.Generation(), "a failed reload must keep the published snapshot")
 	require.Equal(t, 1, strings.Count(buf.String(), "Config disk sync reload failed"))
 
 	// Unchanged bytes: the memo keeps the tick quiescent.
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, st.reloadAttempts, "unchanged candidates must not retry")
+	require.EqualValues(t, 1, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st), "unchanged candidates must not retry")
 	require.Equal(t, 1, strings.Count(buf.String(), "Config disk sync reload failed"))
 
 	// Fixing the newly eligible file changes the candidate key: exactly one
 	// recovery reload runs and the fixed config reaches the store.
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-fixed"}}`)
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.NoError(t, result.ReloadErr)
 	require.True(t, result.Reloaded, "fixing the malformed candidate must retry the drift reload")
-	require.EqualValues(t, 2, st.reloadAttempts)
+	require.EqualValues(t, 2, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st))
 	require.Greater(t, s.Generation(), gen)
 	require.Equal(t, "gpt-fixed", s.Config().Models[SelectedModelTypeSmart].Model)
 	require.Equal(t, 1, strings.Count(buf.String(), "Config disk sync recovered"))
@@ -199,16 +199,16 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	// existing parent). GlobalConfig() is a raw env-var path, so on runners
 	// where the temp dir sits behind a symlink (/var -> /private/var on
 	// macOS; junction components on Windows) the two spellings differ.
-	require.False(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(globalCfg)),
+	require.False(t, slices.Contains((*s.LoadSnapshot().SnapTrackedConfigPaths()), normalizeDiscoveryPath(globalCfg)),
 		"the ineligible global-config path must not be tracked at Load")
 
 	// Settle on the initial candidate set.
-	var st configDiskSyncState
-	st.force = true
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	*cfgstore.ConfigDiskSyncStateForce(&st) = true
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "an unchanged candidate set must not reload")
-	baseAttempts := st.reloadAttempts
+	baseAttempts := *cfgstore.ConfigDiskSyncStateReloadAttempts(&st)
 	gen := s.Generation()
 
 	// Transition 1 (GROWTH): the directory becomes a real eligible signed
@@ -235,13 +235,13 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	// new candidate is not tracked.
 	require.NoError(t, os.Remove(globalCfg))
 	writeSignedModelsFixture(t, globalCfg, `{"smart":{"provider":"openai","model":"gpt-globalcfg"}}`)
-	st2 := configDiskSyncState{force: true}
-	result, err = s.syncConfigFromDisk(context.Background(), &st2)
+	st2 := cfgstore.NewConfigDiskSyncStateForTest(true)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st2)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded, "the candidate-set growth must reload on the drift check alone")
-	require.EqualValues(t, baseAttempts+1, st2.reloadAttempts, "exactly one reload per transition")
+	require.EqualValues(t, baseAttempts+1, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st2), "exactly one reload per transition")
 	require.Greater(t, s.Generation(), gen)
-	require.True(t, slices.Contains(s.loadSnapshot().trackedConfigPaths, normalizeDiscoveryPath(globalCfg)),
+	require.True(t, slices.Contains((*s.LoadSnapshot().SnapTrackedConfigPaths()), normalizeDiscoveryPath(globalCfg)),
 		"the new candidate must join the tracked set")
 
 	// The joined candidate is LIVE for future changes: editing the global
@@ -254,162 +254,26 @@ func TestConfigDiskSyncCandidateSetDriftBoundary(t *testing.T) {
 	// already rejected by the membership assertion above, and with force set
 	// the candidate-set drift check would still reload on the edit.
 	writeSignedModelsFixture(t, globalCfg, `{"smart":{"provider":"openai","model":"gpt-globalcfg-2"}}`)
-	result, err = s.syncConfigFromDisk(context.Background(), &st2)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st2)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded, "an edit to the newly tracked candidate must reload via the digest gate")
-	require.EqualValues(t, baseAttempts+2, st2.reloadAttempts, "exactly one reload for the edit")
+	require.EqualValues(t, baseAttempts+2, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st2), "exactly one reload for the edit")
 	require.Greater(t, s.Generation(), gen)
 
 	// Transition 2 (SHRINK): the file becomes a directory again — the
 	// candidate set shrinks back. Exactly one more reload.
 	require.NoError(t, os.Remove(globalCfg))
 	require.NoError(t, os.Mkdir(globalCfg, 0o755))
-	result, err = s.syncConfigFromDisk(context.Background(), &st2)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st2)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded, "the candidate-set shrink must reload")
-	require.EqualValues(t, baseAttempts+3, st2.reloadAttempts, "exactly one reload per transition")
+	require.EqualValues(t, baseAttempts+3, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st2), "exactly one reload per transition")
 	require.Equal(t, "gpt-project", s.Config().Models[SelectedModelTypeSmart].Model,
 		"the removed candidate's models must revert to the remaining sources")
 
 	// No third reload: the drift is exactly-once per transition.
-	result, err = s.syncConfigFromDisk(context.Background(), &st2)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st2)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded)
-	require.EqualValues(t, baseAttempts+3, st2.reloadAttempts)
-}
-
-// TestConfigDiskSyncJitterBounds pins the delay contract: the first delay
-// is uniform in [0, interval) and every later delay is in
-// [0.8, 1.2] * interval. (Moved here from store_config_disk_sync_test.go in
-// round 6 for the file-length limit; no assertion changed except the
-// P2-8 default-formula loop added below.)
-func TestConfigDiskSyncJitterBounds(t *testing.T) {
-	require.Equal(t, 5*time.Second, configDiskSyncInterval)
-	for range 1000 {
-		delay := configDiskSyncDelay()
-		require.GreaterOrEqual(t, delay, 4*time.Second)
-		require.LessOrEqual(t, delay, 6*time.Second)
-	}
-	// P2-8: the DEFAULT first-delay formula's own bounds. A per-draw
-	// exact-boundary assertion is impossible on a random draw, so the
-	// coverage is per-draw bounds here, exact boundary-draw responses of the
-	// default formula in TestConfigDiskSyncFirstDelayFormulaBoundaries, and
-	// the injectable seam's passthrough boundary draws in
-	// TestConfigDiskSyncFirstDelayBoundaryDraws.
-	for range 1000 {
-		delay := defaultConfigDiskSyncFirstDelay()
-		require.GreaterOrEqual(t, delay, time.Duration(0),
-			"the default first-delay draw must never be negative")
-		require.Less(t, delay, configDiskSyncInterval,
-			"the default first-delay draw must be uniform in [0, interval)")
-	}
-
-	dir, configPath, globalPath := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
-	s, _ := configSyncWhiteBoxStore(t, dir, cfg, []string{configPath, globalPath})
-	t.Cleanup(s.StopConfigDiskSync)
-
-	first := make(chan time.Duration, 1)
-	oldWait := configDiskSyncWait
-	configDiskSyncWait = func(ctx context.Context, delay time.Duration) error {
-		select {
-		case first <- delay:
-		default:
-		}
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	t.Cleanup(func() { configDiskSyncWait = oldWait })
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{})
-	select {
-	case delay := <-first:
-		require.GreaterOrEqual(t, delay, time.Duration(0))
-		require.Less(t, delay, configDiskSyncInterval, "first delay must be uniform in [0, interval)")
-	case <-time.After(2 * time.Second):
-		t.Fatal("poller never ticked")
-	}
-}
-
-// TestConfigDiskSyncFirstDelayFormulaBoundaries pins the REAL default
-// first-delay formula's exact response to boundary draws, via the draw-source
-// seam BELOW the formula (configDiskSyncRandInt63): unlike
-// TestConfigDiskSyncFirstDelayBoundaryDraws (which replaces the whole seam
-// function ABOVE the formula and only proves passthrough) this exercises the
-// formula body itself. rand.Int64N's contract: returns values in [0, n), so
-// the extreme draws are 0 and interval-1ns (as a Duration), never interval.
-// Catches: replacing defaultConfigDiskSyncFirstDelay's body with the
-// steady-state configDiskSyncDelay (interval-spread + draw over
-// 2*spread+1, spread = interval/5 = 1s): a draw of 0 there yields 4s, not 0
-// — the exact-zero assertion below fails. A comment-level argument suffices
-// for the 4s branch, but the exact equality below already excludes it:
-// 0 != 4s.
-func TestConfigDiskSyncFirstDelayFormulaBoundaries(t *testing.T) {
-	orig := configDiskSyncRandInt63
-	t.Cleanup(func() { configDiskSyncRandInt63 = orig })
-
-	for _, tc := range []struct {
-		name string
-		draw int64
-		want time.Duration
-	}{
-		// Lowest value Int64N can return: the first delay is 0.
-		{"lowest", 0, 0},
-		// Highest value Int64N can return (n-1): interval - 1ns, never the
-		// interval itself — the delay must stay strictly below it.
-		{"highest", int64(configDiskSyncInterval) - 1, configDiskSyncInterval - time.Nanosecond},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			configDiskSyncRandInt63 = func(int64) int64 { return tc.draw }
-			require.Equal(t, tc.want, defaultConfigDiskSyncFirstDelay(),
-				"the default first-delay formula must map the boundary draw exactly; a steady-state configDiskSyncDelay body would map draw 0 to 4s, not 0")
-		})
-	}
-}
-
-// TestConfigDiskSyncFirstDelayBoundaryDraws pins the injectable first-delay
-// seam: whatever configDiskSyncFirstDelay draws is passed to the wait
-// UNCHANGED by runConfigDiskSync — including the boundary draws 0 and
-// just-under-interval. Table-driven, no real sleeps (the wait stub parks on
-// ctx.Done and the store is stopped in cleanup). With the round-6 refactor
-// the default is defaultConfigDiskSyncFirstDelay; this test now pins that
-// the seam is a pure passthrough of whatever is installed.
-func TestConfigDiskSyncFirstDelayBoundaryDraws(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		draw time.Duration
-	}{
-		{"zero", 0},
-		{"just-under-interval", configDiskSyncInterval - time.Nanosecond},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir, configPath, globalPath := configSyncIsolate(t)
-			writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-			cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
-			s, _ := configSyncWhiteBoxStore(t, dir, cfg, []string{configPath, globalPath})
-			t.Cleanup(s.StopConfigDiskSync)
-
-			oldDraw := configDiskSyncFirstDelay
-			configDiskSyncFirstDelay = func() time.Duration { return tc.draw }
-			t.Cleanup(func() { configDiskSyncFirstDelay = oldDraw })
-			first := make(chan time.Duration, 1)
-			oldWait := configDiskSyncWait
-			configDiskSyncWait = func(ctx context.Context, delay time.Duration) error {
-				select {
-				case first <- delay:
-				default:
-				}
-				<-ctx.Done()
-				return ctx.Err()
-			}
-			t.Cleanup(func() { configDiskSyncWait = oldWait })
-			s.StartConfigDiskSync(ConfigDiskSyncOptions{})
-			select {
-			case delay := <-first:
-				require.Equal(t, tc.draw, delay, "runConfigDiskSync must pass the first-delay draw through unchanged")
-			case <-time.After(2 * time.Second):
-				t.Fatal("poller never ticked")
-			}
-		})
-	}
+	require.EqualValues(t, baseAttempts+3, *cfgstore.ConfigDiskSyncStateReloadAttempts(&st2))
 }

@@ -31,7 +31,7 @@ func TestLoadKeepsExplicitlySelectedHiddenGLMModel(t *testing.T) {
 
 	require.True(t, !discover.ModelVisible("zai", "glm-5"),
 		"precondition: the selected model is hidden from the lists")
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, known, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 	require.NoError(t, ConfigureSelectedModels(cfg, known),
 		"an explicitly pinned hidden model must not break config loading")
 
@@ -67,7 +67,7 @@ func TestLoadKeepsExplicitlySelectedHiddenCodexModel(t *testing.T) {
 	resolver := NewShellVariableResolver(env.NewFromMap(nil))
 	require.True(t, !discover.ModelVisible("openai-codex", "gpt-5.6-luna"),
 		"precondition: the selected model is hidden from the lists")
-	require.NoError(t, configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(ctx, cfg, env.NewFromMap(nil), resolver, nil, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 	require.NoError(t, ConfigureSelectedModels(cfg, nil),
 		"an explicitly pinned hidden Codex model must not break config loading")
 
@@ -93,7 +93,7 @@ func TestLoadResolvesReviewerGLM53Flash(t *testing.T) {
 
 	require.True(t, discover.ModelVisible("zai", "glm-5.3-flash"),
 		"glm-5.3-flash sits at the visibility boundary and stays visible")
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, known, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 	require.NoError(t, ConfigureSelectedModels(cfg, known),
 		"a reviewer slot on glm-5.3-flash must not break config loading")
 

@@ -45,7 +45,7 @@ func TestGenericConfigMutationRejectsHardLink(t *testing.T) {
 	require.NoError(t, os.Link(path, alias))
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: path, config: &Config{Options: &Options{}}})
-	store.workingDir = root
+	*store.WorkingDirForTest() = root
 	err := store.SetConfigField(ScopeGlobal, "options.debug", true)
 	require.ErrorIs(t, err, ErrConfigHardLink)
 	require.Equal(t, contents, mustReadFile(t, path))

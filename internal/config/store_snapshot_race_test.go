@@ -67,7 +67,7 @@ func TestConcurrentReloadAndReads_NeverObservesTornGeneration(t *testing.T) {
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Kept deliberately small: reloadFromDiskLocked does real disk I/O,
@@ -154,10 +154,10 @@ func TestConcurrentReloadAndReads_NeverObservesTornGeneration(t *testing.T) {
 				// that can never make that promise without a much larger
 				// API change (returning a bundled struct from every
 				// accessor call).
-				snap := store.loadSnapshot()
-				cfg := snap.config
-				resolver := snap.resolver
-				known := snap.knownProviders
+				snap := store.LoadSnapshot()
+				cfg := snap.SnapConfig()
+				resolver := *snap.SnapResolver()
+				known := *snap.SnapKnownProviders()
 				readCount.Add(1)
 
 				if cfg != nil && resolver != nil {
@@ -259,7 +259,7 @@ func TestFailedReload_DoesNotChangePublishedSnapshot(t *testing.T) {
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	before := store.Config()
@@ -384,7 +384,7 @@ func TestConcurrentUpdateConfig_DoesNotLoseUpdates(t *testing.T) {
 		go func(i int, mt SelectedModelType) {
 			defer wg.Done()
 			model := SelectedModel{Provider: "p", Model: fmt.Sprintf("m-%d", i)}
-			store.updateConfig(func(cfgCopy *Config) {
+			store.UpdateConfig(func(cfgCopy *Config) {
 				cfgCopy.Models = maps.Clone(cfgCopy.Models)
 				if cfgCopy.Models == nil {
 					cfgCopy.Models = make(map[SelectedModelType]SelectedModel)
@@ -483,7 +483,7 @@ func TestConcurrentUpdateConfig_DifferentNestedFields_BothVisible(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			<-start
-			store.updateConfig(func(c *Config) {
+			store.UpdateConfig(func(c *Config) {
 				optsCopy := cloneOptions(c.Options)
 				tuiCopy := cloneTUIOptions(optsCopy.TUI)
 				tuiCopy.CompactMode = true
@@ -495,7 +495,7 @@ func TestConcurrentUpdateConfig_DifferentNestedFields_BothVisible(t *testing.T) 
 		go func() {
 			defer wg.Done()
 			<-start
-			store.updateConfig(func(c *Config) {
+			store.UpdateConfig(func(c *Config) {
 				optsCopy := cloneOptions(c.Options)
 				tuiCopy := cloneTUIOptions(optsCopy.TUI)
 				tuiCopy.Theme = "dark"
@@ -569,7 +569,7 @@ func TestUpdateConfigVsReload_ReloadDiskStateNotLostByStaleClone(t *testing.T) {
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// External modification: write gen-1 to disk so the reload will pick up
@@ -589,7 +589,7 @@ func TestUpdateConfigVsReload_ReloadDiskStateNotLostByStaleClone(t *testing.T) {
 	// writer is finally released, its stale clone overwrites the reload's
 	// already-published gen-1.
 	go func() {
-		store.updateConfig(func(c *Config) {
+		store.UpdateConfig(func(c *Config) {
 			close(writerEnteredMutate)
 			<-writerCanFinish
 			optsCopy := cloneOptions(c.Options)
@@ -721,20 +721,20 @@ func TestAutoReload_TryLockSkipsReentry_NoDeadlock(t *testing.T) {
 	cfg := &Config{}
 	setDefaults(cfg, dir, "")
 	store := newTestConfigStore(testStoreOpts{config: cfg})
-	store.workingDir = dir // Enable the autoReload path past the early return.
+	(*store.WorkingDirForTest()) = dir // Enable the autoReload path past the early return.
 
 	// Hold reloadMu, simulating a reload candidate-build already in
 	// progress (either from another autoReload call or an explicit
 	// ReloadFromDisk).
-	store.reloadMu.Lock()
-	defer store.reloadMu.Unlock()
+	store.ReloadMuForTest().Lock()
+	defer store.ReloadMuForTest().Unlock()
 
 	// autoReload must return nil immediately — TryLock(reloadMu) fails
 	// because we already hold it. If it used Lock instead of TryLock,
 	// this call would block forever.
 	done := make(chan error, 1)
 	go func() {
-		done <- store.autoReload(context.Background())
+		done <- store.AutoReload(context.Background())
 	}()
 
 	select {
@@ -771,8 +771,8 @@ func TestReloadCandidateBuild_DoesNotBlockRuntimeMutator(t *testing.T) {
 	// reloadMu directly, without touching publishMu — exactly the
 	// invariant buildAndPublishReload now provides: the expensive,
 	// potentially-minutes-long shell resolution runs under reloadMu only.
-	store.reloadMu.Lock()
-	defer store.reloadMu.Unlock()
+	store.ReloadMuForTest().Lock()
+	defer store.ReloadMuForTest().Unlock()
 
 	done := make(chan struct{})
 	start := time.Now()
@@ -845,7 +845,7 @@ func TestReloadFromDisk_HungResolve_DoesNotBlockIndependentRuntimeChange(t *test
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	const sleepSeconds = 5

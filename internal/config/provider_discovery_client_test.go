@@ -57,7 +57,7 @@ func configureOne(t *testing.T, cfg *Config, known []catwalk.Provider, vars map[
 	t.Helper()
 	setDefaults(cfg, t.TempDir(), "")
 	environ := env.NewFromMap(vars)
-	require.NoError(t, configureProviders(context.Background(), cfg, environ, NewShellVariableResolver(environ), known, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, environ, NewShellVariableResolver(environ), known, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 }
 
 func TestCustomProviderAutoDiscoveryUsesTheProviderClient(t *testing.T) {
@@ -243,7 +243,7 @@ func TestConfigureProvidersWithScope_DiscoveryScoping(t *testing.T) {
 			environ := env.NewFromMap(nil)
 			resolver := NewShellVariableResolver(environ)
 
-			require.NoError(t, provresolve.ConfigureProvidersWithScope(context.Background(), cfg, environ, resolver, known, testStore(cfg).removeConfigFieldBestEffort, nil, tc.scope))
+			require.NoError(t, provresolve.ConfigureProvidersWithScope(context.Background(), cfg, environ, resolver, known, testStore(cfg).RemoveConfigFieldBestEffort, nil, tc.scope))
 
 			require.GreaterOrEqual(t, codexHits.Load(), tc.wantCodexHits)
 			require.GreaterOrEqual(t, zaiHits.Load(), tc.wantZAIHits)

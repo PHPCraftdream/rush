@@ -41,10 +41,10 @@ func TestMCPTransactionExcludesForeignOwnedFixedAndExternalInputs(t *testing.T) 
 		globalDataPath: global,
 		workspacePath:  workspace,
 	})
-	store.workingDir = root
-	store.systemConfigPathOverride = system
+	*store.WorkingDirForTest() = root
+	*store.SystemConfigPathOverrideForTest() = system
 
-	paths := store.orderedMCPPaths()
+	paths := store.OrderedMCPPaths()
 	for _, foreign := range []string{workspace, system} {
 		require.NotContains(t, paths, foreign)
 	}
@@ -67,7 +67,7 @@ func TestConfigStalenessDetectsSymlinkRetargetABA(t *testing.T) {
 	}
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{}})
-	store.captureStalenessSnapshot([]string{alias})
+	store.CaptureStalenessSnapshot([]string{alias})
 	require.NoError(t, os.Remove(alias))
 	require.NoError(t, os.Symlink(targetB, alias))
 	require.NoError(t, os.Remove(alias))
@@ -113,10 +113,10 @@ func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
 		globalDataPath: global,
 		workspacePath:  workspace,
 	})
-	store.workingDir = root
-	store.captureStalenessSnapshot([]string{project, workspace})
+	*store.WorkingDirForTest() = root
+	store.CaptureStalenessSnapshot([]string{project, workspace})
 
-	result, err := store.mcpStore().PersistMCPConfigExactResult(ScopeWorkspace, "new", MCPConfig{
+	result, err := store.MCPStoreForTest().PersistMCPConfigExactResult(ScopeWorkspace, "new", MCPConfig{
 		Type: MCPHttp, URL: "http://new.example",
 	})
 	require.NoError(t, err)
@@ -132,8 +132,8 @@ func TestExactWorkspaceMutationSharesPhysicalSymlinkDocument(t *testing.T) {
 	require.NoError(t, err)
 	_, workspaceAfter, err := readStableConfigFile(workspace)
 	require.NoError(t, err)
-	projectFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(project)].Fingerprint()
-	workspaceFingerprint := store.loadSnapshot().snapshots[normalizeDiscoveryPath(workspace)].Fingerprint()
+	projectFingerprint := (*store.LoadSnapshot().SnapSnapshots())[normalizeDiscoveryPath(project)].Fingerprint()
+	workspaceFingerprint := (*store.LoadSnapshot().SnapSnapshots())[normalizeDiscoveryPath(workspace)].Fingerprint()
 	require.Equal(t, projectAfter, projectFingerprint)
 	require.Equal(t, workspaceAfter, workspaceFingerprint)
 	require.NotEqual(t, projectAfter.Discovery, workspaceAfter.Discovery)
@@ -148,7 +148,7 @@ func TestMCPCommitRejectsParentReplacement(t *testing.T) {
 	global := filepath.Join(parent, "rush.json")
 	setMCPFile(t, global, "old", "http://old.example")
 	store := newTestConfigStore(testStoreOpts{config: &Config{MCP: MCPs{}}, globalDataPath: global})
-	store.workingDir = root
+	*store.WorkingDirForTest() = root
 	var once sync.Once
 	configTestHooks.Lock()
 	previous := configTestHooks.beforeCommitCheck
@@ -183,7 +183,7 @@ func TestMCPCommitIgnoresLegacyPIDTempCollision(t *testing.T) {
 	require.NoError(t, os.WriteFile(legacyTemp, legacyContents, 0o600))
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{MCP: MCPs{}}, globalDataPath: global})
-	store.workingDir = root
+	*store.WorkingDirForTest() = root
 	_, err := store.PersistMCPConfigResult(ScopeGlobal, "new", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
 	require.NoError(t, err)
 	gotLegacy, err := os.ReadFile(legacyTemp)

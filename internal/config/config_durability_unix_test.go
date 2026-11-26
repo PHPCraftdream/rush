@@ -18,8 +18,8 @@ func TestMCPParentSyncFailureReconcilesSnapshotButReturnsUncertainty(t *testing.
 		config:         &Config{MCP: MCPs{"server": {Type: MCPHttp, URL: "http://old.example"}}},
 		globalDataPath: global,
 	})
-	store.captureStalenessSnapshot([]string{global})
-	store.workingDir = root
+	store.CaptureStalenessSnapshot([]string{global})
+	*store.WorkingDirForTest() = root
 	parentSyncErr := errors.New("injected parent fsync failure")
 	configTestHooks.Lock()
 	previous := configTestHooks.syncParent
@@ -44,7 +44,7 @@ func TestMCPParentSyncFailureReconcilesSnapshotButReturnsUncertainty(t *testing.
 	require.Equal(t, "http://new.example", got.URL)
 	_, diskFingerprint, readErr := readStableConfigFile(global)
 	require.NoError(t, readErr)
-	require.Equal(t, diskFingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(global)].Fingerprint())
+	require.Equal(t, diskFingerprint, (*store.LoadSnapshot().SnapSnapshots())[normalizeDiscoveryPath(global)].Fingerprint())
 
 	// The caller received an uncertainty and must not blindly retry the add:
 	// the visible committed state is already authoritative for the next

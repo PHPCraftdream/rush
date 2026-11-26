@@ -167,7 +167,7 @@ func TestWriteTargetSlotSymlinkMigratedLockAndOAuth(t *testing.T) {
 	require.True(t, VerifyPassword("pw", gjson.GetBytes(locked, "sync_rev").String()))
 
 	tokenC := &oauth.Token{AccessToken: "access-c", RefreshToken: "refresh-c", ExpiresIn: 3600, ExpiresAt: 9999999999}
-	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	committed, err := store.SetOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.NoError(t, err)
 	require.True(t, committed)
 	updated := decodeKtavFixtureJSON(t, ktavPath)

@@ -3,9 +3,10 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"sort"
+
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
@@ -18,7 +19,9 @@ type (
 	stableConfigAlias     = docread.StableConfigAlias
 )
 
-var errReloadDiskChanged = errors.New("config files changed while reloading")
+// errReloadDiskChanged aliases the cfgstore sentinel so the root retry loop
+// (errors.Is) recognizes the leaf reload engine's instability error.
+var errReloadDiskChanged = cfgstore.ErrReloadDiskChanged
 
 func candidateInputsChanged(workingDir string, configPaths, externalPaths []string, fingerprints map[string]reloadFileFingerprint) bool {
 	return !docread.SameReloadPathSet(configPaths, docread.LookupConfigCandidates(workingDir)) ||

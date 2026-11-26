@@ -111,7 +111,7 @@ func TestApplyCommittedMCPFingerprintRereadsEverySpelling(t *testing.T) {
 	_, committed, err := readStableConfigFile(aliasPath)
 	require.NoError(t, err)
 
-	require.NoError(t, store.applyCommittedMCPFingerprint(files, record, committed))
+	require.NoError(t, store.ApplyCommittedMCPFingerprint(files, record, committed))
 
 	_, physicalAfter, err := readStableConfigFile(physicalPath)
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
 	record := files.BindMCPPath(aliasPath, boundData, true, fingerprint)
 	require.Same(t, record, files.MCPRecord(physicalPath))
 	store := &ConfigStore{}
-	_, present, err := store.mcpPathData(files, physicalPath)
+	_, present, err := store.MCPPathData(files, physicalPath)
 	require.NoError(t, err)
 	require.True(t, present)
 	physicalFingerprint, ok := files.Fingerprints[normalizeDiscoveryPath(physicalPath)]
@@ -164,7 +164,7 @@ func TestMCPPathDataUsesNormalizedDiscoveryKeys(t *testing.T) {
 	require.Equal(t, expectedPhysical, physicalFingerprint)
 	require.NoError(t, os.Remove(physicalPath))
 
-	got, present, err := store.mcpPathData(files, physicalPath)
+	got, present, err := store.MCPPathData(files, physicalPath)
 	require.NoError(t, err)
 	require.True(t, present)
 	require.Equal(t, data, got)
@@ -199,7 +199,7 @@ func TestMCPPathDataResolvesNonCanonicalPhysicalSpelling(t *testing.T) {
 	}
 	files.BindMCPPath(aliasPath, boundData, true, fingerprint)
 	store := &ConfigStore{}
-	got, present, err := store.mcpPathData(files, physicalPath)
+	got, present, err := store.MCPPathData(files, physicalPath)
 	require.NoError(t, err)
 	require.True(t, present)
 	require.Equal(t, data, got)
@@ -284,7 +284,7 @@ func TestConfigStoreReloadRetriesAfterConcurrentReplace(t *testing.T) {
 	read := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	store.reloadAfterDiskRead = func() {
+	*store.ReloadAfterDiskReadForTest() = func() {
 		once.Do(func() {
 			close(read)
 			<-release

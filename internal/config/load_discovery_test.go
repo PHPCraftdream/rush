@@ -228,7 +228,7 @@ func TestProjectConfigsPreservesProjectCandidatesAndNegativeStaleness(t *testing
 
 	missing := filepath.Join(root, "later.json")
 	store := newTestConfigStore(testStoreOpts{config: &Config{}})
-	store.captureStalenessSnapshot([]string{missing})
+	store.CaptureStalenessSnapshot([]string{missing})
 	require.NoError(t, os.WriteFile(missing, []byte(`{}`), 0o600))
 	result := store.ConfigStaleness()
 	require.True(t, result.Dirty)

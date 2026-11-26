@@ -22,7 +22,7 @@ func TestMCPCommitRecoversRestartedOwnTemporaryAlias(t *testing.T) {
 		config:         &Config{MCP: MCPs{"old": {Type: MCPHttp, URL: "http://old.example"}}},
 		globalDataPath: path,
 	})
-	store.workingDir = root
+	*store.WorkingDirForTest() = root
 	_, err := store.PersistMCPConfigResult(ScopeGlobal, "new", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(root, tempName))
@@ -42,7 +42,7 @@ func TestMCPCommitRejectsForeignHardlinksWithoutDeletingThem(t *testing.T) {
 			config:         &Config{MCP: MCPs{"old": {Type: MCPHttp, URL: "http://old.example"}}},
 			globalDataPath: path,
 		})
-		store.workingDir = root
+		*store.WorkingDirForTest() = root
 		_, err := store.PersistMCPConfigResult(ScopeGlobal, "new", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
 		require.ErrorIs(t, err, ErrConfigHardLink)
 		require.Contains(t, string(mustReadFile(t, alias)), "old.example")
@@ -61,7 +61,7 @@ func TestMCPCommitRejectsForeignHardlinksWithoutDeletingThem(t *testing.T) {
 			config:         &Config{MCP: MCPs{"old": {Type: MCPHttp, URL: "http://old.example"}}},
 			globalDataPath: path,
 		})
-		store.workingDir = root
+		*store.WorkingDirForTest() = root
 		_, err := store.PersistMCPConfigResult(ScopeGlobal, "new", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
 		require.ErrorIs(t, err, ErrConfigHardLink)
 		require.Contains(t, string(mustReadFile(t, ownTemp)), "old.example")

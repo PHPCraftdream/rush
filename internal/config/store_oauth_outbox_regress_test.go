@@ -65,7 +65,7 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		f.store.stopOAuthJournalWorkers()
+		f.store.StopOAuthJournalWorkers()
 		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 		oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy = oldRename, oldCopy
 		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait = oldBefore, oldWait
@@ -83,7 +83,7 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 	require.Equal(t, 1, calls)
 	require.Positive(t, writes.Load())
 	require.Positive(t, quarantines.Load())
-	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+	entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 	require.NotNil(t, entry)
 	require.Equal(t, f.next, entry.Record.Token)
 	actual, err := os.ReadFile(journal)
@@ -93,7 +93,7 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 	requireOAuthRound7Released(t, f)
 	close(start)
 	awaitCodexSignal(t, attempts)
-	require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+	require.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 	failing.Store(false)
 	// Three bounded real-worker attempts cover write, commit and removal.
 	for range 3 {
@@ -104,9 +104,9 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 		}
 		select {
 		case <-idle:
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			assertCodexRefreshTokens(t, f, f.next, f.next)
-			require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+			require.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 			_, err := os.Stat(journal)
 			require.True(t, os.IsNotExist(err))
 			return
@@ -115,7 +115,7 @@ func TestOAuthRound7_P1_1_InvalidWALWorkerRepair(t *testing.T) {
 			t.Fatal("worker repair attempt did not finish")
 		}
 	}
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	disk, err := readOAuthJournalDiskToken(f.path, f.used.ID)
 	require.NoError(t, err)
 	require.Equal(t, f.next, disk, "repaired worker must persist owned B despite invalid active WAL")
@@ -135,8 +135,8 @@ func TestOAuthRound7_P1_2_EqualConfigOutboxUncertainty(t *testing.T) {
 			d.AccessToken, d.RefreshToken = "fixture-D-access", "fixture-D-refresh"
 			d.ExpiresAt = time.Now().Add(2 * time.Hour).Unix()
 			record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken), Token: &b}
-			entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, &b, f.used.OAuthToken, true))
+			entry := f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+			require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, &b, f.used.OAuthToken, true))
 			writeCodexPendingDisk(t, f, &b)
 			before, err := os.ReadFile(f.path)
 			require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestOAuthRound7_P1_2_EqualConfigOutboxUncertainty(t *testing.T) {
 			oldBudget := oauthjournal.OAuthJournalWriteBudget
 			oauthjournal.OAuthJournalWriteBudget = 10 * time.Millisecond
 			t.Cleanup(func() {
-				f.store.stopOAuthJournalWorkers()
+				f.store.StopOAuthJournalWorkers()
 				oauthjournal.OAuthJournalWriteBudget = oldBudget
 				configTestHooks.Lock()
 				configTestHooks.syncParent = oldSync
@@ -168,19 +168,19 @@ func TestOAuthRound7_P1_2_EqualConfigOutboxUncertainty(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			err = f.store.RefreshOAuthTokenWithClient(ctx, ScopeGlobal, used, client)
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			requireOAuthRound7Released(t, f)
 			after, readErr := os.ReadFile(f.path)
 			require.NoError(t, readErr)
 			require.Equal(t, before, after, "uncertain config and unrelated data must remain intact")
 			if calls == 0 {
-				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID), "failed refresh must preserve owned B")
+				require.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID), "failed refresh must preserve owned B")
 				assertCodexRefreshTokens(t, f, &b, &b)
 			}
 			require.Equal(t, 1, calls, "equal config with unverified durability must exchange B exactly once to D")
 			require.NoError(t, err)
 			assertCodexRefreshTokens(t, f, &d, &b)
-			owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+			owned := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 			if owned != nil {
 				require.Equal(t, &d, owned.Record.Token)
 				require.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
@@ -201,6 +201,6 @@ func requireOAuthRound7Released(t *testing.T, f codexRefreshFixture) {
 	lock, err := filelock.TryAcquireFileLock(path)
 	require.NoError(t, err)
 	require.NoError(t, releaseConfigFileLock(path, lock))
-	active := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
+	active := f.store.OAuthCredStore().CodexRefreshActiveForTest(f.used.ID)
 	require.False(t, active)
 }

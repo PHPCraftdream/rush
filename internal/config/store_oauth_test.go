@@ -46,7 +46,7 @@ func TestLoadTokenFromDisk_ReturnsNewerToken(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
+	token, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.NotNil(t, token)
 	require.Equal(t, "newer-token-from-disk", token.AccessToken)
@@ -81,7 +81,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenSameToken(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
+	token, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.NotNil(t, token)
 	require.Equal(t, "same-token", token.AccessToken)
@@ -98,7 +98,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenFileMissing(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
+	token, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.Nil(t, token)
 }
@@ -118,7 +118,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenProviderMissing(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
+	token, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.Nil(t, token)
 }
@@ -138,7 +138,7 @@ func TestLoadTokenFromDisk_ReturnsNilWhenOAuthMissing(t *testing.T) {
 		globalDataPath: configPath,
 	})
 
-	token, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
+	token, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "hyper")
 	require.NoError(t, err)
 	require.Nil(t, token)
 }
@@ -228,7 +228,7 @@ func TestSetProviderRuntimeConfig_VisibleImmediatelyAndDiscardedByReload(t *test
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Verify the provider loaded from disk.
@@ -322,7 +322,7 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 
 	// Override the network call: signal reachedNetworkCall as soon as
 	// RefreshOAuthToken has entered it (proof that it already captured
-	// `providers := s.loadSnapshot().config.Providers` at the top of the
+	// `providers := s.LoadSnapshot().config.Providers` at the top of the
 	// function, since that capture happens strictly before this call), then
 	// block until the test has published a new generation (simulating a
 	// concurrent reload), THEN return the refreshed token. Without this
@@ -332,8 +332,8 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 	// since there would be no orphaned map involved at all.
 	reachedNetworkCall := make(chan struct{})
 	reloadDone := make(chan struct{})
-	origFn := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(ctx context.Context, _ *http.Client, refreshToken string) (*oauth.Token, error) {
+	origFn := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(ctx context.Context, _ *http.Client, refreshToken string) (*oauth.Token, error) {
 		close(reachedNetworkCall)
 		<-reloadDone
 		return &oauth.Token{
@@ -343,7 +343,7 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		}, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = origFn })
+	t.Cleanup(func() { *hyperExchangeTokenFn = origFn })
 
 	refreshErrCh := make(chan error, 1)
 	go func() {
@@ -371,13 +371,13 @@ func TestRefreshOAuthToken_SurvivesReloadDuringNetworkCall(t *testing.T) {
 		APIKey:     oldToken.AccessToken,
 		OAuthToken: oldToken,
 	})
-	store.publishMu.Lock()
-	next := store.loadSnapshot().clone()
-	cfgCopy := *next.config
+	store.PublishMuForTest().Lock()
+	next := store.LoadSnapshot().Clone()
+	cfgCopy := *next.SnapConfig()
 	cfgCopy.Providers = newProviders
-	next.config = &cfgCopy
-	store.publishLocked(next)
-	store.publishMu.Unlock()
+	*next.SnapConfigForTest() = &cfgCopy
+	store.PublishLocked(next)
+	store.PublishMuForTest().Unlock()
 
 	mapAfterReload := store.Config().Providers
 	require.NotSame(t, mapBeforeReload, mapAfterReload,
@@ -429,13 +429,13 @@ func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
 
 	reachedNetwork := make(chan struct{})
 	releaseNetwork := make(chan struct{})
-	original := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+	original := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		close(reachedNetwork)
 		<-releaseNetwork
 		return &oauth.Token{AccessToken: "stale-refresh-result", RefreshToken: "refresh-stale", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = original })
+	t.Cleanup(func() { *hyperExchangeTokenFn = original })
 	errCh := make(chan error, 1)
 	go func() { errCh <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, catalog.HyperName) }()
 	select {
@@ -455,7 +455,7 @@ func TestRefreshOAuthToken_DiskReplacementWinsConcurrentRefresh(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("refresh did not return")
 	}
-	diskToken, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, catalog.HyperName)
+	diskToken, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, catalog.HyperName)
 	require.NoError(t, err)
 	require.Equal(t, replacement.AccessToken, diskToken.AccessToken)
 	require.Equal(t, replacement.RefreshToken, diskToken.RefreshToken)
@@ -477,11 +477,11 @@ func TestRefreshOAuthToken_CommittedDurabilityErrorSynchronizesMemory(t *testing
 	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: configPath})
 
 	refreshed := &oauth.Token{AccessToken: "new-access", RefreshToken: "refresh-new", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix()}
-	originalExchange := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+	originalExchange := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		return refreshed, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = originalExchange })
+	t.Cleanup(func() { *hyperExchangeTokenFn = originalExchange })
 
 	durabilityErr := errors.New("injected parent fsync failure")
 	configTestHooks.Lock()
@@ -504,7 +504,7 @@ func TestRefreshOAuthToken_CommittedDurabilityErrorSynchronizesMemory(t *testing
 	require.True(t, ok)
 	require.Equal(t, refreshed.AccessToken, current.APIKey)
 	require.Equal(t, refreshed.RefreshToken, current.OAuthToken.RefreshToken)
-	diskToken, err := store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, catalog.HyperName)
+	diskToken, err := store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, catalog.HyperName)
 	require.NoError(t, err)
 	require.Equal(t, refreshed.AccessToken, diskToken.AccessToken)
 }
@@ -603,8 +603,8 @@ func TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration(t *tes
 	var observedClient *http.Client
 	var observedRefreshToken string
 	exchangeCalls := 0
-	origFn := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(_ context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
+	origFn := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(_ context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
 		exchangeCalls++
 		observedClient = client
 		observedRefreshToken = refreshToken
@@ -615,7 +615,7 @@ func TestRefreshOAuthTokenWithClient_RefreshesTokenFromHandedInGeneration(t *tes
 			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		}, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = origFn })
+	t.Cleanup(func() { *hyperExchangeTokenFn = origFn })
 
 	err = store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, genAProvider, clientFromGenA)
 
@@ -700,8 +700,8 @@ func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossG
 	}))
 
 	exchangeCalls := 0
-	origFn := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+	origFn := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		exchangeCalls++
 		return &oauth.Token{
 			AccessToken:  "refreshed-access",
@@ -710,7 +710,7 @@ func TestRefreshOAuthTokenWithClient_DiskReplacementDuringWindowNeverPairsCrossG
 			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		}, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = origFn })
+	t.Cleanup(func() { *hyperExchangeTokenFn = origFn })
 
 	err = store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, genAProvider, clientFromGenA)
 

@@ -50,11 +50,11 @@ func TestF8OAuthRefreshCASPersistsFreshTokenUnderGlobalLock(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(serialized), "sync_rev")
 	require.NotContains(t, string(serialized), HashPassword(hash))
-	orig := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+	orig := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		return &oauth.Token{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 7200, ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = orig })
+	t.Cleanup(func() { *hyperExchangeTokenFn = orig })
 	SetProcessPassword("")
 	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "hyper"))
 	var disk struct {
@@ -81,7 +81,7 @@ func TestF8GlobalLockRefusesUnauthorizedLockWhenOnlyLocalLockExists(t *testing.T
 	require.NoError(t, os.MkdirAll(filepath.Dir(workspace), 0o700))
 	require.NoError(t, os.WriteFile(workspace, []byte(`{"sync_rev":"`+HashPassword("local")+`"}`), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: global, workspacePath: workspace})
-	store.workingDir = filepath.Dir(filepath.Dir(filepath.Dir(workspace)))
+	(*store.WorkingDirForTest()) = filepath.Dir(filepath.Dir(filepath.Dir(workspace)))
 	SetProcessPassword("")
 	t.Cleanup(func() { SetProcessPassword("") })
 	before := fileBytes(t, global)
@@ -95,11 +95,11 @@ func TestF8LocalLockRefusesMCPWorkspaceAndGlobalPersistence(t *testing.T) {
 	projectPath := filepath.Join(workspace, ".mcp.json")
 	writeExternalMCPDefinition(t, projectPath, "existing")
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
-	lockPath, err := store.configPath(ScopeWorkspace)
+	lockPath, err := store.ConfigPath(ScopeWorkspace)
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(lockPath), 0o700))
 	require.NoError(t, os.WriteFile(lockPath, []byte(`{"sync_rev":"`+HashPassword("local")+`"}`), 0o600))
-	store.workingDir = workspace
+	(*store.WorkingDirForTest()) = workspace
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	SetProcessPassword("")
 	t.Cleanup(func() { SetProcessPassword("") })

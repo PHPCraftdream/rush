@@ -714,3 +714,24 @@ func (c *Config) IsDockerMCPEnabled() bool {
 	_, exists := c.MCP[DockerMCPName]
 	return exists
 }
+
+// ConfigHasDynamicMCPResolution reports whether any MCP entry in cfg requires
+// dynamic (runtime) variable resolution. Exported wrapper over the
+// package-private configHasDynamicMCPResolution for the cfgstore component.
+func ConfigHasDynamicMCPResolution(cfg *Config) bool {
+	return configHasDynamicMCPResolution(cfg)
+}
+
+// MCPConfigHasDynamicResolution reports whether a single MCP entry requires
+// dynamic variable resolution. Exported wrapper over the package-private
+// mcpConfigHasDynamicResolution for the cfgstore component.
+func MCPConfigHasDynamicResolution(m MCPConfig) bool {
+	return mcpConfigHasDynamicResolution(m)
+}
+
+// ValidateResponsesTransportWrite validates a responses-transport write before
+// commit. Exported wrapper over the package-private
+// validateResponsesTransportWrite for the cfgstore component.
+func ValidateResponsesTransportWrite(raw []byte, keys []string) error {
+	return validateResponsesTransportWrite(raw, keys)
+}

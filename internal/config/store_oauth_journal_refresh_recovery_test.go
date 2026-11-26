@@ -51,7 +51,7 @@ func TestOAuthJournalRefreshRecovery_ValidUsedBVersusControlA(t *testing.T) {
 				return &c, nil
 			})
 			err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, used, client)
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			assert.NoError(t, err)
 			assert.Equal(t, wantCalls, calls)
 			pc, ok := f.store.Config().Providers.Get(used.ID)
@@ -92,7 +92,7 @@ func TestOAuthJournalRefreshRecovery_ExpiredBCorruptConfigExchanges(t *testing.T
 		return &c, nil
 	})
 	err = f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, client)
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	assert.NoError(t, err)
 	assert.Equal(t, 1, calls)
 	pc, ok := f.store.Config().Providers.Get(f.used.ID)
@@ -108,16 +108,16 @@ func TestOAuthJournalRefreshRecovery_ExpiredBCorruptConfigExchanges(t *testing.T
 	assert.Equal(t, oauthRefreshTokenSHA256(&b), record.PredecessorRefreshTokenSHA256)
 	require.NoError(t, os.WriteFile(f.path, original, 0o600))
 	repaired := newTestConfigStore(testStoreOpts{config: f.store.Config(), globalDataPath: f.path})
-	repaired.workingDir = f.store.workingDir
+	(*repaired.WorkingDirForTest()) = (*f.store.WorkingDirForTest())
 	trackOAuthJournalTestStore(t, repaired)
 	oauthjournal.OAuthJournalBeforeWorker = nil
 	idle := hookOAuthJournalIdle(t, repaired)
-	require.NoError(t, repaired.applyOAuthTokenWithPendingPredecessor(f.used.ID, &c, &c, &b, true))
+	require.NoError(t, repaired.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, &c, &c, &b, true))
 	require.NoError(t, repaired.ReloadFromDisk(context.Background()))
 	pc, ok = repaired.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
 	require.Equal(t, &c, pc.OAuthToken)
-	repaired.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
+	repaired.StartOAuthJournalWorker(ScopeGlobal, f.used.ID)
 	waitOAuthJournalIdle(t, idle)
 	persisted, err := readOAuthJournalDiskToken(f.path, f.used.ID)
 	require.NoError(t, err)
@@ -171,15 +171,15 @@ func TestOAuthJournalRefreshRecovery_ConfigUncertaintyExchangesB(t *testing.T) {
 				assert.NoError(t, ctx.Err())
 				assert.Same(t, client, actual)
 				assert.Equal(t, b.RefreshToken, token)
-				acquired := f.store.diskWriteMu.TryLock()
+				acquired := f.store.DiskWriteMuForTest().TryLock()
 				assert.True(t, acquired)
 				if acquired {
-					f.store.diskWriteMu.Unlock()
+					f.store.DiskWriteMuForTest().Unlock()
 				}
 				return &c, nil
 			})
 			err := f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, client)
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			assert.NoError(t, err)
 			assert.Equal(t, 1, calls)
 			record, err := readOAuthJournal(oauthJournalPath(f.path, f.used.ID))
@@ -225,17 +225,17 @@ func TestOAuthJournalRefreshRecovery_PersistentReadIO(t *testing.T) {
 				err = f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil)
 				assert.Error(t, err)
 			case "worker":
-				done, attemptErr := f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
+				done, attemptErr := f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
 				assert.False(t, done)
 				assert.Error(t, attemptErr)
 			case "load":
-				loaded, loadErr := Load(f.store.workingDir, "", false)
+				loaded, loadErr := Load((*f.store.WorkingDirForTest()), "", false)
 				require.NoError(t, loadErr)
 				trackOAuthJournalTestStore(t, loaded)
-				assert.NotNil(t, loaded.oauthJournal().WorkerFor(f.used.ID))
-				loaded.stopOAuthJournalWorkers()
+				assert.NotNil(t, loaded.OAuthJournal().WorkerFor(f.used.ID))
+				loaded.StopOAuthJournalWorkers()
 			}
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			assert.Positive(t, reads)
 			assert.Zero(t, calls)
 			after, readErr := os.ReadFile(path)
@@ -277,7 +277,7 @@ func TestOAuthJournalRefreshRecovery_TransientReadIO(t *testing.T) {
 		return nil, nil
 	})
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	assert.Equal(t, 3, reads)
 	assert.Equal(t, oauthjournal.OAuthJournalReadBackoffs[:2], waits)
 	assert.Zero(t, calls)
@@ -318,9 +318,9 @@ func TestOAuthJournalRefreshRecovery_WorkerReadIOKeepsScope(t *testing.T) {
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	oauthjournal.OAuthJournalBeforeWorker = nil
 	idle := hookOAuthJournalIdle(t, f.store)
-	f.store.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
+	f.store.StartOAuthJournalWorker(ScopeGlobal, f.used.ID)
 	awaitCodexSignal(t, waiting)
-	worker := f.store.oauthJournal().WorkerFor(f.used.ID)
+	worker := f.store.OAuthJournal().WorkerFor(f.used.ID)
 	require.NotNil(t, worker)
 	assert.NotZero(t, worker.Scopes[ScopeGlobal])
 	// Channel release orders seam repair before the worker's next attempt.
@@ -328,7 +328,7 @@ func TestOAuthJournalRefreshRecovery_WorkerReadIOKeepsScope(t *testing.T) {
 	oauthjournal.OAuthJournalWorkerWait = oldWorkerWait
 	close(resume)
 	waitOAuthJournalIdle(t, idle)
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	assertCodexRefreshTokens(t, f, f.next, f.next)
 	_, err := os.Stat(path)
 	assert.True(t, os.IsNotExist(err))
@@ -340,7 +340,7 @@ func TestOAuthJournalRefreshRecovery_SupersessionSyncFailureRetains(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			f := newOAuthJournalRefreshRecoveryFixture(t)
 			writeOAuthJournalFixture(t, f)
-			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
+			require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
 			disk := f.next
 			switch name {
 			case "later", "tie":
@@ -367,15 +367,15 @@ func TestOAuthJournalRefreshRecovery_SupersessionSyncFailureRetains(t *testing.T
 				configTestHooks.Unlock()
 			})
 			joinOAuthJournalTestStoresBeforeRestore(t)
-			done, attemptErr := f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
+			done, attemptErr := f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
 			assert.False(t, done)
 			assert.Error(t, attemptErr)
 			after, readErr := os.ReadFile(path)
 			assert.NoError(t, readErr)
 			assert.Equal(t, before, after)
-			f.store.publishMu.Lock()
-			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-			f.store.publishMu.Unlock()
+			f.store.PublishMuForTest().Lock()
+			_, pending := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+			f.store.PublishMuForTest().Unlock()
 			assert.True(t, pending)
 		})
 	}

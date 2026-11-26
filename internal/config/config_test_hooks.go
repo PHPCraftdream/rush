@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 )
 
@@ -65,4 +66,14 @@ func runConfigBeforeMCPTargetBindingVerificationHook(target *configWriteTarget) 
 	if hook != nil {
 		hook(target)
 	}
+}
+
+// The store engine (and with it the production MCP admission/write paths)
+// moved to cfgstore; bridge the root test seams into the leaf's hook slots so
+// tests that set configTestHooks keep driving production behavior.
+func init() {
+	cfgstore.SetMCPTargetHooks(
+		func(target *configWriteTarget) { runConfigAfterMCPResolveTargetHook(target) },
+		func(target *configWriteTarget) { runConfigBeforeMCPTargetBindingVerificationHook(target) },
+	)
 }

@@ -22,11 +22,11 @@ const task1292Provider = "fixture-task1292-rotating"
 func task1292Descriptor(t *testing.T, preserve bool, exchange func(context.Context, *http.Client, string) (*oauth.Token, error)) {
 	t.Helper()
 	base := oauthProviderDescriptors()
-	old := oauthProviderDescriptorsOverride
-	oauthProviderDescriptorsOverride = func() []oauthProviderDescriptor {
+	old := *oauthProviderDescriptorsOverride
+	*oauthProviderDescriptorsOverride = func() []oauthProviderDescriptor {
 		return append(append([]oauthProviderDescriptor(nil), base...), oauthcred.NewRotatingDescriptorForTest(task1292Provider, preserve, exchange))
 	}
-	t.Cleanup(func() { oauthProviderDescriptorsOverride = old })
+	t.Cleanup(func() { *oauthProviderDescriptorsOverride = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 }
 
@@ -90,7 +90,7 @@ func task1292Recover(t *testing.T, f codexRefreshFixture) (*oauth.Token, *oauthJ
 	lock, err := acquireConfigFileLock(ctx, path)
 	require.NoError(t, err)
 	defer releaseConfigFileLock(path, lock)
-	return f.store.recoverCodexOAuthJournal(ctx, ScopeGlobal, f.used.ID)
+	return f.store.RecoverCodexOAuthJournal(ctx, ScopeGlobal, f.used.ID)
 }
 
 func TestTask1292Engine_RefreshVariantsAndPolicy(t *testing.T) {
@@ -141,14 +141,15 @@ func TestTask1292Engine_RefreshVariantsAndPolicy(t *testing.T) {
 					require.Empty(t, record.PredecessorRefreshTokenSHA256)
 					require.Empty(t, record.BurnedRefreshTokenSHA256)
 				}
-				f.store.publishMu.Lock()
-				pending, _ := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-				candidate := f.store.loadSnapshot().clone()
-				candidate.config = &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{f.used.ID: f.used})}
-				f.store.overlayPendingOAuthLocked(candidate)
-				f.store.publishMu.Unlock()
+				f.store.PublishMuForTest().Lock()
+				pending, _ := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+				candidate := f.store.LoadSnapshot().Clone()
+				cfgCopy := &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{f.used.ID: f.used})}
+				*candidate.SnapConfigForTest() = cfgCopy
+				f.store.OverlayPendingOAuthLocked(candidate)
+				f.store.PublishMuForTest().Unlock()
 				require.Equal(t, &want, pending.Record.Token)
-				adopted, _ := candidate.config.Providers.Get(f.used.ID)
+				adopted, _ := (*candidate.SnapConfig()).Providers.Get(f.used.ID)
 				require.Equal(t, &want, adopted.OAuthToken, "memory-first overlay retains replacement before config persistence")
 				require.Empty(t, adopted.APIKey)
 				disk, err := readOAuthJournalDiskToken(f.path, f.used.ID)
@@ -215,16 +216,16 @@ func TestTask1292Engine_StartupRecoveryAfterJournalHandoff(t *testing.T) {
 			})
 			require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 			pc, _ := f.store.Config().Providers.Get(f.used.ID)
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			restarted := task1292Store(t, f.path, f.used)
-			restarted.recoverOAuthJournalsAtLoad()
+			restarted.RecoverOAuthJournalsAtLoad()
 			got, _ := restarted.Config().Providers.Get(f.used.ID)
 			require.Equal(t, pc.OAuthToken, got.OAuthToken)
 			require.Empty(t, got.APIKey)
 			require.NoError(t, restarted.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 			require.Equal(t, 1, calls, "startup-recovered token skips exchange")
-			restarted.stopOAuthJournalWorkers()
-			_, err := restarted.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
+			restarted.StopOAuthJournalWorkers()
+			_, err := restarted.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
 			require.NoError(t, err)
 			_, record, err := task1292Recover(t, codexRefreshFixture{store: restarted, path: f.path, used: f.used})
 			require.NoError(t, err)

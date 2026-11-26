@@ -88,21 +88,21 @@ func TestKtavLockSources_GlobalLegacyPathSeesKtavLock(t *testing.T) {
 	legacy := GlobalConfigData()
 	require.Equal(t, filepath.Join(dataDir, "rush.json"), legacy)
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: legacy})
-	s.workingDir = filepath.Join(root, "workspace")
+	(*s.WorkingDirForTest()) = filepath.Join(root, "workspace")
 
 	state, err := s.LockState()
 	require.NoError(t, err)
 	require.True(t, state.Global, "a lock only in the global rush.ktav must be Global")
-	require.True(t, s.anySettingsLockExists())
+	require.True(t, s.AnySettingsLockExists())
 
 	withProcessPassword(t, "wrong")
-	require.ErrorIs(t, SettingsWriteAllowed(s.workingDir), ErrSettingsLocked,
+	require.ErrorIs(t, SettingsWriteAllowed((*s.WorkingDirForTest())), ErrSettingsLocked,
 		"a wrong process password must be refused against a rush.ktav-only global slot")
 	require.ErrorIs(t, CheckPasswordAgainstDisk("wrong"), ErrWrongPassword,
 		"a rush.ktav-only global lock must be SEEN by CheckPasswordAgainstDisk")
 	withProcessPassword(t, "pw")
 	require.NoError(t, CheckPasswordAgainstDisk("pw"))
-	require.NoError(t, SettingsWriteAllowed(s.workingDir))
+	require.NoError(t, SettingsWriteAllowed((*s.WorkingDirForTest())))
 }
 
 // TestKtavLockSources_WorkspaceNaturalSource pins that a lock living only in
@@ -119,7 +119,7 @@ func TestKtavLockSources_WorkspaceNaturalSource(t *testing.T) {
 		"the natural workspace source must resolve to the rush.ktav sibling")
 
 	s := newTestConfigStore(testStoreOpts{config: &Config{}})
-	s.workingDir = work
+	(*s.WorkingDirForTest()) = work
 
 	withProcessPassword(t, "wrong")
 	require.ErrorIs(t, SettingsWriteAllowed(work), ErrSettingsLocked,
@@ -139,12 +139,12 @@ func TestKtavLockSources_CorruptKtavBehindLegacyPath(t *testing.T) {
 		[]byte("k: not a ktav document\nk: not a ktav document\n"), 0o600))
 
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: GlobalConfigData()})
-	s.workingDir = filepath.Join(root, "workspace")
+	(*s.WorkingDirForTest()) = filepath.Join(root, "workspace")
 
 	withProcessPassword(t, "pw")
-	require.ErrorIs(t, SettingsWriteAllowed(s.workingDir), ErrSettingsLocked,
+	require.ErrorIs(t, SettingsWriteAllowed((*s.WorkingDirForTest())), ErrSettingsLocked,
 		"an undecodable protection source must fail closed")
-	require.True(t, s.anySettingsLockExists())
+	require.True(t, s.AnySettingsLockExists())
 }
 
 // TestKtavLockSources_BackupOnlyFailsClosed pins that a global slot holding
@@ -158,13 +158,13 @@ func TestKtavLockSources_BackupOnlyFailsClosed(t *testing.T) {
 		[]byte(`{"anything":true}`), 0o600))
 
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: GlobalConfigData()})
-	s.workingDir = filepath.Join(root, "workspace")
+	(*s.WorkingDirForTest()) = filepath.Join(root, "workspace")
 
 	require.Error(t, CheckPasswordAgainstDisk("pw"),
 		"a backup-only slot must never authenticate as unlocked")
 	require.ErrorIs(t, CheckPasswordAgainstDisk("pw"), ErrSettingsLocked)
 	withProcessPassword(t, "pw")
-	require.ErrorIs(t, SettingsWriteAllowed(s.workingDir), ErrSettingsLocked)
+	require.ErrorIs(t, SettingsWriteAllowed((*s.WorkingDirForTest())), ErrSettingsLocked)
 	_, err := s.LockState()
 	require.Error(t, err)
 }

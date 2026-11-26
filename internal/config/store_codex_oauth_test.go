@@ -35,8 +35,8 @@ func TestRefreshOAuthToken_CodexRotatesAndPreservesAccountWithoutAPIKey(t *testi
 	providers.Set("openai-codex", ProviderConfig{ID: "openai-codex", OAuthToken: oldToken})
 	store := newTestConfigStore(testStoreOpts{config: &Config{Providers: providers}, globalDataPath: configPath})
 
-	originalRefresh := codexRefreshTokenFn
-	codexRefreshTokenFn = func(_ context.Context, _ *http.Client, refreshToken string) (*oauth.Token, error) {
+	originalRefresh := *codexRefreshTokenFn
+	*codexRefreshTokenFn = func(_ context.Context, _ *http.Client, refreshToken string) (*oauth.Token, error) {
 		require.Equal(t, oldToken.RefreshToken, refreshToken)
 		return &oauth.Token{
 			AccessToken:  "codex-new-access",
@@ -45,7 +45,7 @@ func TestRefreshOAuthToken_CodexRotatesAndPreservesAccountWithoutAPIKey(t *testi
 			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		}, nil
 	}
-	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
+	t.Cleanup(func() { *codexRefreshTokenFn = originalRefresh })
 	trackOAuthJournalTestStore(t, store)
 	idle := hookOAuthJournalIdle(t, store)
 
@@ -54,7 +54,7 @@ func TestRefreshOAuthToken_CodexRotatesAndPreservesAccountWithoutAPIKey(t *testi
 		OAuthToken: oldToken,
 	}, nil))
 
-	current, exists := store.loadSnapshot().config.Providers.Get("openai-codex")
+	current, exists := (*store.LoadSnapshot().SnapConfig()).Providers.Get("openai-codex")
 	require.True(t, exists)
 	require.Equal(t, "codex-new-access", current.OAuthToken.AccessToken)
 	require.Equal(t, "codex-rotated-refresh", current.OAuthToken.RefreshToken)

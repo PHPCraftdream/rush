@@ -31,10 +31,10 @@ func TestMCPMutationFenceIgnoresAbsentKtavSibling(t *testing.T) {
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	sibling := normalizeDiscoveryPath(ktavSiblingOf(globalPath))
 	require.NoFileExists(t, sibling)
-	snap := store.loadSnapshot()
-	require.Contains(t, snap.trackedConfigPaths, sibling,
+	snap := store.LoadSnapshot()
+	require.Contains(t, *snap.SnapTrackedConfigPaths(), sibling,
 		"precondition: the absent Ktav sibling must be a tracked path")
-	siblingSnapshot, ok := snap.snapshots[sibling]
+	siblingSnapshot, ok := (*snap.SnapSnapshots())[sibling]
 	require.True(t, ok, "precondition: the absent Ktav sibling must have a snapshot")
 	require.False(t, siblingSnapshot.Exists)
 	require.NotEqual(t, reloadFileFingerprint{}, siblingSnapshot.Fingerprint(),

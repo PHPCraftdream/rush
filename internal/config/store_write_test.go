@@ -27,13 +27,14 @@ func TestNoteInitialLoadWriteUpdatesEquivalentFingerprintAliases(t *testing.T) {
 	oldFingerprint, err := readReloadFingerprint(path)
 	require.NoError(t, err)
 
-	store := &ConfigStore{initialLoadFingerprints: map[string]reloadFileFingerprint{
+	store := &ConfigStore{}
+	*store.InitialLoadFingerprintsForTest() = map[string]reloadFileFingerprint{
 		normalizeDiscoveryPath(path): oldFingerprint,
-	}}
+	}
 	require.NoError(t, os.WriteFile(path, newData, 0o600))
-	store.noteInitialLoadWriteLocked(path, newData)
+	store.NoteInitialLoadWriteLocked(path, newData)
 
-	updated, ok := store.initialLoadFingerprints[normalizeDiscoveryPath(path)]
+	updated, ok := (*store.InitialLoadFingerprintsForTest())[normalizeDiscoveryPath(path)]
 	require.True(t, ok)
 	current, err := readReloadFingerprint(path)
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestConfigStore_ConfigPath_GlobalAlwaysWorks(t *testing.T) {
 		globalDataPath: "/some/global/rush.json",
 	})
 
-	path, err := store.configPath(ScopeGlobal)
+	path, err := store.ConfigPath(ScopeGlobal)
 	require.NoError(t, err)
 	require.Equal(t, "/some/global/rush.json", path)
 }
@@ -59,7 +60,7 @@ func TestConfigStore_ConfigPath_WorkspaceReturnsPath(t *testing.T) {
 		workspacePath: "/some/workspace/.rush/rush.json",
 	})
 
-	path, err := store.configPath(ScopeWorkspace)
+	path, err := store.ConfigPath(ScopeWorkspace)
 	require.NoError(t, err)
 	require.Equal(t, "/some/workspace/.rush/rush.json", path)
 }
@@ -72,7 +73,7 @@ func TestConfigStore_ConfigPath_WorkspaceErrorsWhenEmpty(t *testing.T) {
 		workspacePath:  "",
 	})
 
-	_, err := store.configPath(ScopeWorkspace)
+	_, err := store.ConfigPath(ScopeWorkspace)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrNoWorkspaceConfig))
 }
@@ -145,7 +146,7 @@ func TestSetConfigField_AutoReloads(t *testing.T) {
 	require.False(t, store.Config().Options.Debug)
 
 	// Set globalDataPath and capture snapshot for staleness tracking
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Use SetConfigField to change debug to true
@@ -166,7 +167,7 @@ func TestRemoveConfigField_AutoReloads(t *testing.T) {
 	store, configPath := newWriteReloadFixture(t, `{"options": {"debug": true, "custom_field": "value"}}`)
 
 	// Set globalDataPath and capture snapshot
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Verify the field exists initially (indirectly - store loaded successfully)
@@ -224,7 +225,7 @@ func TestSetConfigFields_AutoReloadsAtomically(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set globalDataPath and capture snapshot.
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Write multiple fields atomically.

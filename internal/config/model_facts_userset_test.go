@@ -44,7 +44,7 @@ func TestConfigureProviders_UserSetsOnlyOneFieldTheOtherStaysUnknown(t *testing.
 		},
 	})
 	envMap := env.NewFromMap(map[string]string{"ZAI_API_KEY": "zai-test-key"})
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, NewShellVariableResolver(envMap), []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, NewShellVariableResolver(envMap), []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get("zai")
 	require.True(t, ok)

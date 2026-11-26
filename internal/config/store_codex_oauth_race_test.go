@@ -72,8 +72,8 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 	}))
 	defer tokenEndpoint.Close()
 
-	originalRefresh := codexRefreshTokenFn
-	codexRefreshTokenFn = func(ctx context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
+	originalRefresh := *codexRefreshTokenFn
+	*codexRefreshTokenFn = func(ctx context.Context, client *http.Client, refreshToken string) (*oauth.Token, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint.URL, strings.NewReader(url.Values{
 			"grant_type":    {"refresh_token"},
 			"refresh_token": {refreshToken},
@@ -93,7 +93,7 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 		}
 		return &token, nil
 	}
-	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
+	t.Cleanup(func() { *codexRefreshTokenFn = originalRefresh })
 	// The fixed stale expiry exceeds the replacement's fixed disk expiry.
 	// Quiesce the worker through cancellation and join before the memory check.
 	// Persisted-state assertions separately catch unintended disk writes.
@@ -141,8 +141,8 @@ func TestRefreshOAuthToken_CodexConcurrentDiskRotationWins(t *testing.T) {
 		t.Fatal("Codex refresh did not reconcile concurrent disk rotation")
 	}
 
-	store.stopOAuthJournalWorkers()
-	current, exists := store.loadSnapshot().config.Providers.Get("openai-codex")
+	store.StopOAuthJournalWorkers()
+	current, exists := (*store.LoadSnapshot().SnapConfig()).Providers.Get("openai-codex")
 	require.True(t, exists)
 	require.Equal(t, replacement.AccessToken, current.OAuthToken.AccessToken)
 	require.Equal(t, replacement.RefreshToken, current.OAuthToken.RefreshToken)

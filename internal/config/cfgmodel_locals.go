@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+
 	"github.com/tidwall/gjson"
 
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
@@ -86,24 +88,7 @@ func modelsIntegritySignature(canonical string) string {
 }
 
 func validateResponsesTransportWrite(raw []byte, keys []string) error {
-	for _, key := range keys {
-		parts := strings.Split(key, ".")
-		touched := key == "options" || key == "options.responses_transport" || strings.HasPrefix(key, "options.responses_transport.") || key == "providers" ||
-			(len(parts) >= 2 && parts[0] == "providers" && (len(parts) == 2 || parts[2] == "responses_transport"))
-		if !touched {
-			continue
-		}
-		var document struct {
-			Options struct {
-				Transport ResponsesTransport `json:"responses_transport"`
-			} `json:"options"`
-			Providers map[string]struct {
-				Transport ResponsesTransport `json:"responses_transport"`
-			} `json:"providers"`
-		}
-		return json.Unmarshal(raw, &document)
-	}
-	return nil
+	return cfgmodel.ValidateResponsesTransportWrite(raw, keys)
 }
 
 // settingsAuditSource maps an authority to the SettingsEvent.Source label.
@@ -160,42 +145,16 @@ var defaultContextPaths = []string{
 	"Agents.md",
 }
 
-// configHasDynamicMCPResolution, mcpConfigHasDynamicResolution and
-// hasCommandSubstitution are byte-identical local copies of the moved
-// cfgmodel helpers (model/config_mcp.go:98,120,131) still called by
-// staying-root init.go, load.go and store.go (closures 15).
+// configHasDynamicMCPResolution and mcpConfigHasDynamicResolution forward to
+// the single cfgmodel source (model/config_mcp.go) so the root and the leaf
+// store engine cannot diverge; hasCommandSubstitution already forwards to
+// internal/kit/shell. Resolution 1 of the s0-w85 duplicate audit.
 func configHasDynamicMCPResolution(cfg *Config) bool {
-	if cfg == nil {
-		return false
-	}
-	for _, m := range cfg.MCP {
-		if mcpConfigHasDynamicResolution(m) {
-			return true
-		}
-	}
-	return false
+	return cfgmodel.ConfigHasDynamicMCPResolution(cfg)
 }
 
 func mcpConfigHasDynamicResolution(m MCPConfig) bool {
-	if hasCommandSubstitution(m.Command) || hasCommandSubstitution(m.URL) {
-		return true
-	}
-	for _, value := range m.Env {
-		if hasCommandSubstitution(value) {
-			return true
-		}
-	}
-	for _, value := range m.Args {
-		if hasCommandSubstitution(value) {
-			return true
-		}
-	}
-	for _, value := range m.Headers {
-		if hasCommandSubstitution(value) {
-			return true
-		}
-	}
-	return false
+	return cfgmodel.MCPConfigHasDynamicResolution(m)
 }
 
 func hasCommandSubstitution(value string) bool {

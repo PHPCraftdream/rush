@@ -24,7 +24,7 @@ func TestLoadNewRushCandidateBetweenReadAndVerificationIsRetried(t *testing.T) {
 	require.NoError(t, err)
 	path := filepath.Join(root, "rush.json")
 	var once sync.Once
-	store.reloadAfterDiskRead = func() {
+	*store.ReloadAfterDiskReadForTest() = func() {
 		once.Do(func() {
 			writeMCPDefinition(t, path, "created-during-reload")
 		})

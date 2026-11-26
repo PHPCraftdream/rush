@@ -28,7 +28,7 @@ func reloadEndpointTestStore(t *testing.T, configJSON string) (*ConfigStore, str
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 	return store, configPath
 }

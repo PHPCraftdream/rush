@@ -234,7 +234,7 @@ func TestWindowsGenericConfigMutationRejectsHardLink(t *testing.T) {
 	require.Greater(t, fingerprint.Nlink, uint64(1))
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: path, config: &Config{Options: &Options{}}})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	err := store.SetConfigField(ScopeGlobal, "options.debug", true)
 	require.ErrorIs(t, err, ErrConfigHardLink)
 	require.Equal(t, contents, mustReadFile(t, path))
@@ -261,7 +261,7 @@ func TestWindowsConfigSymlinkAliasInDifferentDirectoryPublishesToTarget(t *testi
 		config:         &Config{Options: &Options{}},
 		globalDataPath: alias,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	require.NoError(t, store.SetConfigField(ScopeGlobal, "options.debug", true))
 	require.NoError(t, store.PersistMCPConfig(ScopeGlobal, "alias-test", MCPConfig{
 		Type: MCPHttp,
