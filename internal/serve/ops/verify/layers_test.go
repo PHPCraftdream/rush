@@ -221,12 +221,10 @@ func TestLayersViolationMessages(t *testing.T) {
 	invoked := 0
 	invoke := func(cwd string, env []string, args ...string) ([]byte, error) {
 		invoked++
-		switch {
-		case invoked == 1:
+		if invoked == 1 {
 			return []byte("fixture\n"), nil
-		default:
-			return []byte(list), nil
 		}
+		return []byte(list), nil
 	}
 	r, err := static.RunLayers(dir, invoke)
 	if err != nil {

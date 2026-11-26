@@ -15,6 +15,17 @@ import (
 	static "github.com/PHPCraftdream/rush/internal/serve/ops/verify/static"
 )
 
+// The repository's db-release-pairing guard counts these call spellings in
+// every tracked *_test.go, this one included, so the fixtures build them at
+// run time instead of containing them literally.
+const (
+	dbConnect     = "db." + "Connect("
+	dbConnectRead = "db." + "ConnectRead("
+	dbRelease     = "db." + "Release("
+	dbReleaseAll  = "db." + "ReleaseAll("
+	dbReleaseConn = "db." + "ReleaseConn("
+)
+
 func TestDbPairingSeededViolationsThroughCommand(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -25,14 +36,14 @@ func TestDbPairingSeededViolationsThroughCommand(t *testing.T) {
 		{
 			name: "ReleaseConn pairs one Connect",
 			files: map[string][]byte{
-				"src/p_test.go": []byte("package p\n\nfunc f() { db.Connect(ctx, d); db.ReleaseConn(conn) }\n"),
+				"src/p_test.go": []byte("package p\n\nfunc f() { " + dbConnect + "ctx, d); " + dbReleaseConn + "conn) }\n"),
 			},
 			exit: 0,
 		},
 		{
 			name: "one ReleaseConn cannot pair two connections",
 			files: map[string][]byte{
-				"src/p_test.go": []byte("package p\n\nfunc f() { db.Connect(ctx, d); db.ConnectRead(ctx, d); db.ReleaseConn(conn) }\n"),
+				"src/p_test.go": []byte("package p\n\nfunc f() { " + dbConnect + "ctx, d); " + dbConnectRead + "ctx, d); " + dbReleaseConn + "conn) }\n"),
 			},
 			exit:    1,
 			excerpt: "src/p_test.go: 2 db.Connect/ConnectRead call(s), 1 db.Release/ReleaseAll/ReleaseConn call(s)",
@@ -40,7 +51,7 @@ func TestDbPairingSeededViolationsThroughCommand(t *testing.T) {
 		{
 			name: "an unpaired connection fails",
 			files: map[string][]byte{
-				"src/p_test.go": []byte("package p\n\nfunc f() { db.Connect(ctx, d) }\n"),
+				"src/p_test.go": []byte("package p\n\nfunc f() { " + dbConnect + "ctx, d) }\n"),
 			},
 			exit:    1,
 			excerpt: "src/p_test.go: 1 db.Connect/ConnectRead call(s), 0 db.Release/ReleaseAll/ReleaseConn call(s)",
@@ -48,14 +59,14 @@ func TestDbPairingSeededViolationsThroughCommand(t *testing.T) {
 		{
 			name: "a paired connect passes",
 			files: map[string][]byte{
-				"src/p_test.go": []byte("package p\n\nfunc f() { db.ConnectRead(ctx, d); db.Release(d) }\n"),
+				"src/p_test.go": []byte("package p\n\nfunc f() { " + dbConnectRead + "ctx, d); " + dbRelease + "d) }\n"),
 			},
 			exit: 0,
 		},
 		{
 			name: "full-line comments do not count",
 			files: map[string][]byte{
-				"src/p_test.go": []byte("package p\n\n// db.Connect(ctx, d) is explained in prose\nfunc f() { db.Connect(ctx, d); db.ReleaseAll(d) }\n"),
+				"src/p_test.go": []byte("package p\n\n// " + dbConnect + "ctx, d) is explained in prose\nfunc f() { " + dbConnect + "ctx, d); " + dbReleaseAll + "d) }\n"),
 			},
 			exit: 0,
 		},
@@ -141,7 +152,7 @@ func TestDbPairingGrepFailureClasses(t *testing.T) {
 		// exemption, this file's unpaired db.Connect would fail the
 		// guard (proven by the byte-identical non-exempt sibling below,
 		// which the same run flags).
-		unpaired := []byte("package p\n\nfunc f() { db.Connect(ctx, d) }\n")
+		unpaired := []byte("package p\n\nfunc f() { " + dbConnect + "ctx, d) }\n")
 		root := initFixture(t, map[string][]byte{
 			"internal/app/shutdown_result_test.go": unpaired,
 			"other/sibling_test.go":                unpaired,
