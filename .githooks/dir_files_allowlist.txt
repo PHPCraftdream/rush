@@ -90,4 +90,4 @@ internal/serve/server/ws/wsconfig 31
 # The tests spread over their own packages at stage F; deliberate, only down from here.
 # born over the limit (MV3, plan D3); falls at EX lanes
 internal/session/batch/sessionbatch 61
-internal/session/run/sessionrun 58
+internal/session/run/sessionrun 52
