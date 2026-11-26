@@ -53,7 +53,7 @@ Assumed engine contracts (re-verified against merged code):
   - Election CAS semantics come from session.BatchStore:
     BatchAnnounceStarted / BatchAnnounceInlineResult return
     ErrBatchAnnouncementLost to losers, who insert no history
-    (batch_ack.go, batch_inline.go). A real transaction error is a FAILED
+    (batch_delivery_store.go). A real transaction error is a FAILED
     ACK, not a lost election, and is retried a bounded number of times.
   - The settled envelope persists in batch_nodes.response_envelope (R5/R11B,
     batch_commit.go) as the jobbatch envelope; the fantasy.ToolResponse form

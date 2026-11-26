@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/google/uuid"
 )
 
 type BatchStopOwnerTarget struct {
@@ -115,4 +117,22 @@ func (s *BatchStore) BatchAnswerOwnerStop(ctx context.Context, target BatchStopO
 		return err
 	}
 	return tx.Commit()
+}
+
+const psfOwnerStopPrefix = "owner_stop:"
+
+func psfOwnerStopRequestID() string {
+	return psfOwnerStopPrefix + uuid.NewString()
+}
+
+func psfIsOwnerStopRequestID(requestID string) bool {
+	return strings.HasPrefix(requestID, psfOwnerStopPrefix)
+}
+
+func psfOwnerStopSQLPredicate(alias string) string {
+	column := "request_id"
+	if alias != "" {
+		column = alias + ".request_id"
+	}
+	return column + " GLOB '" + psfOwnerStopPrefix + "*'"
 }
