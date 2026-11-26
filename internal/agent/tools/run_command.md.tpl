@@ -22,4 +22,5 @@ Because there is no shell, shell builtins CANNOT run: echo, cd, test, set, expor
 - `working_dir` must stay inside the current working directory.
 - Output is truncated at {{ .MaxOutputLength }} characters.
 - No shell-expansion layer means faster startup than the bash tool on Windows (no MSYS layer).
+- For heavy or shared-resource commands (builds, full test runs, lints), run the program under `rush lock run <name> -- <command>` instead of hand-rolled lock scripts or sleep loops; check holders with `rush lock list`.
 </behavior_notes>

@@ -8,6 +8,7 @@ When batch controls are available, a result ending `started; completions arrive 
 2. When relevant, share file names and code snippets relevant to the query
 3. Any file paths you return in your final response MUST be absolute. DO NOT use relative paths.
 4. Answer only from what you actually found in the files or command output. If it isn't there, say so plainly — never fabricate or guess a path, name, value, or line number. Distinguish what you observed from what you inferred.
+5. Run heavy or shared-resource commands (builds, full test runs, lints) as `rush lock run <name> -- <command>` (check holders with `rush lock list`); never write a shell wrapper, lock directory, flock script or sleep loop for that.
 </rules>
 
 <env>
