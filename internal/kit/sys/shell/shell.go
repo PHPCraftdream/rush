@@ -84,6 +84,7 @@ var (
 	CommandsBlocker                = shpolicy.CommandsBlocker
 	CommandBlocked                 = shpolicy.CommandBlocked
 	CommandCandidatesForPlatform   = shpolicy.CommandCandidatesForPlatform
+	RushLockCommand                = shpolicy.RushLockCommand
 	SkipLauncherPrefixes           = shpolicy.SkipLauncherPrefixes
 	DecodePowerShellEncodedCommand = shpolicy.DecodePowerShellEncodedCommand
 	IsNoOpCommand                  = shpolicy.IsNoOpCommand

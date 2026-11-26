@@ -207,7 +207,104 @@ func literalWord(parts []syntax.WordPart) (string, bool) {
 	return value.String(), true
 }
 
+// RushLockCommand recognizes only the narrowly permitted rush lock forms.
+// A nil payload indicates the inspection-only `lock list` form.
+func RushLockCommand(args []string, windows bool) ([]string, bool) {
+	if len(args) < 3 || canonicalExecutableForPlatform(args[0], windows) != "rush" || args[1] != "lock" {
+		return nil, false
+	}
+	common := func(argv []string) bool {
+		for i := 0; i < len(argv); {
+			if argv[i] != "--cwd" && argv[i] != "--data-dir" || i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "-") {
+				return false
+			}
+			i += 2
+		}
+		return true
+	}
+	runFlags := func(argv []string) bool {
+		for i := 0; i < len(argv); {
+			flag := argv[i]
+			if flag == "--force-safe" {
+				i++
+				continue
+			}
+			switch flag {
+			case "--cwd", "--data-dir", "-c", "-D", "--timeout", "--wait", "--idle", "--on-stuck":
+				if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "-") {
+					return false
+				}
+				i += 2
+				continue
+			}
+			valid := false
+			for _, name := range []string{"--cwd=", "--data-dir=", "--timeout=", "--wait=", "--idle=", "--on-stuck="} {
+				if strings.HasPrefix(flag, name) && len(flag) > len(name) {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return false
+			}
+			i++
+		}
+		return true
+	}
+	switch args[2] {
+	case "list":
+		return nil, common(args[3:])
+	case "run":
+		if len(args) < 5 || args[3] == "" || strings.HasPrefix(args[3], "-") {
+			return nil, false
+		}
+		sep := -1
+		for i := 4; i < len(args); i++ {
+			if args[i] == "--" {
+				sep = i
+				break
+			}
+		}
+		if sep < 0 || sep+1 >= len(args) || !runFlags(args[4:sep]) {
+			return nil, false
+		}
+		return args[sep+1:], true
+	default:
+		return nil, false
+	}
+}
+
 func commandCandidates(args []string, depth int, windows bool) [][]string {
+	if len(args) == 0 {
+		return nil
+	}
+	if depth > 8 {
+		return [][]string{{opaqueCandidate}}
+	}
+	candidates := commandCandidatesStep(args, depth, windows)
+	out := make([][]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	add := func(candidate []string) {
+		key := strings.Join(candidate, "\x00")
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, candidate)
+	}
+	for _, candidate := range candidates {
+		add(candidate)
+		if len(candidate) == 0 || (len(candidate) == 1 && candidate[0] == opaqueCandidate) || equalStrings(candidate, args) {
+			continue
+		}
+		for _, expanded := range commandCandidates(candidate, depth+1, windows) {
+			add(expanded)
+		}
+	}
+	return out
+}
+
+func commandCandidatesStep(args []string, depth int, windows bool) [][]string {
 	if len(args) == 0 {
 		return nil
 	}
@@ -221,6 +318,14 @@ func commandCandidates(args []string, depth int, windows bool) [][]string {
 		return commandCandidates(args[1:], depth, windows)
 	}
 	out := [][]string{append([]string(nil), args...)}
+	if canonicalExecutableForPlatform(args[0], windows) == "rush" {
+		if inner, ok := RushLockCommand(args, windows); ok {
+			if inner == nil {
+				return out
+			}
+			return append(out, commandCandidates(inner, depth+1, windows)...)
+		}
+	}
 	view := unwrapCommand(args, windows)
 	if view.head == "" {
 		return out
