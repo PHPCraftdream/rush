@@ -24,6 +24,7 @@ Common shell builtins and core utils available on Windows.
 {{- if .RgAvailable }}
 - Ripgrep (`rg`) is available; prefer it over `grep` for faster, more intuitive searching
 {{- end }}
+- For heavy or shared-resource commands (builds, full test runs, lints), use `rush lock run <name> -- <command>` instead of hand-rolled lock scripts, lock directories or sleep loops; check holders with `rush lock list`.
 </usage_notes>
 
 <background_execution>
