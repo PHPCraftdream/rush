@@ -520,6 +520,9 @@ unlock|--local||bool|false
 unlock|unlock [password]
 update-providers|--source||string|catwalk
 update-providers|update-providers [path-or-url]
+verify guards|--json||bool|false
+verify guards|guards [path]
+verify|verify
 web|--allow-cleartext||bool|false
 web|--host|H|string|localhost
 web|--no-open||bool|false
