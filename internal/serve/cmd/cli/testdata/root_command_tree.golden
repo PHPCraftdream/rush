@@ -120,6 +120,8 @@ lock|--global||bool|false
 lock|--global||bool|false
 lock|--local||bool|false
 lock|--local||bool|false
+lock|--yes||bool|false
+lock|--yes||bool|false
 lock|lock [password]
 lock|lock [password]
 login|--device||bool|false
