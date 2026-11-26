@@ -491,11 +491,19 @@ func TestCobraIncludesTestsAndDefaultSubdirectory(t *testing.T) {
 		if e = json.Unmarshal(out.Bytes(), &env); e != nil {
 			t.Fatal(e)
 		}
-		if env.Target != root {
+		if !sameDirectory(env.Target, root) {
 			t.Fatalf("target=%s want=%s", env.Target, root)
 		}
-		if len(env.Stages[0].Provenance) == 0 || env.Stages[0].Provenance[0].CWD != sub {
+		if len(env.Stages[0].Provenance) == 0 || !sameDirectory(env.Stages[0].Provenance[0].CWD, sub) {
 			t.Fatalf("subdirectory command cwd lost: %+v", env.Stages[0].Provenance)
 		}
 	})
+}
+
+// sameDirectory compares directories by identity: Windows runners hand out
+// 8.3 short names (RUNNER~1) for the same temporary directory.
+func sameDirectory(a, b string) bool {
+	left, errA := os.Stat(a)
+	right, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(left, right)
 }
