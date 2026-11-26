@@ -48,7 +48,8 @@ func Check(command string) error {
 	if command == "" {
 		return nil
 	}
-	for _, segment := range splitChained(command) {
+	segments := splitChained(command)
+	for _, segment := range segments {
 		if err := checkSegment(segment); err != nil {
 			return err
 		}
@@ -63,7 +64,18 @@ func CheckArgs(args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
+	if isDynamicCommandHead(args[0]) && len(args) > 1 && args[1] == "lock" {
+		return rushDenial(strings.Join(args, " "))
+	}
 	return checkArgvCandidates(args, strings.Join(args, " "))
+}
+
+func rushDenial(snippet string) error {
+	return &DeniedError{
+		Tool:    "rush",
+		Reason:  "AI agent CLI invocation is blocked by rush's architecture (would recurse / multiply cost). Tool: " + deniedAgents["rush"],
+		Snippet: snippet,
+	}
 }
 
 // CommandBlockFunc adapts the agent policy to Rush's runtime shell boundary.
@@ -76,13 +88,24 @@ func CommandBlockFunc() shell.BlockFunc {
 }
 
 func checkArgvCandidates(args []string, snippet string) error {
+	opaque, lockWrapped := false, false
 	for _, candidate := range shell.CommandCandidatesForPlatform(args, true) {
-		if len(candidate) == 0 || strings.HasPrefix(candidate[0], "\x00") {
+		if len(candidate) == 0 {
 			continue
 		}
+		if strings.HasPrefix(candidate[0], "\x00") {
+			opaque = true
+			continue
+		}
+		lockWrapped = lockWrapped || canonicalName(candidate[0]) == "rush"
 		if err := checkArgvCandidate(candidate, snippet); err != nil {
 			return err
 		}
+	}
+	// A lock wrapper whose inner command could not be expanded (depth limit
+	// or a dynamic head) must not be allowed on the strength of its outer form.
+	if opaque && lockWrapped {
+		return rushDenial(snippet)
 	}
 	return nil
 }
@@ -92,6 +115,12 @@ func checkArgvCandidate(args []string, snippet string) error {
 		return nil
 	}
 	head := canonicalName(args[0])
+	if head == "rush" {
+		if _, allowed := shell.RushLockCommand(args, true); allowed {
+			return nil
+		}
+		return rushDenial(snippet)
+	}
 	if head == "&" {
 		return checkArgvCandidates(args[1:], snippet)
 	}
@@ -246,6 +275,9 @@ func checkSegment(segment string) error {
 	if len(tokens) == 0 {
 		return nil
 	}
+	if isDynamicCommandHead(tokens[0]) && len(tokens) > 1 && tokens[1] == "lock" {
+		return rushDenial(segment)
+	}
 	if err := checkArgvCandidates(tokens, segment); err != nil {
 		return err
 	}
@@ -264,6 +296,12 @@ func checkSegment(segment string) error {
 	headCanon := res.headCanon
 	rest := res.rest
 
+	if res.headCanon == "rush" {
+		if _, allowed := shell.RushLockCommand(tokens, true); allowed {
+			return nil
+		}
+		return rushDenial(segment)
+	}
 	// Direct denied agent?
 	if reason, ok := deniedAgents[headCanon]; ok {
 		return &DeniedError{

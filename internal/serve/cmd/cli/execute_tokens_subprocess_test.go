@@ -55,6 +55,8 @@ func TestExecuteTokenExitAndJournal(t *testing.T) {
 		{"not found", []string{"tokens", "show", "deadbeef"}, 4},
 		{"usage error", []string{"tokens", "create", "--name", "x", "--scope", "bogus"}, 2},
 		{"success", []string{"tokens", "list"}, 0},
+		{"verify broken input", []string{"verify", "guards", "", "--json"}, 3},
+		{"lock run child status passes through", []string{"lock", "run", "verify-exit-test", "--", "git", "--definitely-invalid-option"}, 129},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -62,12 +64,17 @@ func TestExecuteTokenExitAndJournal(t *testing.T) {
 			dataDir := filepath.Join(base, "data")
 			configDir := filepath.Join(base, "config")
 			cwd := filepath.Join(base, "cwd")
-			for _, dir := range []string{globalDir, dataDir, configDir, cwd} {
+			tmpDir := filepath.Join(base, "tmp")
+			for _, dir := range []string{globalDir, dataDir, configDir, cwd, tmpDir} {
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
-			argsJSON, err := json.Marshal(tc.args)
+			args := append([]string(nil), tc.args...)
+			if tc.name == "verify broken input" {
+				args[2] = filepath.Join(base, "nonexistent-repo")
+			}
+			argsJSON, err := json.Marshal(args)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -90,6 +97,9 @@ func TestExecuteTokenExitAndJournal(t *testing.T) {
 				"RUSH_GLOBAL_DIR="+globalDir,
 				"RUSH_GLOBAL_DATA="+dataDir,
 				"RUSH_GLOBAL_CONFIG="+configDir,
+				"TMPDIR="+tmpDir,
+				"TMP="+tmpDir,
+				"TEMP="+tmpDir,
 				"XDG_CONFIG_HOME="+filepath.Join(base, "xdg-config"),
 				"XDG_DATA_HOME="+filepath.Join(base, "xdg-data"),
 				"HOME="+filepath.Join(base, "home"),

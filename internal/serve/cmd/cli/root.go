@@ -34,6 +34,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/run"
 	wtree "github.com/PHPCraftdream/rush/internal/serve/cmd/run/wtree"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/sessions"
+	"github.com/PHPCraftdream/rush/internal/serve/ops/verify"
 	"github.com/PHPCraftdream/rush/internal/serve/server/server"
 	rushweb "github.com/PHPCraftdream/rush/web"
 	"github.com/atotto/clipboard"
@@ -283,6 +284,7 @@ authenticate — it is never transmitted as part of the URL.
 		reports.NewRolesCmd(),
 		reports.NewSystemPromptCmd(),
 		web,
+		verify.NewCommand(),
 	)
 	return root
 }

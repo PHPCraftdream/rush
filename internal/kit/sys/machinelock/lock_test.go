@@ -10,11 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/stretchr/testify/require"
 )
 
+func isolateLockEnv(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+}
+
 func TestStaleHolderTakeover(t *testing.T) {
-	t.Parallel()
+	isolateLockEnv(t)
 	name := "dead-holder-" + uniqueSuffix(t)
 	base := lockDir(name)
 	require.NoError(t, os.MkdirAll(base, 0o755))
@@ -27,6 +36,7 @@ func TestStaleHolderTakeover(t *testing.T) {
 }
 
 func TestFIFOConcurrentAcquire(t *testing.T) {
+	isolateLockEnv(t)
 	name := "fifo-" + uniqueSuffix(t)
 	first, err := Acquire(context.Background(), name, Record{Command: "first"}, time.Second)
 	require.NoError(t, err)
@@ -71,7 +81,7 @@ func TestFIFOConcurrentAcquire(t *testing.T) {
 }
 
 func TestRunExitCode(t *testing.T) {
-	t.Parallel()
+	isolateLockEnv(t)
 	var argv []string
 	if runtime.GOOS == "windows" {
 		argv = []string{"cmd", "/c", "exit 3"}
@@ -84,10 +94,17 @@ func TestRunExitCode(t *testing.T) {
 }
 
 func TestStuckReleaseQuarantinesAndLeavesProcess(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-release-" + uniqueSuffix(t)
 	argv := testSleepCommand("")
+	sig := "s" + strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			return r
+		}
+		return -1
+	}, uniqueSuffix(t))
 	if runtime.GOOS == "windows" {
-		argv = []string{"powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 300"}
+		argv = []string{"cmd", "/c", "waitfor /T 60 " + sig + " >NUL 2>&1"}
 	}
 	code, err := RunWithOptions(context.Background(), name, Record{Command: "sleep fixture"}, Options{Wait: time.Second, Idle: 250 * time.Millisecond, OnStuck: StuckRelease}, argv, os.Stdout, os.Stderr)
 	require.NoError(t, err)
@@ -113,6 +130,7 @@ func TestStuckReleaseQuarantinesAndLeavesProcess(t *testing.T) {
 }
 
 func TestStuckDefaultLeavesTreeAndRecordsSnapshot(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-default-" + uniqueSuffix(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 	defer cancel()
@@ -120,8 +138,9 @@ func TestStuckDefaultLeavesTreeAndRecordsSnapshot(t *testing.T) {
 	_, runErr := RunWithOptions(ctx, name, Record{Command: "sleep fixture"}, Options{Wait: time.Second, Idle: 250 * time.Millisecond}, argv, os.Stdout, os.Stderr)
 	require.Error(t, runErr)
 	var holder Record
-	require.NoError(t, readJSON(filepath.Join(lockDir(name), "holder.json"), &holder))
-	require.True(t, holder.Stuck)
+	require.Eventually(t, func() bool {
+		return readJSON(filepath.Join(lockDir(name), "holder.json"), &holder) == nil && holder.Stuck
+	}, time.Second, 20*time.Millisecond)
 	require.Contains(t, holder.Snapshot, "Tree")
 	require.Contains(t, holder.Snapshot, "checkout")
 	require.True(t, processAlive(holder.PID), "default stuck handling must leave the tree running")
@@ -132,13 +151,20 @@ func TestStuckDefaultLeavesTreeAndRecordsSnapshot(t *testing.T) {
 }
 
 func TestStuckStopGracefulThenForce(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-stop-force-" + uniqueSuffix(t)
 	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	require.NoError(t, err)
 	defer stderr.Close()
 	argv := []string{"sh", "-c", "sleep 30 & wait"}
+	sig := "s" + strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			return r
+		}
+		return -1
+	}, uniqueSuffix(t))
 	if runtime.GOOS == "windows" {
-		argv = []string{"cmd", "/c", "ping -n 30 127.0.0.1 >NUL"}
+		argv = []string{"cmd", "/c", "waitfor /T 60 " + sig + " >NUL 2>&1"}
 	}
 	code, runErr := RunWithOptions(context.Background(), name, Record{Command: "stalled process tree"}, Options{Wait: time.Second, Idle: time.Second, Grace: 200 * time.Millisecond, OnStuck: StuckStop, ForceSafe: true}, argv, os.Stdout, stderr)
 	require.NoError(t, runErr)
@@ -148,6 +174,7 @@ func TestStuckStopGracefulThenForce(t *testing.T) {
 }
 
 func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-stop-no-force-" + uniqueSuffix(t)
 	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	require.NoError(t, err)
@@ -155,8 +182,14 @@ func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
 	// The Unix fixture ignores SIGTERM (children inherit the ignore), like a Windows console
 	// program survives a graceful taskkill: only then does the stuck command outlive the stop.
 	argv := []string{"sh", "-c", "trap '' TERM; sleep 30 & wait"}
+	sig := "s" + strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			return r
+		}
+		return -1
+	}, uniqueSuffix(t))
 	if runtime.GOOS == "windows" {
-		argv = []string{"cmd", "/c", "ping -n 30 127.0.0.1 >NUL"}
+		argv = []string{"cmd", "/c", "waitfor /T 60 " + sig + " >NUL 2>&1"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 	defer cancel()
@@ -175,6 +208,7 @@ func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
 }
 
 func TestProgressingTreeNotStuck(t *testing.T) {
+	isolateLockEnv(t)
 	name := "progressing-tree-" + uniqueSuffix(t)
 	progressPath := filepath.Join(os.TempDir(), "rush-progress-"+filepath.Base(t.TempDir()))
 	t.Cleanup(func() { _ = os.Remove(progressPath) })
@@ -223,8 +257,9 @@ func TestProgressingTreeNotStuck(t *testing.T) {
 // The Unix snapshot is built from portable ps: it lists the live tree and says plainly that
 // exit codes of exited children cannot be recovered (a known gap, see the backlog).
 func TestStuckSnapshotShowsProcessTreeUnix(t *testing.T) {
+	isolateLockEnv(t)
 	if runtime.GOOS == "windows" {
-		t.Skipf("tree enumeration not implemented on windows")
+		t.Skipf("unix-specific snapshot format")
 	}
 	name := "stuck-child-exited-" + uniqueSuffix(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Millisecond)
@@ -244,9 +279,152 @@ func TestStuckSnapshotShowsProcessTreeUnix(t *testing.T) {
 	_ = os.Remove(filepath.Join(lockDir(name), "holder.json"))
 }
 
+func TestMachinelockFixtureIdle(t *testing.T) {
+	if !strings.Contains(strings.Join(os.Args, " "), "TestMachinelockFixtureIdle") {
+		t.Skip("fixture only")
+	}
+	if os.Getenv("RUSH_MACHINELock_BUSY_CHILD") == "1" {
+		child := platform.Command(context.Background(), os.Args[0], "-test.run=TestMachinelockFixtureBusy$", "-test.timeout=2m")
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(30 * time.Second)
+}
+
+func TestMachinelockFixtureBusy(t *testing.T) {
+	if !strings.Contains(strings.Join(os.Args, " "), "TestMachinelockFixtureBusy") {
+		t.Skip("fixture only")
+	}
+	var value uint64
+	for i := uint64(0); i < 20_000_000; i++ {
+		value += i
+	}
+	_ = value
+}
+
+func TestTreeProgressDetectsBusyDescendant(t *testing.T) {
+	isolateLockEnv(t)
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only process tree sampling")
+	}
+	cmd := platform.Command(context.Background(), os.Args[0], "-test.run=TestMachinelockFixtureIdle$", "-test.timeout=2m")
+	cmd.Env = append(os.Environ(), "RUSH_MACHINELock_BUSY_CHILD=1")
+	require.NoError(t, cmd.Start())
+	rootPID := cmd.Process.Pid
+	t.Cleanup(func() { forceStopPID(rootPID) })
+	initial := processProgress(rootPID)
+	rootInitial := rootCounterValue(rootPID)
+	var treeDelta, rootDelta uint64
+	require.Eventually(t, func() bool {
+		current := processProgress(rootPID)
+		rootCurrent := rootCounterValue(rootPID)
+		if current > initial {
+			treeDelta = current - initial
+		}
+		if rootCurrent > rootInitial {
+			rootDelta = rootCurrent - rootInitial
+		}
+		return treeDelta > rootDelta
+	}, 8*time.Second, 150*time.Millisecond, "descendant CPU must advance tree-wide progress beyond root-only CPU")
+}
+
+func TestIdleTreeNotProgress(t *testing.T) {
+	isolateLockEnv(t)
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only process tree sampling")
+	}
+	cmd := platform.Command(context.Background(), os.Args[0], "-test.run=TestMachinelockFixtureIdle$", "-test.timeout=2m")
+	cmd.Env = os.Environ()
+	require.NoError(t, cmd.Start())
+	rootPID := cmd.Process.Pid
+	t.Cleanup(func() { forceStopPID(rootPID) })
+	_ = processProgress(rootPID)
+	time.Sleep(3 * time.Second)
+	first := processProgress(rootPID)
+	time.Sleep(700 * time.Millisecond)
+	require.Equal(t, first, processProgress(rootPID), "idle process tree must not report progress")
+}
+
+func TestChildExitIsNotProgressOrRegression(t *testing.T) {
+	isolateLockEnv(t)
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only process tree sampling")
+	}
+	cmd := platform.Command(context.Background(), os.Args[0], "-test.run=TestMachinelockFixtureIdle$", "-test.timeout=2m")
+	cmd.Env = os.Environ()
+	require.NoError(t, cmd.Start())
+	rootPID := cmd.Process.Pid
+	t.Cleanup(func() { forceStopPID(rootPID) })
+	previous := processProgress(rootPID)
+	stable := 0
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && stable < 3 {
+		time.Sleep(300 * time.Millisecond)
+		current := processProgress(rootPID)
+		require.GreaterOrEqual(t, current, previous, "child exit must not decrease the counter")
+		if current == previous {
+			stable++
+		} else {
+			stable = 0
+		}
+		previous = current
+	}
+	require.GreaterOrEqual(t, stable, 3, "tree counter should become stable after the child exits")
+}
+
+func TestListSkipsDeadHolder(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-dead-" + uniqueSuffix(t)
+	base := lockDir(name)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+	holderPath := filepath.Join(base, "holder.json")
+	require.NoError(t, writeJSONExclusive(holderPath, Record{PID: 99999999, Token: "dead", Command: "dead fixture"}))
+
+	entries, err := List()
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.NotEqual(t, filepath.Base(base), entry.Name)
+	}
+}
+
+func TestListShowsLiveHolder(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-live-" + uniqueSuffix(t)
+	h, err := Acquire(context.Background(), name, Record{Command: "live"}, time.Second)
+	require.NoError(t, err)
+	defer h.Release()
+
+	entries, err := List()
+	require.NoError(t, err)
+	found := false
+	for _, entry := range entries {
+		if entry.Holder != nil && entry.Holder.Command == "live" {
+			found = true
+		}
+	}
+	require.True(t, found)
+}
+
+func TestListSkipsQuarantinedDeadTree(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-quarantine-dead-" + uniqueSuffix(t)
+	quarantineDir := filepath.Join(lockDir(name), "quarantine")
+	require.NoError(t, os.MkdirAll(quarantineDir, 0o755))
+	require.NoError(t, writeJSONExclusive(filepath.Join(quarantineDir, "dead.json"), Record{PID: 99999999, Token: "dead-quarantine", Command: "sleep fixture", Quarantined: true}))
+
+	entries, err := List()
+	require.NoError(t, err)
+	for _, entry := range entries {
+		if entry.Name == filepath.Base(lockDir(name)) {
+			require.Empty(t, entry.Quarantined)
+		}
+	}
+}
+
 func testSleepCommand(_ string) []string {
 	if runtime.GOOS == "windows" {
-		return []string{"cmd", "/c", "ping -n 30 127.0.0.1 >NUL"}
+		return []string{os.Args[0], "-test.run=TestMachinelockFixtureIdle$", "-test.timeout=2m"}
 	}
 	return []string{"sh", "-c", "sleep 30"}
 }

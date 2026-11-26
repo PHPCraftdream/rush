@@ -89,7 +89,7 @@ internal/session 9
 internal/session/service 18
 # internal/config/domains/datadir 9 -> 7: the D2-6 tail merged export.go into datadir.go and global_testguard.go into global_dir.go; row retired.
 # born over the limit (MV3, plan D3); falls at EX lanes
-internal/session/batch/sessionbatch 24
+internal/session/batch/sessionbatch 19
 # internal/session/run/sessionrun is born with 12 elements: all 12 run-queue production files move together (lane MV4,
 # amended plan D3: the temporary sessiondrain owner is dropped). It falls to <= 7 when EX7 splits them into the run components.
 internal/session/run/sessionrun 12

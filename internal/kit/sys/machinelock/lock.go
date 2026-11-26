@@ -159,13 +159,14 @@ func List() ([]Entry, error) {
 		}
 		var e Entry
 		e.Name = d.Name()
-		if readJSON(filepath.Join(root, d.Name(), "holder.json"), &e.Holder) != nil {
+		holderPath := filepath.Join(root, d.Name(), "holder.json")
+		if readJSON(holderPath, &e.Holder) != nil || (e.Holder != nil && !processAlive(e.Holder.PID)) {
 			e.Holder = nil
 		}
 		files, _ := os.ReadDir(filepath.Join(root, d.Name(), "quarantine"))
 		for _, f := range files {
 			var r Record
-			if readJSON(filepath.Join(root, d.Name(), "quarantine", f.Name()), &r) == nil {
+			if readJSON(filepath.Join(root, d.Name(), "quarantine", f.Name()), &r) == nil && processAlive(r.PID) {
 				e.Quarantined = append(e.Quarantined, r)
 			}
 		}
