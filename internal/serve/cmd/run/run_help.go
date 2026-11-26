@@ -276,6 +276,7 @@ Lifecycle hooks:
 
 == Git-worktree isolation ==
 Flags: --worktree, --base, --branch; also "rush worktree list" / "rush worktree remove"
+Serialize heavy builds with ` + "`" + `rush lock run` + "`" + ` — do not write wrapper scripts.
 
 Git-worktree isolation:
   --worktree <slug> [--base <ref>] [--branch <name>]

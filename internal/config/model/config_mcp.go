@@ -222,6 +222,10 @@ type RunPermissions struct {
 	// AllowBash lists bash command patterns permitted in restricted run
 	// mode. See the RunPermissions doc comment for the pattern syntax.
 	AllowBash []string `json:"allow_bash,omitempty" jsonschema:"description=Bash command patterns permitted in restricted run mode. Forms: 'cmd args' (word-boundary prefix)\\, 'exact:cmd'\\, 'glob:pat' (only * and ? are special\\, cross-platform)\\, 'regex:pat'. Every form except regex rejects compound commands (chaining\\, backgrounding\\, or substitution)\\, so a permissive pattern cannot smuggle a second command.,example=git diff,example=glob:ls *,example=regex:^go (test|build)"`
+
+	// LockWrap opts matching foreground commands into a machine-wide lock.
+	// Background (&) commands and retained sessions are deliberately not wrapped.
+	LockWrap []string `json:"lock_wrap,omitempty" jsonschema:"description=Optional command patterns to run under a machine-wide lock; off by default. Uses the same syntax as allow_bash; non-matching commands are unchanged and compound commands are never wrapped. Applies only to foreground commands; background (&) commands and retained sessions are never wrapped.,default=false,example=go build,example=exact:go test ./...,example=glob:go build *"`
 }
 
 type TrailerStyle string

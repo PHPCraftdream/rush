@@ -13,13 +13,16 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/PHPCraftdream/rush/internal/app"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/diag/version"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/machinelock"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	journal "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/journal"
 	out "github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit/out"
@@ -282,3 +285,103 @@ func unknownSubcommandError(cmd *cobra.Command, name string) error {
 	}
 	return errors.New(msg)
 }
+
+func addMachineLockCommands(cmd *cobra.Command) {
+	cmd.AddCommand(newLockRunCmd(), newLockListCmd())
+}
+
+func newLockListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List machine-wide locks and stuck-holder diagnostics",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			entries, err := machinelock.List()
+			if err != nil {
+				return err
+			}
+			for _, entry := range entries {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", entry.Name)
+				if h := entry.Holder; h != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "  holder pid=%d age=%s started=%s checkout=%s command=%s\n", h.PID, time.Since(h.StartedAt).Round(time.Second), h.StartedAt.Format(time.RFC3339), h.Checkout, h.Command)
+					if h.Stuck {
+						fmt.Fprintf(cmd.OutOrStdout(), "  STUCK: holder is left running. Inspect/resolve manually; use --on-stuck=release or --on-stuck=stop on the run command.\n%s\n", h.Snapshot)
+					}
+				}
+				for _, h := range entry.Quarantined {
+					fmt.Fprintf(cmd.OutOrStdout(), "  QUARANTINED stuck pid=%d checkout=%s command=%s\n%s\n", h.PID, h.Checkout, h.Command, h.Snapshot)
+				}
+				for _, w := range entry.Waiters {
+					fmt.Fprintf(cmd.OutOrStdout(), "  waiter pid=%d age=%s since=%s command=%s\\n", w.PID, time.Since(w.Since).Round(time.Second), w.Since.Format(time.RFC3339), w.Command)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+type minuteDuration struct{ value *time.Duration }
+
+func (d minuteDuration) String() string {
+	if d.value == nil {
+		return ""
+	}
+	return d.value.String()
+}
+
+func (d minuteDuration) Set(s string) error {
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		if n, parseErr := strconv.ParseInt(s, 10, 64); parseErr == nil {
+			parsed = time.Duration(n) * time.Minute
+		} else {
+			return err
+		}
+	}
+	*d.value = parsed
+	return nil
+}
+func (minuteDuration) Type() string { return "duration" }
+
+func newLockRunCmd() *cobra.Command {
+	var timeout, wait, idle time.Duration
+	var onStuck string
+	var forceSafe bool
+	cmd := &cobra.Command{
+		Use:     "run <name> [--timeout D] [--wait D] [--idle D] [--on-stuck=wait|release|stop] [--force-safe] -- <command...>",
+		Short:   "Run a command under a lock; diagnose stalls without killing by default",
+		Example: "rush lock run go-build -- go build ./...\nrush lock run go-test -- go test ./...\nrush lock run go-vet -- go vet ./...\nrush lock run golangci-lint -- golangci-lint run\n\nSerialize heavy builds with rush lock run — do not write wrapper scripts.",
+		Long:    "`rush lock run` serializes expensive commands across checkouts/worktrees. Examples: `rush lock run go-build -- go build ./...`, `rush lock run go-test -- go test ./...`, `rush lock run go-vet -- go vet ./...`, `rush lock run golangci-lint -- golangci-lint run`. Do not write wrapper scripts. Waiters queue FIFO; holder PID, command line, start time, and checkout are recorded. Stuck is diagnosed from no CPU/I/O progress (default 10m idle), not wall-clock time alone. A diagnostic snapshot is saved to the lock record and printed to waiter stderr before action. Default `--on-stuck=wait` marks stuck, warns about every minute, never kills, and keeps the queue waiting. `release` quarantines the holder and advances the queue while leaving its tree running. `stop` is graceful-first; force termination requires `--force-safe`. `--timeout` is an upper bound triggering this same stuck handling, not a kill deadline. A gone holder tree is taken over without a kill; exit codes pass through. `rush lock list` shows holders/waiters with ages and snapshots. Bare numeric durations are minutes (90 means 90m); defaults: --timeout disabled, --wait 120m, --idle 10m. See `rush lock run --help` for options.",
+		Args:    cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, argv := args[0], args[1:]
+			if len(argv) > 0 && argv[0] == "--" {
+				argv = argv[1:]
+			}
+			if len(argv) == 0 {
+				return fmt.Errorf("command is required")
+			}
+			code, err := machinelock.RunWithOptions(cmd.Context(), name, machinelock.Record{Command: strings.Join(argv, " ")}, machinelock.Options{Wait: wait, Timeout: timeout, Idle: idle, OnStuck: machinelock.StuckAction(onStuck), ForceSafe: forceSafe}, argv, os.Stdout, os.Stderr)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return lockExitError{code: code}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().Var(minuteDuration{&timeout}, "timeout", "Upper bound before stuck handling (0 disables; bare numbers are minutes)")
+	cmd.Flags().Var(minuteDuration{&wait}, "wait", "Maximum lock wait (default 120m; bare numbers are minutes)")
+	cmd.Flags().Var(minuteDuration{&idle}, "idle", "No-progress period before stuck diagnosis (default 10m; bare numbers are minutes)")
+	cmd.Flags().StringVar(&onStuck, "on-stuck", "wait", "Stuck action: wait, release, or stop (default wait)")
+	cmd.Flags().BoolVar(&forceSafe, "force-safe", false, "Declare the command safe for force termination after graceful stop fails")
+	idle = 10 * time.Minute
+	wait = 2 * time.Hour
+	return cmd
+}
+
+type lockExitError struct{ code int }
+
+func (e lockExitError) Error() string { return fmt.Sprintf("command exited with status %d", e.code) }
+func (e lockExitError) ExitCode() int { return e.code }

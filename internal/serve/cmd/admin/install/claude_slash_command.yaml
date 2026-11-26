@@ -32,6 +32,9 @@ blocks:
       | shell hook after the run | `--on-finish "cmd"` (env: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC) |
       | restrict what the run may execute | `permissions.run` in rush.json plus roles only — the per-run permission CLI flags were removed |
 
+      ## Heavy commands and worktree lanes
+      Serialize heavy builds and tests with `rush lock run` (or use automatic wrapping when `permissions.run.lock_wrap` is configured); never write wrapper shell scripts, external lock files, or polling loops. Use `rush run --worktree <slug> --isolated-store` for an isolated lane, read completed output with `rush result <session-id>`, and pass prior findings with `--findings-from <session-id>`.
+
   - common: |-
       ## Fallback when `rush` hits rate limits
   - claude: |-

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/lockwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
@@ -219,6 +221,33 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			commandCtx := runCtx
 			if leaf != nil {
 				commandCtx = context.WithoutCancel(ctx)
+			}
+			if leaf == nil {
+				commandString := RunCommandPermissionsParams(params).RunAllowlistCommand()
+				if wrap, lockName := lockwrap.Decision(lockwrap.CurrentLockWrapPatterns(), commandString, false, false); wrap {
+					fmt.Fprintf(os.Stderr, "wrapped by machine lock %s\n", lockName)
+					startTime := time.Now()
+					stdout, stderr, code, lockErr := lockwrap.RunLockedCommand(runCtx, lockName, commandString, execDir, argv)
+					if lockErr != nil {
+						if errors.Is(lockErr, context.DeadlineExceeded) || runCtx.Err() == context.DeadlineExceeded {
+							text := stdout + stderr
+							if text == "" {
+								text = lockErr.Error()
+							}
+							return fantasy.NewTextErrorResponse(fmt.Sprintf("program %q timed out after %ds and was killed\n%s", params.Program, n, text)), nil
+						}
+						return fantasy.NewTextErrorResponse(fmt.Sprintf("machine lock %s failed: %v", lockName, lockErr)), nil
+					}
+					text := truncateOutput(stdout + stderr)
+					if code != 0 {
+						text += fmt.Sprintf("\nExit code %d", code)
+					}
+					if text == "" {
+						text = BashNoOutput
+					}
+					metadata := RunCommandResponseMetadata{StartTime: startTime.UnixMilli(), EndTime: time.Now().UnixMilli(), Output: text, Description: params.Description, WorkingDirectory: execDir}
+					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(text), metadata), nil
+				}
 			}
 			cmd := platform.Command(commandCtx, params.Program, params.Args...)
 			cmd.Dir = execDir

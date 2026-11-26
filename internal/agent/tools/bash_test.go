@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/safety/lockwrap"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
@@ -474,4 +478,19 @@ func TestBashTool_OnBackgroundCompleteFires(t *testing.T) {
 
 	// Clean up the background shell if it is still tracked.
 	_ = testBackgroundManager.Kill(context.Background(), meta.ShellID)
+}
+
+func TestBashToolRoutesLockWrapExitCode(t *testing.T) {
+	token := strconv.FormatInt(time.Now().UnixNano(), 10)
+	command, wantExit := "false "+token, "Exit code 1"
+	if runtime.GOOS == "windows" {
+		command, wantExit = "cmd /c exit 7 "+token, "Exit code 7"
+	}
+	pattern := "exact:" + command
+	lockwrap.SetLockWrapPatterns([]string{pattern})
+	t.Cleanup(func() { lockwrap.SetLockWrapPatterns(nil) })
+	tool := newBashToolForTest(t.TempDir())
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "lock-wrap-routing-test")
+	resp := runBashTool(t, tool, ctx, BashParams{Command: command})
+	require.Contains(t, resp.Content, wantExit)
 }

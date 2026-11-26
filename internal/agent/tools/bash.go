@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"html/template"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,12 +15,14 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/agentguard"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/lockwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/kit/text/stringext"
+	"mvdan.cc/sh/v3/interp"
 )
 
 type BashParams struct {
@@ -197,6 +200,29 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 				if !p {
 					return NewPermissionDeniedResponse(), nil
+				}
+			}
+
+			// Machine-lock matching foreground commands before the detached-shell
+			// path; retained and explicitly background jobs remain unwrapped.
+			if !params.RunInBackground {
+				if _, retained := ctx.Value(shellLeafKey{}).(ShellLeaf); !retained {
+					if wrap, lockName := lockwrap.Decision(lockwrap.CurrentLockWrapPatterns(), params.Command, false, false); wrap {
+						argv, ok := shell.ParseSimpleCommand(params.Command)
+						if !ok {
+							return fantasy.NewTextErrorResponse("machine lock requires a simple literal command"), nil
+						}
+						fmt.Fprintf(os.Stderr, "wrapped by machine lock %s\n", lockName)
+						startTime := time.Now()
+						stdout, stderr, exitCode, execErr := lockwrap.RunLockedCommand(ctx, lockName, params.Command, execWorkingDir, argv)
+						if execErr != nil {
+							return fantasy.ToolResponse{}, fmt.Errorf("machine lock %s failed: %w", lockName, execErr)
+						}
+						if exitCode != 0 {
+							execErr = interp.ExitStatus(exitCode)
+						}
+						return bashForegroundResponse(startTime, "locked", execWorkingDir, params, stdout, stderr, execErr)
+					}
 				}
 			}
 
