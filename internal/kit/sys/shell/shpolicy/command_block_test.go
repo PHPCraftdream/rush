@@ -330,6 +330,72 @@ func TestCanonicalArgumentBlockersUnwrapCommands(t *testing.T) {
 	}
 }
 
+func TestRushLockRunCandidatesAndCanonicalBlockers(t *testing.T) {
+	args := []string{"rush.exe", "lock", "run", "ci", "--timeout", "10m", "--", "go", "install", "example.invalid/pkg"}
+	candidates := CommandCandidatesForPlatform(args, true)
+	found := false
+	for _, candidate := range candidates {
+		if equalStrings(candidate, []string{"go", "install", "example.invalid/pkg"}) {
+			found = true
+		}
+	}
+	require.True(t, found, "inner argv candidate should be expanded")
+	for _, args := range [][]string{
+		{"rush", "lock", "run", "ci", "--", "go", "install", "x"},
+		{"rush", "lock", "run", "ci", "--", "npm", "install", "--global", "x"},
+		{"rush", "lock", "run", "ci", "--", "go", "test", "-exec", "sh"},
+	} {
+		direct := args[5:]
+		for _, blocker := range CanonicalBlockFuncs() {
+			wrappedBlocked := blocker(args)
+			directBlocked := blocker(direct)
+			require.Equal(t, directBlocked, wrappedBlocked, "wrapped %q should match direct %q", args, direct)
+			if wrappedBlocked {
+				break
+			}
+		}
+		blocked := false
+		for _, blocker := range CanonicalBlockFuncs() {
+			blocked = blocked || blocker(args)
+		}
+		require.True(t, blocked, "%q", args)
+	}
+	compositions := [][]string{
+		{"env", "rush", "lock", "run", "x", "--", "git", "commit"},
+		{"rush", "lock", "run", "x", "--", "env", "git", "commit"},
+		{"nice", "env", "rush", "lock", "run", "x", "--", "rush", "lock", "run", "y", "--", "git", "commit"},
+		{"rush", "lock", "run", "x", "--", "bash", "-c", "git commit -m x"},
+	}
+	for _, wrapped := range compositions {
+		t.Run(strings.Join(wrapped, " "), func(t *testing.T) {
+			candidates := CommandCandidatesForPlatform(wrapped, true)
+			found := false
+			for _, candidate := range candidates {
+				if len(candidate) >= 2 && candidate[0] == "git" && candidate[1] == "commit" {
+					found = true
+				}
+			}
+			require.True(t, found, "git commit must be a candidate: %q", candidates)
+			for _, blocker := range CanonicalBlockFuncs() {
+				require.Equal(t, blocker([]string{"git", "commit"}), blocker(wrapped), "wrapped/direct parity for %q", wrapped)
+			}
+		})
+	}
+	deep := []string{"rush", "lock", "run", "a", "--", "rush", "lock", "run", "b", "--", "rush", "lock", "run", "c", "--", "rush", "lock", "run", "d", "--", "rush", "lock", "run", "e", "--", "rush", "lock", "run", "f", "--", "rush", "lock", "run", "g", "--", "rush", "lock", "run", "h", "--", "rush", "lock", "run", "i", "--", "git", "commit"}
+	deepCandidates := CommandCandidatesForPlatform(deep, true)
+	deepOpaque := false
+	for _, candidate := range deepCandidates {
+		deepOpaque = deepOpaque || isOpaqueCandidate(candidate)
+	}
+	require.True(t, deepOpaque, "depth limit must fail closed")
+	for _, invalid := range [][]string{{"rush", "lock", "run", "ci", "go", "install"}, {"rush", "lock", "run", "ci", "--", "rush", "sessions"}, {"crush", "lock", "run", "ci", "--", "go", "install"}} {
+		candidates := CommandCandidatesForPlatform(invalid, true)
+		for _, candidate := range candidates {
+			require.NotEqual(t, []string{"go", "install"}, candidate)
+		}
+	}
+}
+
 func TestNestedCandidatesFailClosedAtDepthAndOnUnknownSyntax(t *testing.T) {
 	nested := func(depth int, leaf string) []string {
 		quote := func(value string) string {
