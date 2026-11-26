@@ -26,7 +26,7 @@ import (
 )
 
 // Revert-check: removing decidePhase's quota branch starts a root Drain after child completion.
-// Revert-check of the gate: a fixed sleep could finish before the latch under load, dropping the job from finished_work via snapshotQuotaTerminal.
+// The bash gate opens only after the stderr latch line, which is printed after snapshotQuotaTerminal; a time-based release can land before the snapshot and drop the job from finished_work.
 func TestCLIQuotaLiveChildAndBash(t *testing.T) {
 	t.Run("finished", func(t *testing.T) { testCLIQuotaLiveChildAndBash(t, false) })
 	t.Run("question", func(t *testing.T) { testCLIQuotaLiveChildAndBash(t, true) })
@@ -49,14 +49,16 @@ func quotaRetryWait() time.Duration {
 const workMargin = 4 * time.Second
 
 type quotaDiagnosticWriter struct {
-	out    io.Writer
-	record func(string)
+	out     io.Writer
+	record  func(string)
+	latched func()
 }
 
 func (w quotaDiagnosticWriter) Write(p []byte) (int, error) {
 	line := string(p)
 	if strings.Contains(line, "hard provider quota exhausted") {
 		w.record("stderr latch: " + strings.TrimSpace(line))
+		w.latched()
 	}
 	if strings.Contains(line, "database is closed") {
 		w.record("stderr db closed: " + strings.TrimSpace(line))
@@ -81,8 +83,31 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 	}
 	var out syncBuffer
 	origStderr := cliLoopStderr
-	cliLoopStderr = quotaDiagnosticWriter{out: origStderr, record: record}
+	latched := make(chan struct{})
+	var latchOnce sync.Once
+	cliLoopStderr = quotaDiagnosticWriter{out: origStderr, record: record, latched: func() { latchOnce.Do(func() { close(latched) }) }}
 	t.Cleanup(func() { cliLoopStderr = origStderr })
+	// The final 429 completes only when its handler returns, so the latch cannot
+	// be awaited inside the handler: a goroutine opens the gate after the latch line.
+	stopRelease := make(chan struct{})
+	releaseDone := make(chan struct{})
+	go func() {
+		defer close(releaseDone)
+		select {
+		case <-latched:
+		case <-stopRelease:
+			return
+		}
+		if err := os.WriteFile(filepath.FromSlash(marker), []byte("released"), 0o644); err != nil {
+			t.Errorf("write bash gate marker: %v", err)
+			return
+		}
+		record("bash gate marker written")
+	}()
+	t.Cleanup(func() {
+		close(stopRelease)
+		<-releaseDone
+	})
 	var application *App
 	var sid string
 	dumpFailure := func() {
@@ -166,17 +191,6 @@ func testCLIQuotaLiveChildAndBash(t *testing.T, question bool) {
 			quotaResponse(w)
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
-			}
-			if requestNo == 5 {
-				// The final response triggers the quota latch. Releasing the
-				// bash gate only after this delay makes its completion causally
-				// later than the latch, independent of scheduler load.
-				time.Sleep(2 * time.Second)
-				if err := os.WriteFile(filepath.FromSlash(marker), []byte("released"), 0o644); err != nil {
-					t.Errorf("write bash gate marker: %v", err)
-				} else {
-					record("bash gate marker written")
-				}
 			}
 		default:
 			t.Errorf("unexpected own request after quota")
