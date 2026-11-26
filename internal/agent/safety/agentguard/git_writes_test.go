@@ -207,6 +207,7 @@ func TestCheckGitWritesStringRushLockRun(t *testing.T) {
 }
 
 func TestCheckGitWritesCompositions(t *testing.T) {
+	t.Parallel()
 	compositions := [][]string{
 		{"env", "rush", "lock", "run", "x", "--", "git", "commit", "-m", "x"},
 		{"rush", "lock", "run", "x", "--", "env", "git", "commit", "-m", "x"},
