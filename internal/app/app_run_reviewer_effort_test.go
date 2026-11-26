@@ -34,9 +34,18 @@ func TestReviewerPass_RecordsReviewerEffort(t *testing.T) {
 	result, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels())
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
 
-	msgs, err := h.app.Messages.List(context.Background(), sess.ID)
+	parentMsgs, err := h.app.Messages.List(context.Background(), sess.ID)
+	require.NoError(t, err)
+
+	var primaryEffort string
+	for _, m := range parentMsgs {
+		if m.Role == message.Assistant {
+			primaryEffort = m.ReasoningEffort
+		}
+	}
+	msgs, err := h.app.Messages.List(context.Background(), result.ReviewerSessionID)
 	require.NoError(t, err)
 
 	markerAt := -1
@@ -45,22 +54,17 @@ func TestReviewerPass_RecordsReviewerEffort(t *testing.T) {
 			markerAt = i
 		}
 	}
-	require.GreaterOrEqual(t, markerAt, 0, "the reviewer-pass prompt must be in the transcript")
+	require.GreaterOrEqual(t, markerAt, 0, "the reviewer-pass prompt must be in the child transcript")
 
-	var primaryEffort, reviewEffort string
-	var sawPrimary, sawReview bool
-	for i, m := range msgs {
-		if m.Role != message.Assistant {
-			continue
-		}
-		if i > markerAt {
+	var reviewEffort string
+	var sawReview bool
+	for _, m := range msgs {
+		if m.Role == message.Assistant {
 			reviewEffort, sawReview = m.ReasoningEffort, true
-		} else {
-			primaryEffort, sawPrimary = m.ReasoningEffort, true
 		}
 	}
-	require.True(t, sawPrimary && sawReview, "both an executor and a reviewer assistant message are expected")
-	require.Equal(t, "max", reviewEffort, "the review turn must be labelled with the reviewer slot's effort")
+	require.True(t, sawReview, "a reviewer assistant message is expected in the child transcript")
+	require.Equal(t, "max", reviewEffort, "the reviewer child transcript must carry the reviewer slot's effort")
 	// A rush run uses the configured smart slot, which sets no effort; the
 	// session's stored effort is not applied outside web turns.
 	require.Empty(t, primaryEffort, "the primary turn carries the configured smart effort, not the session's")

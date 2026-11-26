@@ -477,7 +477,7 @@ worker-context-sized chunks instead of implementing inline — one file
 or logical change per delegation, with enough standalone context since
 the worker doesn't see the parent conversation.
 
-**Reviewer auto-pass:** when a `reviewer` model is configured and a `--role smart` run finishes cleanly, Rush automatically continues the same session with one read-only reviewer turn. The executor's answer remains `final_text`; the reviewer's conclusion is added in the `review` field and its parsed first line in `review_verdict`. The verdict is advisory and does not change the run's exit code. Runs that failed, were canceled, timed out, or queued are returned unchanged; an explicit `--role reviewer` invocation is never extended.
+**Reviewer auto-pass:** when a `reviewer` model is configured and a `--role smart` run finishes cleanly, Rush runs one read-only reviewer pass in an isolated child session by default. The executor's answer remains `final_text`; the reviewer's conclusion is added in the `review` field and its parsed first line in `review_verdict`. The verdict is advisory and does not change the run's exit code. Runs that failed, were canceled, timed out, or queued are returned unchanged; an explicit `--role reviewer` invocation is never extended. Set `options.reviewer_session_mode` to `legacy` to restore in-session review.
 
 A worker sub-agent can itself call `ask_question` and pause. That does
 **not** end the orchestrator's turn — it surfaces as a normal,

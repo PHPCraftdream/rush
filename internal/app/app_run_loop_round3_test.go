@@ -77,15 +77,12 @@ func (rh *reviewerHarness) reviewerBodies() []string {
 // R3C-1: a smart run with a reviewer whose first turn leaves work owed: the
 // Drain reacts, then the reviewer runs ONCE, at the scope-closed exit, on the
 // final text (the reaction); A10: the verdict lands in the additive review
-// field while final_text stays the executor's answer, with the
-// whole run's usage. Before the fix the last Drain ran the reviewer inside its
-// own Drain context: it found nothing to pull, came back as a "queued" no-turn,
-// the loop dropped it and exited with the FIRST turn's text and usage, the
-// reviewer never having seen the reaction.
+// whole run's usage. The isolated reviewer makes two provider requests (read
+// then verdict) inside one pass; the run still performs exactly one reviewer
+// pass, after the Drain.
 //
-// Revert-check: restoring the old flow (the Drain's ExecuteRun running the
-// reviewer, the loop not running it at its exit) leaves the reviewer with no
-// request that contains the reaction and the verdict is not the answer.
+// Revert-check: restoring the old flow leaves the reviewer without the final
+// reaction text, while skipping the pass omits its verdict.
 func TestRunNonInteractive_ReviewerRunsOnceAfterDrainOnFinalText(t *testing.T) {
 	rh := newReviewerHarness(t, true)
 
@@ -101,9 +98,9 @@ func TestRunNonInteractive_ReviewerRunsOnceAfterDrainOnFinalText(t *testing.T) {
 	require.Contains(t, out, r3ReviewVerdict)
 	require.Contains(t, out, r3ReactionText, "the executor's answer is in the envelope")
 	require.Equal(t, "end_turn", res.ExitReason)
-	require.EqualValues(t, 65, res.Usage.DeltaTokens, "the totals reach the reviewer's turn (session counters are last-snapshot: 14, 40, 65; a dropped reviewer would leave 40)")
+	require.EqualValues(t, 105, res.Usage.DeltaTokens, "the totals include the first turn, Drain, reviewer read and verdict steps")
 	require.False(t, rh.debtOpen())
-	require.EqualValues(t, 3, rh.requests.Load(), "first turn, one Drain, one reviewer turn")
+	require.EqualValues(t, 3, rh.requests.Load(), "first turn, one Drain and one reviewer pass (read plus verdict step)")
 }
 
 // R3C-1 (guard): a Drain iteration never runs the reviewer itself, even when

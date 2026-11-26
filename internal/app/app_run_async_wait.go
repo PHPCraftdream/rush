@@ -26,6 +26,21 @@ import (
 // cliOpenWorkNamed bounds how many running rows one heartbeat line names.
 const cliOpenWorkNamed = 3
 
+// reviewerDue reports that the run ended clean and the automatic reviewer pass
+// is configured and has not run yet: it runs at most once per invocation, as an
+// ordinary turn, when the scope closed (never inside a Drain, R3C-1). Same
+// conditions as the in-ExecuteRun pass of non-loop callers; the loop has no
+// credentials.
+func (l *cliLoop) reviewerDue() bool {
+	return !l.reviewerDone && l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
+		shouldRunReviewerPass(l.overrides.ModelRole, l.env.Config.Config())
+}
+
+func hasNoReplay(err error) bool {
+	var marker interface{ NoReplay() bool }
+	return errors.As(err, &marker) && marker.NoReplay()
+}
+
 // describeOpenWork names what the wait heartbeat is waiting on (ASYNC-10: any
 // "why is it waiting" answer names the concrete task): the session's own
 // running rows -- tool, tool_call_id, the delegated child and the host that

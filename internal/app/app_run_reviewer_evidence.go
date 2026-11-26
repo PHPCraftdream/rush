@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"regexp"
 	"slices"
@@ -80,6 +79,7 @@ type reviewBasis struct {
 	Start      time.Time
 	Prompt     string
 	WorkingDir string
+	BaseHead   string // full commit captured before the run; empty for unborn/unavailable HEAD
 	Before     gitSnapshot
 }
 
@@ -104,10 +104,12 @@ func captureReviewBasis(env RunEnv, ctx context.Context, role config.SelectedMod
 		return nil
 	}
 	dir := env.Config.WorkingDir()
+	baseHead, _ := evidenceGit(ctx, dir, "rev-parse", "HEAD")
 	return &reviewBasis{
 		Start:      start,
 		Prompt:     prompt,
 		WorkingDir: dir,
+		BaseHead:   strings.TrimSpace(baseHead),
 		Before:     readGitSnapshot(ctx, dir),
 	}
 }
@@ -247,26 +249,6 @@ func evidenceNumstatEntry(line string) (path, entry string, ok bool) {
 // prompt, plus the deterministic evidence block when a basis was captured.
 // A nil basis (no reviewer configured, or a call that is not the first turn of
 // a `rush run` loop) returns the prompt alone, byte-identical to before.
-func reviewerTurnPrompt(env RunEnv, ctx context.Context, sessionID string, basis *reviewBasis) string {
-	if basis == nil {
-		return reviewerPassPrompt
-	}
-	msgs, err := env.Messages().List(ctx, sessionID)
-	if err != nil {
-		slog.Warn("run: failed to read the session transcript for the review evidence; the reviewer prompt goes out without it",
-			"session", sessionID, "err", err)
-		return reviewerPassPrompt
-	}
-	sess, err := env.Sessions().Get(ctx, sessionID)
-	if err != nil {
-		slog.Warn("run: failed to read the session row for the review evidence; the reviewer prompt goes out without it",
-			"session", sessionID, "err", err)
-		return reviewerPassPrompt
-	}
-	after := readGitSnapshot(ctx, basis.WorkingDir)
-	return reviewerPassPrompt + "\n\n" + buildReviewEvidence(basis, after, msgs, sess.Todos)
-}
-
 // buildReviewEvidence renders the block. Pure: every input is passed in, so
 // the size-cap behaviour is testable without a repository or a database.
 func buildReviewEvidence(basis *reviewBasis, after gitSnapshot, msgs []message.Message, todos []session.Todo) string {

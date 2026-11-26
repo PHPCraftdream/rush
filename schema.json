@@ -393,6 +393,15 @@
     },
     "Options": {
       "properties": {
+        "reviewer_session_mode": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "legacy"
+          ],
+          "description": "Automatic reviewer session isolation mode",
+          "default": "fresh"
+        },
         "context_paths": {
           "items": {
             "type": "string",

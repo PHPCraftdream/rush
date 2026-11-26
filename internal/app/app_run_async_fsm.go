@@ -320,8 +320,49 @@ func transition(phase cliPhase, ev cliEvent) cliPhase {
 	return phaseExit
 }
 
-// cliStepResult is one phase's outcome: the event for transition and, when the
-// event ends the run, the result and error the run returns.
+func setReviewerResumeSession(result *RunResult, err error, parentID, role string) {
+	var timeoutErr *RunTimeoutError
+	if errors.As(err, &timeoutErr) && timeoutErr.ResumeCommand != "" {
+		timeoutErr.ResumeCommand = fmt.Sprintf("rush run --role %s --session %s", runResumeRole(role), parentID)
+	}
+	if result != nil && result.ResumeCommand != "" {
+		result.ResumeCommand = fmt.Sprintf("rush run --role %s --session %s", runResumeRole(role), parentID)
+	}
+}
+
+func mergeReviewerWarnings(final *RunResult, warnings []string) {
+	if final == nil {
+		return
+	}
+	for _, warning := range warnings {
+		if !slices.Contains(final.Warnings, warning) {
+			final.Warnings = append(final.Warnings, warning)
+		}
+	}
+}
+
+func (l *cliLoop) closeReviewerError(result *RunResult) cliStepResult {
+	l.tot.add(result)
+	if stopErr := l.stopError(); stopErr != nil {
+		final, err := l.exitPrecheck(stopErr)
+		return cliStepResult{ev: evCloseEnded, final: final, err: err}
+	}
+	if l.final != nil {
+		l.final.ReviewVerdict = "error"
+		mergeReviewerWarnings(l.final, result.Warnings)
+	}
+	final, err := l.exit(nil, "")
+	return cliStepResult{ev: evCloseEnded, final: final, err: err}
+}
+
+func (l *cliLoop) closeFreshReviewerFailure(turnErr error) cliStepResult {
+	warning := fmt.Sprintf("reviewer pass failed: %v", turnErr)
+	mergeReviewerWarnings(l.final, []string{warning})
+	l.final.ReviewVerdict = "error"
+	final, err := l.exit(nil, "")
+	return cliStepResult{ev: evCloseEnded, final: final, err: err}
+}
+
 type cliStepResult struct {
 	ev    cliEvent
 	final *RunResult
@@ -582,11 +623,61 @@ func (l *cliLoop) finish(err error) (*RunResult, error) {
 				if shouldRunReviewerPass(l.overrides.ModelRole, l.env.Config.Config()) {
 					review, _, reviewErr := l.runReviewerTurn()
 					l.tot.add(review)
-					if reviewErr == nil && review != nil && l.final != nil {
-						l.host.attachReview(l.ctx, l.final, l.sessionID, review.FinalText, l.errOut())
+					if review != nil {
+						mergeReviewerWarnings(l.final, review.Warnings)
+					}
+					if l.ctx.Err() != nil {
+						if review != nil && reviewErr == nil &&
+							(reviewerSessionMode(l.env.Config.Config()) != "fresh" || review.ReviewerSessionID != "") {
+							mergeReviewerWarnings(l.final, review.Warnings)
+							l.host.attachReview(l.ctx, l.final, reviewResultSessionID(review, l.sessionID), review.FinalText, l.errOut())
+							if review.ReviewVerdict == "error" {
+								l.final.ReviewVerdict = "error"
+							}
+						} else if reviewerSessionMode(l.env.Config.Config()) == "fresh" {
+							failure := reviewErr
+							if failure == nil {
+								failure = errors.New("fresh reviewer pass did not produce a completed reviewer session")
+							}
+							mergeReviewerWarnings(l.final, []string{fmt.Sprintf("reviewer pass failed: %v", failure)})
+							l.final.ReviewVerdict = "error"
+						} else if reviewErr != nil {
+							recordReviewFailure(l.final, l.errOut(), reviewErr)
+						}
+						l.final.ExitReason = "canceled"
+						l.final.Error = l.ctx.Err().Error()
+						err = l.ctx.Err()
 						l.reviewerDone = true
-					} else if reviewErr != nil && l.final != nil {
-						recordReviewFailure(l.final, l.errOut(), reviewErr)
+					} else if review != nil && l.final != nil {
+						for _, warning := range review.Warnings {
+							if !slices.Contains(l.final.Warnings, warning) {
+								l.final.Warnings = append(l.final.Warnings, warning)
+							}
+						}
+					}
+					if l.ctx.Err() == nil && reviewErr == nil && review != nil && l.final != nil {
+						if reviewerSessionMode(l.env.Config.Config()) == "fresh" && review.ReviewVerdict == "error" {
+							l.final.ReviewVerdict = "error"
+							l.reviewerDone = true
+						} else if review.ReviewerSessionID == "" && reviewerSessionMode(l.env.Config.Config()) == "fresh" {
+							l.reviewerDone = true
+						} else {
+							l.host.attachReview(l.ctx, l.final, reviewResultSessionID(review, l.sessionID), review.FinalText, l.errOut())
+							l.reviewerDone = true
+						}
+					}
+					if l.ctx.Err() == nil && reviewErr != nil && l.final != nil {
+						if reviewerSessionMode(l.env.Config.Config()) == "fresh" && (errors.Is(reviewErr, ErrRunQueued) || errors.Is(reviewErr, agent.ErrSessionBusy) || turnRefusedByOwner(reviewErr)) {
+							l.reviewerDone = true
+						} else if reviewerSessionMode(l.env.Config.Config()) == "fresh" {
+							warning := fmt.Sprintf("reviewer pass failed: %v", reviewErr)
+							if !slices.Contains(l.final.Warnings, warning) {
+								l.final.Warnings = append(l.final.Warnings, warning)
+							}
+							l.final.ReviewVerdict = "error"
+						} else {
+							recordReviewFailure(l.final, l.errOut(), reviewErr)
+						}
 						l.reviewerDone = true
 					}
 					// Keep the report turn's buffer authoritative; review output is

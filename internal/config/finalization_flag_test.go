@@ -134,4 +134,16 @@ func TestFinalizationFlagSchemaPinsTag(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), `"FinalizationOptions":`)
 	assert.Contains(t, string(raw), wantDescription)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	defs, ok := schema["$defs"].(map[string]any)
+	require.True(t, ok, "$defs missing or not an object")
+	options, ok := defs["Options"].(map[string]any)
+	require.True(t, ok, "Options definition missing or not an object")
+	properties, ok := options["properties"].(map[string]any)
+	require.True(t, ok, "Options properties missing or not an object")
+	reviewerMode, ok := properties["reviewer_session_mode"].(map[string]any)
+	require.True(t, ok, "reviewer_session_mode property missing or not an object")
+	assert.Equal(t, []any{"fresh", "legacy"}, reviewerMode["enum"])
+	assert.Equal(t, "fresh", reviewerMode["default"])
 }

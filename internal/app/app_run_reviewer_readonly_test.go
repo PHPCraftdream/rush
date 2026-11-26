@@ -89,12 +89,14 @@ func TestReviewerPass_WireOffersOnlyReadTools(t *testing.T) {
 	require.NotNil(t, result)
 
 	sets := h.requestedToolSets()
-	require.Len(t, sets, 2, "the primary turn and exactly one review turn")
-	for _, name := range []string{"bash", "write", "edit", "multiedit", "run_command", "todos", "ask_question", "download", "fetch", "agent", "agentic_fetch", "batch_stop"} {
-		assert.NotContains(t, sets[1], name, "the reviewer turn must not be offered %q on the wire", name)
+	require.Len(t, sets, 3, "the primary turn and the reviewer's read and verdict steps")
+	for _, reviewerSet := range sets[1:] {
+		for _, name := range []string{"bash", "write", "edit", "multiedit", "run_command", "todos", "ask_question", "download", "fetch", "agent", "agentic_fetch", "batch_stop"} {
+			assert.NotContains(t, reviewerSet, name, "reviewer step must not be offered %q on the wire", name)
+		}
+		assert.Contains(t, reviewerSet, "git_read")
+		assert.Contains(t, reviewerSet, "view")
 	}
-	assert.Contains(t, sets[1], "git_read")
-	assert.Contains(t, sets[1], "view")
 	assert.Contains(t, sets[0], "bash", "control: the primary smart turn keeps bash")
 }
 
@@ -132,14 +134,15 @@ func TestReviewerPass_ReadToolRunsWriteDoesNot(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// The three scripted reviewer requests after the one primary request: the
-	// read, the write attempt, the verdict.
+	// Four provider requests: primary plus the reviewer's read, write attempt and verdict.
 	require.Equal(t,
 		[]string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel, reviewerPassReviewerModel},
 		*requests,
-		"the review turn must run exactly the scripted read, write attempt and verdict")
+		"the read, write attempt and verdict run in the reviewer child transcript")
 
-	msgs, err := application.Messages.List(context.Background(), sessID)
+	child, err := application.Sessions.Get(context.Background(), result.ReviewerSessionID)
+	require.NoError(t, err)
+	msgs, err := application.Messages.List(context.Background(), child.ID)
 	require.NoError(t, err)
 
 	var writeResult, viewResult *message.ToolResult

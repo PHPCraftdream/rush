@@ -332,21 +332,6 @@ func (l *cliLoop) turnSink() (buffered *bytes.Buffer, out io.Writer) {
 	return buffered, l.output
 }
 
-// reviewerDue reports that the run ended clean and the automatic reviewer pass
-// is configured and has not run yet: it runs at most once per invocation, as an
-// ordinary turn, when the scope closed (never inside a Drain, R3C-1). Same
-// conditions as the in-ExecuteRun pass of non-loop callers; the loop has no
-// credentials.
-func (l *cliLoop) reviewerDue() bool {
-	return !l.reviewerDone && l.runErr == nil && l.final != nil && l.ctx.Err() == nil &&
-		shouldRunReviewerPass(l.overrides.ModelRole, l.env.Config.Config())
-}
-
-func hasNoReplay(err error) bool {
-	var marker interface{ NoReplay() bool }
-	return errors.As(err, &marker) && marker.NoReplay()
-}
-
 func (l *cliLoop) shouldRecoverEmptyReport(result *RunResult, err error) bool {
 	if result == nil || err == nil || strings.TrimSpace(result.FinalText) != "" || l.reportRetryRemaining <= 0 || !hasNoReplay(err) {
 		return false
@@ -406,6 +391,7 @@ func (l *cliLoop) runReviewerTurn() (*RunResult, *bytes.Buffer, error) {
 		captureResult:     true,
 		loopTurn:          true,
 		reviewerTurn:      true,
+		reviewerReport:    l.final.FinalText,
 		reviewBasis:       l.reviewBasis,
 		onSessionResolved: l.claim,
 	})
@@ -442,7 +428,32 @@ func (l *cliLoop) closePhase() cliStepResult {
 	result, buffered, turnErr := l.runReviewerTurn()
 	switch {
 	case l.ctx.Err() != nil:
-		final, err := l.turnCanceled(result, buffered, turnErr, usageBefore)
+		// A completed reviewer is additive even when cancellation lands at
+		// the exact handoff. Keep the executor's envelope authoritative (A10).
+		l.tot.add(result)
+		if result != nil {
+			mergeReviewerWarnings(l.final, result.Warnings)
+		}
+		if result == nil {
+			l.tot.addSince(usageBefore, l.sessionUsage())
+		} else if (turnErr == nil || runTimeoutCommitted(turnErr)) && (reviewerSessionMode(l.env.Config.Config()) != "fresh" || result.ReviewerSessionID != "") {
+			if l.final != nil {
+				l.host.attachReview(l.ctx, l.final, reviewResultSessionID(result, l.sessionID), result.FinalText, l.errOut())
+			}
+		} else {
+			if turnErr == nil {
+				turnErr = errors.New("fresh reviewer pass did not produce a completed reviewer session")
+			}
+			if reviewerSessionMode(l.env.Config.Config()) == "fresh" {
+				mergeReviewerWarnings(l.final, []string{fmt.Sprintf("reviewer pass failed: %v", turnErr)})
+				if l.final != nil {
+					l.final.ReviewVerdict = "error"
+				}
+			} else if turnErr != nil {
+				recordReviewFailure(l.final, l.errOut(), turnErr)
+			}
+		}
+		final, err := l.exitCanceled()
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	case errors.Is(turnErr, ErrRunQueued):
 		fmt.Fprintf(l.errOut(), "rush run: session %q: the reviewer pass queued behind another owner and did not run\n", l.sessionID)
@@ -456,22 +467,40 @@ func (l *cliLoop) closePhase() cliStepResult {
 		l.queuedMark = &usageBefore
 		final, err := l.exit(l.runErr, "")
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
+	case result != nil && result.ReviewVerdict == "error":
+		return l.closeReviewerError(result)
 	case result == nil:
+		if l.final != nil && reviewerSessionMode(l.env.Config.Config()) == "fresh" {
+			return l.closeFreshReviewerFailure(turnErr)
+		}
 		final, err := l.exit(turnErr, incompleteExitReason(turnErr))
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	default:
 		l.tot.add(result)
 		if turnErr == nil {
+			mergeReviewerWarnings(l.final, result.Warnings)
+			if result.ReviewVerdict == "error" {
+				if l.final != nil {
+					l.final.ReviewVerdict = "error"
+				}
+				l.runErr, l.lastFailed = nil, nil
+				return cliStepResult{ev: evCloseAgain}
+			}
+			if result.ReviewerSessionID == "" && reviewerSessionMode(l.env.Config.Config()) == "fresh" {
+				l.runErr, l.lastFailed = nil, nil
+				return cliStepResult{ev: evCloseAgain}
+			}
 			// A10: the executor's answer stays the run's final_text (and its
 			// terse output stays the printed answer); the reviewer's verdict
 			// is attached as the additive review field.
 			if l.final != nil {
-				l.host.attachReview(l.ctx, l.final, l.sessionID, result.FinalText, l.errOut())
+				l.host.attachReview(l.ctx, l.final, reviewResultSessionID(result, l.sessionID), result.FinalText, l.errOut())
 			}
 			l.runErr, l.lastFailed = nil, nil
 			return cliStepResult{ev: evCloseAgain}
 		}
 		if turnErr != nil && reviewFailureKeepsPrimary(l.ctx, turnErr) {
+			mergeReviewerWarnings(l.final, result.Warnings)
 			// A review turn that failed for a reason of its own (a provider
 			// error, its own timeout) keeps the executor's answer. A pending
 			// operator cancel or a crossed cap beats keeping it (#1227).
@@ -480,7 +509,9 @@ func (l *cliLoop) closePhase() cliStepResult {
 				return cliStepResult{ev: evCloseEnded, final: final, err: err}
 			}
 			l.runErr, l.lastFailed = nil, nil
-			recordReviewFailure(l.final, l.errOut(), turnErr)
+			if reviewerSessionMode(l.env.Config.Config()) != "fresh" || result == nil || result.ReviewVerdict != "error" {
+				recordReviewFailure(l.final, l.errOut(), turnErr)
+			}
 			final, err := l.exit(nil, "")
 			return cliStepResult{ev: evCloseEnded, final: final, err: err}
 		}

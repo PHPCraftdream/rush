@@ -129,7 +129,7 @@ func TestParseReviewVerdict(t *testing.T) {
 // Revert-check: removing the `reviewerToolCalls == 0` downgrade from
 // attachReview turns the "unverified" assertion below back into "pass".
 func TestAttachReview_PassWithoutToolsIsUnverified(t *testing.T) {
-	h := newReviewerPassApp(t, true)
+	h := newReviewerPassAppOpts(t, reviewerPassAppOpts{withReviewer: true, noReviewerToolCall: true})
 	sess := createModelOverrideSession(t, h.app, "reviewer-pass-unverified")
 
 	// The real two-phase run: the stub reviewer answers with plain text and
@@ -138,14 +138,25 @@ func TestAttachReview_PassWithoutToolsIsUnverified(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels(),
-		"the clean smart run must be followed by exactly one review turn")
+		"the reviewer completes in one turn when configured without a tool call")
 	require.Equal(t, reviewerPassPrimaryText, result.FinalText,
 		"A10: the reviewer pass never replaces the executor's own answer")
 
-	// The review turn produced a verdict line and not one read tool, so
-	// folding it in must downgrade the pass.
 	var stderr bytes.Buffer
-	h.app.attachReview(context.Background(), result, sess.ID,
+	// The reviewer output is isolated in a child transcript. Confirm the
+	// child's actual tool-call count is zero before exercising the downgrade.
+	childMsgs, err := h.app.Messages.List(context.Background(), result.ReviewerSessionID)
+	require.NoError(t, err)
+	calls := 0
+	for _, msg := range childMsgs {
+		for _, part := range msg.Parts {
+			if _, ok := part.(message.ToolCall); ok {
+				calls++
+			}
+		}
+	}
+	require.Zero(t, calls)
+	h.app.attachReview(context.Background(), result, result.ReviewerSessionID,
 		"VERDICT: PASS\n\n## Checked myself\nI read the report above and agree with it.\n", &stderr)
 
 	require.Equal(t, "unverified", result.ReviewVerdict,
