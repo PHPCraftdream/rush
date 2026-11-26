@@ -209,9 +209,10 @@ func sizeGuard(name string, all map[string]sourceFile, allow map[string]int, lim
 			}
 		} else if f.lines > limit {
 			message := fmt.Sprintf("OVER %d: %s is %d lines", limit, p, f.lines)
-			if limit == 1000 {
+			switch limit {
+			case 1000:
 				message = fmt.Sprintf("TOO LONG: %s is %d lines", p, f.lines)
-			} else if limit == 900 {
+			case 900:
 				message = fmt.Sprintf("OVER 900: %s is %d lines", p, f.lines)
 			}
 			r.add(message)

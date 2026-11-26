@@ -428,7 +428,7 @@ func TestCobraExitThreeBrokenTargets(t *testing.T) {
 	}{{"malformed", "", goFiles(3), map[string]string{"dir_entries_allowlist.txt": "broken\n"}, false}, {"empty", "", map[string][]byte{}, nil, false}, {"vacuous", "", map[string][]byte{"README.md": []byte("empty\n")}, nil, false}, {"not-git", "", nil, nil, true}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			root := tc.root
+			var root string
 			if !tc.nonGit {
 				root = initFixture(t, tc.files, tc.lists)
 			} else {

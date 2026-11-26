@@ -103,9 +103,8 @@ func Run(ctx context.Context, target string, countTests bool) (Envelope, int, er
 			if errors.As(err, &exit) {
 				p.ExitCode = exit.ExitCode()
 				provenance = append(provenance, p)
-			} else if !errors.Is(err, exec.ErrNotFound) {
-				// Spawn errors are not evidence that the process started.
 			}
+			// A spawn error (for example a missing binary) is not evidence that the process started.
 		} else {
 			p.ExitCode = 0
 			provenance = append(provenance, p)
@@ -162,12 +161,13 @@ func Run(ctx context.Context, target string, countTests bool) (Envelope, int, er
 			code = 3
 		}
 		gc := 0
-		if r.Status == "fail" {
+		switch r.Status {
+		case "fail":
 			gc = 1
 			if code == 0 {
 				code = 1
 			}
-		} else if r.Status == "error" {
+		case "error":
 			gc = 3
 		}
 		stage.Guards = append(stage.Guards, Guard{Name: r.Name, Status: r.Status, DurationMS: r.DurationMS, ExitCode: gc, Directories: r.Directories, Files: r.Files, Violations: r.Violations, Summary: r.Summary, Excerpt: boundedExcerpt(r.Excerpt)})
@@ -179,13 +179,14 @@ func Run(ctx context.Context, target string, countTests bool) (Envelope, int, er
 		}
 	}
 	stage.ExitCode = code
-	if code == 3 {
+	switch code {
+	case 3:
 		stage.Status = "error"
 		stage.Summary = "one or more guards examined no applicable inputs"
-	} else if code == 1 {
+	case 1:
 		stage.Status = "fail"
 		stage.Summary = "one or more guards reported violations"
-	} else {
+	default:
 		stage.Summary = "all four guards passed"
 	}
 	env.OK = code == 0
