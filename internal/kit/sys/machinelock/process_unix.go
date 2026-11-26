@@ -31,6 +31,8 @@ func configureProcess(cmd *exec.Cmd) {
 
 func processCounters(pid int) uint64 { return treeCounter(pid) }
 
+func rootCounterValue(pid int) uint64 { return treeCounter(pid) }
+
 func processSnapshot(pid int, record Record, started time.Time) string {
 	out, err := platform.Command(context.Background(), "ps", "-eo", "pid=,ppid=,stat=,etime=,time=,args=").Output()
 	if err != nil {
