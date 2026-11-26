@@ -188,23 +188,39 @@ func TestGeneratedDetectionOnlyFirstTenLinesAndStaleSizeRatchet(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".githooks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"dir_entries_allowlist.txt", "dir_files_allowlist.txt", "file_size_allowlist.txt", "file_size_900_allowlist.txt"} {
+	for _, name := range []string{"dir_entries_allowlist.txt", "dir_files_allowlist.txt", "file_size_allowlist.txt", "file_size_900_allowlist.txt", "layer_exceptions.txt", "layer_test_exceptions.txt", "pkg_names_allowlist.txt"} {
 		if err := os.WriteFile(filepath.Join(root, ".githooks", name), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	firstBytes := []byte("// Code generated; DO NOT EDIT.\n" + strings.Repeat("x\n", 1000))
-	lateBytes := []byte(strings.Repeat("x\n", 10) + "// Code generated; DO NOT EDIT.\n" + strings.Repeat("x\n", 990))
+	firstBytes := []byte("// Code generated; DO NOT EDIT.\npackage fixture\n" + strings.Repeat("x\n", 999))
+	lateBytes := []byte("package fixture\n" + strings.Repeat("x\n", 10) + "// Code generated; DO NOT EDIT.\n" + strings.Repeat("x\n", 989))
 	if err := os.WriteFile(filepath.Join(root, "first.go"), firstBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "late.go"), lateBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	results, err := Run(root, []string{"first.go", "late.go"}, false)
+	// Restored slice-1 coverage: the fixtures are real files on disk and
+	// the generated detection is exercised end to end through Run (the
+	// toolchain-backed guards get a canned go list / empty git grep).
+	results, err := Run(root, []string{"first.go", "late.go"}, false, func(cwd string, env []string, args ...string) ([]byte, error) {
+		_ = cwd
+		_ = env
+		if args[0] == "go" && args[len(args)-1] == "-m" {
+			return []byte("fixture\n"), nil
+		}
+		if args[0] == "go" {
+			return []byte("{\"ImportPath\":\"fixture\"}\n"), nil
+		}
+		// git grep exit 1: zero db candidates, a legitimate pass.
+		return nil, cannedExit{code: 1}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// results[2] is file-size, results[3] is file-size-900 (slice 1's
+	// indexing; the earlier two-element-slice results[3] bug is gone).
 	if results[2].Status != "fail" || !strings.Contains(results[2].Excerpt, "late.go") {
 		t.Fatalf("marker after ten lines must not exempt source: %+v", results[2])
 	}
@@ -245,11 +261,12 @@ func TestAllowlistCommentsBlankAndDuplicateEntries(t *testing.T) {
 }
 
 func TestStaleAllowlistEntriesDoNotFail(t *testing.T) {
+	// Restored slice-1 coverage: real files on disk through Run.
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".githooks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"dir_entries_allowlist.txt", "dir_files_allowlist.txt", "file_size_allowlist.txt", "file_size_900_allowlist.txt"} {
+	for _, name := range []string{"dir_entries_allowlist.txt", "dir_files_allowlist.txt", "file_size_allowlist.txt", "file_size_900_allowlist.txt", "layer_exceptions.txt", "layer_test_exceptions.txt", "pkg_names_allowlist.txt"} {
 		content := ""
 		if name == "file_size_900_allowlist.txt" {
 			content = "gone.ts 950\n"
@@ -264,11 +281,21 @@ func TestStaleAllowlistEntriesDoNotFail(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "src", "ok.go"), []byte("package fixture\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	results, err := Run(root, []string{"src/ok.go"}, false)
+	results, err := Run(root, []string{"src/ok.go"}, false, func(cwd string, env []string, args ...string) ([]byte, error) {
+		_ = cwd
+		_ = env
+		if args[0] == "go" && args[len(args)-1] == "-m" {
+			return []byte("fixture\n"), nil
+		}
+		if args[0] == "go" {
+			return []byte("{\"ImportPath\":\"fixture/src\"}\n"), nil
+		}
+		return nil, cannedExit{code: 1}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range results {
+	for _, r := range results[:4] {
 		if r.Status != "pass" {
 			t.Errorf("stale allowlist entry caused failure in %s: %+v", r.Name, r)
 		}
@@ -277,6 +304,13 @@ func TestStaleAllowlistEntriesDoNotFail(t *testing.T) {
 		t.Fatalf("stale warning did not identify allowlist entry: %+v", results[3])
 	}
 }
+
+// cannedExit is a hard command failure with a specific exit code, for
+// the stubbed git grep in the restored Run-based tests above.
+type cannedExit struct{ code int }
+
+func (e cannedExit) Error() string { return "exit status" }
+func (e cannedExit) ExitCode() int { return e.code }
 
 func TestMalformedAllowlistAndMissingFilesFailClosed(t *testing.T) {
 	root := t.TempDir()
@@ -288,13 +322,13 @@ func TestMalformedAllowlistAndMissingFilesFailClosed(t *testing.T) {
 		}
 		_ = os.WriteFile(filepath.Join(root, ".githooks", name), data, 0o600)
 	}
-	if _, err := Run(root, []string{"src/a.go"}, false); err == nil {
+	if _, err := Run(root, []string{"src/a.go"}, false, nil); err == nil {
 		t.Fatal("malformed allowlist passed")
 	}
 	if err := os.WriteFile(filepath.Join(root, ".githooks", "dir_entries_allowlist.txt"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(root, []string{"gone.go"}, false); err == nil {
+	if _, err := Run(root, []string{"gone.go"}, false, nil); err == nil {
 		t.Fatal("unreadable tracked file passed")
 	}
 }
