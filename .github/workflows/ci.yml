@@ -83,7 +83,7 @@ jobs:
           fi
           if [ "$directive" = true ] || { [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" = true ]; } || { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; } || { [ "$EVENT" = workflow_dispatch ] && [ "$DISPATCH_FULL" = true ]; }; then echo force_full=true >> "$GITHUB_OUTPUT"; else echo force_full=false >> "$GITHUB_OUTPUT"; fi
       - name: install selector graph dependencies
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: false
@@ -134,7 +134,7 @@ jobs:
         run: |
           python3 -I -m unittest discover -s .github/scripts
           python3 -I -m unittest discover -s .github/ci-shards
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: needs.plan.outputs.heavy_allowed == 'true'
         with:
           go-version-file: go.mod
@@ -297,7 +297,7 @@ jobs:
       - run: git config --global core.autocrlf input
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: false
