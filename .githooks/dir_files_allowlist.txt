@@ -89,5 +89,5 @@ internal/serve/server/ws/wsconfig 31
 # internal/session/run/sessionrun is born over the limit: 12 production files plus 46 moved test files (lane MV4).
 # The tests spread over their own packages at stage F; deliberate, only down from here.
 # born over the limit (MV3, plan D3); falls at EX lanes
-internal/session/batch/sessionbatch 61
+internal/session/batch/sessionbatch 49
 internal/session/run/sessionrun 58
