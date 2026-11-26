@@ -33,6 +33,11 @@ func TestRootCommandTreeGolden(t *testing.T) {
 	sort.Strings(lines)
 	actual := strings.Join(lines, "\n") + "\n"
 	path := filepath.Join("testdata", "root_command_tree.golden")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(path, []byte(actual), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	want, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

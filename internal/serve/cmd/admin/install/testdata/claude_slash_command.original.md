@@ -33,6 +33,9 @@ Map the need to the existing flag/command instead of improvising:
 | shell hook after the run | `--on-finish "cmd"` (env: RUSH_SESSION_ID, RUSH_EXIT_REASON, RUSH_COST_USD, RUSH_TOKENS, RUSH_DURATION_SEC) |
 | restrict what the run may execute | `permissions.run` in rush.json plus roles only — the per-run permission CLI flags were removed |
 
+## Heavy commands and worktree lanes
+Serialize heavy builds and tests with `rush lock run` (or use automatic wrapping when `permissions.run.lock_wrap` is configured); never write wrapper shell scripts, external lock files, or polling loops. Use `rush run --worktree <slug> --isolated-store` for an isolated lane, read completed output with `rush result <session-id>`, and pass prior findings with `--findings-from <session-id>`.
+
 ## Fallback when `rush` hits rate limits
 
 When using Claude, an armed `/rush-fallback <agent>` means switch to that agent immediately and silently on either trigger: peak-hours refusal (match `is in peak hours (` in failed-run stderr or JSON `.error`) or hard limit (weekly/monthly account budget exhausted, suspension, or account quota exceeded without a retry-after in this session). This fallback never authorizes `--allow-peak-hours`; add that flag only when a human explicitly authorizes it in this request.

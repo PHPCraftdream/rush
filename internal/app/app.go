@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/lockwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
@@ -398,6 +399,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, opts ...O
 	sessions := coresession.NewServiceWithWorkspace(q, conn, qRead, readConn, workspaceRoot, workingDir, home)
 	messages := message.NewServiceWithReader(q, qRead)
 	files := history.NewService(q, conn)
+	if cfg.Permissions != nil && cfg.Permissions.Run != nil {
+		lockwrap.SetLockWrapPatterns(cfg.Permissions.Run.LockWrap)
+	} else {
+		lockwrap.SetLockWrapPatterns(nil)
+	}
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
 	var allowedTools []string
 	if cfg.Permissions != nil && cfg.Permissions.AllowedTools != nil {

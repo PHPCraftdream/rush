@@ -236,7 +236,10 @@ authenticate — it is never transmitted as part of the URL.
 	journal.UseJournalRoot(root)
 	out.SetInvocationCommands(root, apiCmd, tokensCmd, serveCmd)
 
+	lock := settingsctl.NewLockCmd()
+	addMachineLockCommands(lock)
 	root.AddCommand(
+		lock,
 		settingsctl.NewLockCmd(),
 		settingsctl.NewUnlockCmd(),
 		run.NewRunCmd(),

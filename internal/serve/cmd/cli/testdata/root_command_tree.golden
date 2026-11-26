@@ -109,8 +109,18 @@ grok-del|grok-del
 grok-init|--global||bool|false
 grok-init|--local||bool|false
 grok-init|grok-init
+lock list|list
+lock run|--force-safe||bool|false
+lock run|--idle||duration|0s
+lock run|--on-stuck||string|wait
+lock run|--timeout||duration|0s
+lock run|--wait||duration|0s
+lock run|run <name> [--timeout D] [--wait D] [--idle D] [--on-stuck=wait|release|stop] [--force-safe] -- <command...>
+lock|--global||bool|false
 lock|--global||bool|false
 lock|--local||bool|false
+lock|--local||bool|false
+lock|lock [password]
 lock|lock [password]
 login|--device||bool|false
 login|--force|f|bool|false
