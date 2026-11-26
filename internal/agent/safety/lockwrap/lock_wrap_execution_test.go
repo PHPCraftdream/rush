@@ -8,7 +8,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func isolateLockEnv(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+}
+
 func TestRunLockedCommandExitCode(t *testing.T) {
+	isolateLockEnv(t)
 	raw, argv := "sh -c \"exit 3\"", []string{"sh", "-c", "exit 3"}
 	if runtime.GOOS == "windows" {
 		raw, argv = "cmd /c exit 3", []string{"cmd", "/c", "exit", "3"}

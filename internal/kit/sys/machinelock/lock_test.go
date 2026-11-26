@@ -13,8 +13,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func isolateLockEnv(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+}
+
 func TestStaleHolderTakeover(t *testing.T) {
-	t.Parallel()
+	isolateLockEnv(t)
 	name := "dead-holder-" + uniqueSuffix(t)
 	base := lockDir(name)
 	require.NoError(t, os.MkdirAll(base, 0o755))
@@ -27,6 +35,7 @@ func TestStaleHolderTakeover(t *testing.T) {
 }
 
 func TestFIFOConcurrentAcquire(t *testing.T) {
+	isolateLockEnv(t)
 	name := "fifo-" + uniqueSuffix(t)
 	first, err := Acquire(context.Background(), name, Record{Command: "first"}, time.Second)
 	require.NoError(t, err)
@@ -71,7 +80,7 @@ func TestFIFOConcurrentAcquire(t *testing.T) {
 }
 
 func TestRunExitCode(t *testing.T) {
-	t.Parallel()
+	isolateLockEnv(t)
 	var argv []string
 	if runtime.GOOS == "windows" {
 		argv = []string{"cmd", "/c", "exit 3"}
@@ -84,6 +93,7 @@ func TestRunExitCode(t *testing.T) {
 }
 
 func TestStuckReleaseQuarantinesAndLeavesProcess(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-release-" + uniqueSuffix(t)
 	argv := testSleepCommand("")
 	if runtime.GOOS == "windows" {
@@ -113,6 +123,7 @@ func TestStuckReleaseQuarantinesAndLeavesProcess(t *testing.T) {
 }
 
 func TestStuckDefaultLeavesTreeAndRecordsSnapshot(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-default-" + uniqueSuffix(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 	defer cancel()
@@ -132,6 +143,7 @@ func TestStuckDefaultLeavesTreeAndRecordsSnapshot(t *testing.T) {
 }
 
 func TestStuckStopGracefulThenForce(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-stop-force-" + uniqueSuffix(t)
 	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	require.NoError(t, err)
@@ -148,6 +160,7 @@ func TestStuckStopGracefulThenForce(t *testing.T) {
 }
 
 func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
+	isolateLockEnv(t)
 	name := "stuck-stop-no-force-" + uniqueSuffix(t)
 	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	require.NoError(t, err)
@@ -175,6 +188,7 @@ func TestStuckStopRefusesForceWithoutForceSafe(t *testing.T) {
 }
 
 func TestProgressingTreeNotStuck(t *testing.T) {
+	isolateLockEnv(t)
 	name := "progressing-tree-" + uniqueSuffix(t)
 	progressPath := filepath.Join(os.TempDir(), "rush-progress-"+filepath.Base(t.TempDir()))
 	t.Cleanup(func() { _ = os.Remove(progressPath) })
@@ -223,6 +237,7 @@ func TestProgressingTreeNotStuck(t *testing.T) {
 // The Unix snapshot is built from portable ps: it lists the live tree and says plainly that
 // exit codes of exited children cannot be recovered (a known gap, see the backlog).
 func TestStuckSnapshotShowsProcessTreeUnix(t *testing.T) {
+	isolateLockEnv(t)
 	if runtime.GOOS == "windows" {
 		t.Skipf("tree enumeration not implemented on windows")
 	}
@@ -242,6 +257,55 @@ func TestStuckSnapshotShowsProcessTreeUnix(t *testing.T) {
 	require.NoError(t, err)
 	_ = proc.Kill()
 	_ = os.Remove(filepath.Join(lockDir(name), "holder.json"))
+}
+
+func TestListSkipsDeadHolder(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-dead-" + uniqueSuffix(t)
+	base := lockDir(name)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+	holderPath := filepath.Join(base, "holder.json")
+	require.NoError(t, writeJSONExclusive(holderPath, Record{PID: 99999999, Token: "dead", Command: "dead fixture"}))
+
+	entries, err := List()
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.NotEqual(t, filepath.Base(base), entry.Name)
+	}
+}
+
+func TestListShowsLiveHolder(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-live-" + uniqueSuffix(t)
+	h, err := Acquire(context.Background(), name, Record{Command: "live"}, time.Second)
+	require.NoError(t, err)
+	defer h.Release()
+
+	entries, err := List()
+	require.NoError(t, err)
+	found := false
+	for _, entry := range entries {
+		if entry.Holder != nil && entry.Holder.Command == "live" {
+			found = true
+		}
+	}
+	require.True(t, found)
+}
+
+func TestListSkipsQuarantinedDeadTree(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-quarantine-dead-" + uniqueSuffix(t)
+	quarantineDir := filepath.Join(lockDir(name), "quarantine")
+	require.NoError(t, os.MkdirAll(quarantineDir, 0o755))
+	require.NoError(t, writeJSONExclusive(filepath.Join(quarantineDir, "dead.json"), Record{PID: 99999999, Token: "dead-quarantine", Command: "sleep fixture", Quarantined: true}))
+
+	entries, err := List()
+	require.NoError(t, err)
+	for _, entry := range entries {
+		if entry.Name == filepath.Base(lockDir(name)) {
+			require.Empty(t, entry.Quarantined)
+		}
+	}
 }
 
 func testSleepCommand(_ string) []string {
