@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
@@ -309,7 +311,7 @@ func (c *subagentsComponent) runSubAgent(ctx context.Context, params subAgentPar
 	// A resumed child starts with a stale `sessions cancel` request spent: the
 	// delegation is a fresh, deliberate turn (R8A-2). A new child has no flag.
 	if params.ResumeSessionID != "" {
-		clearCancelRequest(ctx, c.host.sessions(), session.ID)
+		drainctl.ClearCancelRequest(ctx, c.host.sessions(), session.ID)
 	}
 
 	// Propagate the PARENT session's auto-approve status to this child.

@@ -8,7 +8,7 @@
 //   - terminate_and_wake parity: a projected runner timeout (state
 //     timed_out, cause timeout) commits a selected notice that wakes the
 //     owner and is delivered exactly once through the production formatter
-//     (buildBatchNoticeMessageParams -> FormatAsyncCompletion).
+//     (drainctl.BuildBatchNoticeMessageParams -> FormatAsyncCompletion).
 //   - the wake_only check-in parity: the App-owned BatchTimeoutCheckin
 //     scanner (internal/session/batch_timeout_checkin.go) commits ONE
 //     retained check-in notice per overdue wake_only payload, wakes the
@@ -26,6 +26,8 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
@@ -118,10 +120,10 @@ func TestBatchTimeoutWakeParity_TerminatedNodeCommitsTimeoutNoticeWake(t *testin
 	require.EqualValues(t, 1, node.Wake, "the committed row wakes the owner, like the legacy timed_out transition's wake=1")
 
 	// Pull through the production agent formatter: the batch pull path
-	// reuses FormatAsyncCompletion via buildBatchNoticeMessageParams, keyed
+	// reuses FormatAsyncCompletion via drainctl.BuildBatchNoticeMessageParams, keyed
 	// off row.State == "timed_out", exactly like the legacy job-notice pull.
 	store := session.NewBatchStore(env.conn)
-	pulled, err := store.BatchPullNotices(ctx, env.messages, owner.ID, buildBatchNoticeMessageParams)
+	pulled, err := store.BatchPullNotices(ctx, env.messages, owner.ID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "the timeout notice is delivered on the first pull")
 	require.Equal(t, root, pulled[0].RootID)
@@ -132,7 +134,7 @@ func TestBatchTimeoutWakeParity_TerminatedNodeCommitsTimeoutNoticeWake(t *testin
 	require.NotContains(t, pulled[0].Message.FullText(), "still running", "a TERMINAL timeout notice never uses the wake_only check-in wording")
 
 	// Delivered exactly once: the wake is consumed with the notice.
-	again, err := store.BatchPullNotices(ctx, env.messages, owner.ID, buildBatchNoticeMessageParams)
+	again, err := store.BatchPullNotices(ctx, env.messages, owner.ID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, again, 0, "the second pull is empty: a timeout wake is durable and consumed once")
 	node = batchTimeoutWakeParityChild(t, env.conn, owner.ID, root, child)
@@ -244,12 +246,12 @@ func TestBatchTimeoutWakeParity_WakeOnlyCheckinFiresOnceAndCompletionStillSelect
 			}},
 		}},
 	}))
-	pulled, err := store.BatchPullNotices(ctx, env.messages, owner.ID, buildBatchNoticeMessageParams)
+	pulled, err := store.BatchPullNotices(ctx, env.messages, owner.ID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "the completion notice is delivered on the first pull")
 	require.Equal(t, child, pulled[0].NodeID)
 	require.True(t, pulled[0].Wake, "the completion notice still carries the wake")
-	again, err := store.BatchPullNotices(ctx, env.messages, owner.ID, buildBatchNoticeMessageParams)
+	again, err := store.BatchPullNotices(ctx, env.messages, owner.ID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, again, 0, "the completion notice is selected exactly once")
 }

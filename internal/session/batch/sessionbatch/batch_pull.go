@@ -294,7 +294,7 @@ func (s *BatchStore) batchPullOneNotice(ctx context.Context, messages message.Se
 // CAS, so a read error rolls the whole delivery back and the row stays
 // pending. Everything comes from durable rows; no process-local cache.
 // Only the textual summary is projected: the model-visible async completion
-// formatter is text-only (agent_notice_pull.go buildBatchNoticeMessageParams
+// formatter is text-only (agent_notice_pull.go drainctl.BuildBatchNoticeMessageParams
 // -> coordinator_background.go FormatAsyncCompletion), and today's
 // detached/escaped paths carry text-only results, so a media-only detached
 // result is not reachable.

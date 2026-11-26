@@ -335,7 +335,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 	// so we're already in the "attempted" state.
 	// Phase-4 step 3 (doc sec.3.4's "empty prompt" rule): a Drain call that
 	// reaches here (call.IsDrain && anyWake, checked above) has an empty
-	// Prompt by construction (newDrainCall) -- it must NEVER get a
+	// Prompt by construction (drainctl.NewDrainCall) -- it must NEVER get a
 	// createUserMessage call, which would persist an empty user-role row.
 	// Its reaction is purely to the notice(s) the turn-start pull already
 	// spliced into msgs/history above.
@@ -541,7 +541,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		// With no prompt of its own, the Drain reacts to the notices its
 		// turn-start pull just appended; keep them as the final user
 		// message(s) instead of preparePrompt's trailing todo reminder.
-		history = reminderBeforeTail(history, len(pulledAtStart))
+		history = drainctl.ReminderBeforeTail(history, len(pulledAtStart))
 		last := len(history) - 1
 		if last < 0 || (history[last].Role != fantasy.MessageRoleUser && history[last].Role != fantasy.MessageRoleTool) {
 			nudge := "Continue based on the notice(s) above."
@@ -666,7 +666,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 			stallRetryHistory, stallRetryFiles = a.preparePrompt(persisted, currentSession.Todos, smartModel.Model.Provider(), call.Attachments...)
 			stallRetryReady = true
 			if call.IsDrain && call.Prompt == "" {
-				stallRetryHistory = reminderBeforeTail(stallRetryHistory, len(pulledAtStart))
+				stallRetryHistory = drainctl.ReminderBeforeTail(stallRetryHistory, len(pulledAtStart))
 				last := len(stallRetryHistory) - 1
 				if last < 0 || (stallRetryHistory[last].Role != fantasy.MessageRoleUser && stallRetryHistory[last].Role != fantasy.MessageRoleTool) {
 					nudge := "Continue based on the notice(s) above."

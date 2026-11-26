@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -68,7 +70,7 @@ func TestChildQuestionDebtBreaksAwaitSleepForAnyAndAll(t *testing.T) {
 				require.Equal(t, drainAllow, verdict.Kind, "owner wake re-evaluates the any-mode wait")
 			}
 			pulled, err := NewBatchCutoverNodeFacts(env.store, env.live, env.conn).PullPendingSessionNotices(
-				env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+				env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 			require.NoError(t, err)
 			require.NotEmpty(t, pulled, "the production session-notice pull delivers the child question into history")
 			require.Equal(t, session.NoticeKindChildQuestion, pulled[0].Message.NoticeKind)

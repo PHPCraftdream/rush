@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/stretchr/testify/require"
@@ -60,7 +62,7 @@ func TestCoordinatorBatchStopAnswersPendingAfterNaturalSettlement(t *testing.T) 
 	var rootState string
 	require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT state FROM batch_nodes WHERE root_id=? AND node_id=root_id`, rootID).Scan(&rootState))
 	require.Equal(t, "completed", rootState)
-	pulled, err := env.store.BatchPullNotices(ctx, env.messages, env.sessionID, buildBatchNoticeMessageParams)
+	pulled, err := env.store.BatchPullNotices(ctx, env.messages, env.sessionID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.NotEmpty(t, pulled)
 	debt, err := env.store.BatchReactionVisibleDebtExists(ctx, env.sessionID)

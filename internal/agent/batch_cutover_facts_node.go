@@ -10,6 +10,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
@@ -381,7 +383,7 @@ func (n nodeBatchCutoverFacts) PullBatchNotices(ctx context.Context, messages me
 	if n.store == nil {
 		return nil, errBatchFactsUnavailable
 	}
-	pulled, err := n.store.BatchPullNotices(ctx, messages, owner, buildBatchNoticeMessageParams)
+	pulled, err := n.store.BatchPullNotices(ctx, messages, owner, drainctl.BuildBatchNoticeMessageParams)
 	if err != nil {
 		return nil, err
 	}

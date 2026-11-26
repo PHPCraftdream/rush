@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -134,7 +136,7 @@ func TestWakeSession_BindingLossIsTerminalForEpoch(t *testing.T) {
 	require.Equal(t, "completed", rootTerminalFor(t, env, f.sessID, rootID))
 	// Pull with the OWNER so the completion is VISIBLE/selected debt.
 	require.Eventually(t, func() bool {
-		pulled, err := env.store.BatchPullNotices(env.ctx, env.messages, f.sessID, buildBatchNoticeMessageParams)
+		pulled, err := env.store.BatchPullNotices(env.ctx, env.messages, f.sessID, drainctl.BuildBatchNoticeMessageParams)
 		require.NoError(t, err)
 		return len(pulled) >= 1
 	}, 5*time.Second, 5*time.Millisecond, "the batch pull never delivered the completion for %s", f.sessID)

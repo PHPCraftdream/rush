@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -288,7 +290,7 @@ func (f *attemptFixture) blockReactionsAndSettles(ctx context.Context) {
 
 // drainRun runs one Drain call directly on the agent (one leg).
 func (f *attemptFixture) drainRun(ctx context.Context) (*fantasy.AgentResult, error) {
-	return f.sa.Run(ctx, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
+	return f.sa.Run(ctx, drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID}))
 }
 
 // inRecheckSet reports whether the session sits in the coordinator's

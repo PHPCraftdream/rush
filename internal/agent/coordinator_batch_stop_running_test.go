@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -131,7 +133,7 @@ func TestCoordinatorBatchStopRunningDelegatedChild(t *testing.T) {
 		require.NoError(t, env.conn.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(wake),0) FROM batch_nodes WHERE root_id=? AND notice_selected=1`, rootID).Scan(&selected, &wake))
 		require.GreaterOrEqual(t, selected, 1)
 		require.Zero(t, wake)
-		pulled, err := env.store.BatchPullNotices(ctx, env.messages, child, buildBatchNoticeMessageParams)
+		pulled, err := env.store.BatchPullNotices(ctx, env.messages, child, drainctl.BuildBatchNoticeMessageParams)
 		require.NoError(t, err)
 		require.NotEmpty(t, pulled)
 		debt, err := env.store.BatchReactionVisibleDebtExists(ctx, child)

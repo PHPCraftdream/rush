@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/wakectl"
@@ -160,7 +162,7 @@ func TestCoordinatorHasOpenOnceWakeSchedule(t *testing.T) {
 // BackgroundJobNotice/AutoResumed marking every other wake=1 session
 // notice uses, and not collapsed by the supervision history filter.
 func TestWakeFiredNoticeIsNotAHumanMessage(t *testing.T) {
-	params := buildSessionNoticeMessageParams(sessionnotice.SessionNoticeRow{
+	params := drainctl.BuildSessionNoticeMessageParams(sessionnotice.SessionNoticeRow{
 		ID: 1, Kind: session.NoticeKindWakeFired, Text: "Wake wake_x fired (scheduled for ...): check it",
 	})
 	require.True(t, params.BackgroundJobNotice, "must render as a notice, not a human message")

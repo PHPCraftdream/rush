@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 
 	usagepolicy "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
@@ -705,7 +707,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 		// drives the session -- it reads the flag after the turn, ends the run
 		// canceled and clears it itself (R8A-2).
 		if ts.a.coord == nil || !ts.a.coord.driverHints.isExternalDriver(ts.call.SessionID) {
-			clearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
+			drainctl.ClearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
 		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {
 			cancelFn()

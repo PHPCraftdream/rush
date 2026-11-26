@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -484,7 +486,7 @@ func TestSupervision_AfterTurnPushesDeadline(t *testing.T) {
 	require.NotEqual(t, uint64(1), pushed, "a turn that reached the provider must push the supervision deadline")
 
 	noTurn := &drainAttempt{SessionID: "quiet-root", Outcome: drainNoTurn}
-	sa.afterTurn(newDrainCall(SessionAgentCall{SessionID: "quiet-root"}), noTurn, nil, false)
+	sa.afterTurn(drainctl.NewDrainCall(SessionAgentCall{SessionID: "quiet-root"}), noTurn, nil, false)
 	coord.supervision.mu.Lock()
 	quiet := coord.supervision.byRoot["quiet-root"].generation
 	coord.supervision.mu.Unlock()

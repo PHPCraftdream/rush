@@ -29,7 +29,7 @@ import (
 )
 
 // guardCLICtx tags ctx with the entry channel every `rush run` turn carries.
-// A Drain call's own origin is Unspecified (newDrainCall builds its call from a
+// A Drain call's own origin is Unspecified (drainctl.NewDrainCall builds its call from a
 // bare SessionAgentCall), so without this tag the guard's async leg is off and
 // no wait would ever be refused -- and, worse, the bash tool would take its
 // synchronous branch and BLOCK on the held job. This is the same distinction

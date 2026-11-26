@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -23,12 +25,12 @@ import (
 
 // TestBatchNoticeFormatting_CharacterizesCurrentTerminalWording (2c) pins
 // the CURRENT formatter wording byte-for-byte, via
-// buildBatchNoticeMessageParams -> FormatAsyncCompletion.
+// drainctl.BuildBatchNoticeMessageParams -> FormatAsyncCompletion.
 func TestBatchNoticeFormatting_CharacterizesCurrentTerminalWording(t *testing.T) {
 	t.Parallel()
 
 	one := func(row session.BatchNoticeRow) string {
-		p := buildBatchNoticeMessageParams(row)
+		p := drainctl.BuildBatchNoticeMessageParams(row)
 		require.Len(t, p.Parts, 1)
 		text, ok := p.Parts[0].(message.TextContent)
 		require.True(t, ok)
@@ -41,7 +43,7 @@ func TestBatchNoticeFormatting_CharacterizesCurrentTerminalWording(t *testing.T)
 	// The literal `after 0s` is exactly the assertion W4 flips when
 	// TimeoutSeconds becomes accurate (BatchNoticeRow gains the duration
 	// from the selected task's TimeoutNs and
-	// buildBatchNoticeMessageParams sets TimeoutSeconds); the flip replaces
+	// drainctl.BuildBatchNoticeMessageParams sets TimeoutSeconds); the flip replaces
 	// this literal with e.g. "timed out after 42s". Unlike
 	// batch_timeout_wake_parity_test.go, this does NOT feed
 	// FormatAsyncCompletion the same zero value -- it pins current
@@ -53,7 +55,7 @@ func TestBatchNoticeFormatting_CharacterizesCurrentTerminalWording(t *testing.T)
 	require.Equal(t, "Async job w5-i () was interrupted: its host process ended before the job finished.\n\nboom", interrupted)
 
 	// Characterization, not endorsement: cause=stop sets Stopped before the
-	// Cancelled branch in buildBatchNoticeMessageParams, so the wording is
+	// Cancelled branch in drainctl.BuildBatchNoticeMessageParams, so the wording is
 	// the stopped one; a future reclassification of stop-cause cancellation
 	// flips this literal.
 	cancelled := one(session.BatchNoticeRow{ToolCallID: "w5-c", State: "cancelled", Cause: "stop", OutcomeSummary: "boom"})
@@ -137,14 +139,14 @@ func TestBatchQuestionNotice_ExactDeliveryAndAwaitingCount(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, held, 1, "supervision says the parent is awaiting one answer")
 
-	out, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
+	out, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, out, 1, "the parent sees the exact question ONCE through ordinary notice delivery")
 	text := out[0].Message.FullText()
 	require.Contains(t, text, "[batch-question node="+childNode+" token=", "the marker carries the EXISTING node identity")
 	require.Contains(t, text, "SUB-AGENT QUESTION: continue with plan B?", "the durable question text is delivered verbatim")
 
-	out2, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
+	out2, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, out2, 0, "consumed once")
 

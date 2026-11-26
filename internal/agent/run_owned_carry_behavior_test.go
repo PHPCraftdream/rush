@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -106,7 +108,7 @@ func TestRunOwnedCarryWinnerResultPastRefusedDrainBehavior(t *testing.T) {
 	done := c.runWinner()
 	// The winner's turn is parked on the gate: queue the Drain so the
 	// end-of-turn drainOrReleaseMerged pops it.
-	c.sa.getMailbox(c.sessID).Queue(newDrainCall(SessionAgentCall{SessionID: c.sessID}))
+	c.sa.getMailbox(c.sessID).Queue(drainctl.NewDrainCall(SessionAgentCall{SessionID: c.sessID}))
 	close(c.gate)
 
 	select {

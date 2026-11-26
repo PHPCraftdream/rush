@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -226,7 +228,7 @@ func TestInterruptDuringDrain_OperatorMessageReachesProvider(t *testing.T) {
 		mu.Unlock()
 		emptyReplyResponse(w, r)
 	})
-	replacement := agentcall.CallFromActive(newDrainCall(SessionAgentCall{SessionID: f.sessID, NoticeKind: "supervision"}))
+	replacement := agentcall.CallFromActive(drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID, NoticeKind: "supervision"}))
 	replacement.Prompt = "operator interrupt: please check on this"
 	require.True(t, f.sa.InterruptAndReplace(f.sessID, replacement), "the interrupt reaches the live Drain")
 

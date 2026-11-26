@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
@@ -65,7 +67,7 @@ func seedBatchCompletionDebt(t *testing.T, f *attemptFixture, callID string) (*s
 	snap, err := store.Read(ctx, f.sessID, string(root))
 	require.NoError(t, err)
 	require.Equal(t, "completed", snap.Root.State, "the root has settled before its completion is pulled")
-	pulled, err := store.BatchPullNotices(ctx, f.env.messages, f.sessID, buildBatchNoticeMessageParams)
+	pulled, err := store.BatchPullNotices(ctx, f.env.messages, f.sessID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "the settled root's completion notice is delivered")
 	return store, root
@@ -207,7 +209,7 @@ func TestBatchStopWakeZeroAndRestartNoReactionTurn(t *testing.T) {
 		TitleJoinGrace: 100 * time.Millisecond,
 	}).(*sessionAgent)
 
-	_, runErr := sa2.Run(ctx, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
+	_, runErr := sa2.Run(ctx, drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID}))
 	require.NoError(t, runErr)
 	require.Zero(t, f.requests.Load(), "the restarted drain reaches no provider: the stopped debt has no wake left")
 }

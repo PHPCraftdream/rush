@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
@@ -142,7 +144,7 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		sessions := c.sessions
 		previous := admissionSetupFrom(ctx)
 		ctx = WithAdmissionSetup(ctx, func(ctx context.Context) error {
-			clearCancelRequest(ctx, sessions, sessionID)
+			drainctl.ClearCancelRequest(ctx, sessions, sessionID)
 			// Preserve any setup installed by the caller.
 			if previous != nil {
 				return previous(ctx)

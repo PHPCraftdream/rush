@@ -20,6 +20,8 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -118,11 +120,11 @@ func TestBatchSupervisionNoticeDebt_EligibleCase(t *testing.T) {
 	require.Equal(t, drainAllow, dv.Kind)
 
 	// Pull: exactly one check-in is delivered, once, with its wake bit.
-	pulled, err := coordinatorBatchCutoverFacts(coord).PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
+	pulled, err := coordinatorBatchCutoverFacts(coord).PullPendingSessionNotices(ctx, env.messages, owner.ID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "exactly one check-in is pulled")
 	require.True(t, pulled[0].Wake, "the check-in's wake reaches the owner")
-	pulled2, err := coordinatorBatchCutoverFacts(coord).PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
+	pulled2, err := coordinatorBatchCutoverFacts(coord).PullPendingSessionNotices(ctx, env.messages, owner.ID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled2, 0, "delivered exactly once")
 }
@@ -147,7 +149,7 @@ func TestBatchSupervisionNoticeDebt_ClosedScopeVoidsCheckIn(t *testing.T) {
 
 	live := batchFixtureLiveReader(env.conn, env.workingDir)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(env.conn), live, env.conn)
-	out, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
+	out, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, out, 0, "closed scope voids the check-in instead of delivering it")
 
@@ -202,7 +204,7 @@ func TestBatchSupervisionNoticeDebt_DeliveryFailurePreservesPendingDebt(t *testi
 
 	live := batchFixtureLiveReader(env.conn, env.workingDir)
 	facts := NewBatchCutoverNodeFacts(session.NewBatchStore(env.conn), live, env.conn)
-	out, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, buildSessionNoticeMessageParams)
+	out, err := facts.PullPendingSessionNotices(ctx, env.messages, owner.ID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err, "the pull skips failed rows instead of failing")
 	require.Len(t, out, 0)
 	require.Equal(t, []string{"pending"}, w5NoticeDelivery(t, env.conn, owner.ID))

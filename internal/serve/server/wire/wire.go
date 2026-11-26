@@ -152,7 +152,7 @@ type MessageWire struct {
 // Computed ONLY from structured fields, never message text: Origin,
 // AutoResumed, BackgroundJobNotice and NoticeKind. Every notice the driver
 // pulls into history (agent.buildJobNoticeMessageParams/
-// buildSessionNoticeMessageParams) sets AutoResumed and BackgroundJobNotice,
+// drainctl.BuildSessionNoticeMessageParams) sets AutoResumed and BackgroundJobNotice,
 // and a supervision, timeout or wake-failed one also a NoticeKind, so any of
 // the markers excludes it. The NoticeKind != "" check keeps a future notice
 // kind out without enumerating values here, as long as the pull keeps

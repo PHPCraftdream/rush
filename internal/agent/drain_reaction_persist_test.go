@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -30,7 +32,7 @@ func TestOnStepFinish_CapAbortStepIsARecordedReaction(t *testing.T) {
 	f := newAttemptFixture(t, "cap-abort-reaction", attemptFixtureOpts{noIdle: true})
 	f.seedDebt(ctx, "call-1", false)
 
-	call := newDrainCall(SessionAgentCall{SessionID: f.sessID})
+	call := drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID})
 	call.MaxTokens = 1 // the probe reply reports 7 tokens
 	_, _ = f.sa.Run(ctx, call)
 
@@ -54,7 +56,7 @@ func TestAskQuestion_InDrainTurnIsAReaction(t *testing.T) {
 	})
 	f.seedDebt(ctx, "call-1", false)
 
-	_, err := f.sa.Run(ctx, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
+	_, err := f.sa.Run(ctx, drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID}))
 	var awaiting *AwaitingAnswerError
 	require.True(t, errors.As(err, &awaiting), "the turn ends with the question: %v", err)
 

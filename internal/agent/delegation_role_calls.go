@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -40,7 +42,7 @@ func (c *coordinator) refreshRequestedDelegationCall(ctx context.Context, parent
 	} else if call.CallOptions.RoleContract == nil {
 		call.CallOptions = callOptionsFrom(ctx)
 	}
-	call = applyDrainModelOptions(call, selected.Model)
+	call = drainctl.ApplyDrainModelOptions(call, selected.Model)
 	call.ProviderOptions = modelkit.GetProviderOptions(call.SessionID, selected.Model, selected.Provider)
 	call.RequestedModelSource = selected.Source
 	return call, nil

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -76,7 +78,7 @@ func TestDriverWakePreservesAuthorityAndImmutableCallPolicy(t *testing.T) {
 	require.True(t, ok)
 	require.Same(t, agent, driver.Agent, "wake retains the same driver")
 	require.Equal(t, generation, driver.Generation)
-	wake := newDrainCall(driver.CallFor("completion"))
+	wake := drainctl.NewDrainCall(driver.CallFor("completion"))
 	require.Equal(t, original.LogicalCallID, wake.LogicalCallID)
 	require.Same(t, credentials, wake.Credentials)
 	require.NotNil(t, wake.Tools, "explicit empty tool baseline remains empty")
