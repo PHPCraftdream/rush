@@ -640,7 +640,11 @@ func (l *cliLoop) quotaPhase() cliStepResult {
 	}
 	children := map[string]bool{}
 	for _, row := range rows {
-		if l.quotaTerminalState(row.State) && row.Announced && !l.quota.terminal[row.Key] {
+		// A job that finished during the quota wait exports even when its
+		// root's announcement has not landed yet: the exit would otherwise
+		// drop the result. The latch snapshot excludes jobs terminal at the
+		// latch (see quotaRowExports).
+		if quotaRowExports(row, l.quota.terminal) {
 			l.final.FinishedWork = append(l.final.FinishedWork, FinishedWork{SessionID: row.OwnerSessionID, JobID: row.ToolCallID, State: row.State, Result: row.Result})
 		}
 		if row.ChildSessionID != "" {
@@ -741,14 +745,31 @@ func (l *cliLoop) quotaJobsInTree(ctx context.Context) ([]appbatch.QuotaWorkRow,
 	return l.host.batchFinishedWork(ctx, l.sessionID)
 }
 
-// quotaTerminalState is the terminal predicate: the terminal node state set
+// quotaRowTerminal is the terminal predicate: the terminal node state set
 // (a pending/starting/cancelling node is not finished).
-func (l *cliLoop) quotaTerminalState(state string) bool {
+func quotaRowTerminal(state string) bool {
 	switch state {
 	case "completed", "failed", "cancelled", "timed_out", "interrupted", "skipped":
 		return true
 	}
 	return false
+}
+
+// quotaRowExports is the finished-work export predicate of the quota exit:
+// the row is terminal now and was not already terminal at the quota latch
+// (terminalAtLatch dedupes on the root/node key). The root's announced flag
+// is deliberately NOT required: a root created from a model tool call has
+// its announcement set by an asynchronous step, which is not guaranteed to
+// have landed when the pending-question exit fires (CI dump: the bash root
+// was completed with announced=false, and the envelope was written about
+// 0.3 s before that dump).
+func quotaRowExports(row appbatch.QuotaWorkRow, terminalAtLatch map[string]bool) bool {
+	return quotaRowTerminal(row.State) && !terminalAtLatch[row.Key]
+}
+
+// quotaTerminalState is the loop's view of quotaRowTerminal.
+func (l *cliLoop) quotaTerminalState(state string) bool {
+	return quotaRowTerminal(state)
 }
 
 func (l *cliLoop) resumeRole() string {
