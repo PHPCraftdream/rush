@@ -21,13 +21,10 @@ import (
 const evidenceBlockOpen = "review_evidence trust="
 
 // TestReviewerPass_ReviewRequestCarriesTheEvidenceBlock runs a --role smart
-// run with a reviewer configured and reads the two provider requests: the
-// primary turn must not carry the block, the review turn must, with the
-// original request in it.
+// run and confirms the fresh package's computed-change and original-request sections.
 //
-// Revert-check: make captureReviewBasis return nil (the basis is never
-// captured): reviewerTurnPrompt then sends the bare prompt and this test goes
-// red on the review request.
+// Revert-check: removing the fresh package's computed changes or original
+// prompt section leaves the child transcript without independent evidence.
 func TestReviewerPass_ReviewRequestCarriesTheEvidenceBlock(t *testing.T) {
 	h := newReviewerPassAppOpts(t, reviewerPassAppOpts{withReviewer: true})
 	sess := createModelOverrideSession(t, h.app, "reviewer-evidence-wire")
@@ -35,17 +32,17 @@ func TestReviewerPass_ReviewRequestCarriesTheEvidenceBlock(t *testing.T) {
 	result, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels())
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
 
-	h.mu.Lock()
-	bodies := append([]string(nil), h.bodies...)
-	h.mu.Unlock()
-	require.Len(t, bodies, 2)
-
-	require.NotContains(t, bodies[0], evidenceBlockOpen, "the primary turn is not a review")
-	require.Contains(t, bodies[1], evidenceBlockOpen, "the review turn must carry the computed evidence block")
-	require.Contains(t, bodies[1], "do the thing", "the block must carry the original request of the run")
-	require.Contains(t, bodies[1], "independent reviewer", "the fixed reviewer prompt stays in front of the block")
+	child, err := h.app.Sessions.Get(context.Background(), result.ReviewerSessionID)
+	require.NoError(t, err)
+	bodies := h.recordedBodies()
+	require.Contains(t, bodies, "computed changes (before/after snapshots and diff)")
+	require.Contains(t, bodies, "original_prompt:")
+	require.Contains(t, bodies, "do the thing")
+	childMsgs, err := h.app.Messages.List(context.Background(), child.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, childMsgs, "the evidence-bearing reviewer prompt is persisted in the child transcript")
 }
 
 // TestReviewerPass_NoReviewerNoEvidenceBasis is the control: without a
@@ -57,7 +54,7 @@ func TestReviewerPass_NoReviewerNoEvidenceBasis(t *testing.T) {
 	_, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
 	require.NoError(t, err)
 
-	require.NotContains(t, h.recordedBodies(), evidenceBlockOpen)
+	require.NotContains(t, h.recordedBodies(), "computed changes (before/after snapshots and diff)")
 	basis := h.app.captureReviewBasis(context.Background(), config.SelectedModelTypeSmart, "x", time.Now())
 	require.Nil(t, basis, "no reviewer slot: no basis")
 }

@@ -119,7 +119,7 @@ func TestRunLoop_OnlyTheExitWritesEndedReason(t *testing.T) {
 func TestRunLoop_ReviewerPassWritesEndedReasonOnlyAtTheExit(t *testing.T) {
 	rh := newReviewerHarness(t, true)
 	writes := logEndedReasonWrites(t, rh.app)
-	var afterTurns []string // the row as each turn returns: first, Drain, reviewer
+	var afterTurns []string // parent row as each turn returns: first, Drain, reviewer
 	cliLoopTurnDoneSeam = func() { afterTurns = append(afterTurns, sessionEndedReason(t, rh.app, rh.sessionID)) }
 	t.Cleanup(func() { cliLoopTurnDoneSeam = nil })
 
@@ -128,11 +128,13 @@ func TestRunLoop_ReviewerPassWritesEndedReasonOnlyAtTheExit(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	require.NotEmpty(t, rh.reviewerBodies(), "the reviewer turn ran")
-	require.Equal(t, []string{"", "", ""}, afterTurns, "no turn of the loop leaves a reason behind")
+	require.Equal(t, []string{"", "", ""}, afterTurns, "no parent turn of the loop leaves a reason behind; the fresh reviewer child is isolated")
 	require.Equal(t, r3ReactionText, res.FinalText, "A10: final_text stays the executor's answer")
 	require.Equal(t, r3ReviewVerdict, res.Review, "the verdict is the additive review field")
-	require.EqualValues(t, 3, rh.requests.Load(), "first turn, one Drain, one reviewer turn")
-	require.Equal(t, []string{"", res.ExitReason}, writes(), "one write for first turn, Drain and reviewer turn together")
+	require.EqualValues(t, 3, rh.requests.Load(), "first turn, one Drain and one reviewer pass (read plus verdict step)")
+	// The parent primary turn leaves the row empty; then the reviewer child
+	// writes its own end_turn, followed by the loop exit's end_turn on parent.
+	require.Equal(t, []string{"", "end_turn", "end_turn"}, writes(), "parent primary turn, reviewer child row, then loop exit write ended_reason")
 	require.Equal(t, res.ExitReason, sessionEndedReason(t, rh.app, rh.sessionID))
 }
 

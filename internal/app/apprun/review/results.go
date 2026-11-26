@@ -20,7 +20,10 @@ import (
 // RunResult is the JSON shape emitted by `rush run --json`. Wire-stable:
 // fields here are part of the public contract for wrapper scripts.
 type RunResult struct {
-	SessionID string `json:"session_id"`
+	// ReviewerSessionID is internal transport for attaching a review produced in a child.
+	// It is never part of the public run envelope.
+	ReviewerSessionID string `json:"-"`
+	SessionID         string `json:"session_id"`
 	// ExitReason vocabulary:
 	//   "stop","end_turn","tool_use","max_tokens","unknown"  — model-level
 	//   "provider_limit"                                    — own hard quota

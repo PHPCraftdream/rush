@@ -252,6 +252,9 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 }
 
 type Options struct {
+	// ReviewerSessionMode isolates automatic reviews in a child session by default; "legacy" restores in-session review.
+	ReviewerSessionMode string `json:"reviewer_session_mode,omitempty" jsonschema:"description=Automatic reviewer session isolation mode,enum=fresh,enum=legacy,default=fresh"`
+
 	ContextPaths         []string    `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=RUSH.md"`
 	GlobalContextPaths   []string    `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/rush/RUSH.md,default=~/.config/AGENTS.md"`
 	SkillsPaths          []string    `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/rush/skills,example=./skills"`

@@ -32,6 +32,18 @@ func TestConfig_LoadFromBytes(t *testing.T) {
 	require.Equal(t, "https://api.openai.com/v2", pc.BaseURL)
 }
 
+func TestReviewerSessionModeConfigDefaultsAndValues(t *testing.T) {
+	defaultCfg, err := loadFromBytes([][]byte{[]byte(`{}`)})
+	require.NoError(t, err)
+	require.NotNil(t, defaultCfg)
+	require.Nil(t, defaultCfg.Options)
+	for _, mode := range []string{"fresh", "legacy"} {
+		cfg, loadErr := loadFromBytes([][]byte{[]byte(`{"options":{"reviewer_session_mode":"` + mode + `"}}`)})
+		require.NoError(t, loadErr)
+		require.Equal(t, mode, cfg.Options.ReviewerSessionMode)
+	}
+}
+
 func TestConfig_LoadFromBytes_WorkerAndReviewerModels(t *testing.T) {
 	data := []byte(`{
 		"models": {

@@ -18,6 +18,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +33,7 @@ import (
 
 const (
 	reviewerPassPrimaryText   = "PRIMARY ANSWER: the work is done."
-	reviewerPassReviewerText  = "REVIEWER VERDICT: work verified, no gaps found."
+	reviewerPassReviewerText  = "VERDICT: PASS"
 	reviewerPassReviewerModel = "reviewer-r"
 )
 
@@ -40,10 +41,12 @@ type reviewerPassApp struct {
 	app   *App
 	store *config.ConfigStore
 
-	mu       sync.Mutex
-	requests []string
-	bodies   []string
-	toolSets [][]string
+	mu                     sync.Mutex
+	requests               []string
+	bodies                 []string
+	toolSets               [][]string
+	afterReviewerResponse  func()
+	beforeReviewerResponse func()
 }
 
 func (h *reviewerPassApp) requestedModels() []string {
@@ -58,6 +61,18 @@ func (h *reviewerPassApp) recordedBodies() string {
 	return strings.Join(h.bodies, "\n---\n")
 }
 
+func (h *reviewerPassApp) reviewerBodies() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var bodies []string
+	for i, model := range h.requests {
+		if model == reviewerPassReviewerModel && i < len(h.bodies) {
+			bodies = append(bodies, h.bodies[i])
+		}
+	}
+	return bodies
+}
+
 func (h *reviewerPassApp) requestedToolSets() [][]string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -68,8 +83,9 @@ func (h *reviewerPassApp) requestedToolSets() [][]string {
 
 // reviewerPassAppOpts selects which model slots the harness configures.
 type reviewerPassAppOpts struct {
-	withReviewer bool
-	withWorker   bool
+	withReviewer       bool
+	withWorker         bool
+	noReviewerToolCall bool
 	// reviewerEffort, when set, is the reviewer slot's reasoning effort.
 	reviewerEffort string
 }
@@ -95,12 +111,26 @@ func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPas
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		var req struct {
-			Model string `json:"model"`
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
 			Tools []struct {
 				Function struct {
 					Name string `json:"name"`
 				} `json:"function"`
 			} `json:"tools"`
+			Stream    bool `json:"stream"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls,omitempty"`
 		}
 		require.NoError(t, json.Unmarshal(body, &req))
 		toolNames := make([]string, 0, len(req.Tools))
@@ -113,7 +143,26 @@ func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPas
 		h.requests = append(h.requests, req.Model)
 		h.bodies = append(h.bodies, string(body))
 		h.toolSets = append(h.toolSets, toolNames)
+		reviewerRequest := 0
+		reviewerPrompt := false
+		toolResultSeen := false
+		for _, model := range h.requests {
+			if model == reviewerPassReviewerModel {
+				reviewerRequest++
+			}
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(string(msg.Content), "independent reviewer") {
+				reviewerPrompt = true
+			}
+			if msg.Role == "tool" || strings.Contains(string(msg.Content), "read-file") {
+				toolResultSeen = true
+			}
+		}
 		h.mu.Unlock()
+		if req.Model == reviewerPassReviewerModel && reviewerPrompt && toolResultSeen && h.beforeReviewerResponse != nil {
+			h.beforeReviewerResponse()
+		}
 		content := reviewerPassPrimaryText
 		if req.Model == reviewerPassReviewerModel {
 			content = reviewerPassReviewerText
@@ -121,9 +170,28 @@ func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPas
 		contentJSON, mErr := json.Marshal(content)
 		require.NoError(t, mErr)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":`+string(contentJSON)+`},"finish_reason":null}]}`)
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		if req.Model == reviewerPassReviewerModel && reviewerPrompt && reviewerRequest == 1 && !opts.noReviewerToolCall {
+			toolArgs, err := json.Marshal(map[string]string{"file_path": "README.md"})
+			require.NoError(t, err)
+			toolArgsJSON, err := json.Marshal(string(toolArgs))
+			require.NoError(t, err)
+			toolDelta := `,"tool_calls":[{"index":0,"id":"read-file","type":"function","function":{"name":"view","arguments":` + string(toolArgsJSON) + `}}]`
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant"`+toolDelta+`},"finish_reason":null}]}`)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		} else if req.Model == reviewerPassReviewerModel && reviewerPrompt && toolResultSeen {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":`+string(contentJSON)+`},"finish_reason":null}]}`)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		} else {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{"role":"assistant","content":`+string(contentJSON)+`},"finish_reason":null}]}`)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"id":"rp","object":"chat.completion.chunk","created":1,"model":"probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
 		_, _ = fmt.Fprintln(w, "data: [DONE]")
+		if req.Model == reviewerPassReviewerModel && reviewerPrompt && toolResultSeen && h.afterReviewerResponse != nil {
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			h.afterReviewerResponse()
+		}
 	}))
 	t.Cleanup(srv.Close)
 
@@ -137,7 +205,7 @@ func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPas
 	}
 	if opts.withReviewer {
 		selected = append(selected, `"reviewer": {"provider":"openaicompat","model":"`+reviewerPassReviewerModel+`"}`)
-		providerModels = append(providerModels, `{"id":"`+reviewerPassReviewerModel+`","context_window":200000,"default_max_tokens":1000}`)
+		providerModels = append(providerModels, `{"id":"`+reviewerPassReviewerModel+`","context_window":200000,"default_max_tokens":1000,"cost_per_1m_in":1,"cost_per_1m_out":1}`)
 	}
 	if opts.withWorker {
 		selected = append(selected, `"worker": {"provider":"openaicompat","model":"reviewer-pass-worker"}`)
@@ -189,6 +257,30 @@ func newReviewerPassAppOpts(t *testing.T, opts reviewerPassAppOpts) *reviewerPas
 	return h
 }
 
+// TestExecuteRunFreshReviewerCancellationKeepsExecutorAnswer covers cancellation during the review handoff.
+// The completed-review cancellation leg (P1-b ii attach branch with runTimeoutCommitted) has no deterministic
+// ExecuteRun seam and is covered by code inspection only.
+func TestExecuteRunFreshReviewerCancellationKeepsExecutorAnswer(t *testing.T) {
+	h := newReviewerPassApp(t, true)
+	sess := createModelOverrideSession(t, h.app, "reviewer-canceled")
+	require.NoError(t, h.store.SetConfigFields(config.ScopeWorkspace, map[string]any{"options.reviewer_session_mode": "fresh"}))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h.beforeReviewerResponse = cancel
+	result, err := h.app.ExecuteRun(ctx, RunRequest{
+		Prompt: "do the thing", ContinueSessionID: sess.ID,
+		Overrides: RunOverrides{ModelRole: config.SelectedModelTypeSmart},
+		Mode:      RunModeJSON, Stdout: io.Discard, Stderr: io.Discard,
+		captureResult: true,
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotNil(t, result)
+	require.Equal(t, sess.ID, result.SessionID)
+	require.Equal(t, reviewerPassPrimaryText, result.FinalText)
+	require.Equal(t, "error", result.ReviewVerdict)
+	require.Contains(t, strings.Join(result.Warnings, " | "), "reviewer pass failed")
+}
+
 func runReviewerPassExecuteRun(t *testing.T, h *reviewerPassApp, sessID string, overrides RunOverrides) (*RunResult, error) {
 	t.Helper()
 	return h.app.ExecuteRun(context.Background(), RunRequest{
@@ -222,8 +314,8 @@ func TestExecuteRunReviewerPassContinuesCleanSmartRunWithReviewerModel(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels(),
-		"the clean smart run must be followed by exactly one more turn, on the reviewer model")
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels(),
+		"automatic review first reads, then supplies its verdict")
 	require.Contains(t, h.recordedBodies(), "independent reviewer",
 		"the second turn must carry the fixed reviewer-pass prompt")
 
@@ -232,9 +324,28 @@ func TestExecuteRunReviewerPassContinuesCleanSmartRunWithReviewerModel(t *testin
 	// the work report, not the review.
 	require.Equal(t, reviewerPassPrimaryText, result.FinalText,
 		"final_text must stay the executor's own answer (A10)")
-	require.Equal(t, reviewerPassReviewerText, result.Review,
-		"the reviewer's verdict must land in the review field (A10)")
+	require.Equal(t, "pass", result.ReviewVerdict)
+	require.Contains(t, result.Review, "VERDICT: PASS")
+	require.Len(t, h.requestedModels(), 3)
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
+	require.NotContains(t, result.Review, reviewerPassPrimaryText)
 	require.Equal(t, "end_turn", result.ExitReason, "a clean openai-compat run ends with the end_turn finish reason")
+	reviewerBodies := h.reviewerBodies()
+	require.NotEmpty(t, reviewerBodies)
+	for _, body := range reviewerBodies {
+		require.NotContains(t, body, "seed")
+		require.Contains(t, body, "reviewer package")
+	}
+	require.Equal(t, sess.ID, result.SessionID)
+	require.NotEmpty(t, result.ReviewerSessionID)
+	reviewerChild, err := h.app.Sessions.Get(context.Background(), result.ReviewerSessionID)
+	require.NoError(t, err)
+	require.Equal(t, sess.ID, reviewerChild.ParentSessionID)
+	reviewerMsgs, err := h.app.Messages.List(context.Background(), reviewerChild.ID)
+	require.NoError(t, err)
+	for _, msg := range reviewerMsgs {
+		require.NotContains(t, msg.FullText(), "seed")
+	}
 
 	stored, err := h.app.Sessions.Get(context.Background(), sess.ID)
 	require.NoError(t, err)
@@ -243,6 +354,192 @@ func TestExecuteRunReviewerPassContinuesCleanSmartRunWithReviewerModel(t *testin
 	require.Equal(t, before.SmartModelReasoningEffort, stored.SmartModelReasoningEffort,
 		"the reviewer pass must not change the session's stored reasoning effort (fresh rows carry the DB default %q)", before.SmartModelReasoningEffort)
 	require.Equal(t, before.FastModelReasoningEffort, stored.FastModelReasoningEffort)
+}
+
+func TestExecuteRunReviewerPassFreshChildContract(t *testing.T) {
+	h := newReviewerPassApp(t, true)
+	if reviewerSessionMode(h.store.Config()) != "fresh" {
+		t.Fatal("empty mode should use fresh behavior")
+	}
+	sess := createModelOverrideSession(t, h.app, "reviewer-fresh-contract")
+	parentBefore, err := h.app.Sessions.Get(context.Background(), sess.ID)
+	require.NoError(t, err)
+	parentOwnBefore := parentBefore.OwnCost
+	parentBase := parentBefore.CostBase
+	result, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, sess.ID, result.SessionID)
+	require.NotEmpty(t, result.ReviewerSessionID)
+	child, err := h.app.Sessions.Get(context.Background(), result.ReviewerSessionID)
+	require.NoError(t, err)
+	// The cost-parent edge is proven below by the parent's subtree-spend delta.
+	require.Greater(t, child.OwnCost, 0.0)
+	reviewerMessages, err := h.app.Messages.List(context.Background(), child.ID)
+	require.NoError(t, err)
+	require.Len(t, reviewerMessages, 4)
+	for _, msg := range reviewerMessages {
+		require.NotContains(t, msg.FullText(), "seed")
+	}
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
+	subtreeSpent, err := h.app.Sessions.SubtreeSpent(context.Background(), sess.ID)
+	require.NoError(t, err)
+	subtreeCost, err := h.app.Sessions.SubtreeBudget(context.Background(), sess.ID)
+	require.NoError(t, err)
+	childCost, err := h.app.Sessions.SubtreeSpent(context.Background(), child.ID)
+	require.NoError(t, err)
+	require.Equal(t, child.OwnCost, childCost)
+	require.InDelta(t, child.OwnCost, subtreeCost, 1e-9)
+	require.InDelta(t, child.OwnCost, subtreeSpent-parentBase, 1e-9)
+	parentAfter, err := h.app.Sessions.Get(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.InDelta(t, parentOwnBefore, parentAfter.OwnCost, 1e-9)
+	require.Equal(t, sess.ID, result.SessionID)
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
+}
+
+func TestExecuteRunReviewerPassLegacyModeUsesParentSession(t *testing.T) {
+	h := newReviewerPassApp(t, true)
+	require.NoError(t, h.store.SetConfigFields(config.ScopeWorkspace, map[string]any{"options.reviewer_session_mode": "legacy"}))
+	sess := createModelOverrideSession(t, h.app, "reviewer-legacy")
+	result, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Empty(t, result.ReviewerSessionID)
+	require.Equal(t, sess.ID, result.SessionID)
+	parent, err := h.app.Sessions.Get(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, sess.ID, parent.ID)
+	require.NotEqual(t, "", parent.ID)
+	msgs, err := h.app.Messages.List(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, msgs)
+	parentTranscriptHasReview := false
+	for _, msg := range msgs {
+		if strings.Contains(msg.FullText(), "You are now acting as the independent reviewer") {
+			parentTranscriptHasReview = true
+		}
+	}
+	require.True(t, parentTranscriptHasReview)
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels(),
+		"legacy review reads then returns its verdict in the parent session")
+}
+
+func TestExecuteRunReviewerTurnUsesChildForEarlyPath(t *testing.T) {
+	h := newReviewerPassApp(t, true)
+	sess := createModelOverrideSession(t, h.app, "reviewer-early")
+	require.NoError(t, h.store.SetConfigFields(config.ScopeWorkspace, map[string]any{"options.reviewer_session_mode": "fresh"}))
+	basis := &reviewBasis{Prompt: strings.Repeat("acceptance criteria ", 8000), WorkingDir: h.store.WorkingDir()}
+	_, err := h.app.Messages.Create(context.Background(), sess.ID, message.CreateMessageParams{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "PRIMARY REPORT"}},
+	})
+	require.NoError(t, err)
+	res, err := h.app.ExecuteRun(context.Background(), RunRequest{ContinueSessionID: sess.ID, Overrides: RunOverrides{}, Mode: RunModeJSON, Stdout: io.Discard, Stderr: io.Discard, captureResult: true, reviewerTurn: true, reviewerReport: "PRIMARY REPORT", reviewBasis: basis})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, sess.ID, res.SessionID)
+	require.NotEmpty(t, res.ReviewerSessionID)
+	require.Equal(t, []string{reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
+	toolSets := h.requestedToolSets()
+	require.Len(t, toolSets, 2)
+	require.Contains(t, toolSets[0], "view")
+	warningText := strings.Join(res.Warnings, " ")
+	assert.Contains(t, warningText, "original prompt middle")
+	assert.Contains(t, warningText, "reviewer package truncated")
+	assert.Contains(t, h.recordedBodies(), "reviewer package truncated")
+	reviewerBodies := h.reviewerBodies()
+	require.NotEmpty(t, reviewerBodies)
+	for _, body := range reviewerBodies {
+		assert.NotContains(t, body, "seed")
+		assert.Contains(t, body, "reviewer package")
+	}
+	child, err := h.app.Sessions.Get(context.Background(), res.ReviewerSessionID)
+	require.NoError(t, err)
+	require.Equal(t, sess.ID, child.ParentSessionID)
+	childMessages, _, err := h.app.Messages.ListWithWatermark(context.Background(), child.ID)
+	require.NoError(t, err)
+	var readCallCount, readResultCount int
+	for _, msg := range childMessages {
+		for _, part := range msg.Parts {
+			if call, ok := part.(message.ToolCall); ok && call.Name == "view" {
+				readCallCount++
+			}
+		}
+		for _, result := range msg.ToolResults() {
+			if result.Name == "view" {
+				readResultCount++
+			}
+		}
+	}
+	assert.Equal(t, 1, readCallCount)
+	assert.Equal(t, 1, readResultCount)
+	require.Equal(t, "pass", res.ReviewVerdict)
+	require.Contains(t, res.Review, "VERDICT: PASS")
+	require.Equal(t, []string{reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels())
+}
+
+func TestExecuteRunFreshReviewerRefusedWhenOwnerHoldsSession(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		failIfBusy      bool
+		wantQueued      bool
+		wantSessionBusy bool
+	}{
+		{name: "default admission queues", wantQueued: true},
+		{name: "fail-fast admission refuses", failIfBusy: true, wantSessionBusy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReviewerPassApp(t, true)
+			sess := createModelOverrideSession(t, h.app, "reviewer-fresh-refused")
+			require.NoError(t, h.store.SetConfigFields(config.ScopeWorkspace, map[string]any{"options.reviewer_session_mode": "fresh"}))
+			_, err := h.app.Messages.Create(context.Background(), sess.ID, message.CreateMessageParams{
+				Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "PRIMARY ANSWER: untouched"}},
+			})
+			require.NoError(t, err)
+			basis := &reviewBasis{Prompt: "do the thing", WorkingDir: h.store.WorkingDir()}
+
+			holdCtx, epoch, release, admitted := h.app.AgentCoordinator.ReserveExclusive(context.Background(), sess.ID)
+			require.True(t, admitted)
+			defer h.app.AgentCoordinator.ReleaseExclusive(sess.ID, epoch, release)
+			require.NoError(t, holdCtx.Err())
+			_, err = h.app.ExecuteRun(context.Background(), RunRequest{
+				ContinueSessionID: sess.ID, Overrides: RunOverrides{}, Mode: RunModeJSON,
+				Stdout: io.Discard, Stderr: io.Discard, captureResult: true,
+				FailIfSessionBusy: tc.failIfBusy,
+				reviewerTurn:      true, reviewerReport: "PRIMARY ANSWER: untouched", reviewBasis: basis,
+			})
+			require.Error(t, err)
+			if tc.wantQueued {
+				require.ErrorIs(t, err, ErrRunQueued)
+				require.NotErrorIs(t, err, agent.ErrSessionBusy)
+			}
+			if tc.wantSessionBusy {
+				require.ErrorIs(t, err, agent.ErrSessionBusy)
+				require.NotErrorIs(t, err, ErrRunQueued)
+			}
+			require.NotContains(t, h.requestedModels(), reviewerPassReviewerModel)
+		})
+	}
+}
+
+func TestExecuteRunReviewerPassSkippedWhenBudgetExhausted(t *testing.T) {
+	h := newReviewerPassApp(t, true)
+	sess := createModelOverrideSession(t, h.app, "reviewer-exhausted")
+	require.NoError(t, h.app.Sessions.SetBudget(context.Background(), sess.ID, 1, 0, 0))
+	_, err := h.app.Sessions.IncrementCost(context.Background(), sess.ID, 1)
+	require.NoError(t, err)
+	before, err := h.app.Sessions.ListSubSessions(context.Background(), sess.ID)
+	require.NoError(t, err)
+	result, err := runReviewerPassExecuteRun(t, h, sess.ID, RunOverrides{ModelRole: config.SelectedModelTypeSmart, MaxCost: 1})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, sess.ID, result.SessionID)
+	require.Empty(t, result.ReviewerSessionID)
+	require.Contains(t, strings.Join(result.Warnings, " "), "budget exhausted")
+	after, err := h.app.Sessions.ListSubSessions(context.Background(), sess.ID)
+	require.NoError(t, err)
+	require.Len(t, after, len(before))
 }
 
 // TestExecuteRunNoReviewerConfiguredIsByteIdentical is the regression
@@ -302,11 +599,11 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels(),
-		"the clean smart run must be followed by exactly one review turn on the reviewer model")
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels(),
+		"the clean smart run is followed by two reviewer turns")
 
 	sets := h.requestedToolSets()
-	require.Len(t, sets, 2, "both the primary and the review turn must present a toolset")
+	require.Len(t, sets, 3, "primary turn and both reviewer steps must present toolsets")
 
 	// Primary: --role smart with a worker configured runs in orchestrator
 	// mode — worker delegation present, direct edit tools stripped.
@@ -332,9 +629,10 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 	assert.NotContains(t, sets[1], "ask_question")
 	assert.NotContains(t, sets[1], "download")
 	assert.NotContains(t, sets[1], "fetch")
-	assert.Contains(t, sets[1], "view", "the reviewer toolset is read-only, not orchestrator mode")
-	assert.Contains(t, sets[1], "git_read", "the reviewer toolset is read-only, not orchestrator mode")
-
+	assert.Contains(t, sets[1], "view", "the reviewer read step uses read-only tools")
+	assert.NotContains(t, sets[2], "agent", "the verdict step remains reviewer-scoped")
+	assert.NotContains(t, sets[2], "edit")
+	assert.Contains(t, sets[2], "view", "the verdict step retains the read-only reviewer toolset")
 	require.Equal(t, reviewerPassPrimaryText, result.FinalText,
 		"A10: final_text stays the executor's answer")
 	require.Equal(t, reviewerPassReviewerText, result.Review,
@@ -342,19 +640,17 @@ func TestExecuteRunReviewerPassTurnUsesReviewerCallOptions(t *testing.T) {
 }
 
 // TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim pins R2-3:
-// the SDK's FailIfSessionBusy contract must survive the primary ->
-// reviewer phase handoff. Caller A (fail-fast, smart + reviewer) finishes
-// its primary phase; before A's review turn is admitted, caller B claims
-// the same session via ReserveExclusive — the same atomic claim
-// ExecuteRun itself uses. A's ExecuteRun must then fail fast with an
-// error wrapping agent.ErrSessionBusy — NOT queue — and nothing of A's
-// review turn may ever execute, not when B releases and not when B's own
-// queue drains afterwards: the review turn is read-only (its toolset is
-// narrowed to the reviewer read-only list), so leaving it to execute under
-// B's lifecycle after A already received a failure is exactly the violation
-// this pins.
+// a fail-fast reviewer request must not queue behind an owner that holds
+// the session lock before the review phase begins. In legacy mode, the review
+// turn is admitted after the primary; in fresh mode the full pass reserves
+// admission before creating/running its child. Both contracts forbid a
+// reviewer provider call under a competing owner's claim.
 func TestExecuteRunReviewerPassFailFastSurvivesInterPhaseClaim(t *testing.T) {
 	h := newReviewerPassApp(t, true)
+	require.NoError(t, h.store.SetConfigFields(config.ScopeWorkspace, map[string]any{"options.reviewer_session_mode": "legacy"}))
+	if reviewerSessionMode(h.store.Config()) != "legacy" {
+		t.Fatal("this inter-phase reservation test covers the legacy admission path")
+	}
 	sess := createModelOverrideSession(t, h.app, "reviewer-pass-fail-fast")
 
 	origSeam := executeRunBeforeTurnLaunchSeam

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
@@ -490,7 +491,82 @@ func TestReviewEvidence_SizeCapped(t *testing.T) {
 	require.Contains(t, small, "no_test_or_build_command_seen: true")
 }
 
-// T6: the reviewer turn's prompt carries the computed evidence, built from two
+func TestBoundedReviewerPackageWarningOrderAndSize(t *testing.T) {
+	if _, err := platform.Command(context.Background(), "git", "--version").Output(); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := platform.Command(context.Background(), "git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
+		return string(out)
+	}
+	git("init", "--initial-branch=main")
+	git("config", "user.email", "probe@example.com")
+	git("config", "user.name", "probe")
+	target := filepath.Join(dir, "evidence.txt")
+	require.NoError(t, os.WriteFile(target, []byte("before\n"), 0o644))
+	git("add", "evidence.txt")
+	git("commit", "-m", "initial")
+	basis := &reviewBasis{Prompt: strings.Repeat("prompt-tail ", 12000), Start: time.Unix(1, 0), WorkingDir: dir, Before: readGitSnapshot(context.Background(), dir), BaseHead: strings.TrimSpace(git("rev-parse", "HEAD"))}
+	require.True(t, basis.Before.OK)
+	require.NoError(t, os.WriteFile(target, []byte("before\na real reviewer diff hunk\n"), 0o644))
+	msgs := []message.Message{{ID: "m", Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: strings.Repeat("run facts ", 12000)}}}}
+	report := strings.Repeat("report claim ", 12000)
+	todos := []session.Todo{{Content: strings.Repeat("acceptance ", 1000), Status: session.TodoStatusPending}}
+	// Oversized package: all truncation stages are exercised in deterministic order.
+	prompt, warnings := boundedReviewerPackage(basis, report, msgs, todos)
+	require.Len(t, warnings, 1)
+	warning := warnings[0]
+	orderedCuts := []string{"run facts/verbose outputs", "diff details/hunks", "final report middle", "todo ledger middle", "original prompt middle"}
+	last := -1
+	for _, cut := range orderedCuts {
+		i := strings.Index(warning, cut)
+		require.Greater(t, i, last, "cut %q follows the prior cut in design order", cut)
+		last = i
+	}
+	require.Contains(t, prompt, "[diff details omitted; paths retained]")
+
+	// Moderate package: the run-facts cut alone brings the assembled estimate
+	// within the target while preserving the real diff hunk.
+	basis.Prompt = strings.Repeat("prompt-tail ", 200)
+	moderateReport := "short report"
+	moderateTodos := []session.Todo{{Content: "short acceptance", Status: session.TodoStatusPending}}
+	prompt, warnings = boundedReviewerPackage(basis, moderateReport, nil, moderateTodos)
+	require.Empty(t, warnings, "the moderate package fits without cuts")
+	require.LessOrEqual(t, provauth.ApproxTokenCount(prompt), reviewerPackageTokenTarget,
+		"the returned prompt including the warning must meet the target after the run-facts cut")
+	require.Contains(t, prompt, "real reviewer diff hunk")
+
+	// Short package preserves the same real diff evidence.
+	basis.Prompt = "short prompt"
+	prompt, _ = boundedReviewerPackage(basis, "short report", nil, nil)
+	require.Contains(t, prompt, "real reviewer diff hunk", "the real before/after snapshots carry an actual diff hunk")
+}
+
+func TestBoundedReviewerPackageCutsInDesignOrder(t *testing.T) {
+	basis := &reviewBasis{Prompt: strings.Repeat("prompt-tail ", 12000), Start: time.Unix(1, 0)}
+	msgs := []message.Message{{ID: "m", Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: strings.Repeat("run facts ", 12000)}}}}
+	report := strings.Repeat("report claim ", 12000)
+	todos := []session.Todo{{Content: strings.Repeat("acceptance ", 1000), Status: session.TodoStatusPending}}
+	first, warnings := boundedReviewerPackage(basis, report, msgs, todos)
+	second, warnings2 := boundedReviewerPackage(basis, report, msgs, todos)
+	require.Equal(t, first, second)
+	require.Equal(t, warnings, warnings2)
+	require.NotEmpty(t, warnings)
+	require.Contains(t, warnings[0], "run facts/verbose outputs")
+	require.Contains(t, warnings[0], "diff details/hunks")
+	require.Contains(t, warnings[0], "final report middle")
+	require.Contains(t, warnings[0], "todo ledger middle")
+	require.Contains(t, warnings[0], "original prompt middle")
+	require.Contains(t, first, "reviewer package truncated")
+	require.Contains(t, first, "original_prompt")
+}
+
 // real git snapshots taken around a real edit. Skipped when git is missing.
 func TestReviewerPass_PromptCarriesEvidence(t *testing.T) {
 	if _, err := platform.Command(context.Background(), "git", "--version").Output(); err != nil {
@@ -576,6 +652,7 @@ func TestReviewerPass_PromptCarriesEvidence(t *testing.T) {
 	sess := createModelOverrideSession(t, h.app, "evidence-prompt")
 	prompt := h.app.reviewerTurnPrompt(context.Background(), sess.ID, basis)
 	assert.Contains(t, prompt, reviewerPassMarker, "the reviewer marker leads the prompt")
+	assert.Contains(t, prompt, "original_request:")
 	assert.Contains(t, prompt, `<review_evidence trust="computed by rush, not by the orchestrator">`,
 		"and the computed evidence block follows it")
 	assert.Contains(t, prompt, "implement the reviewer pass verification per the design doc")
@@ -607,6 +684,111 @@ func sectionOf(t *testing.T, block, from, to string) string {
 		rest = rest[:j]
 	}
 	return rest
+}
+
+func TestReviewerDiffEvidenceUsesBaseCommit(t *testing.T) {
+	if _, err := platform.Command(context.Background(), "git", "--version").Output(); err != nil {
+		t.Skip("git not available")
+	}
+	newRepo := func(t *testing.T) (string, func(...string) string) {
+		t.Helper()
+		dir := t.TempDir()
+		git := func(args ...string) string {
+			t.Helper()
+			cmd := platform.Command(context.Background(), "git", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
+			return string(out)
+		}
+		git("init", "--initial-branch=main")
+		git("config", "user.email", "probe@example.com")
+		git("config", "user.name", "probe")
+		write := func(path, content string) {
+			t.Helper()
+			full := filepath.Join(dir, filepath.FromSlash(path))
+			require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+			require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+		}
+		write("tracked.txt", "base\n")
+		git("add", ".")
+		git("commit", "-m", "base")
+		return dir, git
+	}
+	t.Run("clean start commit clean end", func(t *testing.T) {
+		dir, git := newRepo(t)
+		basis := &reviewBasis{WorkingDir: dir, Before: readGitSnapshot(context.Background(), dir)}
+		basis.BaseHead = strings.TrimSpace(git("rev-parse", "HEAD"))
+		full := filepath.Join(dir, "tracked.txt")
+		require.NoError(t, os.WriteFile(full, []byte("base\nhunk content\n"), 0o644))
+		git("add", "tracked.txt")
+		git("commit", "-m", "mid-run commit")
+		after := readGitSnapshot(context.Background(), dir)
+		require.Empty(t, changedDuringRun(basis.Before, after), "status-only selection cannot see a clean commit")
+		evidence := reviewerDiffEvidence(basis)
+		assert.Contains(t, evidence, "tracked.txt")
+		assert.Contains(t, evidence, "hunk content")
+	})
+	t.Run("commit plus further edit is one net path", func(t *testing.T) {
+		dir, git := newRepo(t)
+		basis := &reviewBasis{WorkingDir: dir, Before: readGitSnapshot(context.Background(), dir)}
+		basis.BaseHead = strings.TrimSpace(git("rev-parse", "HEAD"))
+		full := filepath.Join(dir, "tracked.txt")
+		require.NoError(t, os.WriteFile(full, []byte("committed line\n"), 0o644))
+		git("add", "tracked.txt")
+		git("commit", "-m", "change tracked")
+		require.NoError(t, os.WriteFile(full, []byte("committed line\nworking edit\n"), 0o644))
+		evidence := reviewerDiffEvidence(basis)
+		assert.Equal(t, 1, strings.Count(strings.SplitN(evidence, "\n", 2)[0], "tracked.txt"))
+		assert.Contains(t, evidence, "working edit")
+	})
+	t.Run("delete and rename are reflected", func(t *testing.T) {
+		dir, git := newRepo(t)
+		write := func(name string) {
+			full := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(full, []byte(name+"\n"), 0o644))
+		}
+		write("delete.txt")
+		write("move.txt")
+		git("add", ".")
+		git("commit", "-m", "add sources")
+		basis := &reviewBasis{WorkingDir: dir, Before: readGitSnapshot(context.Background(), dir), BaseHead: strings.TrimSpace(git("rev-parse", "HEAD"))}
+		git("rm", "delete.txt")
+		git("mv", "move.txt", "renamed.txt")
+		evidence := reviewerDiffEvidence(basis)
+		assert.Contains(t, evidence, "delete.txt")
+		assert.Contains(t, evidence, "move.txt")
+		assert.Contains(t, evidence, "renamed.txt")
+	})
+	t.Run("non ancestor uses status fallback", func(t *testing.T) {
+		dir, git := newRepo(t)
+		basis := &reviewBasis{WorkingDir: dir, Before: readGitSnapshot(context.Background(), dir), BaseHead: strings.TrimSpace(git("rev-parse", "HEAD"))}
+		git("checkout", "--orphan", "elsewhere")
+		git("rm", "-rf", ".")
+		full := filepath.Join(dir, "fallback.txt")
+		require.NoError(t, os.WriteFile(full, []byte("elsewhere base\n"), 0o644))
+		git("add", "fallback.txt")
+		git("commit", "-m", "unrelated head")
+		git("reset", "--hard", "elsewhere")
+		require.NoError(t, os.WriteFile(full, []byte("fallback content\n"), 0o644))
+		evidence := reviewerDiffEvidence(basis)
+		assert.Contains(t, evidence, "fallback.txt")
+		assert.Contains(t, evidence, reviewerDiffFallbackCut)
+	})
+	t.Run("sixty paths are bounded", func(t *testing.T) {
+		dir, git := newRepo(t)
+		basis := &reviewBasis{WorkingDir: dir, Before: readGitSnapshot(context.Background(), dir), BaseHead: strings.TrimSpace(git("rev-parse", "HEAD"))}
+		for i := 0; i < 60; i++ {
+			full := filepath.Join(dir, fmt.Sprintf("change-%02d.txt", i))
+			require.NoError(t, os.WriteFile(full, []byte("content\n"), 0o644))
+		}
+		git("add", ".")
+		evidence := reviewerDiffEvidence(basis)
+		assert.Contains(t, evidence, "... and 20 more paths omitted")
+		assert.Contains(t, evidence, "changed paths list truncated")
+		assert.LessOrEqual(t, strings.Count(strings.SplitN(evidence, "\n", 2)[0], ",")+1, reviewerDiffPathLimit)
+	})
 }
 
 // ensure the config import stays used by the harness reuse above.

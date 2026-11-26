@@ -9,17 +9,26 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/provauth"
+	"github.com/PHPCraftdream/rush/internal/config"
+	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -121,6 +130,456 @@ func reviewerToolCalls(msgs []message.Message) int {
 	return calls
 }
 
+func reviewerTurnPrompt(env RunEnv, ctx context.Context, sessionID string, basis *reviewBasis) string {
+	if basis == nil {
+		return reviewerPassPrompt
+	}
+	msgs, err := env.Messages().List(ctx, sessionID)
+	if err != nil {
+		slog.Warn("run: failed to read the session transcript for the review evidence; the reviewer prompt goes out without it",
+			"session", sessionID, "err", err)
+		return reviewerPassPrompt
+	}
+	sess, err := env.Sessions().Get(ctx, sessionID)
+	if err != nil {
+		slog.Warn("run: failed to read the session row for the review evidence; the reviewer prompt goes out without it",
+			"session", sessionID, "err", err)
+		return reviewerPassPrompt
+	}
+	after := readGitSnapshot(ctx, basis.WorkingDir)
+	return reviewerPassPrompt + "\n\n" + buildReviewEvidence(basis, after, msgs, sess.Todos)
+}
+
+func reviewerSessionMode(cfg *config.Config) string {
+	if cfg == nil || cfg.Options == nil {
+		return "fresh"
+	}
+	switch cfg.Options.ReviewerSessionMode {
+	case "fresh", "":
+		return "fresh"
+	case "legacy":
+		return "legacy"
+	default:
+		return "fresh"
+	}
+}
+
+func runFreshReviewerTurn(env RunEnv, ctx context.Context, parentID string, basis *reviewBasis, report string, overrides RunOverrides, failIfBusy bool, stderr io.Writer) (*RunResult, error) {
+	childID, result, resultErr := runFreshReviewerPhase(env, ctx, parentID, basis, report, 1, overrides, failIfBusy, stderr)
+	setReviewerResumeSession(result, resultErr, parentID, runRoleName(overrides))
+	if result == nil {
+		result = &RunResult{SessionID: parentID}
+	}
+	result.SessionID = parentID
+	if childID != "" {
+		result.ReviewerSessionID = childID
+	}
+	if resultErr != nil {
+		if errors.Is(resultErr, ErrRunQueued) || errors.Is(resultErr, agent.ErrSessionBusy) || turnRefusedByOwner(resultErr) {
+			return result, resultErr
+		}
+		if childID == "" {
+			if ctx.Err() == nil {
+				result.Warnings = append(result.Warnings, "reviewer setup failed: "+resultErr.Error())
+				result.ReviewVerdict = "error"
+				return result, nil
+			}
+			return result, resultErr
+		}
+		result.ReviewVerdict = "error"
+		if ctx.Err() == nil {
+			recordReviewFailure(result, stderr, resultErr)
+		}
+		return result, resultErr
+	}
+	if childID != "" && result.ReviewVerdict == "" {
+		attachReview(env, ctx, result, childID, result.FinalText, stderr)
+	}
+	return result, nil
+}
+
+func reviewResultSessionID(r *RunResult, parentID string) string {
+	if r != nil && r.ReviewerSessionID != "" {
+		return r.ReviewerSessionID
+	}
+	return parentID
+}
+
+func runFreshReviewerAttempt(env RunEnv, ctx context.Context, parentID string, basis *reviewBasis, report string, attempt int, overrides RunOverrides, failIfBusy bool, stderr io.Writer) (*RunResult, error) {
+	childID, result, err := runFreshReviewerPhase(env, ctx, parentID, basis, report, attempt, overrides, failIfBusy, stderr)
+	if result == nil {
+		result = &RunResult{SessionID: parentID}
+	}
+	result.SessionID = parentID
+	if childID != "" {
+		result.ReviewerSessionID = childID
+	}
+	if childID == "" && err != nil {
+		if errors.Is(err, ErrRunQueued) || errors.Is(err, agent.ErrSessionBusy) || turnRefusedByOwner(err) || ctx.Err() != nil {
+			return result, err
+		}
+		result.Warnings = append(result.Warnings, "reviewer setup failed: "+err.Error())
+		result.ReviewVerdict = "error"
+		return result, nil
+	}
+	if err != nil && result.ReviewVerdict == "error" {
+		return result, err
+	}
+	return result, err
+}
+
+const reviewerPackageTokenTarget int64 = 30000
+
+// runFreshReviewerPhase executes the automatic review in a clean child session.
+func runFreshReviewerPhase(env RunEnv, ctx context.Context, parentID string, basis *reviewBasis, report string, attempt int, overrides RunOverrides, failIfBusy bool, stderr io.Writer) (string, *RunResult, error) {
+	if reviewerSessionMode(env.Config.Config()) == "legacy" {
+		return "", &RunResult{SessionID: parentID, Warnings: []string{"fresh reviewer phase disabled by legacy mode"}}, nil
+	}
+	// Fresh reviews execute in a child, but admission belongs to the parent
+	// run just as it does for the legacy reviewer turn. Hold both in-process
+	// mailbox ownership and the inter-process session lock until the child
+	// pass has finished, so a competing owner cannot be bypassed.
+	holdCtx, epoch, release, admitted := env.Coord().ReserveExclusive(ctx, parentID)
+	if !admitted {
+		if failIfBusy {
+			return "", &RunResult{SessionID: parentID}, fmt.Errorf("session %q is already processing another request: %w", parentID, agent.ErrSessionBusy)
+		}
+		return "", &RunResult{SessionID: parentID}, fmt.Errorf("%w: reviewer turn for session %q", ErrRunQueued, parentID)
+	}
+	defer env.Coord().ReleaseExclusive(parentID, epoch, release)
+	parentLock, lockErr := sessionlock.TryAcquireSessionLock(env.DataDir(), parentID)
+	if lockErr != nil {
+		return "", &RunResult{SessionID: parentID}, fmt.Errorf("reviewer turn for session %q: %w", parentID, lockErr)
+	}
+	defer func() { _ = parentLock.Release() }()
+	if err := holdCtx.Err(); err != nil {
+		return "", &RunResult{SessionID: parentID}, err
+	}
+	if basis == nil {
+		basis = &reviewBasis{Prompt: "(original prompt unavailable)", WorkingDir: env.Config.WorkingDir()}
+	}
+	parent, err := env.Sessions().Get(ctx, parentID)
+	if err != nil {
+		warning := fmt.Sprintf("reviewer pass failed: read parent session: %v", err)
+		return "", &RunResult{SessionID: parentID, Warnings: []string{warning}}, err
+	}
+	spent, err := env.Sessions().SubtreeSpent(ctx, parentID)
+	if err != nil {
+		warning := fmt.Sprintf("reviewer pass failed: read parent subtree spend: %v", err)
+		return "", &RunResult{SessionID: parentID, Warnings: []string{warning}}, err
+	}
+	cap := parent.BudgetMaxCost
+	if overrides.MaxCost > 0 {
+		cap = overrides.MaxCost
+	}
+	remainingCost := cap - max(0, spent-parent.CostBase)
+	if cap > 0 && remainingCost <= 0 {
+		return "", &RunResult{SessionID: parentID, Warnings: []string{"reviewer pass skipped: parent cost budget exhausted"}}, nil
+	}
+	if overrides.MaxTokens > 0 {
+		return "", &RunResult{SessionID: parentID, Warnings: []string{"reviewer pass skipped: token budget is finite but subtree token spend is unavailable"}}, nil
+	}
+	msgs, err := env.Messages().List(ctx, parentID)
+	if err != nil {
+		warning := fmt.Sprintf("reviewer pass failed: read parent transcript: %v", err)
+		return "", &RunResult{SessionID: parentID, Warnings: []string{warning}}, err
+	}
+	terminalID := ""
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == message.Assistant && msgs[i].IsFinished() {
+			terminalID = msgs[i].ID
+			break
+		}
+	}
+	// The primary ExecuteRun result is the authoritative report for this
+	// review. Some successful in-process runs can return that report before
+	// terminal-message reconciliation has made a finished row available;
+	// do not silently suppress the fresh review in that case. Use the report
+	// as the deterministic identity input, while retaining the terminal ID
+	// when the persisted message is available.
+	if terminalID == "" {
+		terminalID = "report:" + report
+	}
+	// The report is a required part of the bounded reviewer package; parent
+	// conversation rows are not passed as transcript history to the child.
+	prompt, warnings := boundedReviewerPackage(basis, report, msgs, parent.Todos)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d", parentID, terminalID, attempt)))
+	childID := "reviewer-" + hex.EncodeToString(sum[:16])
+	child, err := env.Sessions().CreateTaskSession(ctx, childID, parentID, "Automatic reviewer pass")
+	if err != nil {
+		warning := fmt.Sprintf("reviewer pass failed: create child: %v", err)
+		return "", &RunResult{SessionID: parentID, Warnings: []string{warning}}, err
+	}
+	reviewerOverrides := overrides
+	reviewerOverrides.ModelRole = config.SelectedModelTypeReviewer
+	reviewerOverrides.RequestedRole, reviewerOverrides.roleContract = "", nil
+	reviewerOverrides.SystemPrompt = ""
+	reviewerOverrides.ReasoningEffort = ""
+	reviewerOverrides.SmartModel = ""
+	reviewerOverrides.FastModel = ""
+	reviewerOverrides.OnFinishHook = ""
+	reviewerOverrides.DisableSubAgents = true
+	reviewerOverrides.AggregationMode = ""
+	reviewerOverrides.NoSupervision = true
+	reviewerOverrides.SupervisionInterval = 0
+	// Keep the caller's folder scope, trusted disk binding and restricted-run
+	// policy intact; the reviewer-role tool filter further narrows access.
+	if cap > 0 {
+		reviewerOverrides.MaxCost = remainingCost
+	} else {
+		reviewerOverrides.MaxCost = 0
+	}
+	reviewCtx, cancel := context.WithTimeout(ctx, reviewerPassTimeout)
+	defer cancel()
+	// This child is an internal report/review container, not a titled human
+	// session. Mark it as a background notice so the agent title hook skips
+	// its fast-then-smart title-generation calls.
+	reviewCtx = sessionprompt.WithBackgroundJobNotice(reviewCtx)
+	res, runErr := executeRun(env, reviewCtx, RunRequest{Prompt: prompt, Overrides: reviewerOverrides, Mode: RunModeJSON, ContinueSessionID: child.ID, Stdout: io.Discard, Stderr: stderr, captureResult: true, drainTurn: true, deferReviewer: true})
+	setReviewerResumeSession(res, runErr, parentID, runRoleName(overrides))
+	if runErr != nil {
+		if res == nil {
+			res = &RunResult{SessionID: parentID}
+		}
+		if !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			recordReviewFailure(res, stderr, runErr)
+		} else {
+			res.ReviewVerdict = "error"
+			warning := fmt.Sprintf("reviewer pass failed: %v", runErr)
+			if !slices.Contains(res.Warnings, warning) {
+				res.Warnings = append(res.Warnings, warning)
+			}
+		}
+	}
+	if res == nil {
+		res = &RunResult{SessionID: parentID}
+	}
+	res.ReviewerSessionID, res.SessionID = child.ID, parentID
+	res.Warnings = append(res.Warnings, warnings...)
+	return child.ID, res, runErr
+}
+
+type reviewerPackageParts struct {
+	instructions, originalPrompt, ledger, report, diff, facts string
+	cuts                                                      []string
+}
+
+func boundedReviewerPackage(basis *reviewBasis, report string, msgs []message.Message, todos []session.Todo) (string, []string) {
+	if basis == nil {
+		basis = &reviewBasis{Prompt: "(original prompt unavailable)"}
+	}
+	diff := reviewerDiffEvidence(basis)
+	parts := reviewerPackageParts{instructions: reviewerInstructions(), originalPrompt: basis.Prompt, ledger: renderReviewerTodos(todos), report: report, diff: diff, facts: reviewerRunFacts(basis, msgs, todos)}
+	if strings.Contains(diff, "evidence unavailable") || strings.Contains(diff, "contents unavailable") {
+		parts.cuts = append(parts.cuts, "changed-file/diff evidence unavailable")
+	}
+	if strings.Contains(diff, reviewerDiffFallbackCut) {
+		parts.cuts = append(parts.cuts, reviewerDiffFallbackCut)
+	}
+	if strings.Contains(diff, "changed paths list truncated") {
+		parts.cuts = append(parts.cuts, "changed paths list truncated")
+	}
+	if strings.Contains(diff, "diff contents truncated at size cap") {
+		parts.cuts = append(parts.cuts, "diff contents truncated at size cap")
+	}
+	render := func() string {
+		return strings.Join([]string{parts.instructions, "original_prompt:\n" + parts.originalPrompt, "current_todos_and_acceptance:\n" + parts.ledger, "Orchestrator final report (claims, not verified facts):\n" + parts.report, "computed changes (before/after snapshots and diff):\n" + parts.diff, "run facts:\n" + parts.facts}, "\n\n")
+	}
+	factsOmitted := false
+	if provauth.ApproxTokenCount(render()) > reviewerPackageTokenTarget && !factsOmitted {
+		parts.facts = "[run facts and verbose outputs omitted]"
+		parts.cuts = append(parts.cuts, "run facts/verbose outputs")
+		factsOmitted = true
+	}
+	if provauth.ApproxTokenCount(render()) > reviewerPackageTokenTarget && !strings.Contains(parts.diff, "[diff details omitted") {
+		parts.diff = reviewerChangedPathSummary(basis)
+		parts.cuts = append(parts.cuts, "diff details/hunks; changed paths retained")
+	}
+	if provauth.ApproxTokenCount(render()) > reviewerPackageTokenTarget && len(parts.report) > 512 {
+		parts.report = edgeTrim(parts.report, 512, "[report middle omitted; claim/conclusion edges retained]")
+		parts.cuts = append(parts.cuts, "final report middle")
+	}
+	if provauth.ApproxTokenCount(render()) > reviewerPackageTokenTarget && len(parts.ledger) > 512 {
+		parts.ledger = edgeTrim(parts.ledger, 512, "[ledger middle omitted; acceptance/todo edges retained]")
+		parts.cuts = append(parts.cuts, "todo ledger middle")
+	}
+	if provauth.ApproxTokenCount(render()) > reviewerPackageTokenTarget && len(parts.originalPrompt) > 1024 {
+		parts.originalPrompt = edgeTrim(parts.originalPrompt, 1024, "[original prompt middle omitted]")
+		parts.cuts = append(parts.cuts, "original prompt middle")
+	}
+	prompt := render()
+	warnings := []string{}
+	if len(parts.cuts) > 0 || provauth.ApproxTokenCount(prompt) > reviewerPackageTokenTarget {
+		warning := "reviewer package truncated; cuts: " + strings.Join(parts.cuts, ", ")
+		if n := provauth.ApproxTokenCount(prompt); n > reviewerPackageTokenTarget {
+			warning += fmt.Sprintf("; assembled estimate remains %d tokens (target %d)", n, reviewerPackageTokenTarget)
+		}
+		warnings = append(warnings, warning)
+		// The truncation notice is appended after estimating package content; its small fixed overhead is intentionally outside the payload target.
+		prompt += "\n\n[" + warning + "]"
+	}
+	return prompt, warnings
+}
+
+func reviewerInstructions() string {
+	return reviewerPassMarker + ".\nROLE SWITCH: independently review this fresh-session package; no prior conversation or parent transcript is available. The labeled final report below is the orchestrator's claims, not verified facts.\nUse read-only view, grep, glob, ls, git_read, and read_delegation_transcript only. Do not edit, run commands/tests, delegate, or ask questions. Check request and acceptance/todo ledger against changed-file evidence and run facts; return the required first-line verdict."
+}
+
+func reviewerRunFacts(basis *reviewBasis, msgs []message.Message, todos []session.Todo) string {
+	var b strings.Builder
+	// Only summarize command exit states. Tool arguments/results and assistant
+	// final text can quote the user prompt or transcript; the dedicated package
+	// fields already include the original request and final report explicitly.
+	writeEvidenceCommandSection(&b, msgs, basis.Start.Unix())
+	writeEvidenceTodoSection(&b, todos)
+	return b.String()
+}
+
+const (
+	reviewerDiffPathLimit   = 40
+	reviewerDiffRuneLimit   = 100000
+	reviewerDiffFallbackCut = "base commit no longer an ancestor; status-based change selection used"
+)
+
+func reviewerDiffEvidence(basis *reviewBasis) string {
+	if basis == nil || basis.WorkingDir == "" {
+		return "changed-file/diff evidence unavailable: captured working directory unavailable"
+	}
+	after := readGitSnapshot(context.Background(), basis.WorkingDir)
+	if !basis.Before.OK || !after.OK {
+		return "changed-file/diff evidence unavailable: before/after snapshot unavailable"
+	}
+	paths, useBase := reviewerDiffPaths(basis, after)
+	fallback := !useBase
+	var diff string
+	var err error
+	if useBase {
+		diff, err = evidenceGit(context.Background(), basis.WorkingDir, "-c", "core.quotepath=off", "-c", "diff.renames=true", "diff", basis.BaseHead)
+	} else {
+		args := append([]string{"-c", "core.quotepath=off", "diff", "HEAD", "--"}, paths...)
+		diff, err = evidenceGit(context.Background(), basis.WorkingDir, args...)
+	}
+	shown, omitted := boundedReviewerDiffPaths(paths)
+	var b strings.Builder
+	fmt.Fprintf(&b, "changed paths: %s\n", strings.Join(shown, ", "))
+	if omitted > 0 {
+		fmt.Fprintf(&b, "... and %d more paths omitted\n[reviewer diff cut: changed paths list truncated]\n", omitted)
+	}
+	if fallback {
+		fmt.Fprintf(&b, "[reviewer diff cut: %s]\n", reviewerDiffFallbackCut)
+	}
+	if err != nil {
+		fmt.Fprintf(&b, "diff contents unavailable: %v", err)
+		return b.String()
+	}
+	boundedDiff, truncated := truncateReviewerDiff(diff)
+	b.WriteString(boundedDiff)
+	if truncated {
+		b.WriteString("\n[reviewer diff cut: diff contents truncated at size cap]")
+	}
+	return b.String()
+}
+
+func reviewerDiffPaths(basis *reviewBasis, after gitSnapshot) ([]string, bool) {
+	fallback := changedDuringRun(basis.Before, after)
+	if basis.BaseHead == "" {
+		return fallback, false
+	}
+	if _, err := evidenceGit(context.Background(), basis.WorkingDir, "rev-parse", "HEAD"); err != nil {
+		return fallback, false
+	}
+	if _, err := evidenceGit(context.Background(), basis.WorkingDir, "merge-base", "--is-ancestor", basis.BaseHead, "HEAD"); err != nil {
+		return fallback, false
+	}
+	diff, err := evidenceGit(context.Background(), basis.WorkingDir, "-c", "core.quotepath=off", "-c", "diff.renames=true", "diff", basis.BaseHead)
+	if err != nil {
+		return fallback, false
+	}
+	return reviewerDiffHeaderPaths(diff), true
+}
+
+func reviewerDiffHeaderPaths(diff string) []string {
+	seen := make(map[string]struct{})
+	var paths []string
+	for _, line := range strings.Split(diff, "\n") {
+		if !strings.HasPrefix(line, "diff --git a/") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "diff --git a/")
+		sep := strings.LastIndex(rest, " b/")
+		if sep < 0 {
+			continue
+		}
+		for _, path := range []string{rest[:sep], rest[sep+3:]} {
+			if _, ok := seen[path]; !ok {
+				seen[path] = struct{}{}
+				paths = append(paths, path)
+			}
+		}
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+func boundedReviewerDiffPaths(paths []string) ([]string, int) {
+	if len(paths) <= reviewerDiffPathLimit {
+		return paths, 0
+	}
+	return paths[:reviewerDiffPathLimit], len(paths) - reviewerDiffPathLimit
+}
+
+func truncateReviewerDiff(diff string) (string, bool) {
+	runes := []rune(diff)
+	if len(runes) <= reviewerDiffRuneLimit {
+		return diff, false
+	}
+	return string(runes[:reviewerDiffRuneLimit]), true
+}
+
+func reviewerChangedPathSummary(basis *reviewBasis) string {
+	if basis == nil || !basis.Before.OK {
+		return "changed paths unavailable: before snapshot unavailable"
+	}
+	after := readGitSnapshot(context.Background(), basis.WorkingDir)
+	if !after.OK {
+		return "changed paths unavailable: after snapshot unavailable"
+	}
+	paths, useBase := reviewerDiffPaths(basis, after)
+	shown, omitted := boundedReviewerDiffPaths(paths)
+	var b strings.Builder
+	fmt.Fprintf(&b, "changed paths: %s\n[diff details omitted; paths retained]", strings.Join(shown, ", "))
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\n... and %d more paths omitted\n[reviewer diff cut: changed paths list truncated]", omitted)
+	}
+	if !useBase {
+		fmt.Fprintf(&b, "\n[reviewer diff cut: %s]", reviewerDiffFallbackCut)
+	}
+	return b.String()
+}
+
+func edgeTrim(s string, keep int, marker string) string {
+	if len(s) <= keep {
+		return s
+	}
+	half := keep / 2
+	return s[:half] + "\n" + marker + "\n" + s[len(s)-half:]
+}
+
+func renderReviewerTodos(todos []session.Todo) string {
+	var b strings.Builder
+	for _, t := range todos {
+		fmt.Fprintf(&b, "- [%s] %s\n", t.Status, t.Content)
+	}
+	if len(todos) == 0 {
+		return "(none recorded)"
+	}
+	return b.String()
+}
+
+func reviewerPackagePrompt(basis *reviewBasis, report string, msgs []message.Message, todos []session.Todo) string {
+	return strings.Join([]string{reviewerInstructions(), "original_prompt:\n" + basis.Prompt, "current_todos_and_acceptance:\n" + renderReviewerTodos(todos), "Orchestrator final report (claims, not verified facts):\n" + report, "computed changes (before/after snapshots and diff):\n" + reviewerDiffEvidence(basis), "run facts:\n" + reviewerRunFacts(basis, msgs, todos)}, "\n\n")
+}
+
 // attachReview folds a completed review turn into the run's envelope: the
 // review text itself, the verdict parsed out of it, and — for every verdict
 // that is not a plain verified "pass" — one warning and one stderr line. It
@@ -168,7 +627,10 @@ func reviewerToolCallCount(env RunEnv, ctx context.Context, sessionID string) (c
 	if env.Messages() == nil {
 		return 0, false
 	}
-	msgs, err := env.Messages().List(ctx, sessionID)
+	// Verification of an already-completed review is a bounded local read independent of run cancellation.
+	ctx2, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	msgs, err := env.Messages().List(ctx2, sessionID)
 	if err != nil {
 		slog.Warn("run: failed to read the session transcript to verify the reviewer verdict", "session", sessionID, "err", err)
 		return 0, false
@@ -198,7 +660,10 @@ func reviewFailureKeepsPrimary(runCtx context.Context, err error) bool {
 func recordReviewFailure(final *RunResult, stderr io.Writer, err error) {
 	if final != nil {
 		final.ReviewVerdict = "error"
-		final.Warnings = append(final.Warnings, fmt.Sprintf("reviewer pass failed: %v", err))
+		warning := fmt.Sprintf("reviewer pass failed: %v", err)
+		if !slices.Contains(final.Warnings, warning) {
+			final.Warnings = append(final.Warnings, warning)
+		}
 	}
 	fmt.Fprintf(stderr, "rush run: reviewer pass failed: %v\n", err)
 }

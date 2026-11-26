@@ -1,10 +1,6 @@
 package app
 
-// Same defect class as the already-fixed #1227 (the nudge drop branch): a
-// reviewer turn that failed for a reason of its own kept the executor's
-// answer and exited clean WITHOUT checking the operator's stop signals, so a
-// `sessions cancel` landing during the review turn was swallowed — the run
-// ended end_turn and left the honoured cancel flag pending.
+// A text-only PASS on a cancelled run must end unverified, not pass.
 
 import (
 	"context"
@@ -16,7 +12,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// REVERT CHECK: removing the stopError() call from closePhase's
+func TestRunLoop_ReviewerCompletedThenParentCanceledKeepsExecutorAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(loopCtx(t))
+	h := newLoopHarness(t, func(_ *loopHarness, w http.ResponseWriter, body []byte, _ bool, _ int) {
+		_, lastUser, _ := lastTurnParts(body)
+		if strings.Contains(lastUser, "independent reviewer") {
+			loopText(w, "review", "VERDICT: PASS", 13, 4)
+			return
+		}
+		loopText(w, "primary", strings.Repeat("executor answer ", 12000), 11, 3)
+	})
+	h.app.config.SetSelectedModelRuntime(config.SelectedModelTypeReviewer, config.SelectedModel{Provider: "openaicompat", Model: "probe"})
+	oldSeam := cliLoopTurnDoneSeam
+	var turnDone int
+	cliLoopTurnDoneSeam = func() {
+		turnDone++
+		if turnDone == 2 {
+			cancel()
+		}
+	}
+	t.Cleanup(func() {
+		cliLoopTurnDoneSeam = oldSeam
+		cancel()
+	})
+
+	res, _, err := h.run(ctx, RunOverrides{ModelRole: config.SelectedModelTypeSmart})
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
+	require.NotNil(t, res)
+	require.Equal(t, "canceled", res.ExitReason)
+	require.Equal(t, strings.Repeat("executor answer ", 12000), res.FinalText)
+	require.Equal(t, "unverified", res.ReviewVerdict)
+	require.Contains(t, res.Review, "VERDICT: PASS")
+	warnings := strings.Join(res.Warnings, " | ")
+	require.Contains(t, warnings, "reviewer package truncated")
+	require.Contains(t, warnings, "reviewer passed the run without any read-tool check")
+}
+
 // reviewFailureKeepsPrimary branch swallows the cancel_requested flag set
 // during the reviewer turn: the run exits clean (err == nil) with the
 // executor's answer instead of ending canceled, and the flag stays pending.
@@ -40,9 +73,8 @@ func TestRunLoop_ReviewerTurnCancellationDuringTurnExitsCanceled(t *testing.T) {
 
 	res, _, err := h.run(loopCtx(t), RunOverrides{ModelRole: config.SelectedModelTypeSmart})
 
-	// The review failed for its own reason, but the operator's cancel was
-	// requested while it ran: the run must end canceled, never as a
-	// success that keeps the primary answer.
+	// A failed reviewer response still returns a cancellation error, while the
+	// primary answer remains intact and the cancel request is consumed.
 	var inc *runIncompleteError
 	require.ErrorAs(t, err, &inc)
 	require.Equal(t, "canceled", inc.Reason)

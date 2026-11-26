@@ -1,8 +1,3 @@
-// The non-interactive run path: run modes and per-invocation overrides,
-// session resolution, the panic-isolated agent-turn wrapper, and the
-// ExecuteRun event loop that computes a run and streams output; the thin
-// RunNonInteractive wrapper renders the final envelope.
-
 package app
 
 import (
@@ -10,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -24,14 +20,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// cleanupTimeout bounds the best-effort DB writes in RunNonInteractive's
-// post-run defers (A-2, task #779). Chosen as a small multiple of ordinary
-// SQLite lock contention (a single writer holding the DB for a query or two,
-// typically single-digit milliseconds) while staying far short of the 30s
-// busy_timeout configured in internal/db/connect.go -- long enough that a
-// momentarily busy DB still gets the write, short enough that a genuinely
-// stuck writer can't reproduce the "looks like a hang after output already
-// printed" symptom this fixes.
 const cleanupTimeout = 2 * time.Second
 
 // messageEventsClosedSeam is a test-only hook fired once, the first time
@@ -584,6 +572,10 @@ func executeRun(env RunEnv, ctx context.Context, req RunRequest) (result *RunRes
 	}()
 
 	if req.reviewerTurn {
+		if reviewerSessionMode(env.Config.Config()) == "fresh" {
+			freshResult, freshErr := runFreshReviewerTurn(env, ctx, sess.ID, basis, req.reviewerReport, overrides, failIfSessionBusy, stderr)
+			return freshResult, freshErr
+		}
 		// The loop's own reviewer pass: only the review phase runs, as an
 		// ordinary turn (the ctx carries no Drain marker).
 		reviewRunFn, reviewCtx := buildReviewerPassTurn(env, ctx, setup.callOpts)
@@ -656,41 +648,108 @@ func executeRun(env RunEnv, ctx context.Context, req RunRequest) (result *RunRes
 	if reviewerCandidate {
 		primaryResult := result
 		primaryFinalText := loop.finalText
-		// Reviewer pass stall handling (app_run_reviewer_stall.go): each
-		// attempt rebuilds the review turn fresh; a stalled attempt restarts
-		// the pass, and an always-stalling reviewer ends on the review-failed
-		// path with ErrReviewerUnresponsive.
+		// Each attempt rebuilds the reviewer turn fresh; a stalled attempt
+		// restarts the pass, and an always-stalling reviewer ends on failure.
+		attemptNumber := 0
 		attempt := func() (*RunResult, error) {
+			attemptNumber++
+			if reviewerSessionMode(env.Config.Config()) == "fresh" {
+				return runFreshReviewerAttempt(env, ctx, sess.ID, basis, primaryFinalText, attemptNumber, overrides, failIfSessionBusy, stderr)
+			}
 			reviewRunFn, reviewCtx := buildReviewerPassTurn(env, ctx, setup.callOpts)
 			loop.resetForReviewerPass(reviewCtx)
 			return loop.runTurnPhase(reviewerTurnPrompt(env, reviewCtx, sess.ID, basis), reviewRunFn)
 		}
 		reviewResult, reviewErr := retryStalledReviewerPass(attempt)
 		switch {
+		case reviewErr == nil && reviewResult != nil && reviewResult.ReviewerSessionID == "" && reviewerSessionMode(env.Config.Config()) == "fresh" && primaryResult != nil:
+			primaryResult.Warnings = append(primaryResult.Warnings, reviewResult.Warnings...)
+			loop.finalText = primaryFinalText
+			result, resultErr = primaryResult, nil
+		case reviewerSessionMode(env.Config.Config()) == "fresh" && reviewErr != nil &&
+			!errors.Is(reviewErr, ErrRunQueued) && !errors.Is(reviewErr, agent.ErrSessionBusy) &&
+			!turnRefusedByOwner(reviewErr) && ctx.Err() == nil && primaryResult != nil:
+			if reviewResult != nil {
+				for _, warning := range reviewResult.Warnings {
+					if !slices.Contains(primaryResult.Warnings, warning) {
+						primaryResult.Warnings = append(primaryResult.Warnings, warning)
+					}
+				}
+			}
+			primaryResult.ReviewVerdict = "error"
+			recordReviewFailure(primaryResult, stderr, reviewErr)
+			loop.finalText = primaryFinalText
+			result, resultErr = primaryResult, nil
+		case reviewerSessionMode(env.Config.Config()) == "fresh" && primaryResult != nil && ctx.Err() != nil &&
+			!errors.Is(reviewErr, ErrRunQueued) && !errors.Is(reviewErr, agent.ErrSessionBusy) && !turnRefusedByOwner(reviewErr):
+			if reviewResult != nil {
+				for _, warning := range reviewResult.Warnings {
+					if !slices.Contains(primaryResult.Warnings, warning) {
+						primaryResult.Warnings = append(primaryResult.Warnings, warning)
+					}
+				}
+			}
+			if reviewResult != nil && reviewResult.ReviewerSessionID != "" && (reviewErr == nil || runTimeoutCommitted(reviewErr)) {
+				primaryResult.ReviewerSessionID = reviewResult.ReviewerSessionID
+				attachReview(env, ctx, primaryResult, reviewResultSessionID(reviewResult, sess.ID), reviewResult.FinalText, stderr)
+				primaryResult.Usage.DeltaCostUSD += reviewResult.Usage.DeltaCostUSD
+				primaryResult.Usage.DeltaTokens += reviewResult.Usage.DeltaTokens
+			} else {
+				failure := reviewErr
+				if failure == nil {
+					failure = ctx.Err()
+				}
+				primaryResult.ReviewVerdict = "error"
+				recordReviewFailure(primaryResult, stderr, failure)
+			}
+			loop.finalText = primaryFinalText
+			resultErr = reviewErr
+			if resultErr == nil {
+				resultErr = ctx.Err()
+			}
+			result = primaryResult
 		case reviewErr == nil:
 			// A10/C9-21: the executor's answer stays the run's final text
 			// in every mode; the reviewer's verdict is additive.
 			if primaryResult != nil && reviewResult != nil {
-				attachReview(env, ctx, primaryResult, sess.ID, reviewResult.FinalText, stderr)
+				if reviewerSessionMode(env.Config.Config()) == "fresh" {
+					primaryResult.ReviewerSessionID = reviewResult.ReviewerSessionID
+				}
+				attachReview(env, ctx, primaryResult, reviewResultSessionID(reviewResult, sess.ID), reviewResult.FinalText, stderr)
+				if reviewResult.ReviewerSessionID != "" {
+					primaryResult.Warnings = append(primaryResult.Warnings, reviewResult.Warnings...)
+					primaryResult.Usage.DeltaCostUSD += reviewResult.Usage.DeltaCostUSD
+					primaryResult.Usage.DeltaTokens += reviewResult.Usage.DeltaTokens
+				}
 			} else if primaryResult == nil {
-				// No envelope in terse/stream without captureResult: surface
+				// No envelope in terse/stream mode without captureResult: surface
 				// the verdict's stderr line from a throwaway result. The
 				// reviewer's own text is still loop.finalText here.
 				reviewText := loop.finalText
 				if reviewResult != nil {
 					reviewText = reviewResult.FinalText
 				}
-				attachReview(env, ctx, &RunResult{}, sess.ID, reviewText, stderr)
+				attachReview(env, ctx, &RunResult{}, reviewResultSessionID(reviewResult, sess.ID), reviewText, stderr)
 			}
 			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
 		case errors.Is(reviewErr, ErrReviewerUnresponsive):
+			if primaryResult != nil && reviewResult != nil {
+				if reviewResult.ReviewerSessionID != "" {
+					primaryResult.Usage.DeltaCostUSD += reviewResult.Usage.DeltaCostUSD
+					primaryResult.Usage.DeltaTokens += reviewResult.Usage.DeltaTokens
+				}
+			}
 			// The reviewer stalled through every attempt: keep the
 			// executor's answer and take the existing review-failed path.
 			recordReviewFailure(primaryResult, stderr, reviewErr)
 			loop.finalText = primaryFinalText
 			result, resultErr = primaryResult, nil
 		case reviewFailureKeepsPrimary(ctx, reviewErr):
+			if primaryResult != nil && reviewResult != nil && reviewResult.ReviewerSessionID != "" {
+				primaryResult.Usage.DeltaCostUSD += reviewResult.Usage.DeltaCostUSD
+				primaryResult.Usage.DeltaTokens += reviewResult.Usage.DeltaTokens
+			}
 			// A review turn that failed for a reason of its own (a provider
 			// error, a timeout of the review turn) keeps the executor's
 			// answer as the run's outcome; only a canceled run, a

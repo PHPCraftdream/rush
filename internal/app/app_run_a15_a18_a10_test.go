@@ -166,7 +166,7 @@ func TestRunLoop_ReviewerPassKeepsExecutorFinalText(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, res)
-	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel}, h.requestedModels(),
+	require.Equal(t, []string{"smart-default", reviewerPassReviewerModel, reviewerPassReviewerModel}, h.requestedModels(),
 		"the executor turn plus exactly one reviewer pass")
 	require.Equal(t, reviewerPassPrimaryText, res.FinalText,
 		"final_text must stay the executor's report (A10)")
