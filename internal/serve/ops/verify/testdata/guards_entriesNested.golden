@@ -40,6 +40,41 @@
           ],
           "cwd": "\u003cTARGET\u003e",
           "exit_code": 0
+        },
+        {
+          "operation": "go list -m",
+          "argv": [
+            "go",
+            "list",
+            "-m"
+          ],
+          "cwd": "\u003cTARGET\u003e",
+          "exit_code": 0
+        },
+        {
+          "operation": "go list -json ./...",
+          "argv": [
+            "go",
+            "list",
+            "-json",
+            "./..."
+          ],
+          "cwd": "\u003cTARGET\u003e",
+          "exit_code": 0
+        },
+        {
+          "operation": "git grep -l -E db\\.(Connect|ConnectRead)\\( -- *_test.go",
+          "argv": [
+            "git",
+            "grep",
+            "-l",
+            "-E",
+            "db\\.(Connect|ConnectRead)\\(",
+            "--",
+            "*_test.go"
+          ],
+          "cwd": "\u003cTARGET\u003e",
+          "exit_code": 1
         }
       ],
       "guards": [
@@ -48,10 +83,10 @@
           "status": "fail",
           "duration_ms": 0,
           "exit_code": 1,
-          "examined_directories": 2,
+          "examined_directories": 3,
           "examined_files": 8,
           "violations": 1,
-          "summary": "2 code directories checked, 8 element file(s) counted, 0 generated skipped",
+          "summary": "3 code directories checked, 8 element file(s) counted, 0 generated skipped",
           "first_failure_excerpt": "TOO MANY ENTRIES: src has 8 elements (max 7)"
         },
         {
@@ -59,10 +94,10 @@
           "status": "pass",
           "duration_ms": 0,
           "exit_code": 0,
-          "examined_directories": 2,
-          "examined_files": 8,
+          "examined_directories": 3,
+          "examined_files": 9,
           "violations": 0,
-          "summary": "2 code directories checked, 8 element file(s) counted, 0 generated skipped",
+          "summary": "3 code directories checked, 9 element file(s) counted, 0 generated skipped",
           "first_failure_excerpt": ""
         },
         {
@@ -71,9 +106,9 @@
           "duration_ms": 0,
           "exit_code": 0,
           "examined_directories": 0,
-          "examined_files": 8,
+          "examined_files": 9,
           "violations": 0,
-          "summary": "8 file(s) checked, 0 generated skipped, 0 allowlisted over 1000 lines, max 1000\n0 hand-written file(s) over 900 lines (warning, limit 1000)",
+          "summary": "9 file(s) checked, 0 generated skipped, 0 allowlisted over 1000 lines, max 1000\n0 hand-written file(s) over 900 lines (warning, limit 1000)",
           "first_failure_excerpt": ""
         },
         {
@@ -82,9 +117,42 @@
           "duration_ms": 0,
           "exit_code": 0,
           "examined_directories": 0,
-          "examined_files": 8,
+          "examined_files": 9,
           "violations": 0,
-          "summary": "8 file(s) checked, 0 generated skipped, 0 allowlisted over 900 lines, max 900",
+          "summary": "9 file(s) checked, 0 generated skipped, 0 allowlisted over 900 lines, max 900",
+          "first_failure_excerpt": ""
+        },
+        {
+          "name": "layers",
+          "status": "pass",
+          "duration_ms": 0,
+          "exit_code": 0,
+          "examined_directories": 0,
+          "examined_files": 3,
+          "violations": 0,
+          "summary": "layer guard: 3 package(s) checked, 0 internal package(s) checked, 0 production edge(s) allowlisted (kept), 0 test file(s) allowlisted (kept); kit \u003c store \u003c session \u003c config \u003c agent \u003c app \u003c serve",
+          "first_failure_excerpt": ""
+        },
+        {
+          "name": "pkg-names",
+          "status": "fail",
+          "duration_ms": 0,
+          "exit_code": 1,
+          "examined_directories": 2,
+          "examined_files": 8,
+          "violations": 1,
+          "summary": "pkg-names guard: 2 package dir(s) checked, 1 unique name(s), 0 allowlisted collision(s)",
+          "first_failure_excerpt": "DUPLICATE PACKAGE NAME: \"fixture\" is declared by 2 directories: src src/nested\nrename one of them, or record the CURRENT count as \"fixture 2\" in pkg_names_allowlist.txt"
+        },
+        {
+          "name": "db-release-pairing",
+          "status": "pass",
+          "duration_ms": 0,
+          "exit_code": 0,
+          "examined_directories": 0,
+          "examined_files": 1,
+          "violations": 0,
+          "summary": "db-pairing guard: 1 tracked test file(s), 0 candidate file(s) examined, 0 unpaired",
           "first_failure_excerpt": ""
         }
       ]

@@ -15,13 +15,16 @@ type Result struct {
 	Name, Status, Summary, Excerpt string
 	Directories, Files, Violations int
 	DurationMS                     int64
+	// Messages carries the full verdict list (not serialized into the
+	// envelope; the envelope keeps the bounded first-failure excerpt).
+	Messages []string `json:"-"`
 }
 type sourceFile struct {
 	lines     int
 	generated bool
 }
 
-func Run(root string, paths []string, countTests bool) ([]Result, error) {
+func Run(root string, paths []string, countTests bool, invoke InvokeFunc) ([]Result, error) {
 	entry, err := readAllow(root, "dir_entries_allowlist.txt")
 	if err != nil {
 		return nil, err
@@ -76,12 +79,22 @@ func Run(root string, paths []string, countTests bool) ([]Result, error) {
 	if len(all) == 0 {
 		return nil, fmt.Errorf("no tracked source inputs")
 	}
-	return []Result{
+	results := []Result{
 		directoryGuard("dir-entries", all, entry, 7, countTests),
 		directoryGuard("dir-files", all, dirFiles, 21, true),
 		sizeGuard("file-size", all, size1000, 1000),
 		sizeGuard("file-size-900", all, size900, 900),
-	}, nil
+	}
+	layerRes, err := RunLayers(root, invoke)
+	if err != nil {
+		return nil, err
+	}
+	pkgRes, err := RunPkgNames(root, paths)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, layerRes, pkgRes, RunDbPair(root, paths, invoke))
+	return results, nil
 }
 
 func source(p string) bool {
