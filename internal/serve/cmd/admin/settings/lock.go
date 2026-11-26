@@ -21,15 +21,15 @@ var lockCmd = &cobra.Command{
 	Short: "Protect settings or manage machine-wide command locks",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if args[0] == "" {
+			return errors.New("an argument must not be empty")
+		}
 		yes, err := cmd.Flags().GetBool("yes")
 		if err != nil {
 			return err
 		}
 		if !stdinIsTerminal() && !yes {
 			return errors.New("non-interactive settings locking requires --yes; use 'rush lock list' for machine-wide locks, 'rush lock run <name> -- <command>' to run under a lock, or 'rush lock --yes <password>' to protect settings")
-		}
-		if args[0] == "" {
-			return errors.New("an argument must not be empty")
 		}
 		scope, err := cmdkit.ScopeFromFlags(cmd, config.ScopeGlobal)
 		if err != nil {
