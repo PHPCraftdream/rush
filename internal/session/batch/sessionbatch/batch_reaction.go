@@ -303,7 +303,7 @@ func (s *BatchStore) BatchReactionMarkReactedWithMessageUpdate(ctx context.Conte
 	if msg.SessionID != owner {
 		return session.ErrBatchProjectionConflict
 	}
-	// See batch_tool_result.go: prepare before the tx holds the pool's only
+	// See batch_delivery_store.go: prepare before the tx holds the pool's only
 	// connection.
 	if err := db.PdaBatchEnsure(ctx, s.writer); err != nil {
 		return err
