@@ -140,14 +140,14 @@ func TestBatchFinishedWork_ReusedCallIDIncarnationsDistinct(t *testing.T) {
 	require.Equal(t, "completed", new.State)
 
 	// Pre-latch ONLY the old incarnation, as a previous pass would have;
-	// the export predicate (quotaTerminalState && Announced &&
-	// !terminal[Key]) still yields the NEW incarnation's key.
+	// quotaRowExports is the production function quotaPhase uses and still
+	// yields the NEW incarnation's key.
 	l := &cliLoop{env: h.app.runEnv(), host: h.app.loopHost(), ctx: ctx, sessionID: owner}
 	l.quota = &cliQuotaStop{cause: nil, terminal: map[string]bool{"root-fw-old/root-fw-old-t1": true}}
 	export := func() []string {
 		var finished []string
 		for _, row := range rows {
-			if l.quotaTerminalState(row.State) && row.Announced && !l.quota.terminal[row.Key] {
+			if quotaRowExports(row, l.quota.terminal) {
 				finished = append(finished, row.Key)
 			}
 		}
