@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -90,7 +92,7 @@ func TestCoordinatorBatchStopRetryPendingOwner(t *testing.T) {
 	_, ok, err := env.install.Done.AwaitDone(ctx, env.sessionID, root)
 	require.NoError(t, err)
 	require.True(t, ok)
-	pulled, err := env.store.BatchPullNotices(ctx, env.messages, env.sessionID, buildBatchNoticeMessageParams)
+	pulled, err := env.store.BatchPullNotices(ctx, env.messages, env.sessionID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(t, err)
 	require.NotEmpty(t, pulled)
 	debt, err := env.store.BatchReactionVisibleDebtExists(ctx, env.sessionID)

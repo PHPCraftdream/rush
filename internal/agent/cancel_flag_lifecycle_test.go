@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -186,7 +188,7 @@ func TestCancelFlag_LoopDrivenSessionKeepsItAfterTheAbort(t *testing.T) {
 	f.seedDebt(ctx, "call-1", false)
 	require.NoError(t, f.env.sessions.RequestCancel(ctx, f.sessID))
 
-	_, err := f.sa.Run(ctx, newDrainCall(SessionAgentCall{SessionID: f.sessID, MaxOutputTokens: 100}))
+	_, err := f.sa.Run(ctx, drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID, MaxOutputTokens: 100}))
 	require.Error(t, err)
 	require.EqualValues(t, 1, f.steps.Load())
 	require.True(t, f.cancelRequested(), "the loop's flag survives the Drain that honoured it")
@@ -194,7 +196,7 @@ func TestCancelFlag_LoopDrivenSessionKeepsItAfterTheAbort(t *testing.T) {
 	f.coord.driverHints.releaseExternalDriver(f.sessID)
 	f.steps.Store(0)
 	f.seedDebt(ctx, "call-2", false) // the aborted turn's first step already reacted to call-1
-	_, err = f.sa.Run(ctx, newDrainCall(SessionAgentCall{SessionID: f.sessID, MaxOutputTokens: 100}))
+	_, err = f.sa.Run(ctx, drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID, MaxOutputTokens: 100}))
 	require.Error(t, err, "without a loop the Drain honours the flag once")
 	require.False(t, f.cancelRequested(), "and clears it")
 }
@@ -234,7 +236,7 @@ func TestRunSubAgent_ResumeClearsAStaleCancelFlag(t *testing.T) {
 // leaves the flag for that owner; once the lock is free the same turn is
 // admitted and the flag is spent.
 //
-// Revert-check: restoring the eager clearCancelRequest at the top of
+// Revert-check: restoring the eager drainctl.ClearCancelRequest at the top of
 // runInternal clears the flag on the refused (locked-out) call and the first
 // assertion below goes red; deleting the runOwned admission invocation keeps
 // the flag after the admitted turn and the last one goes red.

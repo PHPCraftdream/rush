@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openaicompat"
@@ -112,7 +114,7 @@ func TestDrainCall_NeverDurablyEnqueued(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "drain-no-durable-queue")
 	require.NoError(t, err)
 
-	drain := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	drain := drainctl.NewDrainCall(SessionAgentCall{SessionID: sess.ID})
 	require.NoError(t, sessionAgent.restartOrphanedWithRetry([]SessionAgentCall{drain}))
 
 	pending, err := env.sessions.ListPendingRunQueueEntries(ctx)
@@ -209,7 +211,7 @@ func TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt(t *testing.T) {
 	a2ClaimJob(t, env.conn, sess.ID, "call-1", true)
 	a2CompleteJob(t, env.conn, sess.ID, "call-1", "job output")
 
-	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	drainCall := drainctl.NewDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sessionAgent.Run(ctx, drainCall)
 	require.NoError(t, err)
 	require.NotNil(t, result, "a Drain that pulled a wake=1 notice must reach the provider")
@@ -276,7 +278,7 @@ func TestDrain_NothingPendingSkipsProviderAndFinishesTurn(t *testing.T) {
 	sess, err := env.sessions.Create(ctx, "drain-empty-test")
 	require.NoError(t, err)
 
-	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	drainCall := drainctl.NewDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sessionAgent.Run(ctx, drainCall)
 	require.NoError(t, err)
 	require.Nil(t, result, "a Drain with nothing to pull must never reach the provider")

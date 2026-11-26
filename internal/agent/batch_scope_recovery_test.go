@@ -12,6 +12,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
 	sessionhosts "github.com/PHPCraftdream/rush/internal/session/state/sessionhosts"
@@ -315,14 +317,14 @@ func TestBatchScopeRecovery_OffModeInert(t *testing.T) {
 }
 
 // TestBatchNoticeClassification_RecoveredNodeIsInterruption pins
-// buildBatchNoticeMessageParams's H4 W2 classification: state "interrupted"
+// drainctl.BuildBatchNoticeMessageParams's H4 W2 classification: state "interrupted"
 // or outcome_code "host_lost" reads as an interruption; a plain failure
 // stays a failure.
 func TestBatchNoticeClassification_RecoveredNodeIsInterruption(t *testing.T) {
 	t.Parallel()
 
 	textOf := func(row session.BatchNoticeRow) string {
-		params := buildBatchNoticeMessageParams(row)
+		params := drainctl.BuildBatchNoticeMessageParams(row)
 		require.Len(t, params.Parts, 1)
 		return params.Parts[0].(message.TextContent).Text
 	}

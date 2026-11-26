@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"charm.land/fantasy"
@@ -82,9 +84,9 @@ func TestCompaction_DoesNotPullNotices(t *testing.T) {
 func TestMailboxSubmit_DrainMergeRule(t *testing.T) {
 	mb := &mailboxpkg.Mailbox{State: mailboxpkg.MbOwned, Current: mailboxpkg.Generation{ID: 1, Cancel: func() {}}}
 
-	owner, _ := mb.Submit(newDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
+	owner, _ := mb.Submit(drainctl.NewDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
 	require.False(t, owner)
-	owner, _ = mb.Submit(newDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
+	owner, _ = mb.Submit(drainctl.NewDrainCall(SessionAgentCall{SessionID: "s1"}), nil)
 	require.False(t, owner)
 	mb.Mu.Lock()
 	require.Len(t, mb.Submitted, 1, "at most one Drain may sit in the queue")
@@ -109,7 +111,7 @@ func TestNewDrainCall_ResetsInheritedFlags(t *testing.T) {
 		ExistingMessageID: "m1", FromDurableQueue: true, FailIfSessionBusy: true,
 		OnUserMessageCreated: func(string) {},
 	}
-	call := newDrainCall(base)
+	call := drainctl.NewDrainCall(base)
 	require.True(t, call.IsDrain)
 	require.Empty(t, call.Prompt)
 	require.Empty(t, call.NoticeKind)
@@ -247,7 +249,7 @@ func TestDrain_CommittedRetryReachesProviderWithNothingToPull(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	call := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	call := drainctl.NewDrainCall(SessionAgentCall{SessionID: sess.ID})
 	call.DrainTurnCommitted = true
 	result, err := sa.Run(ctx, call)
 	require.NoError(t, err)
@@ -352,7 +354,7 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 // user messages: preparePrompt's trailing todo reminder moves in front of
 // them. Non-reminder tails and k=0 are left alone.
 //
-// Revert-check performed: made reminderBeforeTail return history unchanged
+// Revert-check performed: made drainctl.ReminderBeforeTail return history unchanged
 // -- this test FAILED, and so did internal/app's
 // TestRunNonInteractiveChildReceivesItsOwnAsyncBashResult (the root's Drain
 // request ended with the reminder, not the delegation's notice). Restored;
@@ -366,15 +368,15 @@ func TestReminderBeforeTail(t *testing.T) {
 		return part.Text
 	}
 
-	got := reminderBeforeTail([]fantasy.Message{u("old"), u("notice-1"), u("notice-2"), reminder}, 2)
+	got := drainctl.ReminderBeforeTail([]fantasy.Message{u("old"), u("notice-1"), u("notice-2"), reminder}, 2)
 	require.Len(t, got, 4)
 	require.Equal(t, []string{"old", reminder.Content[0].(fantasy.TextPart).Text, "notice-1", "notice-2"},
 		[]string{text(got[0]), text(got[1]), text(got[2]), text(got[3])})
 
 	plain := []fantasy.Message{u("old"), u("notice")}
-	require.Equal(t, plain, reminderBeforeTail(plain, 1), "no trailing reminder: untouched")
+	require.Equal(t, plain, drainctl.ReminderBeforeTail(plain, 1), "no trailing reminder: untouched")
 	withReminder := []fantasy.Message{u("old"), reminder}
-	require.Equal(t, withReminder, reminderBeforeTail(withReminder, 0), "k=0: untouched")
+	require.Equal(t, withReminder, drainctl.ReminderBeforeTail(withReminder, 0), "k=0: untouched")
 }
 
 // TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop pins B13: a no-turn Drain
@@ -432,7 +434,7 @@ func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	}
 	t.Cleanup(func() { runTurnToolsSnapshotSeam = orig })
 
-	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	drainCall := drainctl.NewDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sa.Run(ctx, drainCall)
 	require.NoError(t, err)
 	require.NotNil(t, result, "the queued real call must run as the loop's next turn")

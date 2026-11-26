@@ -3,6 +3,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -37,7 +39,7 @@ func TestRequestedRoleContinuationRefreshesModelWithoutChangingAuthority(t *test
 	require.Equal(t, original.SystemPrompt, got.SystemPrompt)
 	require.Equal(t, original.SystemPromptPrefix, got.SystemPromptPrefix)
 	require.Equal(t, original.MaxCost, got.MaxCost)
-	wake := newDrainCall((toolwrap.Driver{Call: got}).CallFor("reaction"))
+	wake := drainctl.NewDrainCall((toolwrap.Driver{Call: got}).CallFor("reaction"))
 	require.Equal(t, got.RequestedModelRole, wake.RequestedModelRole)
 	require.Equal(t, got.RequestedModelSource, wake.RequestedModelSource)
 	require.Equal(t, before.ModelRole, wake.CallOptions.ModelRole)

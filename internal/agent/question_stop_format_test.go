@@ -25,7 +25,7 @@ import (
 // the batch world the question framing is delivered at PUBLISH time (the
 // child_question session notice, batch_install_question.go), while recovery
 // marks the node interrupted; the interruption notice text is
-// buildBatchNoticeMessageParams's, pinned by
+// drainctl.BuildBatchNoticeMessageParams's, pinned by
 // TestBatchNoticeClassification_RecoveredNodeIsInterruption.
 func TestQuestionStopFormatRecoverDeadHost(t *testing.T) {
 	t.Parallel()

@@ -156,7 +156,7 @@ func FormatAsyncCompletion(completion batchdispatch.AsyncCompletion) string {
 // never run on c.host.currentAgent() (task #1049).
 func (c *backgroundComponent) notifyAsyncCompletion(completion batchdispatch.AsyncCompletion) {
 	// No ctx tagging needed anymore: a Drain call's own constructor
-	// (newDrainCall) unconditionally stamps AutoResumed/BackgroundJobNotice/
+	// (drainctl.NewDrainCall) unconditionally stamps AutoResumed/BackgroundJobNotice/
 	// NoticeKind itself, and a Drain never creates a user message (empty
 	// Prompt), so there is no Origin left for a caller-supplied ctx to
 	// influence either.

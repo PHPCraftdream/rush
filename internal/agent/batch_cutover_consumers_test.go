@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
@@ -60,7 +62,7 @@ func TestBatchCutoverNoLegacyTableON(t *testing.T) {
 	pulled, err := facts.PullBatchNotices(env.ctx, env.messages, env.sessionID)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1)
-	pulled, err = facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	pulled, err = facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled)
 	held, err := facts.HeldQuestions(env.ctx, env.sessionID)
@@ -391,7 +393,7 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 	require.NoError(t, err)
 	env.invokeDetached("call-pull-live", "view", leaf)
 	leaf.waitStarted(t, "call-pull-live")
-	sp, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	sp, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, sp, 1, "the check-in delivers while the scope is open")
 
@@ -404,7 +406,7 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 		Text: "check-in two", Wake: 1, CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
-	sp, err = facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	sp, err = facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Empty(t, sp, "the closed-scope check-in is voided")
 	var delivery2 string
@@ -420,7 +422,7 @@ func TestBatchCutoverNoticePullON(t *testing.T) {
 		Text: "held question?", Wake: 1, CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
-	sp, err = facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	sp, err = facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, sp, 1, "the child question delivers without legacy validation")
 	env.logDebtRows(t)

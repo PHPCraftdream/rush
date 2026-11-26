@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -106,7 +108,7 @@ func TestBatchDrainTurnEntryReachesProviderON(t *testing.T) {
 	// Pull with the OWNER f.sessID (BatchPullNotices is owner-scoped): the
 	// completion notice delivers before the Drain turn.
 	require.Eventually(t, func() bool {
-		pulled, err := env.store.BatchPullNotices(env.ctx, env.messages, f.sessID, buildBatchNoticeMessageParams)
+		pulled, err := env.store.BatchPullNotices(env.ctx, env.messages, f.sessID, drainctl.BuildBatchNoticeMessageParams)
 		require.NoError(t, err)
 		return len(pulled) >= 1
 	}, 5*time.Second, 5*time.Millisecond, "the batch pull never delivered the completion for %s", f.sessID)

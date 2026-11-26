@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 
 	"charm.land/fantasy"
@@ -505,7 +507,7 @@ func (e *cutoverEnv) backgroundNoticeCount() int64 {
 // count.
 func (e *cutoverEnv) pullBatchNotices() int {
 	e.t.Helper()
-	pulled, err := e.store.BatchPullNotices(e.ctx, e.messages, e.sessionID, buildBatchNoticeMessageParams)
+	pulled, err := e.store.BatchPullNotices(e.ctx, e.messages, e.sessionID, drainctl.BuildBatchNoticeMessageParams)
 	require.NoError(e.t, err)
 	return len(pulled)
 }

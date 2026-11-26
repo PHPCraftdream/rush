@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/store/message"
@@ -127,7 +129,7 @@ func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 	// history -- the shape decideDrainTurn's first (main) evaluation needs.
 	seedRoot, seedChild := seedFixtureJobDebt(t, env.conn, sess.ID, "call-async-1", true)
 
-	drainCall := newDrainCall(SessionAgentCall{SessionID: sess.ID})
+	drainCall := drainctl.NewDrainCall(SessionAgentCall{SessionID: sess.ID})
 	result, err := sa.Run(ctx, drainCall)
 	finalSess, sessionErr := env.sessions.Get(ctx, sess.ID)
 	msgs, messagesErr := env.messages.List(ctx, sess.ID)

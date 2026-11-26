@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 
 	"github.com/stretchr/testify/require"
@@ -77,7 +79,7 @@ func TestOrphanedDrain_ReleaseTimeRecheckConverges(t *testing.T) {
 			return err
 		}
 		mb.Mu.Lock()
-		mb.Submitted = append(mb.Submitted, newDrainCall(SessionAgentCall{SessionID: f.sessID}))
+		mb.Submitted = append(mb.Submitted, drainctl.NewDrainCall(SessionAgentCall{SessionID: f.sessID}))
 		mb.Mu.Unlock()
 		return nil
 	}

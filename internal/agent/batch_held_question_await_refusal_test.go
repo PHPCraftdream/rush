@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
@@ -325,7 +327,7 @@ func TestHeldQuestionIncidentChain(t *testing.T) {
 	coord.sessions = env.sessions
 	coord.messages = env.messages
 	facts := bindBatchNodeFacts(t, coord, env.conn, t.TempDir())
-	pulled, perr := facts.PullPendingSessionNotices(ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	pulled, perr := facts.PullPendingSessionNotices(ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, perr)
 	require.NotEmpty(t, pulled, "the production session-notice pull delivers the child question into history")
 	var questionCount int

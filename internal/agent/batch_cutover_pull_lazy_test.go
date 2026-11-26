@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/session"
 	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"github.com/PHPCraftdream/rush/internal/store/db"
@@ -48,7 +50,7 @@ func newBatchPullEnv(t *testing.T) (*cutoverEnv, *nodeBatchCutoverFacts, *batchP
 
 func TestBatchPullPendingNoticesSkipsLiveReadWhenEmpty(t *testing.T) {
 	env, facts, counting := newBatchPullEnv(t)
-	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled)
 	require.Zero(t, counting.begins, "an empty pull must not open the live-read transaction")
@@ -62,7 +64,7 @@ func TestBatchPullPendingNoticesDeliversWithoutLiveRead(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
-	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1)
 	require.Zero(t, counting.begins, "non-supervision delivery never needs the live scope")
@@ -77,7 +79,7 @@ func TestBatchPullSupervisionOpenScopeDelivers(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
-	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Len(t, pulled, 1, "an open live scope delivers the check-in")
 	require.Equal(t, 1, counting.begins, "exactly one transactional live read")
@@ -91,7 +93,7 @@ func TestBatchPullSupervisionClosedScopeVoids(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)
-	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, buildSessionNoticeMessageParams)
+	pulled, err := facts.PullPendingSessionNotices(env.ctx, env.messages, env.sessionID, drainctl.BuildSessionNoticeMessageParams)
 	require.NoError(t, err)
 	require.Empty(t, pulled, "a closed scope voids the check-in")
 	require.Equal(t, 1, counting.begins, "exactly one transactional live read")

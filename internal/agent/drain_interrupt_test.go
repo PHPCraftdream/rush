@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
@@ -62,7 +64,7 @@ func newInterruptDrainFixture(t *testing.T, active func(sessionID string) Sessio
 // (replacement.IsDrain true, AutoResumed true). Restored; re-ran, passed.
 func TestHandleInterruptTick_DrainActiveCallNotInherited(t *testing.T) {
 	coord, current, env, sessionID := newInterruptDrainFixture(t, func(id string) SessionAgentCall {
-		return newDrainCall(SessionAgentCall{SessionID: id, NoticeKind: "supervision"})
+		return drainctl.NewDrainCall(SessionAgentCall{SessionID: id, NoticeKind: "supervision"})
 	})
 
 	fired, err := coord.handleInterruptTick(t.Context(), sessionID)
@@ -94,7 +96,7 @@ func TestHandleInterruptTick_DrainActiveCallNotInherited(t *testing.T) {
 func TestHandleActiveNonDurableInterrupt_DrainActiveCallNotInherited(t *testing.T) {
 	creds := &CredentialSet{Credentials: []Credential{{Provider: "tenant", Type: ProviderTypeOpenAI, APIKey: "k"}}}
 	coord, current, _, sessionID := newInterruptDrainFixture(t, func(id string) SessionAgentCall {
-		call := newDrainCall(SessionAgentCall{SessionID: id})
+		call := drainctl.NewDrainCall(SessionAgentCall{SessionID: id})
 		call.Credentials = creds
 		return call
 	})

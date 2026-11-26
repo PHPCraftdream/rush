@@ -301,7 +301,7 @@ type SessionAgentCall struct {
 	// starter for ownership.
 	FailIfSessionBusy bool
 
-	// IsDrain: phase-4 step 3 drain call. Set by newDrainCall
+	// IsDrain: phase-4 step 3 drain call. Set by drainctl.NewDrainCall
 	// (agent_drain.go) or, for the prompt-string entry points, from
 	// WithDrainCall's ctx marker (buildCall/runInternal) -- see agent_drain.go
 	// for the full contract. Never durable-queue-persisted.

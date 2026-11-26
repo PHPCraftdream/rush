@@ -11,6 +11,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
@@ -22,6 +23,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
+	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
 // drainHost is the narrow coordinator surface the drain/reaction/arbiter
@@ -441,4 +443,68 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, ha
 
 func SetDrainPacingForTest(retryAfter, refusalPause, recheckInterval time.Duration) (restore func()) {
 	return drainctl.DrainPacingForTest(retryAfter, refusalPause, recheckInterval)
+}
+
+// turn: the affected row simply stays pending and is retried on the next
+// pull (this turn's own step boundary, or a later turn).
+func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string) (pulled []message.Message) {
+	if sessionID == "" {
+		return nil
+	}
+	// Batch-only pull: batch completion notices plus pending session
+	// notices, both through the node-backed facts; no legacy void queries
+	// and no async_jobs job-notice pull (the old table is gone).
+	facts := coordinatorBatchCutoverFacts(a.coord)
+	// claims[i] is the async_jobs claim id of pulled[i] -- always "" now:
+	// batch notices and session_notices rows carry no legacy claim identity.
+	// The reaction chain guard's key (#1113) stays: chainHasClaim("") is
+	// false, so the "" claims are safe.
+	claims := make([]string, 0, 8)
+	bp, err := facts.PullBatchNotices(ctx, a.messages, sessionID)
+	if err != nil {
+		slog.Warn("notice pull: batch notice pull failed", "session_id", sessionID, "err", err)
+	}
+	for _, p := range bp {
+		pulled = append(pulled, p.Message)
+		claims = append(claims, "")
+	}
+	sp, err := facts.PullPendingSessionNotices(ctx, a.messages, sessionID, drainctl.BuildSessionNoticeMessageParams)
+	if err != nil {
+		slog.Warn("notice pull: batch session notice pull failed", "session_id", sessionID, "err", err)
+	}
+	for _, p := range sp {
+		pulled = append(pulled, p.Message)
+		claims = append(claims, "")
+	}
+	// Doc sec.3.4: moving a notice into history is progress for the
+	// supervision countdown -- except a supervision check-in itself, which
+	// must not reset the backoff it just grew, and a completion of the
+	// reaction chain guard's own idle launches (#1113): a supervision tick
+	// that drains such a completion must not reset the backoff either, or
+	// the no-progress pause after 6 ticks never arrives.
+	coord := a.coord
+	for i, m := range pulled {
+		if m.NoticeKind == sessionprompt.NoticeKindSupervision {
+			continue
+		}
+		if claims[i] != "" && coord != nil && coord.reactionChainHasClaim(sessionID, claims[i]) {
+			continue
+		}
+		if coord != nil {
+			coord.recordProgress(sessionID)
+		}
+		break
+	}
+	return pulled
+}
+
+// pullPendingNoticesForStep is PrepareStep's step-boundary pull (doc
+// sec.3.3): the same pull, at a point where the turn already runs.
+func (a *sessionAgent) pullPendingNoticesForStep(ctx context.Context, sessionID string) []message.Message {
+	return a.pullPendingNotices(ctx, sessionID)
+}
+
+// the session, so two processes can never write one session's messages.
+func ForeignWorkspaceError(sess coresession.Session) error {
+	return drainctl.ForeignWorkspaceError(sess)
 }

@@ -16,7 +16,7 @@
 //  3. InjectAgent's interrupt replacement carries the SAME pointer and
 //     shaped toolset onto the replacement call the driver's mailbox
 //     receives.
-//  4. drainCallFor's wake path (callFor → newDrainCall) preserves the same
+//  4. drainCallFor's wake path (callFor → drainctl.NewDrainCall) preserves the same
 //     pointer and shaped toolset.
 //  5. The REAL durable-payload writer (batchOneItemSpec, question_route
 //     omitted) chained into the REAL executor guard: the ask fails fast
@@ -318,7 +318,7 @@ func TestInjectAgentReplacementInheritsChildCapability(t *testing.T) {
 }
 
 // TestDrainCallForCarriesDriverCapability: drainCallFor's driver branch
-// (callFor → newDrainCall) must preserve the registered template's frozen
+// (callFor → drainctl.NewDrainCall) must preserve the registered template's frozen
 // capability pointer and shaped toolset onto every automatic wake turn.
 // Catches a regression where a wake rebuilt the child as a non-batch
 // session (the wake arrives on a background callback context that carries

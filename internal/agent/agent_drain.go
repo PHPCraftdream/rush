@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
@@ -77,7 +79,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok && driver.ParentSessionID != "" {
 			mgr.InheritSessionRunAllowlistForGeneration(driver.ParentSessionID, sessionID, driver.Generation)
 		}
-		call := newDrainCall(driver.CallFor(""))
+		call := drainctl.NewDrainCall(driver.CallFor(""))
 		if driver.Call.RoleContract != nil && (call.CallOptions == nil || call.CallOptions.RoleContract == nil) {
 			call.CallOptions = WithRoleContractCopy(call.CallOptions, driver.Call.RoleContract)
 		}
@@ -89,7 +91,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 			}
 		} else if driver.SlotRole != "" && call.Credentials == nil {
 			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.SlotRole); ok {
-				call = applyDrainModelOptions(call, refreshed)
+				call = drainctl.ApplyDrainModelOptions(call, refreshed)
 				call.ProviderOptions = modelkit.GetProviderOptions(sessionID, refreshed, providerCfg)
 			}
 		}
@@ -137,7 +139,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 		}
 		// CallOptions remain the source of call policy; the marker now reflects
 		// the latest persisted user-message origin rather than inherited setup.
-		origin, hasUserMessage := lastUserMessageOrigin(ctx, c.messages, sessionID)
+		origin, hasUserMessage := drainctl.LastUserMessageOrigin(ctx, c.messages, sessionID)
 		capOpts.WebTurnOptIn = hasUserMessage && origin == message.OriginWeb && capOpts.ModelRole != config.SelectedModelTypeReviewer
 		ctx = WithCallOptions(ctx, capOpts)
 		// Carry the fence's folder-scope spec on the ctx too, mirroring
@@ -163,7 +165,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	if prep == nil {
 		// With no execution fence, use CallOptions to carry the web-turn policy
 		// into model resolution without replacing unrelated context options.
-		origin, hasUserMessage := lastUserMessageOrigin(ctx, c.messages, sessionID)
+		origin, hasUserMessage := drainctl.LastUserMessageOrigin(ctx, c.messages, sessionID)
 		if existing := callOptionsFrom(ctx); existing != nil || hasUserMessage && origin == message.OriginWeb {
 			var opts CallOptions
 			if existing != nil {
@@ -195,7 +197,7 @@ func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (Sessi
 	if err != nil {
 		return SessionAgentCall{}, nil, err
 	}
-	call = newDrainCall(call)
+	call = drainctl.NewDrainCall(call)
 	if rootLogicalID != "" {
 		call.LogicalCallID = rootLogicalID
 	}
