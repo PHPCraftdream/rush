@@ -1,13 +1,16 @@
 package settingsctl
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,6 +54,104 @@ func newTestStoreWithDir(t *testing.T) (*config.ConfigStore, string) {
 }
 
 // --- Cobra structure tests ---
+
+func lockCLIEnv(t *testing.T) {
+	t.Helper()
+	base := t.TempDir()
+	t.Setenv("RUSH_GLOBAL_DATA", filepath.Join(base, "data"))
+	t.Setenv("RUSH_GLOBAL_CONFIG", filepath.Join(base, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(base, "xdg-data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(base, "xdg-config"))
+}
+
+func executeLockCLI(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	lockCLIEnv(t)
+	cmd := NewLockCmd()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return output.String(), err
+}
+
+func TestLockNonInteractiveRequiresYes(t *testing.T) {
+	old := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = old })
+	_, err := executeLockCLI(t, "status")
+	require.Error(t, err)
+	for _, text := range []string{"rush lock list", "rush lock run <name> -- <command>", "rush lock --yes <password>"} {
+		require.Contains(t, err.Error(), text)
+	}
+	store, err := config.Load(t.TempDir(), t.TempDir(), false)
+	require.NoError(t, err)
+	state, err := store.LockState()
+	require.NoError(t, err)
+	require.False(t, state.Global)
+}
+
+func TestLockNonInteractiveYesAndTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		terminal bool
+		args     []string
+	}{
+		{name: "yes", args: []string{"--yes", "secret"}},
+		{name: "terminal", terminal: true, args: []string{"secret"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := stdinIsTerminal
+			stdinIsTerminal = func() bool { return tc.terminal }
+			t.Cleanup(func() { stdinIsTerminal = old })
+			_, err := executeLockCLI(t, tc.args...)
+			require.NoError(t, err)
+			store, err := config.Load(t.TempDir(), t.TempDir(), false)
+			require.NoError(t, err)
+			state, err := store.LockState()
+			require.NoError(t, err)
+			require.True(t, state.Global)
+		})
+	}
+}
+
+func TestLockMachineListAndRunDispatch(t *testing.T) {
+	for _, name := range []string{"list", "run"} {
+		t.Run(name, func(t *testing.T) {
+			lockCLIEnv(t)
+			cmd := NewLockCmd()
+			cmd.AddCommand(&cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), "machine-lock")
+				return err
+			}})
+			cmd.AddCommand(&cobra.Command{Use: "run <name>", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, _ []string) error {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), "machine-run")
+				return err
+			}})
+			var output bytes.Buffer
+			cmd.SetOut(&output)
+			args := []string{"list"}
+			want := "machine-lock"
+			if name == "run" {
+				args = []string{"run", "build", "--", "command"}
+				want = "machine-run"
+			}
+			cmd.SetArgs(args)
+			require.NoError(t, cmd.Execute())
+			require.Contains(t, output.String(), want)
+			store, err := config.Load(t.TempDir(), t.TempDir(), false)
+			require.NoError(t, err)
+			state, err := store.LockState()
+			require.NoError(t, err)
+			require.False(t, state.Global)
+		})
+	}
+}
+
+func TestLockYesFlagIsNotRegisteredOnUnlock(t *testing.T) {
+	require.Nil(t, NewUnlockCmd().Flags().Lookup("yes"))
+}
 
 func TestMCPCmd_Exists(t *testing.T) {
 	t.Parallel()

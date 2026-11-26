@@ -220,6 +220,13 @@ func runLockTree(t *testing.T, workspace, dataDir string, args ...string) (stdou
 	t.Helper()
 	cmdtest.RestoreWorkingDir(t)
 	root := NewRootCmd()
+	args = append([]string(nil), args...)
+	for i, arg := range args {
+		if arg == "lock" {
+			args = append(args[:i+1], append([]string{"--yes"}, args[i+1:]...)...)
+			break
+		}
+	}
 	root.SetArgs(append([]string{"--cwd", workspace, "--data-dir", dataDir}, args...))
 	stdout, stderr = cmdtest.CaptureStdoutAndStderr(t, func() {
 		runErr = root.ExecuteContext(t.Context())

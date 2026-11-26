@@ -3,21 +3,33 @@ package settingsctl
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
+
+	"golang.org/x/term"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/serve/cmd/cli/cmdkit"
 	"github.com/spf13/cobra"
 )
 
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
 var lockCmd = &cobra.Command{
 	Use:   "lock [password]",
-	Short: "Protect settings",
+	Short: "Protect settings or manage machine-wide command locks",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if args[0] == "" {
 			return errors.New("an argument must not be empty")
+		}
+		yes, err := cmd.Flags().GetBool("yes")
+		if err != nil {
+			return err
+		}
+		if !stdinIsTerminal() && !yes {
+			return errors.New("non-interactive settings locking requires --yes; use 'rush lock list' for machine-wide locks, 'rush lock run <name> -- <command>' to run under a lock, or 'rush lock --yes <password>' to protect settings")
 		}
 		scope, err := cmdkit.ScopeFromFlags(cmd, config.ScopeGlobal)
 		if err != nil {
@@ -87,6 +99,7 @@ func NewLockCmd() *cobra.Command {
 			c.Flags().Bool("global", false, "Use global settings")
 			c.Flags().Bool("local", false, "Use workspace settings")
 		}
+		lockCmd.Flags().Bool("yes", false, "Confirm settings protection in non-interactive use")
 	})
 	return cmdkit.DeepFreshCmd(lockCmd)
 }

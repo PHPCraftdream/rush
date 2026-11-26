@@ -213,7 +213,7 @@ func TestJournalWrongPasswordJournalled(t *testing.T) {
 		}
 	})
 	workspace, dataDir := t.TempDir(), t.TempDir()
-	_, err := runRushTree(t, "--cwd", workspace, "--data-dir", dataDir, "lock", "right-pw-value")
+	_, err := runRushTree(t, "--cwd", workspace, "--data-dir", dataDir, "lock", "--yes", "right-pw-value")
 	require.NoError(t, err)
 
 	clijournal.ResetCommandJournalForTests()
