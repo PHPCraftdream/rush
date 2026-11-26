@@ -86,7 +86,6 @@ internal/config 32
 internal/session/jobbatch/lab 18
 internal/session 9
 # EX4: 22 direct production Go sources plus the components directory = 23 direct elements; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
-internal/session/service 18
 # internal/config/domains/datadir 9 -> 7: the D2-6 tail merged export.go into datadir.go and global_testguard.go into global_dir.go; row retired.
 # born over the limit (MV3, plan D3); falls at EX lanes
 internal/session/batch/sessionbatch 19
