@@ -32,7 +32,7 @@
 internal/agent 60
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
-internal/agent/tools 35
+internal/agent/tools 31
 # 19 -> 18: lane D2-tools+mcp M1 moved the stateless transport out to
 # internal/agent/tools/mcp/mcpdial (transport.go, process_unix.go,
 # process_other.go: -3 files, +1 code directory) and M2 split mutation.go
