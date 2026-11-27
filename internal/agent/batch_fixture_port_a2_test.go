@@ -130,7 +130,7 @@ func newA2WakeDebtFixture(t *testing.T, title string, wireOnSessionIdle bool) *a
 	opts := SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: f.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: f.coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(f.coord),
 	}
 	if wireOnSessionIdle {
 		opts.OnSessionIdle = f.coord.onSessionIdleHook

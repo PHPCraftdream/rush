@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
@@ -26,7 +27,7 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	// Coord is the owning coordinator (batch facts, reaction store, notice
 	// pull route through it). Nil on bare fixtures.
-	Coord *coordinator
+	Coord agentcall.CoordinatorPort
 	// OnSessionIdle -- see sessionAgent.onSessionIdle's doc. Nil in every
 	// test that builds a bare sessionAgent directly (no coordinator to
 	// notify).

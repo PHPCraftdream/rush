@@ -1,0 +1,474 @@
+measure	C1	port members verified	coordinator conformance	internal/agent/coordinator.go; internal/agent/coordinator_agent_control.go; internal/agent/coordinator_models_build.go; internal/agent/credentials.go; internal/agent/drain_attempt.go; internal/agent/agent_own_work_batch.go; internal/agent/coordinator_providers_auth.go; internal/agent/batch_cutover_facts.go; internal/agent/reaction_component.go; internal/agent/agent_own_work_batch.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	CoordinatorPort all members	yes	no	compile-verified	Direct: CheckLivePeakHours at coordinator_providers_auth.go:247; BatchFactsInstalled at agent_own_work_batch.go:100; BackgroundOwnsWork at agent_own_work_batch.go:117; AccountDrainAttempt at drain_attempt.go:26; batch bindings at batch_cutover_facts.go:135, reaction_component.go:368, scope recovery agent_own_work_batch.go:113. Accessors: Cfg coordinator.go:126; BuildCredentialModel credentials.go:387; BuildModelsFromCfg coordinator_models_build.go:33; DrainCredentialBoundary coordinator_agent_control.go:240; NoteDrainRefused/NoteTurnFailed drain_attempt.go:31-32; SuspendAutoResume coordinator.go:592; RecordProgress/PushDeadlineOnTurnEnd/ReactionChainHasClaim coordinator.go:89-91; ArbiterVerdict/Ar/DriverHints/Background/SubAgentDrivers/Finalization coordinator.go:70-84; ClearSleepAll coordinator.go:631. Adapters coordinator.go:93-121. Assertion var _ agentcall.CoordinatorPort = (*coordinator)(nil) at coordinator.go:122.
+verify	C1	build and test compile	final validation	internal/agent/coordinator.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	wrapped build and test-c	yes	no	passed	`capm 2g bash .rush/tmp/golock.sh env GOMEMLIMIT=700MiB go build ./internal/agent` exit 0; `capm 2g bash .rush/tmp/golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL -gcflags=-e ./internal/agent` exit 0. verified: initial compile results were reported by orchestrator; re-run wrapped post-port iteration 29 completed with no output. Error batches were from earlier iterations; preserve verbatim in repair rows. Retype test-c also completed silently, batch terminal complete.
+measure	C1	cfg	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_codex_recovery.go:83,86,99; agent_turn.go:188	yes	no	compiler-demanded	Verbatim: internal\agent\agent_codex_recovery.go:83:31: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg); :86:20 same; :99:67 same. Type owner: config (cfg field is *config.ConfigStore); proposed accessor Cfg() *config.ConfigStore.
+measure	C1	buildCredentialModel	port member demand	internal/agent/credentials.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_codex_recovery.go:108	yes	no	compiler-demanded	Verbatim: internal\agent\agent_codex_recovery.go:108:38: a.coord.buildCredentialModel undefined (type agentcall.CoordinatorPort has no field or method buildCredentialModel). CORRECTED: CredentialSet is an agentcall type via internal/agent/contract_bridge.go:23-37; no type boundary obstacle.
+measure	C1	buildModelsFromCfg	port member demand	internal/agent/coordinator_models_build.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_codex_recovery.go:127,148	yes	no	compiler-demanded	Verbatim: internal\agent\agent_codex_recovery.go:127:28: a.coord.buildModelsFromCfg undefined (type agentcall.CoordinatorPort has no field or method buildModelsFromCfg); :148:27 same. Signature returns agent-owned Model; CORRECTED: Model is an agentcall type via internal/agent/contract_bridge.go:23-37; no type boundary obstacle.
+measure	C1	drainCredentialBoundary	port member demand	internal/agent/coordinator_agent_control.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_codex_recovery.go:133	yes	no	compiler-demanded	Verbatim: internal\agent\agent_codex_recovery.go:133:14: a.coord.drainCredentialBoundary undefined (type agentcall.CoordinatorPort has no field or method drainCredentialBoundary). Type bool; owner builtin.
+measure	C1	CheckLivePeakHours	port member demand	internal/agent/coordinator_providers_auth.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_compaction.go:96	yes	no	compiler-demanded	Verbatim: internal\agent\agent_compaction.go:96:9: cannot use a.coord (variable of interface type agentcall.CoordinatorPort) as callbeat.CacheKeepAlivePeakHoursChecker value in return statement: agentcall.CoordinatorPort does not implement callbeat.CacheKeepAlivePeakHoursChecker (missing method CheckLivePeakHours). Signature returns error; owner builtin.
+measure	C1	BatchFactsInstalled	port member demand	internal/agent/agent_own_work_batch.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_own_work_batch.go:32; agent_turn_step.go:345	yes	no	compiler-demanded	Verbatim: internal\agent\agent_own_work_batch.go:32:12: coord.BatchFactsInstalled undefined (type agentcall.CoordinatorPort has no field or method BatchFactsInstalled). Type bool; owner builtin. Also :39:40 concrete parameter obstacle recorded below.
+measure	C1	BackgroundOwnsWork	port member demand	internal/agent/runtime/policy/clibridge (interface)	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_own_work_batch.go:49	yes	no	compiler-demanded	Verbatim: internal\agent\agent_own_work_batch.go:49:54: cannot use coord (variable of interface type agentcall.CoordinatorPort) as clibridge.cliActiveWorkHost value in argument to clibridge.NewCliActiveWorkComponent: agentcall.CoordinatorPort does not implement clibridge.cliActiveWorkHost (missing method BackgroundOwnsWork). Type owner agent implementation; method signature type audit not completed.
+measure	C1	background	field member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_own_work_batch.go:59	yes	no	compiler-demanded	Verbatim: internal\agent\agent_own_work_batch.go:59:11: coord.background undefined (type agentcall.CoordinatorPort has no field or method background). Field type/owner not established in this probe.
+measure	C1	arb	field member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_turn_step.go:453,477,498	yes	no	compiler-demanded	Verbatim: internal\agent\agent_turn_step.go:453:27: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb); :477:26 same; :498:16 same. Field type/owner not established.
+measure	C1	driverHints	field member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_turn_step.go:709; drain_component.go:199	yes	no	compiler-demanded	Verbatim: internal\agent\agent_turn_step.go:709:39: ts.a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints); internal\agent\drain_component.go:199:24: a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints). Owner not established.
+measure	C1	accountDrainAttempt	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:217	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:217:10: a.coord.accountDrainAttempt undefined (type agentcall.CoordinatorPort has no field or method accountDrainAttempt). Signature/owner not established.
+measure	C1	noteDrainRefused	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:365	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:365:10: a.coord.noteDrainRefused undefined (type agentcall.CoordinatorPort has no field or method noteDrainRefused). Signature/owner not established.
+measure	C1	suspendAutoResume	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:385	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:385:10: coord.suspendAutoResume undefined (type agentcall.CoordinatorPort has no field or method suspendAutoResume). Signature/owner not established.
+measure	C1	noteTurnFailed	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:387	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:387:10: coord.noteTurnFailed undefined (type agentcall.CoordinatorPort has no field or method noteTurnFailed). Signature/owner not established.
+measure	C1	pushDeadlineOnTurnEnd	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:390	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:390:10: coord.pushDeadlineOnTurnEnd undefined (type agentcall.CoordinatorPort has no field or method pushDeadlineOnTurnEnd). Signature/owner not established.
+measure	C1	arbiterVerdict	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:428	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:428:23: a.coord.arbiterVerdict undefined (type agentcall.CoordinatorPort has no field or method arbiterVerdict). Signature/owner not established.
+measure	C1	clearSleepAll	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:439	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:439:11: a.coord.clearSleepAll undefined (type agentcall.CoordinatorPort has no field or method clearSleepAll). Signature/owner not established.
+measure	C1	reactionChainHasClaim	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:490	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:490:47: coord.reactionChainHasClaim undefined (type agentcall.CoordinatorPort has no field or method reactionChainHasClaim). Signature/owner not established.
+measure	C1	recordProgress	port member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:494	yes	no	compiler-demanded	Verbatim: internal\agent\drain_component.go:494:10: coord.recordProgress undefined (type agentcall.CoordinatorPort has no field or method recordProgress). Signature/owner not established.
+measure	C1	subAgentDrivers	field member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	finalization_driver_binding.go:27	yes	no	compiler-demanded	Verbatim: internal\agent\finalization_driver_binding.go:27:18: a.coord.subAgentDrivers undefined (type agentcall.CoordinatorPort has no field or method subAgentDrivers). Field type/owner not established.
+measure	C1	finalization	field member demand	internal/agent/agent.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	finalization_wiring.go:306	yes	no	compiler-demanded	Verbatim: internal\agent\finalization_wiring.go:306:17: a.coord.finalization undefined (type agentcall.CoordinatorPort has no field or method finalization). Field type/owner not established.
+obstacle	C1	concrete coordinator parameters	remaining concrete type edges	internal/agent/batch_cutover_facts.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent_own_work_batch.go:39; agent_turn.go:207,228; agent_turn_failure.go:380; agent_turn_step.go:790; drain_component.go:457	yes	no	blocked	Verbatim: internal\agent\agent_own_work_batch.go:39:40: cannot use coord (variable of interface type agentcall.CoordinatorPort) as *coordinator value in argument to coordinatorBatchCutoverFacts: need type assertion. Same class at agent_turn.go:207:47 (`recoverBatchScopeDeadCandidates`), :228:42 (`coordinatorBatchCutoverFacts`); agent_turn_failure.go:380:41 (`batchCutoverReactionStore`); agent_turn_step.go:790:41 (`batchCutoverReactionStore`); drain_component.go:457:40 (`coordinatorBatchCutoverFacts`).
+obstacle	C1	accountDrainAttempt	coordinator port method signature	internal/agent/drain_attempt.go	agent	agentcall	internal/agent/runtime/contract/agentcall/coordinator_contract.go	drain_component.go:217	yes	no	blocked	Verbatim cycle: imports github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl from coordinator_contract.go; drainctl imports batchmeta; batchmeta imports agentcall. accountDrainAttempt requires *drainctl.DrainAttempt at drain_attempt.go:21; this contract cannot name it without the cycle.
+defect	C1	adapter binding stub	lost paired identity call	internal/agent/coordinator.go; internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent	agentcall	internal/agent/finalization_driver_binding.go:27; internal/agent/runtime/policy/toolwrap/driver_registry.go:149-191	SubAgentDrivers must receive agentcall.SessionAgent and SessionAgentCall because Registry validates driver pointer, session, generation, logical call, and authority set before storing the exact FinalizationAuthorities context.	Repaired: narrow contract now carries precisely the paired arguments; adapter delegates a.r.BindFinalizationIdentity(agent, call), preserving the same agent pointer, call payload, and registry binding checks. Stub error was a semantic defect, not acceptable compatibility behavior.
+
+interface	C1	CoordinatorBatchReactionStore	narrow interface	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agentcall	agent	internal/agent/reaction_component.go	BatchReactionStoreBindingKey() any	used by batchCutoverReactionStore to preserve store lookup identity	
+interface	C1	CoordinatorBatchScopeRecovery	narrow interface	internal/agent/runtime/contract/agentcall/coordinator_contract.go	agentcall	agent	internal/agent/batch_scope_recovery.go	RecoverBatchScopeDeadCandidates(context.Context, string)	used for the scope recovery operation	
+decision	C1	typed nil	port conversion preserving nil	internal/agent/coordinator.go	agent	agentcall	internal/agent/agent.go; internal/agent/agent_options.go	SessionAgentOptions.Coord and sessionAgent.coord	port retype	coordinatorPortFrom(c *coordinator) returns nil when c==nil and otherwise returns c. Used at every concrete *coordinator Coord assignment: tools_component.go:235; batch_fixture_port_a2_test.go:133; batch_reaction_persist_test.go:208; coordinator_recheck_debt_deadline_test.go:61,134; coordinator_wake_reaction_debt_test.go:137; drain_attempt_fixture_test.go:143; drain_compaction_continuation_test.go:119; drain_compaction_submit_test.go:50,185,239,293,408; drain_notice_pull_test.go:203,273,366; session_idle_trigger_test.go:130. Existing internal/app Coord closures transport agent.Coordinator already, not SessionAgentOptions assignments. Existing nil checks at agent_own_work_batch.go:28; agent_codex_recovery.go:83,99; agent_turn_step.go:709; drain_component.go:213,363,420; finalization_driver_binding.go:24; finalization_wiring.go:303 remain equivalent because conversion avoids typed-nil interfaces.
+
+site	C1	non-obvious parameter sites	partial requalification	internal/agent/batch_cutover_facts.go; internal/agent/batch_scope_recovery.go; internal/agent/reaction_component.go	agent	agentcall	internal/agent/agent_own_work_batch.go:39; internal/agent/agent_turn.go:207,228; internal/agent/agent_turn_failure.go:380; internal/agent/agent_turn_step.go:790; internal/agent/drain_component.go:457	callers continue passing a.coord; declared interfaces are all used	build and test compile succeeded
+defect	C1	scope recovery recursion	base requalification defect	internal/agent/agent_own_work_batch.go	agent	agentcall	internal/agent/batch_scope_recovery.go:101; internal/agent/agent_own_work_batch.go:113	Restored original direct call c.scopeRecoverySource().recoverDeadCandidates(ctx, owner); indirect helper dispatch recursed unconditionally.
+test	C1	recursion revert-check	focused regression	internal/agent/agent_own_work_batch_test.go	agent	agentcall	TestRecoverBatchScopeDeadCandidatesReturns	Recursive body failed with `runtime: goroutine stack exceeds 1000000000-byte limit` and fatal stack overflow; fixed body passed `ok github.com/PHPCraftdream/rush/internal/agent 0.271s`. Test asserts recovered batch state `interrupted`, outcome `host_lost`.
+decision	C1	DrainAttempt option (a)	opaque named interface	internal/agent/runtime/contract/agentcall/coordinator_contract.go; internal/agent/drain_attempt.go; internal/agent/drain_component.go	agent	agentcall	DrainAttempt call site drain_component.go:218	Chosen: CoordinatorDrainAttempt empty named marker; implementation checked-asserts *drainctl.DrainAttempt, and failed assertion/nil follows existing nil-safe path. Only production caller passes the *drainAttempt alias; repo-wide search found one production call site. Option (b) loses because moving DrainAttempt with all methods drags ChainLink and drainAccountRecord use across root+drainctl and import reshuffles. Option (c) loses because injected func bypasses coordinator for one member, adds wiring state, and does not preserve existing coordinator nil-check shape.
+test	C1	DrainAttempt and recursion smoke	focused verification	internal/agent/agent_own_work_batch_test.go	agent	agentcall	wrapped go test -run TestRecoverBatchScopeDeadCandidatesReturns -count=1 ./internal/agent	PASS; wrapped build `go build -gcflags=all=-e ./internal/agent` exit 0 after adapter fixes; test asserts recovered batch state `interrupted`, outcome `host_lost`.
+blocker	C1	full CoordinatorPort	deferred port probe	internal/agent/agent.go	agent	agentcall	CoordinatorPort worktree-wide selector inventory	Stopped before retyping sessionAgent or introducing guessed method sets; no full-port compile errors collected. Full port remains a planned next step, not a verified type/cycle blocker.
+
+measure	C1	port accessors	field-to-accessor retype	internal/agent/coordinator.go; internal/agent/agent_codex_recovery.go; internal/agent/agent_turn.go; internal/agent/agent_turn_step.go; internal/agent/drain_component.go; internal/agent/finalization_driver_binding.go; internal/agent/finalization_wiring.go	agent	agentcall	port member accesses	all selected sessionAgent uses	final locations	verified	no	retained	coord now agentcall.CoordinatorPort; Cfg at agent_codex_recovery.go:83,86,99; BuildCredentialModel:108; BuildModelsFromCfg:127,148; DrainCredentialBoundary:133; Arb().ChainLastLaunch turn_step.go:453,477,498; DriverHints().IsExternalDriver turn_step.go:709; DriverHints().HintSeqOf drain_component.go:200; NoteDrainRefused drain_component.go:366; ArbiterVerdict drain_component.go:429; ClearSleepAll:440; SuspendAutoResume/NoteTurnFailed/PushDeadlineOnTurnEnd drain_component.go:386,388,391; ReactionChainHasClaim/RecordProgress drain_component.go:491,495; SubAgentDrivers binding finalization_driver_binding.go:27; Finalization finalization_wiring.go:306.
+measure	C1	cliActiveWorkHost adapter	port bridge preserving coordinator-owned state	internal/agent/agent_own_work_batch.go:128-137	agent	agentcall	clibridge.cliActiveWorkHost methods	all nine cliActiveWorkHost methods	adapter	verified	no	complete	Adapter delegates to same port and preserves same facts binding. ownWorkBatch uses Background() counters.
+
+defect	C1	adapter binding stub	lost paired identity call	internal/agent/coordinator.go; internal/agent/runtime/contract/agentcall/coordinator_contract.go	agent	agentcall	finalization_driver_binding.go:27; runtime/policy/toolwrap/driver_registry.go:149-191	Paired agent/call identity must be preserved for registry validation and update.	Repaired: contract BindFinalizationIdentity(SessionAgent, SessionAgentCall); adapter delegates exact arguments to Registry.
+measure	C1	port retype	accessor migration	internal/agent/coordinator.go; internal/agent/agent_codex_recovery.go; internal/agent/agent_turn.go; internal/agent/agent_turn_step.go; internal/agent/drain_component.go; internal/agent/finalization_driver_binding.go; internal/agent/finalization_wiring.go	agent	agentcall	sessionAgent.coord and SessionAgentOptions.Coord	accessor consumers migrated	post-port locations	verified	no	complete	Retyped to agentcall.CoordinatorPort. Cfg 83/86/99; build models 108/127/148; drain boundary 133; Arb at agent_turn_step 453/477/498; DriverHints at 709 and drain_component 200; NoteDrainRefused 366; ArbiterVerdict 429; ClearSleepAll 440; lifecycle methods 386/388/391/491/495; binding finalization_driver_binding:27; finalization_wiring:306.
+decision	C1	typed nil	port conversion preserves nil	internal/agent/coordinator.go	agent	agentcall	SessionAgentOptions.Coord sites	coordinatorPortFrom returns nil for nil pointer	list in prior typed-nil row	verified	no	complete	Wrapped at all concrete internal/agent assignments; app closure-valued Coord fields are not SessionAgentOptions assignments. Nil checks retain same behavior.
+measure	C1	cliActiveWorkHost adapter	delegating adapter	internal/agent/agent_own_work_batch.go:128-137	agent	agentcall	clibridge private method set	all nine methods delegated to same CoordinatorPort	adapter	verified	no	complete	ownWorkBatch uses adapter and Background accessor.
+verify	C1	importers	wrapped test compile	internal/app; sdk	agent	agentcall	go test -c -o NUL -gcflags=-e	package compiles	completed silently; numeric status unavailable in tool output
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+error	C1	build 56	verbatim compiler output	wrapped go build ./internal/agent	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:2: syntax error: non-declaration statement outside function body
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:2: syntax error: non-declaration statement outside function body
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\agent_turn_step.go:498:16: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\drain_component.go:386:10: coord.suspendAutoResume undefined (type agentcall.CoordinatorPort has no field or method suspendAutoResume, but does have method SuspendAutoResume)
+internal\agent\drain_component.go:388:10: coord.noteTurnFailed undefined (type agentcall.CoordinatorPort has no field or method noteTurnFailed, but does have method NoteTurnFailed)
+internal\agent\drain_component.go:391:10: coord.pushDeadlineOnTurnEnd undefined (type agentcall.CoordinatorPort has no field or method pushDeadlineOnTurnEnd, but does have method PushDeadlineOnTurnEnd)
+internal\agent\drain_component.go:433:23: cannot use v (variable of type agentcall.CoordinatorVerdict) as Verdict value in argument to drainVerdictOf
+internal\agent\drain_component.go:491:47: coord.reactionChainHasClaim undefined (type agentcall.CoordinatorPort has no field or method reactionChainHasClaim, but does have method ReactionChainHasClaim)
+internal\agent\drain_component.go:495:10: coord.recordProgress undefined (type agentcall.CoordinatorPort has no field or method recordProgress, but does have method RecordProgress)
+internal\agent\finalization_driver_binding.go:27:18: a.coord.subAgentDrivers undefined (type agentcall.CoordinatorPort has no field or method subAgentDrivers)
+internal\agent\finalization_wiring.go:306:9: cannot use a.coord.Finalization() (value of interface type agentcall.CoordinatorFinalization) as *finalizationWiring value in return statement
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:319:40: undefined: notify
+internal\agent\agent_options.go:130:16: undefined: permission
+internal\agent\agent_options.go:132:17: undefined: permission
+internal\agent\agent_own_work_batch.go:59:11: coord.background undefined (type agentcall.CoordinatorPort has no field or method background, but does have method Background)
+internal\agent\agent_turn.go:188:38: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg, but does have method Cfg)
+internal\agent\agent_turn_step.go:453:27: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:477:26: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:498:16: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:709:39: ts.a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints, but does have method DriverHints)
+internal\agent\drain_component.go:200:24: a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints, but does have method DriverHints)
+... too many errors
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:2: syntax error: non-declaration statement outside function body
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:23: method coordinator.BatchCutoverFacts already declared at internal\agent\agent_own_work_batch.go:82:23
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:74:2: syntax error: non-declaration statement outside function body
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:137:15: undefined: prompt
+internal\agent\coordinator.go:375:24: undefined: prompt
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:69:42: undefined: agentcall
+internal\agent\coordinator.go:76:83: undefined: agentcall
+internal\agent\coordinator.go:81:29: undefined: agentcall
+internal\agent\coordinator.go:82:37: undefined: agentcall
+internal\agent\coordinator.go:83:36: undefined: agentcall
+internal\agent\coordinator.go:87:41: undefined: agentcall
+internal\agent\coordinator.go:88:38: undefined: agentcall
+internal\agent\coordinator.go:99:96: undefined: agentcall
+internal\agent\coordinator.go:105:45: undefined: agentcall
+internal\agent\coordinator.go:106:48: undefined: agentcall
+internal\agent\coordinator.go:106:48: too many errors
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:69:42: undefined: agentcall
+internal\agent\coordinator.go:76:83: undefined: agentcall
+internal\agent\coordinator.go:81:29: undefined: agentcall
+internal\agent\coordinator.go:82:37: undefined: agentcall
+internal\agent\coordinator.go:83:36: undefined: agentcall
+internal\agent\coordinator.go:87:41: undefined: agentcall
+internal\agent\coordinator.go:88:38: undefined: agentcall
+internal\agent\coordinator.go:99:96: undefined: agentcall
+internal\agent\coordinator.go:105:45: undefined: agentcall
+internal\agent\coordinator.go:106:48: undefined: agentcall
+internal\agent\coordinator.go:106:48: too many errors
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:140:15: undefined: nettransport
+internal\agent\coordinator.go:442:18: undefined: nettransport
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:137:15: undefined: prompt
+internal\agent\coordinator.go:375:24: undefined: prompt
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:135:14: undefined: history
+internal\agent\coordinator.go:367:10: undefined: history
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:136:14: undefined: filetracker
+internal\agent\coordinator.go:368:14: undefined: filetracker
+internal\agent\delegation_role_calls.go:95:34: undefined: session
+internal\agent\delegation_role_calls.go:130:34: undefined: session
+internal\agent\mcp_output_access.go:16:21: undefined: mcpoutput
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:132:14: undefined: coresession
+internal\agent\coordinator.go:191:11: undefined: coresession
+internal\agent\coordinator.go:194:17: undefined: coresession
+internal\agent\coordinator.go:348:11: undefined: coresession
+internal\agent\coordinator.go:349:11: undefined: coresession
+internal\agent\coordinator.go:364:11: undefined: coresession
+internal\agent\delegation_role_calls.go:12:2: "github.com/PHPCraftdream/rush/internal/session/service" imported as session and not used
+internal\agent\mcp_output_access.go:6:2: "github.com/PHPCraftdream/rush/internal/session/state/mcpoutput" imported and not used
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:115:46: undefined: shellbg
+internal\agent\coordinator.go:139:15: undefined: shellbg
+internal\agent\coordinator.go:373:25: undefined: shellbg
+internal\agent\coordinator.go:384:16: undefined: shellbg
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:134:14: undefined: permission
+internal\agent\coordinator.go:366:14: undefined: permission
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:61:39: undefined: usage
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:315:19: undefined: modelkit
+internal\agent\coordinator.go:404:17: undefined: modelkit
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:67:35: undefined: drainctl
+internal\agent\coordinator.go:77:41: undefined: drainctl
+internal\agent\coordinator.go:99:202: undefined: drainctl
+internal\agent\coordinator.go:101:42: undefined: drainctl
+internal\agent\coordinator.go:104:44: undefined: drainctl
+internal\agent\coordinator.go:107:44: undefined: drainctl
+internal\agent\coordinator.go:109:47: undefined: drainctl
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:69:42: undefined: agentcall
+internal\agent\coordinator.go:76:83: undefined: agentcall
+internal\agent\coordinator.go:81:29: undefined: agentcall
+internal\agent\coordinator.go:82:37: undefined: agentcall
+internal\agent\coordinator.go:83:36: undefined: agentcall
+internal\agent\coordinator.go:87:41: undefined: agentcall
+internal\agent\coordinator.go:88:38: undefined: agentcall
+internal\agent\coordinator.go:99:96: undefined: agentcall
+internal\agent\coordinator.go:105:45: undefined: agentcall
+internal\agent\coordinator.go:106:48: undefined: agentcall
+internal\agent\coordinator.go:106:48: too many errors
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:181:21: undefined: batchflow
+internal\agent\coordinator.go:340:17: undefined: batchflow
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\agent_turn_step.go:498:16: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\drain_component.go:386:10: coord.suspendAutoResume undefined (type agentcall.CoordinatorPort has no field or method suspendAutoResume, but does have method SuspendAutoResume)
+internal\agent\drain_component.go:388:10: coord.noteTurnFailed undefined (type agentcall.CoordinatorPort has no field or method noteTurnFailed, but does have method NoteTurnFailed)
+internal\agent\drain_component.go:391:10: coord.pushDeadlineOnTurnEnd undefined (type agentcall.CoordinatorPort has no field or method pushDeadlineOnTurnEnd, but does have method PushDeadlineOnTurnEnd)
+internal\agent\drain_component.go:433:23: cannot use v (variable of type agentcall.CoordinatorVerdict) as Verdict value in argument to drainVerdictOf
+internal\agent\drain_component.go:491:47: coord.reactionChainHasClaim undefined (type agentcall.CoordinatorPort has no field or method reactionChainHasClaim, but does have method ReactionChainHasClaim)
+internal\agent\drain_component.go:495:10: coord.recordProgress undefined (type agentcall.CoordinatorPort has no field or method recordProgress, but does have method RecordProgress)
+internal\agent\finalization_driver_binding.go:27:18: a.coord.subAgentDrivers undefined (type agentcall.CoordinatorPort has no field or method subAgentDrivers)
+internal\agent\finalization_wiring.go:306:17: a.coord.finalization undefined (type agentcall.CoordinatorPort has no field or method finalization).
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\agent.go:319:40: undefined: notify
+internal\agent\agent_options.go:130:16: undefined: permission
+internal\agent\agent_options.go:132:17: undefined: permission
+internal\agent\agent_own_work_batch.go:59:11: coord.background undefined (type agentcall.CoordinatorPort has no field or method background, but does have method Background)
+internal\agent\agent_turn.go:188:38: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg, but does have method Cfg)
+internal\agent\agent_turn_step.go:453:27: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:477:26: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:498:16: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:709:39: ts.a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints, but does have method DriverHints)
+internal\agent\drain_component.go:200:24: a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints, but does have method DriverHints)
+... (compiler reported too many errors).
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\coordinator.go:77:2: syntax error: non-declaration statement outside function body
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\agent.go:440:17: undefined: permission
+internal\agent\agent_options.go:39:26: undefined: notify
+internal\agent\agent_own_work_batch.go:49:54: cannot use coord (variable of interface type agentcall.CoordinatorPort) as clibridge.cliActiveWorkHost value in argument to clibridge.NewCliActiveWorkComponent: agentcall.CoordinatorPort does not implement clibridge.cliActiveWorkHost (missing method BatchCutoverFacts)
+internal\agent\agent_own_work_batch.go:59:11: coord.background undefined (type agentcall.CoordinatorPort has no field or method background, but does have method Background)
+internal\agent\agent_turn.go:188:38: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg, but does have method Cfg)
+internal\agent\agent_turn_step.go:453:27: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:477:26: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:498:16: ts.a.coord.arb undefined (type agentcall.CoordinatorPort has no field or method arb, but does have method Arb)
+internal\agent\agent_turn_step.go:709:39: ts.a.coord.driverHints undefined (type agentcall.CoordinatorPort has no field or method driverHints, but does have method DriverHints)
+internal\agent\agent_turn_step.go:709:39: too many errors
+	internal/agent	build error	# github.com/PHPCraftdream/rush/internal/agent
+internal\agent\agent.go:432:32: undefined: mailboxpkg
+internal\agent\agent.go:474:55: undefined: mailboxpkg
+internal\agent\agent.go:510:53: undefined: mailboxpkg
+internal\agent\agent_options.go:30:8: undefined: agentcall
+internal\agent\agent_codex_recovery.go:83:31: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg, but does have method Cfg)
+internal\agent\agent_codex_recovery.go:86:20: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg, but does have method Cfg)
+internal\agent\agent_codex_recovery.go:99:67: a.coord.cfg undefined (type agentcall.CoordinatorPort has no field or method cfg, but does have method Cfg)
+internal\agent\agent_codex_recovery.go:108:38: a.coord.buildCredentialModel undefined (type agentcall.CoordinatorPort has no field or method buildCredentialModel, but does have method BuildCredentialModel)
+internal\agent\agent_codex_recovery.go:127:28: a.coord.buildModelsFromCfg undefined (type agentcall.CoordinatorPort has no field or method buildModelsFromCfg, but does have method BuildModelsFromCfg)
+internal\agent\agent_codex_recovery.go:133:14: a.coord.drainCredentialBoundary undefined (type agentcall.CoordinatorPort has no field or method drainCredentialBoundary, but does have method DrainCredentialBoundary)
+... (compiler reported too many errors; remaining output omitted by compiler).
+
+verify\tC1\timporter compiles\twired CoordinatorPort consumers\tinternal/app; sdk; internal/agent/runtime/batch/batchadapter; internal/agent/runtime/batch/batchadapter/delegation; internal/agent/runtime/batch/batchcore; internal/agent/runtime/batch/batchcore/finalize; internal/agent/runtime/batch/batchcore/modelcontrol; internal/agent/runtime/batch/batchexec/childagent; internal/agent/runtime/batch/batchexec/childagent/state; internal/agent/runtime/batch/batchflow; internal/agent/runtime/batch/batchinst; internal/agent/runtime/batch/batchinst/diskport; internal/agent/runtime/batch/batchmeta; internal/agent/runtime/exec/drainctl; internal/agent/runtime/exec/mailbox; internal/agent/runtime/exec/sessionprompt; internal/agent/runtime/exec/turnstep; internal/agent/runtime/modelkit; internal/agent/runtime/policy/callbeat; internal/agent/runtime/policy/clibridge; internal/agent/runtime/policy/provauth; internal/agent/runtime/policy/toolwrap; internal/agent/runtime/policy/usage; internal/app/appbatch; internal/app/apprun/review; internal/app/itest; internal/serve/cmd/admin/serverctl/queuecmd; internal/serve/cmd/cli; internal/serve/cmd/cli/batchclitest; internal/serve/cmd/modelctl/ping; internal/serve/cmd/run/finish; internal/serve/cmd/sessions/cleanup; internal/serve/server/rest/api; internal/serve/server/rest/apibatch; internal/serve/server/server; internal/serve/server/ws/wsapi; internal/serve/server/ws/wsconfig\tagentcall and agent importers\tgo test -c -o NUL -gcflags=-e\tverified\tno\tEach package exit 0; wrappers included internal/agent, internal/app, sdk, and all listed importer packages.
+test\tC1\tTestCoordinatorPortFinalizationWiringDelegates\tport finalization wiring\tinternal/agent/finalization_driver_binding_test.go\tagent\tagentcall\tSubAgentDrivers BindFinalizationIdentity preserves driver pointer, logical ID and authority context through real Registry; Finalization Enabled reflects wiring\tverified\tno\tPASS `ok github.com/PHPCraftdream/rush/internal/agent\t0.511s` EXIT=0
+test\tC1\tTestCoordinatorAccountDrainAttemptTypedAndNil\tport drain accounting\tinternal/agent/drain_attempt_test.go\tagent\tagentcall\tnil and typed-nil attempt no-op; real captured batch attempt increments once through port\tverified\tno\tPASS `ok github.com/PHPCraftdream/rush/internal/agent\t0.408s` EXIT=0
+test\tC1\tTestRecoverBatchScopeDeadCandidatesReturns\tscope recovery through port\tinternal/agent/agent_own_work_batch_test.go\tagent\tagentcall\tstate interrupted and outcome host_lost via sessionAgent port\tverified\tno\tPASS `ok github.com/PHPCraftdream/rush/internal/agent\t0.417s` EXIT=0
+test\tC1\tTestCoordinatorPortFromTypedNilIsCoordless\ttyped-nil conversion\tinternal/agent/agent_own_work_batch_test.go\tagent\tagentcall\tcoordinatorPortFrom nil pointer compares nil; NewSessionAgent coord nil and coordinatorDrainHost nil guard true\tverified\tno\tPASS same focused run as scope recovery EXIT=0
+revert-check\tC1\tfinalization wiring\tTestCoordinatorPortFinalizationWiringDelegates\tinternal/agent/coordinator.go:120-121\tbreak returns nil; failure `Error:       Not equal:` (expected child-call, actual empty); restore Registry delegation; PASS `ok github.com/PHPCraftdream/rush/internal/agent\t0.511s` EXIT=0
+revert-check\tC1\tdrain accounting\tTestCoordinatorAccountDrainAttemptTypedAndNil\tinternal/agent/drain_attempt.go:26-29\tbreak returns without delegation; failure `Messages:    the coordinator port accounts a real drain attempt exactly once` (expected 1 actual 0); restore typed assertion + accounting; PASS `ok github.com/PHPCraftdream/rush/internal/agent\t0.408s` EXIT=0
+revert-check\tC1\tscope recovery\tTestRecoverBatchScopeDeadCandidatesReturns\tinternal/agent/agent_own_work_batch.go:113-115\tbreak returns without recovery; failure `Error:       Not equal:` (expected interrupted, actual running); restore recoverDeadCandidates delegation; PASS `ok github.com/PHPCraftdream/rush/internal/agent\t0.417s` EXIT=0
+verify\tC1\tagent package compile\tpost-test production restored\tinternal/agent\tgo test -c -o NUL -gcflags=-e\tverified\tno\tEXIT=0

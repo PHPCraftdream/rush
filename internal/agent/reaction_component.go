@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
 	"github.com/PHPCraftdream/rush/internal/session"
@@ -546,11 +547,13 @@ func (w *drainComponent) runningWorkOpen(ctx context.Context, sessionID string) 
 // conservative unknown source has no store)": the callers fall back to the
 // plain message write so the finish still lands. Fact READS keep flowing
 // through the BatchCutoverFacts seam.
-func batchCutoverReactionStore(c *coordinator) *session.BatchStore {
+func (c *coordinator) BatchReactionStoreBindingKey() any { return c }
+
+func batchCutoverReactionStore(c agentcall.CoordinatorBatchReactionStore) *session.BatchStore {
 	if c == nil {
 		return nil
 	}
-	v, ok := coordinatorBatchCutoverFactsBindings.Load(c)
+	v, ok := coordinatorBatchCutoverFactsBindings.Load(c.BatchReactionStoreBindingKey())
 	if !ok {
 		return nil
 	}

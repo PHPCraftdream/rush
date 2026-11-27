@@ -13,7 +13,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// armOwnWork drives the real armProgressGuard path for a synthetic turn
+func TestCoordinatorPortFromTypedNilIsCoordless(t *testing.T) {
+	var concrete *coordinator
+	port := coordinatorPortFrom(concrete)
+	require.True(t, port == nil, "typed-nil coordinator converts to a nil port")
+	sa := NewSessionAgent(SessionAgentOptions{Coord: port}).(*sessionAgent)
+	require.Nil(t, sa.coord, "session agent constructed with the nil port is coord-less")
+	require.True(t, coordinatorDrainHost{coordinator: nil}.coordinatorIsNil(), "coordinator nil guard remains true")
+}
+
+func TestRecoverBatchScopeDeadCandidatesReturns(t *testing.T) {
+	coord, conn, _ := batchScopeRecoveryFixture(t, "scope-direct-dead")
+	root, _ := b1SeedBatchRootOnHost(t, conn, "sess-direct", "call-direct", "scope-direct-dead", "running")
+	sa := NewSessionAgent(SessionAgentOptions{Coord: coordinatorPortFrom(coord)}).(*sessionAgent)
+	sa.coord.RecoverBatchScopeDeadCandidates(context.Background(), "sess-direct")
+	state, outcome := batchScopeRootState(t, conn, root)
+	require.Equal(t, "interrupted", state)
+	require.Equal(t, "host_lost", outcome)
+}
+
 // stream and returns the guard's ownWork snapshot.
 func armOwnWork(t *testing.T, sa *sessionAgent, sessionID string) bool {
 	t.Helper()

@@ -200,7 +200,7 @@ func TestDrain_WakeNoticeCallsProviderWithNoticeAndNoTextPrompt(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	sessionAgent := sa.(*sessionAgent)
 
@@ -270,7 +270,7 @@ func TestDrain_NothingPendingSkipsProviderAndFinishesTurn(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	sessionAgent := sa.(*sessionAgent)
 
@@ -363,7 +363,7 @@ func TestDrain_NoticeBetweenTwoToolCalls_OnlyAtStepBoundaryAndCarriesForward(t *
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{toolA, toolB}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{toolA, toolB}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 		IsYolo: true,
 	})
 	sessionAgent := sa.(*sessionAgent)

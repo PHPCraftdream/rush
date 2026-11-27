@@ -761,7 +761,11 @@ func (a *sessionAgent) finalizationWiring() *finalizationWiring {
 	if a == nil || a.coord == nil {
 		return nil
 	}
-	return a.coord.finalization
+	finalization, ok := a.coord.Finalization().(coordinatorFinalizationAdapter)
+	if !ok {
+		return nil
+	}
+	return finalization.f
 }
 
 // passThroughExecution adapts the wiring driver start to the entry

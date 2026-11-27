@@ -205,7 +205,7 @@ func TestBatchStopWakeZeroAndRestartNoReactionTurn(t *testing.T) {
 	sa2 := NewSessionAgent(SessionAgentOptions{
 		SmartModel: f.model, FastModel: f.model, SystemPrompt: "you are a probe",
 		DataDirectory: f.env.workingDir, Sessions: f.env.sessions, Messages: f.env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord2,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord2),
 		TitleJoinGrace: 100 * time.Millisecond,
 	}).(*sessionAgent)
 

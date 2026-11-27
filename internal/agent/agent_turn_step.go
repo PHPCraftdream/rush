@@ -450,7 +450,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			command, isCommand := asyncLaunchCommand(call)
 			repeated := false
 			if isCommand && class != stepCallRefused && ts.a != nil && ts.a.coord != nil {
-				repeated = ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+				repeated = ts.a.coord.Arb().ChainLastLaunch(ts.call.SessionID, command)
 			}
 			switch class {
 			case stepCallWait:
@@ -474,7 +474,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 		command, isCommand := asyncLaunchCommand(call)
 		repeated := false
 		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && ts.a != nil && ts.a.coord != nil {
-			repeated = ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, command)
+			repeated = ts.a.coord.Arb().ChainLastLaunch(ts.call.SessionID, command)
 		}
 		if meta.Async && meta.ClaimID != "" && isCommand && class != stepCallRefused && !repeated {
 			if class != stepCallWait {
@@ -495,7 +495,7 @@ func (ts *turnStream) recordChainEvidence(stepResult fantasy.StepResult) {
 			// a guard refusal is neither progress nor a claim: it started nothing
 		default: // act, read, reread: progress, as #1113 counts reread as progress
 			if ts.a != nil && ts.a.coord != nil {
-				ts.a.coord.arb.chainLastLaunch(ts.call.SessionID, "")
+				ts.a.coord.Arb().ChainLastLaunch(ts.call.SessionID, "")
 			}
 			ts.att.ChainProgress = true
 		}
@@ -706,7 +706,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 		// Honoured: the request is spent, unless the `rush run` loop of this process
 		// drives the session -- it reads the flag after the turn, ends the run
 		// canceled and clears it itself (R8A-2).
-		if ts.a.coord == nil || !ts.a.coord.driverHints.isExternalDriver(ts.call.SessionID) {
+		if ts.a.coord == nil || !ts.a.coord.DriverHints().IsExternalDriver(ts.call.SessionID) {
 			drainctl.ClearCancelRequest(ts.ctx, ts.a.sessions, ts.call.SessionID)
 		}
 		if cancelFn, ok := ts.a.activeRequests.Get(ts.call.SessionID); ok {

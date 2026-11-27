@@ -116,7 +116,7 @@ func TestDrain_CompactionContinuation_NoEmptyPrompt(t *testing.T) {
 		DataDirectory: env.workingDir,
 		SmartModel:    model, FastModel: model, SystemPrompt: "you are a probe",
 		Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, Coord: coord,
+		Tools: []fantasy.AgentTool{}, Coord: coordinatorPortFrom(coord),
 		// DisableAutoSummarize intentionally left false: the whole point is
 		// to exercise the real shouldSummarize gate.
 	})

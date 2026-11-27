@@ -58,7 +58,7 @@ func TestRecheckDebtOnRelease_DrainOutlivesCheckBudget_StillCompletes(t *testing
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	agent := sa.(*sessionAgent)
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func TestRecheckDebtOnRelease_QueuedUserTurnSurvivesSlowDrain(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	agent := sa.(*sessionAgent)
 	ctx := context.Background()

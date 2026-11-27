@@ -47,7 +47,7 @@ func TestCompaction_DoesNotPullNotices(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	agent := sa.(*sessionAgent)
 
@@ -182,7 +182,7 @@ func TestPullPendingNotices_RecordsProgressExceptSupervision(t *testing.T) {
 		coord.noticeStore = notices
 	}
 	sa := NewSessionAgent(SessionAgentOptions{
-		Sessions: env.sessions, Messages: env.messages, DataDirectory: env.workingDir, Coord: coord,
+		Sessions: env.sessions, Messages: env.messages, DataDirectory: env.workingDir, Coord: coordinatorPortFrom(coord),
 	})
 	agent := sa.(*sessionAgent)
 
@@ -236,7 +236,7 @@ func TestDrain_CommittedRetryReachesProviderWithNothingToPull(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 
 	ctx := context.Background()
@@ -290,7 +290,7 @@ func TestWebAsyncJob_EndToEnd_OneNoticeOneTurn(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	ctx := context.Background()
 	sess, err := env.sessions.Create(ctx, "web-async-e2e")
@@ -405,7 +405,7 @@ func TestNoTurnDrain_QueuedRealCallRunsNextInSameLoop(t *testing.T) {
 	sa := NewSessionAgent(SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		DataDirectory: env.workingDir, Sessions: env.sessions, Messages: env.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(coord),
 	})
 	agent := sa.(*sessionAgent)
 

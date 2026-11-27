@@ -49,7 +49,22 @@ func unauthorizedResponse(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprint(w, `{"error":{"message":"invalid api key","type":"invalid_request_error"}}`)
 }
 
-// A1: a fresh notice is still delivery='pending' before the Drain's own pull.
+func TestCoordinatorAccountDrainAttemptTypedAndNil(t *testing.T) {
+	ctx := context.Background()
+	f := newAttemptFixture(t, "attempt-interface", attemptFixtureOpts{noIdle: true})
+
+	var nilAttempt *drainctl.DrainAttempt
+	f.sa.coord.AccountDrainAttempt(ctx, nil, nil)
+	f.sa.coord.AccountDrainAttempt(ctx, nilAttempt, nil)
+	f.seedDebtFor(ctx, f.sessID, "account-through-port", true)
+	snapshot, captured := a1CaptureDebtSnapshot(t, f, ctx)
+	before := f.row(ctx, "account-through-port")
+	attempt := &drainctl.DrainAttempt{SessionID: f.sessID, Outcome: drainctl.DrainAttempted, BatchSnapshot: snapshot, BatchCaptured: captured}
+	f.sa.coord.AccountDrainAttempt(ctx, attempt, nil)
+	after := f.row(ctx, "account-through-port")
+	require.EqualValues(t, before.WakeAttempts+1, after.WakeAttempts, "the coordinator port accounts a real drain attempt exactly once")
+}
+
 // The snapshot is taken AFTER the pull, so the very first attempt counts.
 //
 // Revert-check: taking the snapshot before the pull (empty for a pending row)

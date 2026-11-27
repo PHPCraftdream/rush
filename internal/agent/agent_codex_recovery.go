@@ -81,10 +81,10 @@ func comparableError(err error) (comparable bool) {
 }
 
 func (a *sessionAgent) snapshotCodexRecovery(call SessionAgentCall, sess session.Session) *codexRecoveryState {
-	if a.coord == nil || a.coord.cfg == nil {
+	if a.coord == nil || a.coord.Cfg() == nil {
 		return nil
 	}
-	cfg, _ := a.coord.cfg.Snapshot()
+	cfg, _ := a.coord.Cfg().Snapshot()
 	creds := call.Credentials
 	if creds != nil {
 		copy := creds.Clone()
@@ -97,7 +97,7 @@ func (a *sessionAgent) snapshotCodexRecovery(call SessionAgentCall, sess session
 }
 
 func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryState) (*SummarizeSnapshot, error) {
-	if state == nil || state.Cfg == nil || a.coord == nil || a.coord.cfg == nil {
+	if state == nil || state.Cfg == nil || a.coord == nil || a.coord.Cfg() == nil {
 		return nil, errors.New("automatic context recovery has no pinned worker configuration")
 	}
 	var model Model
@@ -106,7 +106,7 @@ func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryS
 		choice, covered := state.Creds.Models[RoleWorker]
 		if covered {
 			var err error
-			model, providerCfg, err = a.coord.buildCredentialModel(ctx, state.Cfg, state.Creds, choice)
+			model, providerCfg, err = a.coord.BuildCredentialModel(ctx, state.Cfg, state.Creds, choice)
 			if err != nil {
 				return nil, fmt.Errorf("pinned credential worker is unavailable: %w", err)
 			}
@@ -125,13 +125,13 @@ func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryS
 			if providerCfg.Type == cliprovider.ProviderType {
 				return nil, fmt.Errorf("automatic context recovery cannot use CLI worker provider %q", selected.Provider)
 			}
-			model, _, err = a.coord.buildModelsFromCfg(ctx, state.Cfg, selected, selected, false)
+			model, _, err = a.coord.BuildModelsFromCfg(ctx, state.Cfg, selected, selected, false)
 			if err != nil {
 				return nil, fmt.Errorf("pinned worker model is unavailable: %w", err)
 			}
 		}
 	} else {
-		if a.coord.drainCredentialBoundary(ctx, state.Session.ID) {
+		if a.coord.DrainCredentialBoundary(ctx, state.Session.ID) {
 			return nil, diskport.ErrCredentialBindingUnavailable
 		}
 		selected, _, err := requestedRoleSlot(state.Cfg, state.Session, RequestedModelRole(config.SelectedModelTypeWorker))
@@ -146,7 +146,7 @@ func (a *sessionAgent) recoveryWorker(ctx context.Context, state *codexRecoveryS
 		if providerCfg.Type == cliprovider.ProviderType {
 			return nil, fmt.Errorf("automatic context recovery cannot use CLI worker provider %q", selected.Provider)
 		}
-		model, _, err = a.coord.buildModelsFromCfg(ctx, state.Cfg, selected, selected, false)
+		model, _, err = a.coord.BuildModelsFromCfg(ctx, state.Cfg, selected, selected, false)
 		if err != nil {
 			return nil, fmt.Errorf("pinned worker model is unavailable: %w", err)
 		}
