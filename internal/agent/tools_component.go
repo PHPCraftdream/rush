@@ -232,7 +232,7 @@ func (p *toolsComponent) buildAgent(ctx context.Context, prompt *prompt.Prompt, 
 		ToolMaxDuration:   toolMaxDuration,
 		DataDirectory:     dataDirectory,
 		RunAllowlists:     runAllowlists,
-		Coord:             p.host.coord(),
+		Coord:             coordinatorPortFrom(p.host.coord()),
 		// Phase 3's by-construction release trigger (sessionAgent.
 		// onSessionIdle's doc, docs/plans/2026-09-28-async-phase3-spec.md
 		// orchestrator decision item 1) PLUS supervision's turn-end deadline

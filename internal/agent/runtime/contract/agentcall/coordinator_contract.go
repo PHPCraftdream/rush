@@ -16,6 +16,30 @@ import (
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
+// CoordinatorBatchFacts exposes the batch fact-binding identity needed by readers.
+type CoordinatorBatchFacts interface {
+	BatchFactsBindingKey() any
+}
+
+// CoordinatorBatchReactionStore exposes the identity needed for reaction writes.
+type CoordinatorBatchReactionStore interface {
+	BatchReactionStoreBindingKey() any
+}
+
+// CoordinatorBatchScopeRecovery exposes the scope-time recovery operation.
+type CoordinatorBatchScopeRecovery interface {
+	RecoverBatchScopeDeadCandidates(context.Context, string)
+}
+
+// CoordinatorDrainAttempt is the opaque drain-accounting attempt accepted by the
+// coordinator port. The concrete implementation is *drainctl.DrainAttempt;
+// implementations must return/pass the same pointer so accounting remains tied
+// to the exact attempt record. The marker keeps unrelated values from being
+// accepted by production callers at compile time.
+type CoordinatorDrainAttempt interface {
+	CoordinatorDrainAttemptMarker() any
+}
+
 // ModelOverride allows callers to specify per-run model overrides (provider + model ID).
 type ModelOverride struct {
 	Provider        string
@@ -650,3 +674,111 @@ func (opts *CallOptions) BorrowDiskBindingFrom(src *CallOptions) {
 // BorrowCallDiskBinding is the exported read side of borrowCallDiskBinding: staying
 // package-agent callers delegate here (design §3.1 contract reads).
 func BorrowCallDiskBinding(opts *CallOptions) CallBindingHandle { return borrowCallDiskBinding(opts) }
+
+// CoordinatorVerdict exposes only the decision fields read by turn callers.
+type CoordinatorVerdict interface {
+	Kind() uint8
+	Reason() string
+	RecheckAt() time.Time
+}
+
+// CoordinatorTurnFacts exposes the accessed parts of the launch snapshot.
+type CoordinatorTurnFacts interface {
+	Debt() CoordinatorDebtFacts
+	Session() CoordinatorSessionFacts
+}
+
+// CoordinatorDebtFacts allows the policy path to mark pending debt inclusive.
+type CoordinatorDebtFacts interface {
+	SetPendingInclusive(bool)
+}
+
+// CoordinatorSessionFacts exposes reaction-chain state used by policy handling.
+type CoordinatorSessionFacts interface {
+	ChainNoticed() bool
+	ExternallyDrivenSelf() bool
+}
+
+// CoordinatorArbiter evaluates a launch site and records chain launches.
+type CoordinatorArbiter interface {
+	ArbiterVerdict(context.Context, string, uint8) (CoordinatorVerdict, CoordinatorTurnFacts, error)
+	ChainLastLaunch(string, string) bool
+}
+
+// CoordinatorDriverHints exposes the two driver-hint reads needed by turns.
+type CoordinatorDriverHints interface {
+	HintSeqOf(string) uint64
+	IsExternalDriver(string) bool
+}
+
+// CoordinatorBackground exposes the owned-work counters needed by the guard.
+type CoordinatorBackground interface {
+	ActiveOwned(string) int
+	PendingCompletionsOwned(string) int
+}
+
+// CoordinatorSubAgentDrivers exposes finalization identity binding to a driver.
+type CoordinatorSubAgentDrivers interface {
+	BindFinalizationIdentity(SessionAgent, SessionAgentCall) error
+}
+
+// CoordinatorFinalization exposes whether flag-gated finalization wiring exists.
+type CoordinatorFinalization interface {
+	Enabled() bool
+}
+
+// CoordinatorPort is the narrow coordinator surface used by agent session turns.
+type CoordinatorPort interface {
+	CoordinatorBatchFacts
+	CoordinatorBatchReactionStore
+	CoordinatorBatchScopeRecovery
+	// Cfg returns the coordinator's config store.
+	Cfg() *config.ConfigStore
+	// BuildCredentialModel constructs a model from the pinned config and credentials.
+	BuildCredentialModel(context.Context, *config.Config, *CredentialSet, ModelChoice) (Model, config.ProviderConfig, error)
+	// BuildModelsFromCfg constructs models from explicit selected-model settings.
+	BuildModelsFromCfg(context.Context, *config.Config, config.SelectedModel, config.SelectedModel, bool) (Model, Model, error)
+	// DrainCredentialBoundary reports whether a credentialed root blocks configured credentials.
+	DrainCredentialBoundary(context.Context, string) bool
+	// CheckLivePeakHours checks a provider against current peak-hours configuration.
+	CheckLivePeakHours(string) error
+	// BatchFactsInstalled reports whether batch facts were installed.
+	BatchFactsInstalled() bool
+	// BackgroundOwnsWork reports owned background work for a session.
+	BackgroundOwnsWork(string) bool
+	// AccountDrainAttempt reports the completed drain accounting attempt.
+	AccountDrainAttempt(context.Context, CoordinatorDrainAttempt, error)
+	// NoteDrainRefused records a refused drain admission.
+	NoteDrainRefused(string, error)
+	// SuspendAutoResume suspends automatic resumes for a session.
+	SuspendAutoResume(string)
+	// NoteTurnFailed updates pacing after a failed provider turn.
+	NoteTurnFailed(string)
+	// PushDeadlineOnTurnEnd advances supervision after a turn ends.
+	PushDeadlineOnTurnEnd(string)
+	// ArbiterVerdict evaluates a launch site through a package-neutral adapter.
+	ArbiterVerdict(context.Context, string, uint8) (CoordinatorVerdict, CoordinatorTurnFacts, error)
+	// Arb exposes the narrow launch-policy adapter used by turn decisions.
+	Arb() CoordinatorArbiter
+	// ClearSleepAll clears all await-task sleep for the session.
+	ClearSleepAll(string)
+	// ReactionChainHasClaim reports whether a claim belongs to the reaction chain.
+	ReactionChainHasClaim(string, string) bool
+	// RecordProgress updates progress after a notice is consumed.
+	RecordProgress(string)
+	// DriverHints exposes the per-session external-driver and hint data.
+	DriverHints() CoordinatorDriverHints
+	// Background exposes owned background-work counters.
+	Background() CoordinatorBackground
+	// SubAgentDrivers exposes finalization identity binding.
+	SubAgentDrivers() CoordinatorSubAgentDrivers
+	// Finalization exposes the optional finalization wiring state.
+	Finalization() CoordinatorFinalization
+	BatchCutoverFacts() BatchCutoverFacts
+	UnboundBatchFacts(BatchCutoverFacts) bool
+	CLIActiveWorkMessages() message.Service
+	ChildSessionBusy(string) bool
+	SubAgentQuestionBlockFromFinish(*message.Finish) (string, bool)
+	SubAgentQuestionFromFinish(string, *message.Finish) (string, bool)
+	BatchNodeStateLive(string) bool
+}

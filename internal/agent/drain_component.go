@@ -17,6 +17,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
@@ -42,6 +43,15 @@ func (c *coordinator) accountDrainAttempt(ctx context.Context, att *drainctl.Dra
 	newDrainComponent(c).accountDrainAttempt(ctx, att, turnErr)
 }
 
+func (c *coordinator) AccountDrainAttempt(ctx context.Context, att agentcall.CoordinatorDrainAttempt, turnErr error) {
+	attempt, _ := att.(*drainctl.DrainAttempt)
+	c.accountDrainAttempt(ctx, attempt, turnErr)
+}
+
+func (c *coordinator) NoteDrainRefused(sessionID string, cause error) {
+	c.noteDrainRefused(sessionID, cause)
+}
+func (c *coordinator) NoteTurnFailed(sessionID string) { c.noteTurnFailed(sessionID) }
 func (c *coordinator) noteDrainRefused(sessionID string, cause error) {
 	newDrainComponent(c).noteDrainRefused(sessionID, cause)
 }
@@ -224,7 +234,7 @@ func (a *sessionAgent) newDrainAttempt(call SessionAgentCall) *drainAttempt {
 	}
 	att := &drainAttempt{SessionID: call.SessionID}
 	if a.coord != nil {
-		att.HintAt = a.coord.driverHints.hintSeqOf(call.SessionID)
+		att.HintAt = a.coord.DriverHints().HintSeqOf(call.SessionID)
 	}
 	return att
 }
@@ -242,7 +252,7 @@ func (a *sessionAgent) closeDrainAttempt(att *drainAttempt, turnErr error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), drainAccountBudget())
 	defer cancel()
-	a.coord.accountDrainAttempt(ctx, att, turnErr)
+	a.coord.AccountDrainAttempt(ctx, att, turnErr)
 }
 
 func operatorStop(err error, turnCtxDone bool) bool {
@@ -390,7 +400,7 @@ func (a *sessionAgent) noteRefusal(sessionID string, cause error) {
 	if a.coord == nil {
 		return
 	}
-	a.coord.noteDrainRefused(sessionID, cause)
+	a.coord.NoteDrainRefused(sessionID, cause)
 }
 
 // afterTurn is runOwned's per-leg epilogue, run right after runTurn returns
@@ -410,12 +420,12 @@ func (a *sessionAgent) afterTurn(call SessionAgentCall, att *drainAttempt, err e
 		coord := a.coord
 		switch {
 		case errors.As(err, &awaiting):
-			coord.suspendAutoResume(call.SessionID)
+			coord.SuspendAutoResume(call.SessionID)
 		case att == nil && err != nil && providerTurnFailed(err, turnCtxDone):
-			coord.noteTurnFailed(call.SessionID)
+			coord.NoteTurnFailed(call.SessionID)
 		}
 		if att == nil || att.Outcome == drainAttempted {
-			coord.pushDeadlineOnTurnEnd(call.SessionID)
+			coord.PushDeadlineOnTurnEnd(call.SessionID)
 		}
 	}
 	if att != nil && att.Outcome == drainNotAttempted {
@@ -453,18 +463,18 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, ha
 	// slot pulled), and it must not get a sixth automatic turn. A Drain's own
 	// slot row is not an over-cap row, so it is never refused for the slot it
 	// holds.
-	v, _, err := a.coord.arbiterVerdict(ctx, sessionID, siteCommit)
+	v, _, err := a.coord.ArbiterVerdict(ctx, sessionID, uint8(siteCommit))
 	if err != nil {
 		return false, unreadablePolicyInput("launch decision input", sessionID, err)
 	}
-	dv := drainVerdictOf(v)
+	dv := drainVerdictFromPort(v)
 	if dv.Kind == drainAllow {
 		// An allowed drain launch breaks await_tasks' sleep and cancels its
 		// max_wait schedule (#1270). The wakeSession funnel (drainPolicy)
 		// never sees an externally-driven session's drains — its loop
 		// launches those itself — so this is the commit-side half of the
 		// "every allowed launch clears" contract.
-		a.coord.clearSleepAll(sessionID)
+		a.coord.ClearSleepAll(sessionID)
 	}
 	return dv.Kind == drainAllow, dv
 }
@@ -515,11 +525,11 @@ func (a *sessionAgent) pullPendingNotices(ctx context.Context, sessionID string)
 		if m.NoticeKind == sessionprompt.NoticeKindSupervision {
 			continue
 		}
-		if claims[i] != "" && coord != nil && coord.reactionChainHasClaim(sessionID, claims[i]) {
+		if claims[i] != "" && coord != nil && coord.ReactionChainHasClaim(sessionID, claims[i]) {
 			continue
 		}
 		if coord != nil {
-			coord.recordProgress(sessionID)
+			coord.RecordProgress(sessionID)
 		}
 		break
 	}
@@ -580,6 +590,12 @@ func (w *drainComponent) arbiterVerdict(ctx context.Context, sessionID string, s
 // callers still speak; the mapping itself is drainctl-owned.
 func drainVerdictOf(v Verdict) drainVerdict {
 	return drainctl.DrainVerdictOf(v)
+}
+
+// drainVerdictFromPort rebuilds the arbiter verdict from the port's decision
+// fields and maps it with drainVerdictOf, exactly as the direct call did.
+func drainVerdictFromPort(v agentcall.CoordinatorVerdict) drainVerdict {
+	return drainVerdictOf(Verdict{Kind: drainctl.VerdictKind(v.Kind()), Reason: v.Reason(), RecheckAt: v.RecheckAt()})
 }
 
 // unreadable wraps a read error as a fail-closed deferred verdict (worth a

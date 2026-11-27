@@ -127,7 +127,7 @@ func TestRecheckChild_FiresOnRealDriverRunEndWithoutManualTrigger(t *testing.T) 
 		IsYolo:     true,
 		Sessions:   env.sessions,
 		Messages:   env.messages,
-		Coord:      coord,
+		Coord:      coordinatorPortFrom(coord),
 		// The exact wiring buildAgent does for every driver it builds
 		// (coordinator_tools.go) -- this test wires it directly since it
 		// builds the driver without going through buildAgent.

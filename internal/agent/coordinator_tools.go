@@ -4,14 +4,18 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 )
 
 // finishToolAssembly is the final construction boundary. Flag OFF (no batch
@@ -375,3 +379,128 @@ func (c *coordinator) ListWakeSchedules(ctx context.Context, sessionID string) (
 func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, scheduleID string) (string, error) {
 	return c.wakeWorker().CancelWakeSchedule(ctx, sessionID, scheduleID)
 }
+
+func coordinatorPortFrom(c *coordinator) agentcall.CoordinatorPort {
+	if c == nil {
+		return nil
+	}
+	return c
+}
+
+func (c *coordinator) ArbiterVerdict(ctx context.Context, id string, site uint8) (agentcall.CoordinatorVerdict, agentcall.CoordinatorTurnFacts, error) {
+	v, f, err := c.arbiterVerdict(ctx, id, drainctl.LaunchSite(site))
+	return coordinatorVerdictAdapter{v}, coordinatorTurnFactsAdapter{f}, err
+}
+
+func (c *coordinator) Arb() agentcall.CoordinatorArbiter { return coordinatorArbiterAdapter{c} }
+func (c *coordinator) DriverHints() agentcall.CoordinatorDriverHints {
+	return coordinatorDriverHintsAdapter{c.driverHints}
+}
+
+func (c *coordinator) Background() agentcall.CoordinatorBackground {
+	if c.background == nil {
+		return nil
+	}
+	return coordinatorBackgroundAdapter{c.background}
+}
+
+func (c *coordinator) SubAgentDrivers() agentcall.CoordinatorSubAgentDrivers {
+	return coordinatorSubAgentDriversAdapter{c.subAgentDrivers}
+}
+
+func (c *coordinator) Finalization() agentcall.CoordinatorFinalization {
+	if c.finalization == nil {
+		return nil
+	}
+	return coordinatorFinalizationAdapter{c.finalization}
+}
+
+func (c *coordinator) RecordProgress(sessionID string)        { c.recordProgress(sessionID) }
+func (c *coordinator) PushDeadlineOnTurnEnd(sessionID string) { c.pushDeadlineOnTurnEnd(sessionID) }
+func (c *coordinator) ReactionChainHasClaim(sessionID, claim string) bool {
+	return c.reactionChainHasClaim(sessionID, claim)
+}
+
+type coordinatorArbiterAdapter struct{ c *coordinator }
+
+func (a coordinatorArbiterAdapter) ArbiterVerdict(ctx context.Context, id string, site uint8) (agentcall.CoordinatorVerdict, agentcall.CoordinatorTurnFacts, error) {
+	v, f, e := a.c.arbiterVerdict(ctx, id, drainctl.LaunchSite(site))
+	return coordinatorVerdictAdapter{v}, coordinatorTurnFactsAdapter{f}, e
+}
+
+func (a coordinatorArbiterAdapter) ChainLastLaunch(id, cmd string) bool {
+	return a.c.arb.chainLastLaunch(id, cmd)
+}
+
+type coordinatorVerdictAdapter struct{ v drainctl.Verdict }
+
+func (a coordinatorVerdictAdapter) Kind() uint8          { return uint8(a.v.Kind) }
+func (a coordinatorVerdictAdapter) Reason() string       { return a.v.Reason }
+func (a coordinatorVerdictAdapter) RecheckAt() time.Time { return a.v.RecheckAt }
+
+type coordinatorTurnFactsAdapter struct{ f drainctl.TurnFacts }
+
+func (a coordinatorTurnFactsAdapter) Debt() agentcall.CoordinatorDebtFacts {
+	return coordinatorDebtFactsAdapter{a.f.Debt}
+}
+
+func (a coordinatorTurnFactsAdapter) Session() agentcall.CoordinatorSessionFacts {
+	return coordinatorSessionFactsAdapter{a.f.Session}
+}
+
+type coordinatorDebtFactsAdapter struct{ f drainctl.DebtFacts }
+
+func (a coordinatorDebtFactsAdapter) SetPendingInclusive(v bool) { a.f.PendingIncl = v }
+
+type coordinatorSessionFactsAdapter struct{ f drainctl.SessionFacts }
+
+func (a coordinatorSessionFactsAdapter) ChainNoticed() bool         { return a.f.ChainNoticed }
+func (a coordinatorSessionFactsAdapter) ExternallyDrivenSelf() bool { return a.f.ExternallyDrivenSelf }
+
+type coordinatorDriverHintsAdapter struct{ h *batchDriverHints }
+
+func (a coordinatorDriverHintsAdapter) HintSeqOf(id string) uint64 {
+	if a.h == nil {
+		return 0
+	}
+	return a.h.hintSeqOf(id)
+}
+
+func (a coordinatorDriverHintsAdapter) IsExternalDriver(id string) bool {
+	return a.h != nil && a.h.isExternalDriver(id)
+}
+
+type coordinatorBackgroundAdapter struct {
+	b *shellbg.BackgroundShellManager
+}
+
+func (a coordinatorBackgroundAdapter) ActiveOwned(id string) int {
+	if a.b == nil {
+		return 0
+	}
+	return a.b.ActiveOwned(id)
+}
+
+func (a coordinatorBackgroundAdapter) PendingCompletionsOwned(id string) int {
+	if a.b == nil {
+		return 0
+	}
+	return a.b.PendingCompletionsOwned(id)
+}
+
+type coordinatorSubAgentDriversAdapter struct{ r *toolwrap.Registry }
+
+func (a coordinatorSubAgentDriversAdapter) BindFinalizationIdentity(agent agentcall.SessionAgent, call agentcall.SessionAgentCall) error {
+	return a.r.BindFinalizationIdentity(agent, call)
+}
+
+type coordinatorFinalizationAdapter struct{ f *finalizationWiring }
+
+func (a coordinatorFinalizationAdapter) Enabled() bool { return a.f != nil }
+func (a coordinatorFinalizationAdapter) FinalizeTurn(ctx context.Context, ts *turnStream) error {
+	return a.f.finalizeTurn(ctx, ts)
+}
+
+var _ agentcall.CoordinatorPort = (*coordinator)(nil)
+
+func (c *coordinator) Cfg() *config.ConfigStore { return c.cfg }

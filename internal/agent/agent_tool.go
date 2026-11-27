@@ -145,7 +145,7 @@ func (a *sessionAgent) ownWorkBatch(ctx context.Context, sessionID string) bool 
 		return true
 	}
 	if own+descendants > 0 {
-		active, err := clibridge.NewCliActiveWorkComponent(coord).DoBatchActiveAfterQuestionPause(bctx, facts, sessionID)
+		active, err := clibridge.NewCliActiveWorkComponent(cliActiveWorkHostAdapter{coord: coord}).DoBatchActiveAfterQuestionPause(bctx, facts, sessionID)
 		if err != nil {
 			slog.Warn("Batch own-work question-pause read failed; treating the session as active",
 				"session_id", sessionID, "err", err)
@@ -155,7 +155,7 @@ func (a *sessionAgent) ownWorkBatch(ctx context.Context, sessionID string) bool 
 			return true
 		}
 	}
-	if coord.background != nil && (coord.background.ActiveOwned(sessionID) > 0 || coord.background.PendingCompletionsOwned(sessionID) > 0) {
+	if bg := coord.Background(); bg != nil && (bg.ActiveOwned(sessionID) > 0 || bg.PendingCompletionsOwned(sessionID) > 0) {
 		return true
 	}
 	return false
@@ -178,7 +178,7 @@ func (c *coordinator) cliActiveWorkBatch(ctx context.Context, facts BatchCutover
 	return clibridge.NewCliActiveWorkComponent(c).DoCLIActiveWorkBatch(ctx, facts, root)
 }
 
-func (c *coordinator) BatchCutoverFacts() BatchCutoverFacts {
+func (c *coordinator) BatchCutoverFacts() agentcall.BatchCutoverFacts {
 	return coordinatorBatchCutoverFacts(c)
 }
 
@@ -210,7 +210,7 @@ func (c *coordinator) UnboundBatchFacts(facts agentcall.BatchCutoverFacts) bool 
 }
 
 func (c *coordinator) RecoverBatchScopeDeadCandidates(ctx context.Context, owner string) {
-	recoverBatchScopeDeadCandidates(ctx, c, owner)
+	c.scopeRecoverySource().recoverDeadCandidates(ctx, owner)
 }
 
 func (c *coordinator) BackgroundOwnsWork(root string) bool {
@@ -222,4 +222,42 @@ func (c *coordinator) CLIActiveWorkMessages() message.Service { return c.message
 func (c *coordinator) ChildSessionBusy(child string) bool {
 	ag := c.agentFor(child)
 	return ag != nil && ag.IsSessionBusy(child)
+}
+
+type cliActiveWorkHostAdapter struct{ coord agentcall.CoordinatorPort }
+
+func (a cliActiveWorkHostAdapter) BatchCutoverFacts() agentcall.BatchCutoverFacts {
+	return coordinatorBatchCutoverFacts(a.coord)
+}
+
+func (a cliActiveWorkHostAdapter) RecoverBatchScopeDeadCandidates(ctx context.Context, owner string) {
+	recoverBatchScopeDeadCandidates(ctx, a.coord, owner)
+}
+
+func (a cliActiveWorkHostAdapter) BackgroundOwnsWork(root string) bool {
+	return a.coord.BackgroundOwnsWork(root)
+}
+
+func (a cliActiveWorkHostAdapter) CLIActiveWorkMessages() message.Service {
+	return a.coord.CLIActiveWorkMessages()
+}
+
+func (a cliActiveWorkHostAdapter) ChildSessionBusy(child string) bool {
+	return a.coord.ChildSessionBusy(child)
+}
+
+func (a cliActiveWorkHostAdapter) UnboundBatchFacts(facts agentcall.BatchCutoverFacts) bool {
+	return a.coord.UnboundBatchFacts(facts)
+}
+
+func (a cliActiveWorkHostAdapter) SubAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
+	return a.coord.SubAgentQuestionBlockFromFinish(fp)
+}
+
+func (a cliActiveWorkHostAdapter) SubAgentQuestionFromFinish(child string, fp *message.Finish) (string, bool) {
+	return a.coord.SubAgentQuestionFromFinish(child, fp)
+}
+
+func (a cliActiveWorkHostAdapter) BatchNodeStateLive(state string) bool {
+	return a.coord.BatchNodeStateLive(state)
 }

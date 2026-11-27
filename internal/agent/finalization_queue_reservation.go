@@ -183,7 +183,11 @@ func (a *sessionAgent) bindFinalizationDriverCall(call SessionAgentCall) error {
 		if a.coord == nil {
 			return session.ErrAgentFinalizationDriverUnavailable
 		}
-		return a.coord.subAgentDrivers.BindFinalizationIdentity(a, call)
+		drivers := a.coord.SubAgentDrivers()
+		if drivers == nil {
+			return session.ErrAgentFinalizationDriverUnavailable
+		}
+		return drivers.BindFinalizationIdentity(a, call)
 	}
 	return nil
 }

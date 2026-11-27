@@ -258,6 +258,10 @@ func (c *coordinator) buildRoleContractModels(ctx context.Context, cfg *config.C
 // buildModelsFromCfg builds Model objects from explicit SelectedModel configs.
 // The cfg parameter must be from a single atomic Snapshot() call to ensure
 // consistency across all provider reads (task #341, P1-3).
+func (c *coordinator) BuildModelsFromCfg(ctx context.Context, cfg *config.Config, smart, fast config.SelectedModel, subAgent bool) (Model, Model, error) {
+	return c.buildModelsFromCfg(ctx, cfg, smart, fast, subAgent)
+}
+
 func (c *coordinator) buildModelsFromCfg(ctx context.Context, cfg *config.Config, smartModelCfg, fastModelCfg config.SelectedModel, isSubAgent bool) (Model, Model, error) {
 	return newModelsComponent(c).buildModelsFromCfg(ctx, cfg, smartModelCfg, fastModelCfg, isSubAgent)
 }

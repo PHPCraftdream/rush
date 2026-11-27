@@ -12,6 +12,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCoordinatorPortFinalizationWiringDelegates(t *testing.T) {
+	fixture := newFinalizationDriverFixture(t)
+	parent, err := fixture.api.BindAgentFinalization(fixture.ctx, fixture.parent)
+	require.NoError(t, err)
+	registry := toolwrap.NewRegistry()
+	agent := NewSessionAgent(SessionAgentOptions{})
+	original := SessionAgentCall{SessionID: fixture.child.SessionID, MaxCost: 2, MaxTokens: 123, Credentials: &CredentialSet{}, CallOptions: &CallOptions{MaxAgentDepth: 1, AgentDepthSet: true}, Tools: []fantasy.AgentTool{}, RequestedModelRole: RequestedModelRole("reviewer")}
+	parentCtx, err := session.WithAgentFinalizationContext(context.Background(), parent)
+	require.NoError(t, err)
+	generation := registry.Register(original.SessionID, toolwrap.Driver{Agent: agent, Call: original, FinalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx)})
+	call := SessionAgentCall{SessionID: original.SessionID, LogicalCallID: fixture.child.LogicalCallID, DriverGeneration: generation, FinalizationAuthorities: fixture.capability}
+	coord := &coordinator{subAgentDrivers: registry}
+	port := coordinatorPortFrom(coord)
+	require.NoError(t, port.SubAgentDrivers().BindFinalizationIdentity(agent, call))
+	stored, ok := registry.Get(call.SessionID)
+	require.True(t, ok, "port delegation reaches the real toolwrap registry")
+	require.Same(t, agent, stored.Agent, "the bound driver retains the same session agent identity")
+	require.Equal(t, call.LogicalCallID, stored.Call.LogicalCallID)
+	require.Equal(t, call.FinalizationAuthorities.Requirement(), stored.FinalizationAuthorities.Requirement())
+
+	finalization := &finalizationWiring{}
+	coord.finalization = finalization
+	adapter := port.Finalization()
+	require.True(t, adapter.Enabled(), "port finalization adapter reflects installed wiring")
+}
+
 func TestFinalizationDriverBindingInstallsIdentityWithoutChangingFrozenPolicy(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
 	parent, err := fixture.api.BindAgentFinalization(fixture.ctx, fixture.parent)

@@ -246,7 +246,10 @@ func finishedStatusFor(msg *message.Message) string {
 	return "finished"
 }
 
-// drainCredentialBoundary reports whether an automatic drain of sessionID must
+func (c *coordinator) DrainCredentialBoundary(ctx context.Context, sessionID string) bool {
+	return c.drainCredentialBoundary(ctx, sessionID)
+}
+
 // be refused for lack of its tenant credentials. The in-process root marker is
 // always consulted; the durable lineage walk (an extra session read per drain)
 // runs only when a durable marker store is bound, so a coordinator without one

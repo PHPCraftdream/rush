@@ -6,6 +6,8 @@ import (
 	"github.com/PHPCraftdream/rush/internal/session"
 )
 
+func (a *DrainAttempt) CoordinatorDrainAttemptMarker() any { return a }
+
 // DrainAttempt is one Drain leg (one turn-loop iteration of a Drain call).
 type DrainAttempt struct {
 	SessionID string

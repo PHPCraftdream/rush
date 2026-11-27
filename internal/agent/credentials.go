@@ -386,6 +386,10 @@ func (c *coordinator) resolveCredentialsModels(ctx context.Context, sessionID st
 // and model choice. Used for every role a call's CredentialSet covers.
 // cfg is the caller's pinned config snapshot (F6); it only supplies the
 // global network defaults for the provider HTTP client.
+func (c *coordinator) BuildCredentialModel(ctx context.Context, cfg *config.Config, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error) {
+	return c.buildCredentialModel(ctx, cfg, creds, choice)
+}
+
 func (c *coordinator) buildCredentialModel(ctx context.Context, cfg *config.Config, creds *CredentialSet, choice ModelChoice) (Model, config.ProviderConfig, error) {
 	cred, ok := creds.Credential(choice.Provider)
 	if !ok {

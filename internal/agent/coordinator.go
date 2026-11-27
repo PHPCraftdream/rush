@@ -541,6 +541,8 @@ func (c *coordinator) suspendAutoResume(sessionID string) {
 	c.arb.suspend(sessionID)
 }
 
+func (c *coordinator) SuspendAutoResume(sessionID string) { c.suspendAutoResume(sessionID) }
+
 // autoResumeSuspended reports whether Stop suspended automatic turns for
 // sessionID and no human message has lifted it yet.
 func (c *coordinator) autoResumeSuspended(sessionID string) bool {
@@ -576,6 +578,8 @@ func (c *coordinator) claimAutoResumeSlot(sessionID string, rowID int64, eligibl
 func (c *coordinator) SetAgentTimeoutOptions(extendsOnProgress bool, hardCap time.Duration) {
 	c.currentAgent.SetTimeoutOptions(extendsOnProgress, hardCap)
 }
+
+func (c *coordinator) ClearSleepAll(sessionID string) { c.clearSleepAll(sessionID) }
 
 // Compile-time wiring guards for the OPTIONAL interfaces *coordinator exposes.
 // Their consumers type-assert on the Coordinator value (internal/app, cmd and

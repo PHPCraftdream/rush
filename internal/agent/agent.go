@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
@@ -232,7 +233,7 @@ type sessionAgent struct {
 	// facts, reaction store and notice pull all route through it. The
 	// deleted workLedger's remaining retained state (hint counter, external
 	// driver mirror, supervision) lives on the coordinator too.
-	coord  *coordinator
+	coord  agentcall.CoordinatorPort
 	config *config.ConfigStore
 
 	// wsHomeOverride is the WS-1 test seam (#1142 step C): when non-nil it

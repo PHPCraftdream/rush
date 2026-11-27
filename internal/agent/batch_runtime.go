@@ -16,6 +16,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
@@ -670,6 +671,9 @@ func (s batchScopeRecoverySource) recoverDeadCandidates(ctx context.Context, own
 // the flag-ON paths (H4 W2): the turn preamble BEFORE the notice pull,
 // runningWorkOpen, CLIActiveWork's batch branch, and nothing else.
 // Ordinary output/status/live-work rendering must not trigger recovery.
-func recoverBatchScopeDeadCandidates(ctx context.Context, c *coordinator, owner string) {
-	c.scopeRecoverySource().recoverDeadCandidates(ctx, owner)
+func recoverBatchScopeDeadCandidates(ctx context.Context, c agentcall.CoordinatorBatchScopeRecovery, owner string) {
+	if c == nil {
+		return
+	}
+	c.RecoverBatchScopeDeadCandidates(ctx, owner)
 }

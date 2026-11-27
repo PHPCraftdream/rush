@@ -138,9 +138,11 @@ func BindCoordinatorBatchCutoverFacts(c Coordinator, facts BatchCutoverFacts) {
 // source, else the conservative unknown source (unwired coordinator: never
 // idle, never "no debt"). There is no flag selector and no ledger adapter:
 // batch node facts are the ONLY fact source.
-func coordinatorBatchCutoverFacts(c *coordinator) BatchCutoverFacts {
+func (c *coordinator) BatchFactsBindingKey() any { return c }
+
+func coordinatorBatchCutoverFacts(c agentcall.CoordinatorBatchFacts) BatchCutoverFacts {
 	if c != nil {
-		if v, ok := coordinatorBatchCutoverFactsBindings.Load(c); ok {
+		if v, ok := coordinatorBatchCutoverFactsBindings.Load(c.BatchFactsBindingKey()); ok {
 			return v.(BatchCutoverFacts)
 		}
 	}

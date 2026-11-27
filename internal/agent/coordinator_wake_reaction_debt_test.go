@@ -134,7 +134,7 @@ func newWakeDebtFixtureOpts(t *testing.T, title string, onRequestBody func([]byt
 	opts := SessionAgentOptions{
 		SmartModel: model, FastModel: model, SystemPrompt: "you are a probe",
 		Sessions: env.sessions, Messages: f.messages,
-		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: f.coord,
+		Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true, Coord: coordinatorPortFrom(f.coord),
 	}
 	if wireOnSessionIdle {
 		opts.OnSessionIdle = f.coord.onSessionIdleHook

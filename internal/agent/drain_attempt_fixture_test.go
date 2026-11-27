@@ -140,7 +140,7 @@ func newAttemptFixture(t *testing.T, title string, o attemptFixtureOpts) *attemp
 	opts := SessionAgentOptions{
 		SmartModel: f.model, FastModel: f.model, SystemPrompt: "you are a probe",
 		DataDirectory: f.env.workingDir, Sessions: f.env.sessions, Messages: f.env.messages,
-		Tools: tools, DisableAutoSummarize: true, Coord: f.coord,
+		Tools: tools, DisableAutoSummarize: true, Coord: coordinatorPortFrom(f.coord),
 		StreamIdleTimeout: o.streamIdle, StreamWatchdogTick: o.streamTick,
 		// The probe handler answers title requests with the same scripted
 		// turn, so the title never resolves: do not hold each turn 10 s on it.

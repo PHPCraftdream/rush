@@ -185,7 +185,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		if call.RecoverySpentTokens > state.Spent.Load() {
 			state.Spent.Store(call.RecoverySpentTokens)
 		}
-	} else if a.coord != nil && a.coord.cfg != nil {
+	} else if a.coord != nil && a.coord.Cfg() != nil {
 		call.Recovery = a.snapshotCodexRecovery(call, currentSession)
 		call.Recovery.TargetPrompt = call.Prompt
 		call.Recovery.TargetAttachments = cloneRecoveryAttachments(call.Attachments)
