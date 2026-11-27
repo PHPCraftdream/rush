@@ -1,26 +1,165 @@
-// Node-backed BatchCutoverFacts: every answer comes from batch_nodes, the
-// batch outbox and session_notices reads (plus the retained host probe).
-// async_jobs is never read and terminal state is never mirrored back. Every
-// failed or incomplete read answers conservatively: debt true, live true.
 package agent
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
-
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
-
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchlife"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/session"
 	sessionnotice "github.com/PHPCraftdream/rush/internal/session/state/sessionnotice"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
+// BatchCutoverFacts is the R12-E single fact-source seam for the job-batches
+// cutover: the terminal/debt/scope/reaction/wake questions the pre-cutover
+// consumers direct at the async_jobs ledger. The node-backed implementation
+// is the only source: it reads batch_nodes/batch outbox/session_notices only
+// and never touches async_jobs (the legacy adapter is gone). Wake schedules
+// and session driver markers are retained host infrastructure and stay on
+// their existing readers.
+// BatchCutoverFacts is retained as a root-package alias for its anchored
+// coordinator, supervision, drain, adapter, and test callers.
+type BatchCutoverFacts = agentcall.BatchCutoverFacts
+
+// ErrBatchFactsSourceUnavailable marks a permanently unavailable batch
+// facts node source (missing binding or missing node-source dependency).
+// It is a terminal condition: callers must surface it as an error, never
+// retry it.
+var ErrBatchFactsSourceUnavailable = errBatchFactsUnavailable
+
+// unknownBatchCutoverFacts is the flag-ON fail-safe: no node source could be
+// constructed (no binding, no live reader). It never touches the ledger and
+// answers every question conservatively: debt true, live true.
+type unknownBatchCutoverFacts struct{}
+
+func (unknownBatchCutoverFacts) SelectedDebtExists(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (unknownBatchCutoverFacts) CaptureVisibleDebt(context.Context, string) (session.BatchDebtSnapshot, error) {
+	return session.BatchDebtSnapshot{}, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) PendingInclusiveDebt(context.Context, string) (session.BatchPendingDebt, error) {
+	return session.BatchPendingDebt{}, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) PendingInclusiveDebtSummary(context.Context, string) (bool, []string, error) {
+	return true, nil, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) ReactedFailedTexts(context.Context, string) ([]session.BatchReactedFailedText, error) {
+	return nil, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) LiveWorkSummary(context.Context, string) (int, int, error) {
+	return 1, 1, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) LiveScopeForOwners(_ context.Context, owners []string) ([]agentcall.BatchLiveScopeEntry, error) {
+	out := make([]agentcall.BatchLiveScopeEntry, 0, len(owners))
+	for _, o := range owners {
+		out = append(out, agentcall.BatchLiveScopeEntry{Owner: o, Live: true})
+	}
+	return out, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) LiveDelegationChildOf(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func (unknownBatchCutoverFacts) DelegationChildEver(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func (unknownBatchCutoverFacts) LiveNodes(context.Context, string) ([]session.BatchLiveNode, error) {
+	return nil, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) LiveDelegationNodes(context.Context, string) ([]session.BatchLiveNode, error) {
+	return nil, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) AttemptRows(context.Context, string, session.BatchDebtSnapshot, int) (agentcall.BatchAttemptRows, error) {
+	return agentcall.BatchAttemptRows{}, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) IncrementWakeAttempts(context.Context, string, session.BatchDebtSnapshot) error {
+	return errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) SettleReactedFailedWithMarker(context.Context, string, session.BatchDebtSnapshot, string) (int64, error) {
+	return 0, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) DebtToolCallIDs(context.Context, session.BatchDebtSnapshot) []string {
+	return nil
+}
+
+func (unknownBatchCutoverFacts) PullBatchNotices(context.Context, message.Service, string) ([]sessionnotice.PulledNotice, error) {
+	return nil, nil
+}
+
+func (unknownBatchCutoverFacts) PullPendingSessionNotices(context.Context, message.Service, string, func(sessionnotice.SessionNoticeRow) message.CreateMessageParams) ([]sessionnotice.PulledNotice, error) {
+	return nil, nil
+}
+
+func (unknownBatchCutoverFacts) HeldQuestions(context.Context, string) ([]sessionnotice.PendingNoticeDebt, error) {
+	return nil, errBatchFactsUnavailable
+}
+
+func (unknownBatchCutoverFacts) LiveHeldQuestions(context.Context, string) ([]sessionnotice.PendingNoticeDebt, error) {
+	return []sessionnotice.PendingNoticeDebt{{Kind: session.NoticeKindChildQuestion}}, errBatchFactsUnavailable
+}
+
+// coordinatorBatchCutoverFactsBindings maps a *coordinator onto its
+// explicitly bound fact source (R12-H wiring at install time).
+var coordinatorBatchCutoverFactsBindings sync.Map
+
+// BindCoordinatorBatchCutoverFacts binds one coordinator to the node-backed
+// fact source. R12-H calls this beside BindCoordinatorBatchRuntime, e.g.
+// BindCoordinatorBatchCutoverFacts(c, NewBatchCutoverNodeFacts(store, live,
+// writer)). nil facts is ignored.
+func BindCoordinatorBatchCutoverFacts(c Coordinator, facts BatchCutoverFacts) {
+	if c == nil || facts == nil {
+		return
+	}
+	coordinatorBatchCutoverFactsBindings.Store(c, facts)
+}
+
+// coordinatorBatchCutoverFacts returns the fact source for c: the bound node
+// source, else the conservative unknown source (unwired coordinator: never
+// idle, never "no debt"). There is no flag selector and no ledger adapter:
+// batch node facts are the ONLY fact source.
+func coordinatorBatchCutoverFacts(c *coordinator) BatchCutoverFacts {
+	if c != nil {
+		if v, ok := coordinatorBatchCutoverFactsBindings.Load(c); ok {
+			return v.(BatchCutoverFacts)
+		}
+	}
+	return unknownBatchCutoverFacts{}
+}
+
+// readTurnFactsBatch is readTurnFacts' only implementation: the same
+// TurnFacts shape, with the DB half sourced from batch node reads and the
+// in-process half (arbiter state, hint counter, external driver, gate) on
+// the rehomed coordinator runtime state. Order is law: the debt rows
+// first, then the memory half.
+func (c *coordinator) readTurnFactsBatch(ctx context.Context, facts BatchCutoverFacts, sessionID string, f TurnFacts) (TurnFacts, error) {
+	return newBatchCutoverGlueComponent(c).readTurnFactsBatch(ctx, facts, sessionID, f)
+}
+
+// Node-backed BatchCutoverFacts: every answer comes from batch_nodes, the
+// batch outbox and session_notices reads (plus the retained host probe).
+// async_jobs is never read and terminal state is never mirrored back. Every
+// failed or incomplete read answers conservatively: debt true, live true.
 // nodeBatchCutoverFacts is constructed by the installer over one BatchStore,
 // its live reader and the same writer conn the store wraps
 // (NewBatchCutoverNodeFacts) and bound to a coordinator with
@@ -520,3 +659,76 @@ func parseBatchQuestionMarker(text string) (string, int64, bool) {
 }
 
 func batchQuestionMarkerChild(text string) string { return batchmeta.BatchQuestionMarkerChild(text) }
+
+// Exact-incarnation rerun stop routing (R12-F, cutover acceptance 3): the
+// batch-only post-commit executor stop (the retained rerun contract).
+// The durable reconciliation is session.BatchStore.BatchRerunReconcile's
+// single transaction (R10c); retirement is DURABLE and written THERE, in the
+// truncation transaction (R12-F round 4: the live-root void runs in-tx, so
+// it survives restarts and needs no in-memory registry). This goroutine runs
+// only AFTER that transaction committed, from the Voided set it returned,
+// and only stops executors: it never writes delivery state. Every entry
+// carries its exact root_id, so stops are keyed by (owner, root_id) — never
+// widened to a tool_call_id: a provider-reused call id can never cancel a
+// NEW incarnation, and a late completion of a stopped old incarnation can
+// only commit against its own (void-delivery or retired) root rows, never
+// into the new one (I5).
+// Rerun stop routing is batch-only: the post-commit executor stop is
+// Coordinator.BatchRerunStopVoided (batch_cutover_rerun.go), the retained
+// implementation of the optional BatchRerunStopper surface. The legacy
+// StopRerunJobs / []session.VoidedAsyncJob contract is gone — the durable
+// reconciliation (session.BatchStore.BatchRerunReconcile) returns the
+// exact-incarnation Voided node set the batch stop consumes.
+// BatchRerunStopper is the rerun stop surface (the only one; the legacy
+// StopRerunJobs / session.VoidedAsyncJob contract is gone). It is an
+// OPTIONAL interface so coordinator fakes can stay narrow: the rerun
+// handler type-asserts it.
+type BatchRerunStopper interface {
+	BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode)
+}
+
+// batchRerunStopWorthy reports whether a voided incarnation's executor can
+// still be stopped: the live states. A terminal incarnation is already
+// settled; a stop would only chase dead rows.
+func batchRerunStopWorthy(state string) bool {
+	switch state {
+	case "pending", "starting", "running", "cancelling":
+		return true
+	}
+	return false
+}
+
+// batchRerunRuntime unwraps the coordinator's bound batch runtime into the
+// engine handle, owning host and batch store the stop needs. The binding is
+// per-coordinator (BindCoordinatorBatchRuntime, batch_install_ingress.go);
+// nil means not bound — the caller and its log treat that as "retire by
+// delivery fencing only".
+func batchRerunRuntime(c *coordinator) (runner batchcore.RunnerHandle, host string, store *session.BatchStore) {
+	bind := coordinatorBatchBindingFor(c)
+	if bind == nil {
+		return nil, "", nil
+	}
+	wi, ok := bind.ingress.(*batchWorkIngress)
+	if !ok || wi == nil || wi.rt == nil {
+		return nil, "", nil
+	}
+	if attach, ok := wi.rt.cfg.Attach.(batchAttachAdapter); ok {
+		store = attach.store
+	}
+	return wi.rt.cfg.Runner, wi.rt.cfg.Host, store
+}
+
+// BatchRerunStopVoided implements the post-commit stop: stop exactly
+// the local live engine roots the committed reconciliation voided, and stop
+// every voided delegation's child tree (the retained transitive-stop shape). The durable void marks were already written by
+// BatchRerunReconcile in its truncation transaction; nothing here touches
+// delivery state.
+// Best effort and idempotent: the rows are already void-delivery, and the
+// re-read below is the repeated-stop suppression — after the first pass the
+// stopped root settles terminal, so a second pass over the same Voided set
+// is a no-op. A stop that misses (foreign host, engine gone, already
+// retired) only means the executor's completion commits void instead of
+// being stopped early.
+func (c *coordinator) BatchRerunStopVoided(ctx context.Context, sessionID string, voided []session.BatchRerunVoidedNode) {
+	newBatchCutoverGlueComponent(c).batchRerunStopVoided(ctx, sessionID, voided)
+}
