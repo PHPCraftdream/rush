@@ -679,6 +679,7 @@ func BorrowCallDiskBinding(opts *CallOptions) CallBindingHandle { return borrowC
 type CoordinatorVerdict interface {
 	Kind() uint8
 	Reason() string
+	RecheckAt() time.Time
 }
 
 // CoordinatorTurnFacts exposes the accessed parts of the launch snapshot.

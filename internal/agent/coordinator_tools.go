@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/prompt"
@@ -433,8 +434,9 @@ func (a coordinatorArbiterAdapter) ChainLastLaunch(id, cmd string) bool {
 
 type coordinatorVerdictAdapter struct{ v drainctl.Verdict }
 
-func (a coordinatorVerdictAdapter) Kind() uint8    { return uint8(a.v.Kind) }
-func (a coordinatorVerdictAdapter) Reason() string { return a.v.Reason }
+func (a coordinatorVerdictAdapter) Kind() uint8          { return uint8(a.v.Kind) }
+func (a coordinatorVerdictAdapter) Reason() string       { return a.v.Reason }
+func (a coordinatorVerdictAdapter) RecheckAt() time.Time { return a.v.RecheckAt }
 
 type coordinatorTurnFactsAdapter struct{ f drainctl.TurnFacts }
 

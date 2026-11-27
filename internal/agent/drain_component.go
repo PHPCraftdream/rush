@@ -467,7 +467,7 @@ func (a *sessionAgent) decideDrainTurn(ctx context.Context, sessionID string, ha
 	if err != nil {
 		return false, unreadablePolicyInput("launch decision input", sessionID, err)
 	}
-	dv := drainVerdict{Kind: drainVerdictKind(v.Kind()), Reason: v.Reason()}
+	dv := drainVerdictFromPort(v)
 	if dv.Kind == drainAllow {
 		// An allowed drain launch breaks await_tasks' sleep and cancels its
 		// max_wait schedule (#1270). The wakeSession funnel (drainPolicy)
@@ -590,6 +590,12 @@ func (w *drainComponent) arbiterVerdict(ctx context.Context, sessionID string, s
 // callers still speak; the mapping itself is drainctl-owned.
 func drainVerdictOf(v Verdict) drainVerdict {
 	return drainctl.DrainVerdictOf(v)
+}
+
+// drainVerdictFromPort rebuilds the arbiter verdict from the port's decision
+// fields and maps it with drainVerdictOf, exactly as the direct call did.
+func drainVerdictFromPort(v agentcall.CoordinatorVerdict) drainVerdict {
+	return drainVerdictOf(Verdict{Kind: drainctl.VerdictKind(v.Kind()), Reason: v.Reason(), RecheckAt: v.RecheckAt()})
 }
 
 // unreadable wraps a read error as a fail-closed deferred verdict (worth a

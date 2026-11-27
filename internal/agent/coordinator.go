@@ -579,7 +579,7 @@ func (c *coordinator) SetAgentTimeoutOptions(extendsOnProgress bool, hardCap tim
 	c.currentAgent.SetTimeoutOptions(extendsOnProgress, hardCap)
 }
 
-func (c *coordinator) ClearSleepAll(sessionID string) { c.arb.clearSleepAll(sessionID) }
+func (c *coordinator) ClearSleepAll(sessionID string) { c.clearSleepAll(sessionID) }
 
 // Compile-time wiring guards for the OPTIONAL interfaces *coordinator exposes.
 // Their consumers type-assert on the Coordinator value (internal/app, cmd and
