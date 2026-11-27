@@ -16,12 +16,10 @@ func TestCoordinatorPortFinalizationWiringDelegates(t *testing.T) {
 	fixture := newFinalizationDriverFixture(t)
 	parent, err := fixture.api.BindAgentFinalization(fixture.ctx, fixture.parent)
 	require.NoError(t, err)
-	parentCtx, err := session.WithAgentFinalizationContext(context.Background(), parent)
-	require.NoError(t, err)
 	registry := toolwrap.NewRegistry()
 	agent := NewSessionAgent(SessionAgentOptions{})
 	original := SessionAgentCall{SessionID: fixture.child.SessionID, MaxCost: 2, MaxTokens: 123, Credentials: &CredentialSet{}, CallOptions: &CallOptions{MaxAgentDepth: 1, AgentDepthSet: true}, Tools: []fantasy.AgentTool{}, RequestedModelRole: RequestedModelRole("reviewer")}
-	parentCtx, err = session.WithAgentFinalizationContext(context.Background(), parent)
+	parentCtx, err := session.WithAgentFinalizationContext(context.Background(), parent)
 	require.NoError(t, err)
 	generation := registry.Register(original.SessionID, toolwrap.Driver{Agent: agent, Call: original, FinalizationAuthorities: session.CaptureAgentFinalizationContext(parentCtx)})
 	call := SessionAgentCall{SessionID: original.SessionID, LogicalCallID: fixture.child.LogicalCallID, DriverGeneration: generation, FinalizationAuthorities: fixture.capability}
