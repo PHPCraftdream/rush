@@ -1,0 +1,12 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+internal/session/session_bridge.go	272	internal/session/session_notice_store.go	701	one-file merge of the full set (719 source lines, fits one target under 880); store file keeps the name as the larger, primary concern of the pair	bodies appended in file-name order (bridge first, then notice_store); no build constraints, no GOOS/GOARCH suffixes in either source; no func init(); no package-level var/const initialiser with side effects or cross-file dependency (bridge holds only alias/type/const re-exports; notice_store holds store types with no init-time coupling); no go:embed/generate/linkname/cgo; no //nolint directives; alias overlap: session, sessionnotice imported with identical alias+path in both sources - single union entry; sessionbatch path appeared both plain and identically-aliased - collapsed to the plain form (same package name); package doc comment of session_notice_store.go kept above the package clause; session_bridge.go's file-level comment described the now-deleted file and was dropped with it (counted as excluded from oracle (a) region together with package clause and import block)
+ORACLE-A	sorted multiset of non-blank lines excluding package doc/package clause/import blocks	IDENTICAL (589 lines before and after, byte-compared from git show HEAD sources)	-	-	-
+ORACLE-B	sorted top-level declaration lines (func/type/var/const)	IDENTICAL (61 declarations)	-	-	-
+ORACLE-C	git status scope	only session_bridge.go (deleted) and session_notice_store.go (modified) plus this ledger; no _test.go or file outside the set	-	-	-
+MUTATION-CHECK	one character changed inside a moved function body in a scratch copy (return nil -> return xxx)	ORACLE-A reports the mismatch (DETECTED); scratch copy discarded, tracked tree untouched	-	-	-
+CHECK-COMPILE	go test -c -o NUL ./internal/session (via capm 2g golock.sh wrapper)	exit 0	-	-	-
+CHECK-VET-linux	go vet ./internal/session, GOOS=linux	exit 0	-	-	-
+CHECK-VET-darwin	go vet ./internal/session, GOOS=darwin	exit 0	-	-	-
+CHECK-VET-windows	go vet ./internal/session, GOOS=windows	exit 0	-	-	-
+CHECK-FMT	gofumpt -l and goimports -l on target file	both print nothing	-	-	-
+CHECK-FILECOUNT	production files of the set before -> after	2 -> 1 (719 lines -> 701 lines; delta = removed file-level comment + tidied import block)	-	-	-
