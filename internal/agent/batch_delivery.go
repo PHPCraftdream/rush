@@ -88,6 +88,7 @@ func isBatchStartedToolResult(result fantasy.ToolResultContent) bool {
 }
 
 /*
+
 Batch delivery and cancellation mapping (R11D, inert; nothing is installed,
 R11F owns the wiring; model tools stay R13).
 

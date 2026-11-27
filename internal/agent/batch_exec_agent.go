@@ -384,6 +384,7 @@ func pctClaimCapturedHandoffViaIngress(env batchLeafEnv, p batchLeafPayload) *to
 }
 
 /*
+
 batch_exec_agent_doc.go — R7c agent scope adapter: behavior mapping and
 assumed contracts. The adapter is the LIVE delegation authority: a batch
 executor runs it through the registered batchAgentFamily (the deleted
