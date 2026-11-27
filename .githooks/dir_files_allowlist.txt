@@ -67,9 +67,9 @@ internal/serve/server/server 126
 # MV2 split: lock and child-group source/test files now live in their leaf packages.
 internal/session 33
 # EX4 service has 43 direct Go files (22 production, 21 tests); components is not counted here; service remains over max-7; EX4 is not complete (later EX2/EX3/EX5 own remaining service files).
-internal/session/service 38
+internal/session/service 27
 internal/session/jobbatch 43
-internal/session/jobbatch/lab 35
+internal/session/jobbatch/lab 24
 internal/store/message 26
 # 45 -> 46: +1 sdk/client.go, the Client implementation cut out of sdk.go (D2m lane E-sdk); deliberate, only down from here.
 sdk 46
@@ -89,5 +89,5 @@ internal/serve/server/ws/wsconfig 31
 # internal/session/run/sessionrun is born over the limit: 12 production files plus 46 moved test files (lane MV4).
 # The tests spread over their own packages at stage F; deliberate, only down from here.
 # born over the limit (MV3, plan D3); falls at EX lanes
-internal/session/batch/sessionbatch 61
-internal/session/run/sessionrun 58
+internal/session/batch/sessionbatch 49
+internal/session/run/sessionrun 52

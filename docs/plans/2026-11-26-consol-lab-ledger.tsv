@@ -1,0 +1,44 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+internal/session/jobbatch/lab/controlled_compat.go	7	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 1
+internal/session/jobbatch/lab/errors.go	8	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 2
+internal/session/jobbatch/lab/journal.go	223	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 3
+internal/session/jobbatch/lab/journal_state.go	40	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 4
+internal/session/jobbatch/lab/oracle.go	313	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 5
+internal/session/jobbatch/lab/oracle_check.go	206	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 6
+internal/session/jobbatch/lab/oracle_cleanup.go	45	internal/session/jobbatch/lab/oracle.go	810	G1 oracle consolidation	concatenated group order 7
+internal/session/jobbatch/lab/replay.go	360	internal/session/jobbatch/lab/replay.go	708	G2 replay consolidation	concatenated group order 1
+internal/session/jobbatch/lab/replay_engine.go	273	internal/session/jobbatch/lab/replay.go	708	G2 replay consolidation	concatenated group order 2
+internal/session/jobbatch/lab/replay_metadata.go	89	internal/session/jobbatch/lab/replay.go	708	G2 replay consolidation	concatenated group order 3
+internal/session/jobbatch/lab/scenario_run.go	314	internal/session/jobbatch/lab/scenario_run.go	724	G3 scenario-run consolidation	concatenated group order 1
+internal/session/jobbatch/lab/scenario_actions.go	223	internal/session/jobbatch/lab/scenario_run.go	724	G3 scenario-run consolidation	concatenated group order 2
+internal/session/jobbatch/lab/scenario_validate.go	204	internal/session/jobbatch/lab/scenario_run.go	724	G3 scenario-run consolidation	concatenated group order 3
+internal/session/jobbatch/lab/scenario.go	328	internal/session/jobbatch/lab/scenario.go	386	G4 scenario consolidation	concatenated group order 1
+internal/session/jobbatch/lab/scenario_decode.go	65	internal/session/jobbatch/lab/scenario.go	386	G4 scenario consolidation	concatenated group order 2
+internal/session/jobbatch/lab/schema.go	343	internal/session/jobbatch/lab/schema.go	343	G5 unchanged	unchanged
+ORACLE-a	identical			production nonblank lines after excluding package/import blocks	before/after sorted multiset: 2695 lines; exact match
+ORACLE-b	identical			production declarations	before/after sorted declaration list: 149 entries; exact match
+ORACLE-c	none			initialization/build constraints	no func init(), build tags, or GOOS/GOARCH suffixes observed
+MUTATION-check	passed			mutation sensitivity	changed one body character in scratch comparison; difference detected (symmetric set delta 2)
+INIT-order-none	none			initialization order	no func init() observed
+BUILD-CONSTRAINTS-none	none			build constraints	no //go:build or GOOS/GOARCH suffixes observed
+DIRECTIVES-none	none			compiler directives	no embed/generate/linkname directives observed
+IMPORT-ALIASES-none	none			import aliases	no dot/blank imports observed
+SIZE-880-ok	passed			final target limits	810, 708, 724, 386, 343 lines; maximum 880
+G1-build	0			go build . after G1	passed
+G2-build	0			go build . after G2	passed
+G3-build	0			go build . after G3	passed
+G4-build	0			go build . after G4	passed
+final-build	0			go build . after formatting	passed
+lab-vet	0			go vet .	passed
+lab-test-c	0			go test -c -o NUL	passed
+importer-cmd/batchlab-build	0			cmd/batchlab go build .	passed
+importer-internal/session/jobbatch-build	0			internal/session/jobbatch go build .	passed
+vet-linux	0			GOOS=linux go vet .	passed
+vet-darwin	0			GOOS=darwin go vet .	passed
+vet-windows	0			GOOS=windows go vet .	passed
+final-test	0			go test -p 1 -parallel 1 -count=1 -timeout 30m .	passed in 12.037s
+check_dir_entries.sh	3			guard invocation with requested directory argument	unknown argument; no-argument retry failed code 1 because deleted tracked files unavailable
+check_dir_files.sh	1			guard invocation with requested directory argument	could not read deleted tracked source files
+check_file_size_900.sh	1			guard	could not read deleted tracked source files
+check_pkg_names.sh	1			guard	could not read deleted tracked source files
+check_layers.sh	0			guard	228 packages checked; 0 production edges and 2 test files allowlisted

@@ -1,0 +1,32 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+session.go	785	session.go	848	core session service: constructor, role contract, execution requirement, batch compat seams	first source; largest file anchors target
+session_cost_subtree.go	71	session.go	848	subtree cost reads and budget freeze belong to the session service core imports unioned; no aliases, no dot/blank imports
+finalization_compat.go	608	finalization_compat.go	696	finalization queue compatibility API, typed leases, queue service largest finalization file anchors target
+finalization_notify_gate.go	94	finalization_compat.go	696	finalization notify gate polls the same queue concern as the compat layer gate const finalizationGatePollInterval has no cross-file dependency
+session_runqueue.go	539	session_runqueue.go	829	durable run queue: entry types, lease lifecycle, converters	no package-level side-effectful initializers; relative decl order preserved by source order
+session_orphan_outbox.go	302	session_runqueue.go	829	orphan call outbox drains back into the run queue (P0-3); same async-queue concern	imports unioned
+session_inject.go	491	session_inject.go	768	cross-process message inject queue (merge + interrupt protocol)	largest mutation file anchors target
+session_fork.go	287	session_inject.go	768	fork clones a session row transactionally; sibling mutation path	imports unioned
+session_update.go	403	session_update.go	842	column-scoped session state updates	largest update file anchors target
+session_lifecycle.go	221	session_update.go	842	Create*/Delete row management; update+lifecycle both manage session rows	imports unioned
+agent_depth.go	174	session_update.go	842	agent depth store guard used by update/lifecycle depth checks	imports unioned
+session_purge_queue.go	71	session_update.go	842	purge of queued work for stopped sessions; lifecycle-end housekeeping	imports unioned
+finalization_ingress_helpers.go	275	finalization_ingress.go	779	finalization ingress helpers first finalization-ingress source
+finalization_context.go	154	finalization_ingress.go	779	typed finalization context proof API	imports unioned
+finalization_notify.go	116	finalization_ingress.go	779	finalization batch notify (ErrFinalizationBatchResultReadMissing etc)	var initializers are errors.New only; no side effects, file order keeps decl order
+session_read.go	140	finalization_ingress.go	779	standalone read paths over the read-only connection	included for line budget; read paths complete the ingress/notify group
+session_workspace.go	119	finalization_ingress.go	779	workspace helpers	included for line budget
+# item 3 (a) init order: no func init() in any production file; no package-level var/const initializer has side effects or cross-file dependence (all are errors.New, package-alias re-exports like ErrBatchProjectionConflict = sesstypes.ErrBatchProjectionConflict, interface assertions var _ X = (*service)(nil), and simple constants). Go initializes package-level vars by dependency then declaration order per file sorted by name; since all initializers are independent and most are constant-foldable, merge is order-neutral. Relative order of all declarations preserved by concatenating sources in listed order.
+# item 3 (b) build constraints: zero //go:build or // +build lines; zero _windows/_unix/_linux/_darwin/_js file-name suffixes; all 17 files are unconstrained, so merging them is constraint-safe.
+# item 3 (c) directives: no //go:embed, //go:generate, //go:linkname, cgo preamble in any production file; 11 //nolint:errcheck comments ride on defer tx.Rollback() lines inside function bodies and moved byte-for-byte with them.
+# item 3 (d) imports: no aliased, dot, or blank imports anywhere in the package; merged import block is the deduplicated union of source import paths, tidied by goimports then gofumpt.
+# item 3 (e) target line counts after goimports+gofumpt: session.go 848, finalization_ingress.go 779, session_inject.go 768, session_update.go 842, session_runqueue.go 829, finalization_compat.go 696. All <= 880, none over 900.
+# oracle (a) before: sha256 431b5b182e893fbaa3e74c05892308d558c6d7fa37891b47cd229570255e532c (4316 non-blank lines excl package clause and import blocks); after: 431b5b182e893fbaa3e74c05892308d558c6d7fa37891b47cd229570255e532c (4316). IDENTICAL.
+# oracle (b) before: sha256 5a82077360c889bc11629918305ba281a304651197b4d122af5153b5688860ec (261 top-level decls); after: 5a82077360c889bc11629918305ba281a304651197b4d122af5153b5688860ec (261). IDENTICAL.
+# oracle (c) top-level test functions: 66 before, 66 after; git status shows zero _test.go entries.
+# mutation check: flipping one character of "func " to "func X" in the merged session.go changed oracle (a) hash to cfe7aa24cb17448a2f1743008d3b196aaf7191d73e950939c0e5e3334fcf8dc7 and oracle (b) to 1f13bf09c6ffa181884675c279cad72cb01eb3158c79564f9f16a69b794f36e2; oracle detects mutations; scratch restored.
+# compile: go test -c -o NUL . in internal/session/service exit=0. Direct importers compile-checked via go vet: internal/agent exit=0, internal/app exit=0.
+# vet: GOOS=linux exit=0, GOOS=darwin exit=0, GOOS=windows exit=0.
+# fmt: goimports -l prints nothing (exit 0); gofumpt -l prints nothing (exit 0).
+# test: capm 2g bash golock.sh env GOMEMLIMIT=700MiB go test -p 1 -parallel 1 -count=1 -timeout 30m . => ok github.com/PHPCraftdream/rush/internal/session/service 1.948s, exit=0.
+# guards: check_layers.sh exit=0 (228 packages, 0 allowlisted edges). check_dir_entries/check_dir_files/check_file_size_900/check_pkg_names exit=1 ONLY because the 12 deleted sources are still git-tracked and the guards read tracked files from the worktree ("cannot read tracked file internal/session/service/agent_depth.go"); the directory now holds 6 production files + components/ = 7 elements (at the limit) and the largest file is 848 lines, so all four pass once the orchestrator commits; the dir_entries_allowlist row (18) must then be dropped per the ratchet rule.
