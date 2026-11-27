@@ -1,0 +1,27 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+agentic_fetch_policy.go	134	agentic_fetch_tool.go	364	Private-fetch ingress and agentic-fetch tool form one feature	Sources concatenated alphabetical: policy then tool; no init or constraints; no package doc; embedded/import union formatted
+agentic_fetch_tool.go	242	agentic_fetch_tool.go	364	Private-fetch ingress and agentic-fetch tool form one feature	Sources concatenated alphabetical: policy then tool; no init or constraints; no package doc; embedded/import union formatted
+credentials.go	466	credentials.go	508	Per-call credential model handling and OAuth bearer client source	Sources alphabetical: credentials then OAuth source; no init or constraints; no package doc
+oauth_token_source.go	52	credentials.go	508	Per-call credential model handling and OAuth bearer client source	Sources alphabetical: credentials then OAuth source; no init or constraints; no package doc
+await_tasks_era.go	37	contract_bridge.go	431	Small root runtime dispatch seams: await era, contract bridge, role runtime, timeout, wake dispatch	Sources alphabetical; await-task declarations precede bridge; no init or constraints; bridge package doc retained
+contract_bridge.go	330	contract_bridge.go	431	Small root runtime dispatch seams: await era, contract bridge, role runtime, timeout, wake dispatch	Sources alphabetical; original package documentation retained once; no init or constraints
+custom_role_runtime.go	43	contract_bridge.go	431	Small root runtime dispatch seams: await era, contract bridge, role runtime, timeout, wake dispatch	Sources alphabetical; no init or constraints
+default_job_timeout.go	27	contract_bridge.go	431	Small root runtime dispatch seams: await era, contract bridge, role runtime, timeout, wake dispatch	Order explicitly sorted by source filename; timeout’s file doc comment preserved, no init or constraints
+session_wake_dispatch.go	19	contract_bridge.go	431	Small root runtime dispatch seams: await era, contract bridge, role runtime, timeout, wake dispatch	Sources alphabetical; no init or constraints
+mcp_output_access.go	32	prompts.go	167	Prompt/embed helpers with tool suggestion and MCP-output admission helpers, grouped to reach target-count floor	Sources alphabetical; prompt embeds stay attached to variables; no init or constraints
+prompts.go	45	prompts.go	167	Prompt/embed helpers with tool suggestion and MCP-output admission helpers, grouped to reach target-count floor	Sources alphabetical; //go:embed directives remain adjacent to their vars; no init or constraints
+tool_suggest.go	99	prompts.go	167	Prompt/embed helpers with tool suggestion and MCP-output admission helpers, grouped to reach target-count floor	Sources alphabetical; no init or constraints
+ORACLE (a)				PASS; byte-decoded UTF-8 sorted multiset of nonblank lines excluding package clauses and import blocks identical across all 14 base sources and four target files; scratch mutation changed client == nil to != and was detected
+ORACLE (b)				PASS; sorted top-level declaration lines identical
+ORACLE (c)				PASS; git status has no changed _test.go and no files outside the 14-file set; ledger excepted
+ORACLE (d)				PASS; scratch body character mutation detected by oracle (a); scratch only, no tracked mutation
+init-order				No func init() found. No top-level var/const initializers with side effects or cross-file dependencies found among set; credentialReasoningLevels is a pure slice literal. No ordering-sensitive package initialization identified.
+build-constraints				No //go:build or // +build constraints, and none of the files has GOOS suffix. No constrained files merged.
+directives				Only //go:embed in prompts.go, for coder/task/initialize templates; each remains directly attached to its respective variable. No go:generate, cgo preamble, go:linkname, or nolint directives found.
+imports				One blank import, underscore embed in prompts.go, preserved in the merged import block; no dot imports; no differing aliases between merged sources; goimports -l prints nothing.
+compile-test-c				PASS exit 0: go test -c -o NUL ./internal/agent (compile only; tests not run)
+vet-linux				PASS exit 0: GOOS=linux go vet ./internal/agent
+vet-darwin				PASS exit 0: GOOS=darwin go vet ./internal/agent
+vet-windows				PASS exit 0: GOOS=windows go vet ./internal/agent; completed after >20 minute queue wait (do not retry)
+gofumpt				PASS exit 0; all four changed target files formatted
+goimports				PASS exit 0; no output for four changed target files
