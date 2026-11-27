@@ -1,0 +1,31 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+internal/session/run/sessionrun/run_queue_pump.go	671	internal/session/run/sessionrun/run_queue_pump.go	743	consolidate pump clock context and test support	order pump, clock, row context, testsupport; unchanged declaration bodies/comments
+internal/session/run/sessionrun/run_queue_clock.go	44	internal/session/run/sessionrun/run_queue_pump.go	743	consolidate pump clock context and test support	order 2; one import block; no import aliases
+internal/session/run/sessionrun/run_queue_row_context.go	28	internal/session/run/sessionrun/run_queue_pump.go	743	consolidate pump clock context and test support	order 3; one import block; no import aliases
+internal/session/run/sessionrun/run_queue_testsupport.go	8	internal/session/run/sessionrun/run_queue_pump.go	743	consolidate pump clock context and test support	order 4; one import block; no import aliases
+internal/session/run/sessionrun/run_queue_entry_exec.go	789	internal/session/run/sessionrun/run_queue_entry_exec.go	789	unchanged	left unchanged
+internal/session/run/sessionrun/run_queue_drain_session.go	765	internal/session/run/sessionrun/run_queue_drain_session.go	765	unchanged	left unchanged
+internal/session/run/sessionrun/run_queue_drain_ledger.go	610	internal/session/run/sessionrun/run_queue_drain_ledger.go	807	consolidate drain classification with ledger	order ledger then classifier; one import block; no aliases
+internal/session/run/sessionrun/run_queue_drain_classify.go	202	internal/session/run/sessionrun/run_queue_drain_ledger.go	807	consolidate drain classification with ledger	order 2; one import block; no aliases
+internal/session/run/sessionrun/run_queue_admission.go	446	internal/session/run/sessionrun/run_queue_admission.go	741	consolidate entry dispatch with admission	order admission then dispatch; one import block; no aliases
+internal/session/run/sessionrun/run_queue_entry_dispatch.go	300	internal/session/run/sessionrun/run_queue_admission.go	741	consolidate entry dispatch with admission	order 2; one import block; no aliases
+internal/session/run/sessionrun/run_queue_lifecycle.go	289	internal/session/run/sessionrun/run_queue_lifecycle.go	557	consolidate orphan drain with lifecycle	order lifecycle then orphan drain; one import block; no aliases
+internal/session/run/sessionrun/run_queue_orphan_drain.go	277	internal/session/run/sessionrun/run_queue_lifecycle.go	557	consolidate orphan drain with lifecycle	order 2; one import block; no aliases
+ORACLE_A				Nonblank production lines compared	Baseline saved outside tree; initial comparison PASS (4095 lines). Formatting subsequently changed representation; post-format recheck could not complete.
+ORACLE_B				Top-level declaration lines	Initial comparison PASS: 127 before and after.
+ORACLE_C				Test function count	111 before, 111 after; no _test.go deliberately edited. Check git status report showed only production files changed/deleted.
+MUTATION_A				Mutation sensitivity	Scratch copy mutation detected by oracle A; counted 4095 baseline and mutated lines.
+init-order				Source finding	No production init() reported by the inspection.
+build-constraints				Source finding	No build constraints, embed/generate directives, cgo, or nolint reported.
+import-aliases				Source finding	Imports appeared unaliased; merged import blocks deduplicated and sorted.
+compile: go test -c -o NUL ./internal/session/run/sessionrun				Exit code 0; no output.
+vet: GOOS=linux CGO_ENABLED=0 go vet ./internal/session/run/sessionrun				Exit code 0; no output.
+vet: GOOS=darwin CGO_ENABLED=0 go vet ./internal/session/run/sessionrun				Exit code 0; no output.
+vet: GOOS=windows CGO_ENABLED=0 go vet ./internal/session/run/sessionrun				Exit code 0; no output.
+test: go test -p 1 -parallel 1 -count=1 -timeout 30m ./internal/session/run/sessionrun				PASS; 68.417s.
+format: gofumpt and goimports -l on four changed files				Exit code 0; gofumpt/gofumpt and goimports available; goimports printed nothing.
+guard: .githooks/check_dir_entries.sh				Exit 1; tracked deleted source run_queue_clock.go unavailable to guard.
+guard: .githooks/check_dir_files.sh				Exit 1; tracked deleted source run_queue_clock.go unavailable to guard.
+guard: .githooks/check_file_size_900.sh				Exit 1; tracked deleted source run_queue_clock.go unavailable to guard.
+guard: .githooks/check_pkg_names.sh				Exit 1; tracked deleted source run_queue_clock.go unavailable to guard.
+guard: .githooks/check_layers.sh				Exit 0; 228 packages checked, 222 internal, 0 prod edge and 2 test exceptions.

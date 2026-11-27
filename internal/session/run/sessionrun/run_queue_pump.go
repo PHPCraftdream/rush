@@ -1,3 +1,9 @@
+// The run-queue row id travels to the coordinator through the execution
+// context (R12-H2b §2.4): the pump leases a row and hands only its
+// serialized call data across the Coordinator.Run boundary, but a durable
+// continuation's rebuild must be able to release the row-keyed
+// Continuation holder the enqueue producer took — and that release is
+// keyed by the ROW's durable id, which only the pump knows.
 package sessionrun
 
 import (
@@ -668,4 +674,69 @@ func NewRunQueuePump(cfg RunQueuePumpConfig) *RunQueuePump {
 	// execSem must be initialized after p is constructed, so maxConcurrentExecutions() works
 	p.execSem = make(chan struct{}, p.maxConcurrentExecutions())
 	return p
+}
+
+// Time source for the run-queue pump's lease logic.
+
+// PumpClock is the time source the pump's lease, renewal, watchdog, expiry
+// and busy-backoff logic reads. Production always uses the real clock
+// (RunQueuePumpConfig.TestClock == nil); a test injects a fake to advance
+// across many TTL windows without any wall-clock scheduling dependence.
+type PumpClock interface {
+	Now() time.Time
+	NewTicker(d time.Duration) PumpTicker
+}
+
+// PumpTicker is the subset of *time.Ticker the pump uses.
+type PumpTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type realPumpClock struct{}
+
+func (realPumpClock) Now() time.Time { return time.Now() }
+
+func (realPumpClock) NewTicker(d time.Duration) PumpTicker {
+	return realPumpTicker{t: time.NewTicker(d)}
+}
+
+type realPumpTicker struct{ t *time.Ticker }
+
+func (r realPumpTicker) C() <-chan time.Time { return r.t.C }
+func (r realPumpTicker) Stop()               { r.t.Stop() }
+
+// clock returns the injected clock, or the real one.
+func (p *RunQueuePump) clock() PumpClock {
+	if p.cfg.TestClock != nil {
+		return p.cfg.TestClock
+	}
+	return realPumpClock{}
+}
+
+// now reads the pump's clock.
+func (p *RunQueuePump) now() time.Time { return p.clock().Now() }
+
+// runQueueRowIDContextKey carries the leased run-queue entry's id.
+type runQueueRowIDContextKey struct{}
+
+// WithRunQueueRowID stamps the leased row's durable id onto the
+// execution context the pump hands to Coordinator.Run.
+func WithRunQueueRowID(ctx context.Context, rowID string) context.Context {
+	return context.WithValue(ctx, runQueueRowIDContextKey{}, rowID)
+}
+
+// RunQueueRowIDFrom returns the leased row id the pump stamped (or "" for
+// callers outside the pump path — a rebuild that cannot know the row id
+// simply skips the row-keyed holder release, which is safe when absent).
+func RunQueueRowIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(runQueueRowIDContextKey{}).(string)
+	return id
+}
+
+// LiveRunQueueDispatchesForTest reports the number of worker slots currently
+// held by dispatched run-queue workers. Tests must first observe Stop's
+// false barrier; this count supplements that barrier and is not itself a join.
+func (p *RunQueuePump) LiveRunQueueDispatchesForTest() int {
+	return len(p.execSem)
 }
