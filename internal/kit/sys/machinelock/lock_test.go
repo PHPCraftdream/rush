@@ -2,6 +2,7 @@ package machinelock
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,6 +34,52 @@ func TestStaleHolderTakeover(t *testing.T) {
 	h, err := Acquire(ctx, name, Record{Command: "test"}, time.Second)
 	require.NoError(t, err)
 	require.NoError(t, h.Release())
+}
+
+// A waiter whose process died while queued (a lane killed at its hard timeout)
+// must not block the FIFO: the live waiter behind it acquires.
+func TestAcquireSkipsDeadWaiterAtHead(t *testing.T) {
+	isolateLockEnv(t)
+	name := "dead-waiter-" + uniqueSuffix(t)
+	base := lockDir(name)
+	waitDir := filepath.Join(base, "waiters")
+	require.NoError(t, os.MkdirAll(waitDir, 0o755))
+	deadPath := filepath.Join(waitDir, fmt.Sprintf("%020d-%010d-%d.json", 1, 99999999, 1))
+	require.NoError(t, writeJSONExclusive(deadPath, Waiter{PID: 99999999, Since: time.Now().Add(-time.Hour), Command: "dead waiter fixture"}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h, err := Acquire(ctx, name, Record{Command: "live"}, 5*time.Second)
+	require.NoError(t, err, "a dead waiter at the head of the queue must not block a live one")
+	require.NoError(t, h.Release())
+	_, statErr := os.Stat(deadPath)
+	require.True(t, os.IsNotExist(statErr), "the dead waiter record must be removed")
+}
+
+// A half-written (unreadable) waiter record is treated as alive and kept.
+func TestAcquireKeepsUnreadableWaiterRecord(t *testing.T) {
+	isolateLockEnv(t)
+	name := "partial-waiter-" + uniqueSuffix(t)
+	waitDir := filepath.Join(lockDir(name), "waiters")
+	require.NoError(t, os.MkdirAll(waitDir, 0o755))
+	partial := filepath.Join(waitDir, fmt.Sprintf("%020d-%010d-%d.json", 1, 1, 1))
+	require.NoError(t, os.WriteFile(partial, []byte("{"), 0o600))
+	first, err := firstWaiter(waitDir)
+	require.NoError(t, err)
+	require.Equal(t, partial, first)
+}
+
+func TestListSkipsDeadWaiter(t *testing.T) {
+	isolateLockEnv(t)
+	name := "list-dead-waiter-" + uniqueSuffix(t)
+	waitDir := filepath.Join(lockDir(name), "waiters")
+	require.NoError(t, os.MkdirAll(waitDir, 0o755))
+	require.NoError(t, writeJSONExclusive(filepath.Join(waitDir, fmt.Sprintf("%020d-%010d-%d.json", 1, 99999999, 1)), Waiter{PID: 99999999, Since: time.Now(), Command: "dead waiter fixture"}))
+	entries, err := List()
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.Empty(t, entry.Waiters, "dead waiters are not listed")
+	}
 }
 
 func TestFIFOConcurrentAcquire(t *testing.T) {

@@ -173,7 +173,7 @@ func List() ([]Entry, error) {
 		files, _ = os.ReadDir(filepath.Join(root, d.Name(), "waiters"))
 		for _, f := range files {
 			var w Waiter
-			if readJSON(filepath.Join(root, d.Name(), "waiters", f.Name()), &w) == nil {
+			if readJSON(filepath.Join(root, d.Name(), "waiters", f.Name()), &w) == nil && (w.PID <= 0 || processAlive(w.PID)) {
 				e.Waiters = append(e.Waiters, w)
 			}
 		}
@@ -338,9 +338,20 @@ func firstWaiter(dir string) (string, error) {
 		return "", err
 	}
 	for _, f := range files {
-		if !f.IsDir() {
-			return filepath.Join(dir, f.Name()), nil
+		if f.IsDir() {
+			continue
 		}
+		path := filepath.Join(dir, f.Name())
+		// A waiter whose process died (killed lane, crash, hard timeout) never
+		// acquires and never removes its record; at the head of the FIFO it
+		// would block every later waiter forever. An unreadable or half-written
+		// record is treated as alive.
+		var w Waiter
+		if readJSON(path, &w) == nil && w.PID > 0 && !processAlive(w.PID) {
+			_ = os.Remove(path)
+			continue
+		}
+		return path, nil
 	}
 	return "", nil
 }
