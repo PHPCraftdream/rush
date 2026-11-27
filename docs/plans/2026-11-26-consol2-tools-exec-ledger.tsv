@@ -1,0 +1,41 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+bash.go	499	bash.go	598	bash tool and its template/leaf plumbing kept with one receiver group	bodies byte-identical; sources in sorted file-name order
+bash_callback_context.go	14	bash.go	598	bash context helper belongs to bash concern	single-line import form folded into union
+bash_leaf.go	82	bash.go	598	bash leaf execution belongs to bash concern	bodies byte-identical
+command_policy_spawn.go	24	bash.go	598	spawn policy is part of command execution concern	bodies byte-identical
+download.go	269	fetch.go	804	web download tool grouped with fetch/download concern	//go:embed download.md.tpl stays attached to its var
+fetch.go	226	fetch.go	804	core fetch tool anchors the group	//go:embed fetch.md.tpl stays attached; alias md preserved
+fetch_helpers.go	175	fetch.go	804	fetch helpers belong to fetch concern	same alias md as fetch.go, union is one import
+fetch_types.go	50	fetch.go	804	fetch types belong to fetch concern	package doc comment of fetch_types.go kept once above package clause
+web_fetch.go	77	fetch.go	804	web fetch tool belongs to fetch group	//go:embed web_fetch.md.tpl stays attached
+web_search.go	60	fetch.go	804	web search grouped with web fetch/download concern	//go:embed web_search.md.tpl stays attached
+grep.go	843	grep.go	843	left alone: at 843 lines any merge would exceed the 880 cap	untouched; //go:embed grep.md.tpl attached
+grep_ripgrep.go	188	grep_ripgrep.go	273	ripgrep backend grouped with rg helper	package doc comment kept once; embed/directives attached
+rg.go	93	grep_ripgrep.go	273	rg helper is part of the ripgrep backend	bodies byte-identical
+git_read.go	276	search.go	839	read/search tooling group (git read, search, sourcegraph)	//go:embed git_read.md.tpl stays attached
+search.go	256	search.go	839	search tool anchors the group	//go:embed stays attached; template.Must init dependency order preserved
+sourcegraph.go	332	search.go	839	sourcegraph search tool in the search group	//go:embed sourcegraph.md.tpl stays attached
+read_authorization.go	220	read_authorization.go	322	read-path authorization concerns grouped	bodies byte-identical; sources in sorted file-name order
+read_mcp_resource.go	111	read_authorization.go	322	mcp resource read is part of the read path	//go:embed read_mcp_resource.md stays attached
+read_delegation_transcript.go	550	read_delegation_transcript.go	550	left alone: 550 lines alone, no cohesive partner fits under 880	untouched; //go:embed attached
+run_command.go	335	run_command.go	680	run_command tool anchors its leaf/output group	//go:embed run_command.md.tpl stays attached
+run_command_leaf.go	225	run_command.go	680	leaf execution belongs to run_command concern	bodies byte-identical
+run_command_output_buffer.go	135	run_command.go	680	output buffering belongs to run_command concern	bodies byte-identical
+run_command_process_unix.go	36	os_failure_unix.go	65	both files carry the same build constraint, merged into the _unix file	//go:build !windows kept exactly once at top
+os_failure_unix.go	37	os_failure_unix.go	65	os failure handling anchors the _unix group	//go:build !windows kept exactly once
+run_command_process_windows.go	24	os_failure_windows.go	83	same build constraint pair, merged into the _windows file	//go:build windows kept exactly once at top
+os_failure_windows.go	66	os_failure_windows.go	83	os failure handling anchors the _windows group	//go:build windows kept exactly once
+safe.go	251	safe.go	440	command safety gate anchors the group with the SSRF gate	func init() of safe.go precedes func init() of ssrf_guard.go (file-name order preserved)
+ssrf_guard.go	193	safe.go	440	SSRF defense gate grouped with safety concern	package doc comment kept once; func init() order safe.go then ssrf_guard.go preserved
+ORACLE_a_nonblank_multiset	PASS		independent rerun by orchestrator, exit 0		
+ORACLE_b_declaration_multiset	PASS		independent rerun by orchestrator, exit 0		
+ORACLE_c_git_status_scope	PASS		only M/D entries under internal/agent/tools in the 28-file set; no _test.go, no other files, no untracked leftovers		
+MUTATION_check	DETECTED		one char changed in a moved function body in a scratch copy made oracle a FAIL; restored, oracle PASS		
+CHECK_import_aliases	PASS		alias md identical in fetch.go and fetch_helpers.go; alias session only in read_delegation_transcript.go; no conflict		
+CHECK_init_order	PASS		func init() only in safe.go (from safe.go then ssrf_guard.go), order preserved; package-level side-effect vars (safeNoArgCommands, reservedSpecialPurposeCIDRs, errSSRFBlocked, multipleNewlinesRe, getRg, template.Must descriptions) keep file-name order		
+CHECK_build_constraints	PASS		_unix and _windows pairs never cross-merged; single constraint line per merged target		
+CHECK_go_embed	PASS		all //go:embed directives remain attached to their declarations		
+CHECK_compile	go test -c -o NUL exit 0		reconfirmed by orchestrator via lock wrapper		
+CHECK_vet	GOOS linux darwin windows all exit 0		via lock wrapper		
+CHECK_format	gofumpt -w then gofmt -l empty		changed target files only		
+CHECK_file_counts	28 before, 11 after		set production files count		
