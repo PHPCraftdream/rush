@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
@@ -20,6 +22,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/platform"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
+	"github.com/PHPCraftdream/rush/internal/session/jobbatch"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -332,4 +335,346 @@ func NewRunCommandTool(permissions permission.Service, workingDir string) fantas
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(text), metadata), nil
 		},
 	)
+}
+
+// ArgvLeaf opts a guarded run_command call into retained process ownership.
+// OnStart runs after Start succeeds and before Wait begins. It must return
+// promptly; it may publish the handle, but must not wait for Done itself.
+type (
+	ArgvLeaf           struct{ OnStart func(*ArgvProcess) }
+	argvLeafContextKey struct{}
+)
+
+// WithArgvLeaf selects the lifetime seam without bypassing tool policy.
+func WithArgvLeaf(ctx context.Context, leaf *ArgvLeaf) context.Context {
+	return context.WithValue(ctx, argvLeafContextKey{}, leaf)
+}
+
+func argvLeafFromContext(ctx context.Context) *ArgvLeaf {
+	leaf, _ := ctx.Value(argvLeafContextKey{}).(*ArgvLeaf)
+	return leaf
+}
+
+var (
+	ErrArgvNotDone  = errors.New("argv process has not completed")
+	ErrArgvDisposed = errors.New("argv process disposed")
+	ErrArgvBusy     = errors.New("argv process has an active physical stop")
+)
+
+// ArgvOutcome is sourced exclusively from the real, drained exec.Cmd.Wait.
+// ExitCode is -1 when the platform supplies no numeric exit status.
+type ArgvOutcome struct {
+	WaitErr  error
+	ExitCode int
+}
+
+// ArgvProcess retains completion and output independently of tool return.
+type ArgvProcess struct {
+	mu       sync.Mutex
+	buf      *runCommandOutputBuffer
+	done     chan struct{}
+	stopSlot chan struct{}
+	kill     func() error
+	outcome  ArgvOutcome
+	disposed bool
+}
+
+func newArgvProcess(cmd *exec.Cmd, buf *runCommandOutputBuffer) *ArgvProcess {
+	p := &ArgvProcess{buf: buf, done: make(chan struct{}), stopSlot: make(chan struct{}, 1), kill: cmd.Cancel}
+	p.stopSlot <- struct{}{}
+	buf.mu.Lock()
+	buf.changed = make(chan struct{})
+	buf.mu.Unlock()
+	return p
+}
+
+func runArgvLeaf(ctx context.Context, leaf *ArgvLeaf, cmd *exec.Cmd, buf *runCommandOutputBuffer) (err error) {
+	p := newArgvProcess(cmd, buf)
+	// A callback panic cannot strand the successfully started process.
+	defer func() {
+		if v := recover(); v != nil {
+			_ = p.Stop(context.Background())
+			p.finish(cmd.Wait(), cmd)
+			panic(v)
+		}
+	}()
+	if leaf.OnStart != nil {
+		leaf.OnStart(p)
+	}
+	go func() { p.finish(cmd.Wait(), cmd) }()
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		go func() { _ = p.Stop(context.Background()) }()
+		<-p.done
+	}
+	outcome, _ := p.Outcome()
+	return outcome.WaitErr
+}
+
+func (p *ArgvProcess) finish(err error, cmd *exec.Cmd) {
+	code := -1
+	if cmd.ProcessState != nil {
+		code = cmd.ProcessState.ExitCode()
+	}
+	p.mu.Lock()
+	p.outcome = ArgvOutcome{WaitErr: err, ExitCode: code}
+	close(p.done)
+	p.mu.Unlock()
+}
+
+// Done closes only after real Wait, including stdout/stderr drain.
+func (p *ArgvProcess) Done() <-chan struct{} { return p.done }
+
+// Outcome refuses to infer an exit result before completion.
+func (p *ArgvProcess) Outcome() (ArgvOutcome, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.done:
+		return p.outcome, nil
+	default:
+		return ArgvOutcome{}, ErrArgvNotDone
+	}
+}
+
+// Stop serializes physical tree kills. A caller deadline bounds its wait,
+// never releases the slot of a kill still physically executing.
+func (p *ArgvProcess) Stop(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.stopSlot:
+	}
+	p.mu.Lock()
+	if p.disposed {
+		p.mu.Unlock()
+		p.stopSlot <- struct{}{}
+		return ErrArgvDisposed
+	}
+	select {
+	case <-p.done:
+		p.mu.Unlock()
+		p.stopSlot <- struct{}{}
+		return nil
+	default:
+	}
+	p.mu.Unlock()
+	result := make(chan error, 1)
+	go func() {
+		defer func() { p.stopSlot <- struct{}{} }()
+		result <- p.kill()
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ReadOutput blocks at the live head and returns caller-owned retained bytes.
+// Invalid signed cursors normalize to zero, as on the existing live buffer.
+func (p *ArgvProcess) ReadOutput(ctx context.Context, cursor int64) (jobbatch.OutputChunk, error) {
+	for {
+		p.mu.Lock()
+		if p.disposed {
+			p.mu.Unlock()
+			return jobbatch.OutputChunk{}, ErrArgvDisposed
+		}
+		b := p.buf
+		b.mu.Lock()
+		if cursor < 0 || cursor > b.total {
+			cursor = 0
+		}
+		oldest := b.availableFromLocked()
+		start := max(cursor, oldest)
+		chunk := jobbatch.OutputChunk{Data: append([]byte(nil), b.data[start-oldest:]...), Next: uint64(b.total), Oldest: uint64(oldest), Truncated: cursor < oldest}
+		changed := b.changed
+		select {
+		case <-p.done:
+			chunk.EOF = true
+		default:
+		}
+		b.mu.Unlock()
+		p.mu.Unlock()
+		if len(chunk.Data) > 0 || chunk.EOF {
+			return chunk, nil
+		}
+		select {
+		case <-ctx.Done():
+			return jobbatch.OutputChunk{}, ctx.Err()
+		case <-changed:
+		case <-p.done:
+		}
+	}
+}
+
+// Dispose gives up output once, only after completion and physical Stop return.
+func (p *ArgvProcess) Dispose(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	if p.disposed {
+		p.mu.Unlock()
+		return ErrArgvDisposed
+	}
+	select {
+	case <-p.done:
+	default:
+		p.mu.Unlock()
+		return ErrArgvNotDone
+	}
+	p.mu.Unlock()
+	// Stop takes mu after acquiring the slot; never wait with mu held.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.stopSlot:
+	}
+	defer func() { p.stopSlot <- struct{}{} }()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.disposed {
+		return ErrArgvDisposed
+	}
+	p.disposed = true
+	p.buf.mu.Lock()
+	p.buf.data = nil
+	p.buf.mu.Unlock()
+	return nil
+}
+
+// LiveOutputBuffer is a concurrency-safe, size-bounded output sink a
+// still-running tool execution registers with the work ledger (currently
+// only run_command, task #1023 §3) so job_output/job_kill and the ledger's
+// own timeout capturePartial can read accumulated output WHILE the process
+// is still running. run_command has no BackgroundShellManager entry to read
+// from otherwise (see the run_command branch of ResolveJobShellID's callers
+// in job_shell_resolver.go).
+type LiveOutputBuffer interface {
+	// Read returns the bytes written from cursor onward, plus the new
+	// cursor (== total bytes ever written). A cursor outside [0, total] is
+	// treated as 0 (wake-tools-contract.md §2.1: a stale/negative cursor is
+	// not an error).
+	Read(cursor int64) (data string, nextCursor int64)
+	// String returns everything currently resident, for a one-shot
+	// best-effort read (job_kill's stopped notice, timeout's capturePartial).
+	String() string
+}
+
+// runCommandLiveBufferMax bounds how much of a still-running run_command
+// job's output stays resident for progressive job_output reads. Distinct
+// from MaxOutputLength (the FINAL response's display truncation): this
+// bounds memory for a long-running, chatty command, not display width.
+const runCommandLiveBufferMax = 1 << 20 // 1 MiB
+
+// runCommandOutputBuffer implements LiveOutputBuffer and io.Writer so it can
+// be used directly as cmd.Stdout/cmd.Stderr. Oldest bytes are dropped once
+// resident content would exceed maxBytes -- simpler than internal/shell's
+// boundedBuffer (head+tail retention): a run_command job's FINAL output is
+// separately truncated for display already (truncateOutput), so this only
+// needs to serve "recent progress" reads while running, not preserve the
+// command's early output verbatim.
+type runCommandOutputBuffer struct {
+	mu       sync.Mutex
+	data     []byte
+	maxBytes int
+	total    int64         // monotonic count of all bytes ever written
+	changed  chan struct{} // Optional leaf-only write notification.
+	// lastWriteNS is the nanosecond Unix timestamp of the last non-empty
+	// Write (0 = never written).
+	lastWriteNS atomic.Int64
+}
+
+func newRunCommandOutputBuffer(maxBytes int) *runCommandOutputBuffer {
+	if maxBytes <= 0 {
+		maxBytes = runCommandLiveBufferMax
+	}
+	return &runCommandOutputBuffer{maxBytes: maxBytes}
+}
+
+// Write implements io.Writer. Always reports len(p) bytes written (matching
+// io.Writer semantics) even once bytes start being dropped from the front.
+func (b *runCommandOutputBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.total += int64(len(p))
+	// Record the last-output time only for real output; empty writes don't count.
+	if len(p) > 0 {
+		b.lastWriteNS.Store(time.Now().UnixNano())
+		if b.changed != nil {
+			close(b.changed)
+			b.changed = make(chan struct{})
+		}
+	}
+	b.data = append(b.data, p...)
+	if excess := len(b.data) - b.maxBytes; excess > 0 {
+		b.data = b.data[excess:]
+	}
+	return len(p), nil
+}
+
+// LastWriteAt reports when the buffer last received non-empty output.
+func (b *runCommandOutputBuffer) LastWriteAt() (time.Time, bool) {
+	ns := b.lastWriteNS.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
+}
+
+// availableFromLocked is the earliest logical offset still resident (bytes
+// before it were dropped by Write's cap). Caller must hold b.mu.
+func (b *runCommandOutputBuffer) availableFromLocked() int64 {
+	return b.total - int64(len(b.data))
+}
+
+func (b *runCommandOutputBuffer) Read(cursor int64) (string, int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if cursor < 0 || cursor > b.total {
+		cursor = 0
+	}
+	start := cursor - b.availableFromLocked()
+	if start < 0 {
+		start = 0 // cursor points at already-dropped data; return what's left rather than erroring
+	}
+	if start > int64(len(b.data)) {
+		start = int64(len(b.data))
+	}
+	return string(b.data[start:]), b.total
+}
+
+func (b *runCommandOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
+}
+
+// liveOutputSinkContextKey is the context key WithLiveOutputSink installs.
+type liveOutputSinkContextKey struct{}
+
+// WithLiveOutputSink attaches a callback that a tool execution invokes with
+// its LiveOutputBuffer as soon as the underlying process starts, so
+// job_kill/job_output can read/stop it while still running (task #1023 §3).
+// Wired by internal/agent's asyncTool.run for run_command only;
+// LiveOutputSinkFromContext returns nil for every other tool/origin, and
+// callers must treat a nil sink as "do not register".
+func WithLiveOutputSink(ctx context.Context, sink func(LiveOutputBuffer)) context.Context {
+	return context.WithValue(ctx, liveOutputSinkContextKey{}, sink)
+}
+
+// LiveOutputSinkFromContext returns the sink WithLiveOutputSink attached, or
+// nil.
+func LiveOutputSinkFromContext(ctx context.Context) func(LiveOutputBuffer) {
+	sink, _ := ctx.Value(liveOutputSinkContextKey{}).(func(LiveOutputBuffer))
+	return sink
 }
