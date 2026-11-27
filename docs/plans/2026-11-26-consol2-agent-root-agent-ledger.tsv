@@ -1,0 +1,34 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+internal/agent/agent.go	558	internal/agent/agent.go	596	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_prompt.go	49	internal/agent/agent.go	596	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_compaction.go	327	internal/agent/agent_compaction.go	819	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_compaction_silent.go	510	internal/agent/agent_compaction.go	819	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_codex_recovery.go	265	internal/agent/agent_codex_recovery.go	322	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_codex_recovery_cleanup.go	69	internal/agent/agent_codex_recovery.go	322	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_control.go	327	internal/agent/agent_control.go	570	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_drain.go	253	internal/agent/agent_control.go	570	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_options.go	133	internal/agent/agent_options.go	263	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_timeouts.go	136	internal/agent/agent_options.go	263	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_tool.go	106	internal/agent/agent_tool.go	225	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_own_work_batch.go	126	internal/agent/agent_tool.go	225	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_title.go	348	internal/agent/agent_title.go	580	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_turn_title.go	242	internal/agent/agent_title.go	580	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_turn_checkpoint.go	269	internal/agent/agent_turn_failure.go	823	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_turn_failure.go	392	internal/agent/agent_turn_failure.go	823	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_turn_helpers.go	188	internal/agent/agent_turn_failure.go	823	merged into fixed group	listed source order; declarations preserved
+internal/agent/agent_ownership.go	855	internal/agent/agent_ownership.go	855	untouched	unchanged
+internal/agent/agent_run.go	919	internal/agent/agent_run.go	919	untouched	unchanged
+internal/agent/agent_turn.go	814	internal/agent/agent_turn.go	814	untouched	unchanged
+internal/agent/agent_turn_step.go	888	internal/agent/agent_turn_step.go	888	untouched	unchanged
+internal/agent/agent_turn_stream.go	688	internal/agent/agent_turn_stream.go	688	untouched	unchanged
+oracle (a)	-	-	-	verification	PASS: sorted multiset nonblank content lines preserved
+oracle (b)	-	-	-	verification	PASS: top-level declaration lines preserved
+oracle (c)	-	-	-	verification	PASS: status set only
+oracle (d)	-	-	-	verification	PASS: mutation detected
+init-order	-	-	-	verification	declaration locations verified
+build-constraints	-	-	-	verification	no findings
+import-alias notes	-	-	-	verification	mailboxpkg aliases and _ embed retained
+compile	-	-	-	check	exit code 0
+linux_vet	-	-	-	check	exit code 0
+darwin_vet	-	-	-	check	exit code 0
+windows_vet	-	-	-	check	exit code 0
