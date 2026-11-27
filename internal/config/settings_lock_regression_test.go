@@ -24,7 +24,7 @@ func TestSettingsLockRegression_F2RedirectedGlobalPath(t *testing.T) {
 	settings.SetCanonicalGlobalDataPathForTest(t, canonical)
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: global, workspacePath: workspace})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	SetProcessPassword("")
 	require.ErrorIs(t, store.SetConfigField(ScopeWorkspace, "value", "blocked"), ErrSettingsLocked)
 	require.NoError(t, store.SetConfigField(ScopeGlobal, "value", "allowed"))
@@ -45,7 +45,7 @@ func TestSettingsLockRegression_F3RedirectedWorkspacePath(t *testing.T) {
 	require.NoError(t, os.WriteFile(natural, []byte(`{"sync_rev":"`+HashPassword("workspace-lock")+`"}`), 0o600))
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: global, workspacePath: workspace})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	SetProcessPassword("")
 	require.ErrorIs(t, store.SetConfigField(ScopeGlobal, "value", "blocked"), ErrSettingsLocked)
 	require.NoError(t, store.SetConfigField(ScopeWorkspace, "value", "allowed"))
@@ -68,7 +68,7 @@ func TestSettingsLockRegression_F3AliasedWorkspaceDir(t *testing.T) {
 	}
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: filepath.Join(root, "global.json"), workspacePath: filepath.Join(alias, "rush.json")})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	SetProcessPassword("")
 	require.NoError(t, store.SetConfigField(ScopeWorkspace, "value", "allowed"))
 }
@@ -171,7 +171,7 @@ func TestSettingsLockRegression_LockedDebugLogIsBestEffortAndRedacted(t *testing
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	store.removeConfigFieldBestEffort(ScopeGlobal, "legacy")
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, "legacy")
 	text := output.String()
 	require.Equal(t, before, fileBytes(t, path))
 	require.Contains(t, text, "DEBUG")

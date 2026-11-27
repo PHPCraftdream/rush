@@ -22,8 +22,8 @@ func oauthMatrixSeamRestorer() func() {
 	read, write := oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalAtomicWrite
 	readWait, retryWait, budget := oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget
 	rename, copy := oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy
-	before, wait, idle := oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait, oauthJournalWorkerIdle
-	exchange := codexRefreshTokenFn
+	before, wait, idle := oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait, *oauthJournalWorkerIdle
+	exchange := *codexRefreshTokenFn
 	configTestHooks.Lock()
 	syncParent := configTestHooks.syncParent
 	configTestHooks.Unlock()
@@ -31,8 +31,8 @@ func oauthMatrixSeamRestorer() func() {
 		oauthjournal.OAuthJournalReadFile, oauthjournal.OAuthJournalAtomicWrite = read, write
 		oauthjournal.OAuthJournalReadWait, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget = readWait, retryWait, budget
 		oauthjournal.OAuthJournalQuarantineRename, oauthjournal.OAuthJournalQuarantineCopy = rename, copy
-		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait, oauthJournalWorkerIdle = before, wait, idle
-		codexRefreshTokenFn = exchange
+		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait, *oauthJournalWorkerIdle = before, wait, idle
+		*codexRefreshTokenFn = exchange
 		configTestHooks.Lock()
 		configTestHooks.syncParent = syncParent
 		configTestHooks.Unlock()
@@ -99,8 +99,8 @@ func TestOAuthRound9_MatrixCleanupTimeoutPath(t *testing.T) {
 		oauthjournal.OAuthJournalQuarantineCopy = oauthjournal.OAuthJournalQuarantineRename
 		oauthjournal.OAuthJournalBeforeWorker = func(context.Context) {}
 		oauthjournal.OAuthJournalWorkerWait = oauthjournal.OAuthJournalReadWait
-		oauthJournalWorkerIdle = func(*ConfigStore, string) {}
-		codexRefreshTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, os.ErrPermission }
+		*oauthJournalWorkerIdle = func(*ConfigStore, string) {}
+		*codexRefreshTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) { return nil, os.ErrPermission }
 		configTestHooks.Lock()
 		configTestHooks.syncParent = func(string) error { return os.ErrPermission }
 		configTestHooks.Unlock()

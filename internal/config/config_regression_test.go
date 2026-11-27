@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
+
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +38,7 @@ func TestMCPAdmissionRejectsLogicalRetargetAfterSidecarResolution(t *testing.T) 
 	configTestHooks.Lock()
 	previous := configTestHooks.afterMCPResolveTarget
 	configTestHooks.afterMCPResolveTarget = func(target *configWriteTarget) {
-		if normalizeDiscoveryPath(target.selectedPath) != normalizeDiscoveryPath(logicalPath) {
+		if normalizeDiscoveryPath(target.WTSelectedPath()) != normalizeDiscoveryPath(logicalPath) {
 			return
 		}
 		retarget.Do(func() {
@@ -74,11 +76,8 @@ func TestVerifyConfigTargetBindingRejectsInvalidExistingIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rush.json")
 	aliasChain := [32]byte{1}
 	identity := configFileIdentity{Device: 1, Inode: 1, Valid: true}
-	target := configWriteTarget{
-		path: path, selectedPath: path,
-		expected: reloadFileFingerprint{Exists: true, Identity: identity, AliasChain: aliasChain},
-	}
-	actual := target.expected
+	target := cfgstore.NewConfigWriteTargetForTest(path, path, "", reloadFileFingerprint{Exists: true, Identity: identity, AliasChain: aliasChain}, 0, false)
+	actual := target.WTExpected()
 	actual.Identity = configFileIdentity{}
 
 	err := verifyConfigTargetBinding(target, actual, nil)
@@ -97,8 +96,8 @@ func TestMCPAdmissionInvokesBindingVerifierAfterSidecarAcquisition(t *testing.T)
 	snapshot := store.SnapshotMCPAdmission("server")
 	// Synchronize the white-box snapshot with the exact disk input so this
 	// oracle reaches the binding verifier rather than an earlier stale fence.
-	require.NoError(t, store.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
-		evaluation, err := store.evaluateMCPFiles(files)
+	require.NoError(t, store.WithMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+		evaluation, err := store.EvaluateMCPFiles(files)
 		if err != nil {
 			return err
 		}
@@ -112,7 +111,7 @@ func TestMCPAdmissionInvokesBindingVerifierAfterSidecarAcquisition(t *testing.T)
 	previous := configTestHooks.beforeMCPTargetBindingVerification
 	configTestHooks.beforeMCPTargetBindingVerification = func(target *configWriteTarget) {
 		verified = true
-		target.expected.AliasChain[0] ^= 0xff
+		target.WTExpectedForTest().AliasChain[0] ^= 0xff
 	}
 	configTestHooks.Unlock()
 	t.Cleanup(func() {
@@ -140,7 +139,7 @@ func TestMCPFieldsPublishConfigAndFingerprintInOneGeneration(t *testing.T) {
 		globalDataPath: filepath.Join(root, "global", "rush.json"),
 		workspacePath:  path,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	before := store.Generation()
 
 	require.NoError(t, store.PersistMCPFieldsExact(ScopeWorkspace, "server", map[string]any{
@@ -169,7 +168,7 @@ func TestMCPMutationRejectsHardLinkAliasesWithoutChangingEitherDirent(t *testing
 		globalDataPath: filepath.Join(root, "global", "rush.json"),
 		workspacePath:  workspace,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	err := store.PersistMCPFieldsExact(ScopeWorkspace, "server", map[string]any{
 		"url": "http://new.example",
 	})
@@ -186,7 +185,7 @@ func TestMCPPostRenameFailureReconcilesCommittedDocument(t *testing.T) {
 		config:         &Config{MCP: MCPs{"server": {Type: MCPHttp, URL: "http://old.example"}}},
 		globalDataPath: global,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	configTestHooks.Lock()
 	previous := configTestHooks.afterCommitRename
 	configTestHooks.afterCommitRename = func() error { return context.Canceled }
@@ -219,8 +218,8 @@ func TestMCPPostCommitFingerprintFailureReturnsUnreconciledOutcome(t *testing.T)
 		globalDataPath: physical,
 		workspacePath:  alias,
 	})
-	store.workingDir = root
-	store.captureStalenessSnapshot([]string{physical, alias})
+	(*store.WorkingDirForTest()) = root
+	store.CaptureStalenessSnapshot([]string{physical, alias})
 	beforeGeneration := store.Generation()
 	configTestHooks.Lock()
 	previous := configTestHooks.afterMCPCommit

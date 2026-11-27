@@ -22,7 +22,7 @@ func TestTask1300AdoptionLineage(t *testing.T) {
 				t.Fatal("adoption must not exchange")
 				return nil, nil
 			})
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			x := *f.next
 			x.AccessToken, x.RefreshToken = "fixture-X-access", "fixture-X-refresh"
 			x.ExpiresAt += 60
@@ -51,7 +51,7 @@ func TestTask1300AdoptionLineage(t *testing.T) {
 				adopt = false
 			}
 			owned := &oauthJournalRecord{Token: f.next, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken)}
-			entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, owned)
+			entry := f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, owned)
 			pc := f.used
 			pc.OAuthToken, pc.APIKey = &live, ""
 			f.store.SetProviderRuntimeConfig(pc.ID, pc)
@@ -61,19 +61,19 @@ func TestTask1300AdoptionLineage(t *testing.T) {
 			require.NoError(t, err)
 			beforeWAL, err := os.ReadFile(journal)
 			require.NoError(t, err)
-			err = f.store.flushOAuthOutbox(context.Background(), f.path, pc.ID)
+			err = f.store.FlushOAuthOutbox(context.Background(), f.path, pc.ID)
 			if adopt {
 				require.NoError(t, err)
-				require.Nil(t, f.store.oauthOutboxCurrent(f.path, pc.ID))
+				require.Nil(t, f.store.OAuthOutboxCurrent(f.path, pc.ID))
 			} else {
-				require.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
-				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, pc.ID))
+				require.ErrorIs(t, err, f.store.OAuthCredStore().ErrCredentialCAS())
+				require.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, pc.ID))
 				require.False(t, entry.Obsolete)
 			}
 			pc, _ = f.store.Config().Providers.Get(pc.ID)
-			f.store.publishMu.Lock()
-			rotation, pending := f.store.oauthCredStore().PendingRotationForTest(t, pc.ID)
-			f.store.publishMu.Unlock()
+			f.store.PublishMuForTest().Lock()
+			rotation, pending := f.store.OAuthCredStore().PendingRotationForTest(t, pc.ID)
+			f.store.PublishMuForTest().Unlock()
 			require.Equal(t, adopt, pending)
 			if adopt {
 				require.Equal(t, &x, pc.OAuthToken)
@@ -155,17 +155,17 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			require.Equal(t, 1, calls)
 			require.Equal(t, 1, writes)
 			require.Equal(t, 1, waits)
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait = oldWrite, oldWait
 
-			entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+			entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 			require.NotNil(t, entry)
 			require.Equal(t, f.next, entry.Record.Token)
 			require.False(t, entry.Obsolete)
 			require.Equal(t, predecessor, oauthJournalLivePredecessor(&entry.Record, &live))
-			f.store.publishMu.Lock()
-			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-			f.store.publishMu.Unlock()
+			f.store.PublishMuForTest().Lock()
+			_, pending := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+			f.store.PublishMuForTest().Unlock()
 			require.False(t, pending, "failed publication CAS must not install pending B")
 			pc, _ := f.store.Config().Providers.Get(f.used.ID)
 			require.Equal(t, &live, pc.OAuthToken)
@@ -180,7 +180,7 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			external := &oauthJournalRecord{Token: &x, PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken)}
 			require.NoError(t, writeOAuthJournalOnce(journal, external))
 			require.Equal(t, oauthJournalDiskLaterOrTie, arbitrateOAuthJournal(&entry.Record, nil, &x, nil))
-			settled, err := f.store.settleOAuthOutbox(ctx, f.path, f.used.ID, entry)
+			settled, err := f.store.SettleOAuthOutbox(ctx, f.path, f.used.ID, entry)
 			require.NoError(t, err)
 			require.False(t, settled)
 
@@ -188,10 +188,10 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			require.NoError(t, err)
 			beforeWAL, err := os.ReadFile(journal)
 			require.NoError(t, err)
-			done, attemptErr := f.store.oauthJournalWorkerAttempt(ctx, ScopeGlobal, f.used.ID, 0)
+			done, attemptErr := f.store.OAuthJournalWorkerAttempt(ctx, ScopeGlobal, f.used.ID, 0)
 			require.False(t, done)
 			if !predecessor {
-				require.ErrorIs(t, attemptErr, f.store.oauthCredStore().ErrCredentialCAS())
+				require.ErrorIs(t, attemptErr, f.store.OAuthCredStore().ErrCredentialCAS())
 				pc, _ = f.store.Config().Providers.Get(f.used.ID)
 				require.Equal(t, &live, pc.OAuthToken)
 				disk, err = readOAuthJournalDiskToken(f.path, f.used.ID)
@@ -203,11 +203,11 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 				afterWAL, err := os.ReadFile(journal)
 				require.NoError(t, err)
 				require.Equal(t, beforeWAL, afterWAL)
-				require.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+				require.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 				require.False(t, entry.Obsolete)
-				f.store.publishMu.Lock()
-				_, pending = f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-				f.store.publishMu.Unlock()
+				f.store.PublishMuForTest().Lock()
+				_, pending = f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+				f.store.PublishMuForTest().Unlock()
 				require.False(t, pending, "rejected adoption must not synthesize pending X")
 				return
 			}
@@ -218,10 +218,10 @@ func TestTask1300OutboxExternalAdoption(t *testing.T) {
 			record, err = readOAuthJournal(journal)
 			require.NoError(t, err)
 			require.Equal(t, external, record, "external journal must be preserved")
-			require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
-			f.store.publishMu.Lock()
-			rotation, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-			f.store.publishMu.Unlock()
+			require.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
+			f.store.PublishMuForTest().Lock()
+			rotation, pending := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+			f.store.PublishMuForTest().Unlock()
 			require.True(t, pending)
 			require.Equal(t, &x, &rotation.Token)
 			require.Equal(t, &live, &rotation.Predecessor)

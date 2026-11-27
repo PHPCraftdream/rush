@@ -183,7 +183,7 @@ func TestTrustedUILiftsWorkspaceLockNotScopeOwnership(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(workspace), 0o700))
 	require.NoError(t, os.WriteFile(workspace, []byte(`{"sync_rev":"`+HashPassword("local")+`"}`), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: global, workspacePath: workspace})
-	store.workingDir = filepath.Dir(filepath.Dir(filepath.Dir(workspace)))
+	(*store.WorkingDirForTest()) = filepath.Dir(filepath.Dir(filepath.Dir(workspace)))
 	SetProcessPassword("")
 	t.Cleanup(func() { SetProcessPassword("") })
 	before := fileBytes(t, workspace)

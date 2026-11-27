@@ -18,7 +18,7 @@ import (
 //
 // REVERT CHECK: temporarily modify SetProviderRuntimeConfig to mutate
 // in-place without calling publishLocked (i.e., revert to the old
-// "s.loadSnapshot().config.Providers.Set(...)" pattern). This test will fail
+// "s.LoadSnapshot().config.Providers.Set(...)" pattern). This test will fail
 // because generation does not increment. Restore the publishLocked call, it
 // passes again.
 func TestSetProviderRuntimeConfig_IncrementsGeneration(t *testing.T) {

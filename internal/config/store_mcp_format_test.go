@@ -424,7 +424,7 @@ func TestMCPTransactionUsesRushSchemaForPhysicalMCPBasename(t *testing.T) {
 	}
 	files.BindMCPPath(path, original, true, dataFingerprint(path, original))
 
-	require.NoError(t, (&ConfigStore{}).prepareMCPFileMutation(files, path, "add", "added", "added", MCPConfig{
+	require.NoError(t, (&ConfigStore{}).PrepareMCPFileMutation(files, path, "add", "added", "added", MCPConfig{
 		Type: MCPHttp, URL: "http://added",
 	}, nil))
 	require.NoError(t, updateMCPFile(files, path, "added", func(entry map[string]any) error {

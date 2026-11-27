@@ -432,9 +432,12 @@ func TestMayMigrateData_Matrix(t *testing.T) {
 	devExe := filepath.Join(base, "tmp-exe", "rush.exe")
 	t.Cleanup(setOSExecutablePathForTest(devExe))
 
-	shared := &ConfigStore{dataDirSource: DataDirSourceShared}
-	isolated := &ConfigStore{dataDirSource: DataDirSourceDevIsolated}
-	home := &ConfigStore{dataDirSource: DataDirSourceLegacyLocal}
+	shared := &ConfigStore{}
+	*shared.DataDirSourceForTest() = DataDirSourceShared
+	isolated := &ConfigStore{}
+	*isolated.DataDirSourceForTest() = DataDirSourceDevIsolated
+	home := &ConfigStore{}
+	*home.DataDirSourceForTest() = DataDirSourceLegacyLocal
 	zero := &ConfigStore{}
 
 	require.False(t, shared.MayMigrateData(), "dev build on the shared DB must not migrate")

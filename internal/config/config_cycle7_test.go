@@ -26,13 +26,13 @@ func TestCycle7MCPTransactionIsConditionalAcrossBothScopes(t *testing.T) {
 	})
 	// The helper's working directory is deliberately set after construction so
 	// the transaction exercises the same disk paths as a real store.
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	store2 := newTestConfigStore(testStoreOpts{
 		config:         &Config{MCP: MCPs{}},
 		globalDataPath: global,
 		workspacePath:  workspace,
 	})
-	store2.workingDir = root
+	(*store2.WorkingDirForTest()) = root
 
 	want := MCPConfig{Type: MCPHttp, URL: "http://one.example"}
 	var firstErr, secondErr error
@@ -80,7 +80,7 @@ func TestCycle7MCPResultUsesFullFallbackPipeline(t *testing.T) {
 		globalDataPath: global,
 		workspacePath:  workspace,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	result, err := store.PersistReplaceMCPResult(ScopeWorkspace, "server", "renamed", MCPConfig{Type: MCPHttp, URL: "http://new.example"})
 	require.NoError(t, err)
 	require.True(t, result.NewExists)
@@ -146,7 +146,7 @@ func TestCycle7StalenessTracksNegativeLookupAndMCPCandidates(t *testing.T) {
 	root := t.TempDir()
 	store, err := Load(root, filepath.Join(root, "data"), false)
 	require.NoError(t, err)
-	tracked := store.loadSnapshot().trackedConfigPaths
+	tracked := (*store.LoadSnapshot().SnapTrackedConfigPaths())
 	require.Contains(t, tracked, normalizeReloadPath(filepath.Join(root, "rush.json")))
 	require.Contains(t, tracked, normalizeReloadPath(filepath.Join(root, ".rush.json")))
 	require.Contains(t, tracked, normalizeReloadPath(filepath.Join(root, ".mcp.json")))
@@ -163,17 +163,17 @@ func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
 	path := filepath.Join(root, "rush.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"options":{}}`), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path, workspacePath: filepath.Join(root, "ws.json")})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	firstHook := make(chan struct{})
 	writerQueued := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseHook := func() { releaseOnce.Do(func() { close(release) }) }
-	store.reloadAfterWriteQueued = func() { close(writerQueued) }
+	*store.ReloadAfterWriteQueuedForTest() = func() { close(writerQueued) }
 
 	var calls int
 	var hookErr error
-	store.reloadAfterDiskRead = func() {
+	*store.ReloadAfterDiskReadForTest() = func() {
 		calls++
 		switch calls {
 		case 1:
@@ -246,9 +246,9 @@ func TestCycle7WriterHandoffAfterNonRetryableReloadFailure(t *testing.T) {
 	require.NoError(t, hookErr)
 	require.GreaterOrEqual(t, calls, 3, "the queued writer must build a successor")
 	require.True(t, store.Config().Options.Debug, "the successor must publish the writer's value")
-	store.reloadPendingMu.Lock()
-	require.False(t, store.reloadPending)
-	store.reloadPendingMu.Unlock()
+	store.ReloadPendingMuForTest().Lock()
+	require.False(t, *store.ReloadPendingForTest())
+	store.ReloadPendingMuForTest().Unlock()
 }
 
 func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
@@ -257,7 +257,7 @@ func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
 	path := filepath.Join(root, "rush.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"options":{}}`), 0o600))
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -265,7 +265,7 @@ func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
 	releaseHook := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseHook)
 	calls := 0
-	store.reloadAfterDiskRead = func() {
+	*store.ReloadAfterDiskReadForTest() = func() {
 		once.Do(func() { close(started) })
 		if calls == 0 {
 			deadline := time.Now().Add(5 * time.Second)
@@ -314,9 +314,9 @@ func TestCycle7WriterHandoffAfterReloadBudgetExhaustion(t *testing.T) {
 		releaseHook()
 		t.Fatal("writer did not finish")
 	}
-	store.reloadPendingMu.Lock()
-	require.False(t, store.reloadPending)
-	store.reloadPendingMu.Unlock()
+	store.ReloadPendingMuForTest().Lock()
+	require.False(t, *store.ReloadPendingForTest())
+	store.ReloadPendingMuForTest().Unlock()
 }
 
 func mustReadCycle7File(t *testing.T, path string) []byte {

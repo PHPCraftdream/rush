@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
+
 	"github.com/PHPCraftdream/rush/internal/kit/fs/filelock"
 	"github.com/stretchr/testify/require"
 )
@@ -37,11 +39,11 @@ func TestConfigAliasChainFingerprintIgnoresRegularLeafMode(t *testing.T) {
 
 func TestConfigWriteTargetDedupKeyUsesExistingFileIdentity(t *testing.T) {
 	identity := configFileIdentity{Device: 11, Inode: 22, Valid: true}
-	left := configWriteTarget{expected: reloadFileFingerprint{Exists: true, Identity: identity}}
-	right := configWriteTarget{expected: reloadFileFingerprint{Exists: true, Identity: identity}}
-	different := configWriteTarget{expected: reloadFileFingerprint{
+	left := cfgstore.NewConfigWriteTargetForTest("", "", "", reloadFileFingerprint{Exists: true, Identity: identity}, 0, false)
+	right := cfgstore.NewConfigWriteTargetForTest("", "", "", reloadFileFingerprint{Exists: true, Identity: identity}, 0, false)
+	different := cfgstore.NewConfigWriteTargetForTest("", "", "", reloadFileFingerprint{
 		Exists: true, Identity: configFileIdentity{Device: 11, Inode: 23, Valid: true},
-	}}
+	}, 0, false)
 
 	require.Equal(t, configWriteTargetDedupKey(left), configWriteTargetDedupKey(right))
 	require.NotEqual(t, configWriteTargetDedupKey(left), configWriteTargetDedupKey(different))
@@ -52,11 +54,9 @@ func TestConfigWriteTargetDedupKeyUsesExistingSidecarIdentity(t *testing.T) {
 	lockPath := filepath.Join(root, "rush.json.lock")
 	require.NoError(t, os.WriteFile(lockPath, nil, 0o600))
 	parent := configParentIdentity(filepath.Join(root, "rush.json"))
-	target := configWriteTarget{
-		path: filepath.Join(root, "rush.json"), lockPath: lockPath,
-		selectedPath: filepath.Join(root, "rush.json"),
-		expected:     reloadFileFingerprint{ParentIdentity: parent},
-	}
+	target := cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "rush.json"),
+		filepath.Join(root, "rush.json"), lockPath,
+		reloadFileFingerprint{ParentIdentity: parent}, 0, false)
 	key := configWriteTargetDedupKey(target)
 	require.Contains(t, key, "sidecar:")
 }
@@ -68,13 +68,10 @@ func TestConfigWriteTargetMissingLeafCaseCapability(t *testing.T) {
 	if !parent.Valid {
 		t.Skip("parent identity unavailable")
 	}
-	left := configWriteTarget{
-		path: filepath.Join(root, "Rush.json"), selectedPath: filepath.Join(root, "Rush.json"),
-		expected: reloadFileFingerprint{ParentIdentity: parent},
-	}
+	left := cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json"), "", reloadFileFingerprint{ParentIdentity: parent}, 0, false)
 	right := left
-	right.path = filepath.Join(root, "rush.json")
-	right.selectedPath = right.path
+	*right.WTPathForTest() = filepath.Join(root, "rush.json")
+	*right.WTSelectedPathForTest() = *right.WTPathForTest()
 	if configDirectoryIsCaseInsensitive(root) {
 		require.Equal(t, configWriteTargetDedupKey(left), configWriteTargetDedupKey(right))
 	} else {
@@ -265,15 +262,11 @@ func TestConfigWriteTargetMissingLeafUsesInjectedCaseDecision(t *testing.T) {
 	root := t.TempDir()
 	parent := configParentIdentity(filepath.Join(root, "first.json"))
 	require.True(t, parent.Valid)
-	left := configWriteTarget{
-		path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"),
-		selectedPath: filepath.Join(root, "Rush.json"),
-		expected:     reloadFileFingerprint{ParentIdentity: parent},
-	}
+	left := cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json.lock"), reloadFileFingerprint{ParentIdentity: parent}, 0, false)
 	right := left
-	right.path = filepath.Join(root, "rush.json")
-	right.lockPath = filepath.Join(root, "rush.json.lock")
-	right.selectedPath = right.path
+	*right.WTPathForTest() = filepath.Join(root, "rush.json")
+	*right.WTLockPathForTest() = filepath.Join(root, "rush.json.lock")
+	*right.WTSelectedPathForTest() = *right.WTPathForTest()
 	before := directoryEntryNames(t, root)
 	caseFold := func(_ string, leaf string) (string, bool) {
 		return configFoldCaseLeaf(leaf, configCaseSensitivityInsensitive)
@@ -307,13 +300,10 @@ func TestConfigCaseVariantHardlinksDoNotProveCaseInsensitivity(t *testing.T) {
 	caseFold := func(_ string, leaf string) (string, bool) {
 		return configFoldCaseLeaf(leaf, decision)
 	}
-	left := configWriteTarget{
-		path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"),
-		expected: reloadFileFingerprint{ParentIdentity: configParentIdentity(filepath.Join(root, "Rush.json"))},
-	}
+	left := cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "Rush.json"), "", filepath.Join(root, "Rush.json.lock"), reloadFileFingerprint{ParentIdentity: configParentIdentity(filepath.Join(root, "Rush.json"))}, 0, false)
 	right := left
-	right.path = filepath.Join(root, "rush.json")
-	right.lockPath = filepath.Join(root, "rush.json.lock")
+	*right.WTPathForTest() = filepath.Join(root, "rush.json")
+	*right.WTLockPathForTest() = filepath.Join(root, "rush.json.lock")
 	require.NotEqual(t, configWriteTargetDedupKeyWithCaseFold(left, caseFold), configWriteTargetDedupKeyWithCaseFold(right, caseFold))
 	require.Equal(t, before, directoryEntryNames(t, root))
 }
@@ -330,13 +320,13 @@ func TestMissingTargetIdentityChecksAreDiskless(t *testing.T) {
 		globalDataPath: upper,
 		workspacePath:  lower,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	before := directoryEntryNames(t, root)
 
-	target, err := store.resolveConfigWriteTarget(upper)
+	target, err := store.ResolveConfigWriteTarget(upper)
 	require.NoError(t, err)
 	_ = configWriteTargetDedupKey(target)
-	require.NoError(t, store.withMCPAdmissionLocks(func(*mcpLockedFiles) error { return nil }))
+	require.NoError(t, store.WithMCPAdmissionLocks(func(*mcpLockedFiles) error { return nil }))
 
 	require.Equal(t, before, directoryEntryNames(t, root))
 }
@@ -347,30 +337,30 @@ func TestConfigWriteTargetPermissionTransitionSupportsFreshRMW(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(`{"existing":true}`), 0o644))
 	store1 := newTestConfigStore(testStoreOpts{globalDataPath: path})
 	store2 := newTestConfigStore(testStoreOpts{globalDataPath: path})
-	target1, err := store1.resolveConfigWriteTarget(path)
+	target1, err := store1.ResolveConfigWriteTarget(path)
 	require.NoError(t, err)
-	target2, err := store2.resolveConfigWriteTarget(path)
+	target2, err := store2.ResolveConfigWriteTarget(path)
 	require.NoError(t, err)
 
-	lock1, err := acquireConfigFileLock(t.Context(), target1.lockPath)
+	lock1, err := acquireConfigFileLock(t.Context(), target1.WTLockPath())
 	require.NoError(t, err)
-	_, err = commitConfigFile(target1.selectedPath, target1.path, []byte(`{"existing":true,"first":true}`), 0o600,
-		target1.expected, target1.owner, target1.enforce)
+	_, err = commitConfigFile(target1.WTSelectedPath(), target1.WTPath(), []byte(`{"existing":true,"first":true}`), 0o600,
+		target1.WTExpected(), target1.WTOwner(), target1.WTEnforce())
 	require.NoError(t, err)
 	require.NoError(t, lock1.Release())
 
-	lock2, err := acquireConfigFileLock(t.Context(), target2.lockPath)
+	lock2, err := acquireConfigFileLock(t.Context(), target2.WTLockPath())
 	require.NoError(t, err)
 	defer lock2.Release()
 	require.NoError(t, verifyConfigTarget(target2))
-	data, expected, err := readStableConfigFileOwned(target2.selectedPath, target2.owner, target2.enforce)
+	data, expected, err := readStableConfigFileOwned(target2.WTSelectedPath(), target2.WTOwner(), target2.WTEnforce())
 	require.NoError(t, err)
 	var document map[string]any
 	require.NoError(t, json.Unmarshal(data, &document))
 	document["second"] = true
 	data, err = json.Marshal(document)
 	require.NoError(t, err)
-	_, err = commitConfigFile(target2.selectedPath, target2.path, data, 0o600, expected, target2.owner, target2.enforce)
+	_, err = commitConfigFile(target2.WTSelectedPath(), target2.WTPath(), data, 0o600, expected, target2.WTOwner(), target2.WTEnforce())
 	require.NoError(t, err)
 
 	final, err := os.ReadFile(path)
@@ -396,7 +386,7 @@ func TestMCPAdmissionDeduplicatesCaseSpellingsWhenFilesystemDoes(t *testing.T) {
 		globalDataPath: upper,
 		workspacePath:  lower,
 	})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 
 	acquisitions := 0
 	configTestHooks.Lock()
@@ -412,7 +402,7 @@ func TestMCPAdmissionDeduplicatesCaseSpellingsWhenFilesystemDoes(t *testing.T) {
 		configTestHooks.Unlock()
 	})
 
-	require.NoError(t, store.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+	require.NoError(t, store.WithMCPAdmissionLocks(func(files *mcpLockedFiles) error {
 		require.Len(t, files.Records, 1)
 		return nil
 	}))
@@ -446,7 +436,7 @@ func TestMCPAdmissionUsesInjectedCaseDecisionForMissingAliases(t *testing.T) {
 				globalDataPath: upper,
 				workspacePath:  lower,
 			})
-			store.workingDir = root
+			(*store.WorkingDirForTest()) = root
 
 			acquisitions := 0
 			configTestHooks.Lock()
@@ -469,14 +459,14 @@ func TestMCPAdmissionUsesInjectedCaseDecisionForMissingAliases(t *testing.T) {
 			}
 			targets := make([]configWriteTarget, 0, 2)
 			for _, path := range []string{upper, lower} {
-				target, err := store.resolveConfigWriteTarget(path)
+				target, err := store.ResolveConfigWriteTarget(path)
 				require.NoError(t, err)
 				targets = append(targets, target)
 			}
 			groups, _, _ := configMCPAdmissionLockGroups(targets, caseSensitivity)
 			require.Len(t, groups, test.expectedGroups)
 			foldCalls = 0
-			err := store.withMCPLocksUsingCaseSensitivity(context.Background(), func(files *mcpLockedFiles) error {
+			err := store.WithMCPLocksUsingCaseSensitivity(context.Background(), func(files *mcpLockedFiles) error {
 				require.Len(t, files.Records, test.expectedRecords)
 				return nil
 			}, caseSensitivity)
@@ -492,8 +482,8 @@ func TestMCPAdmissionPinsCaseSensitivityPerParent(t *testing.T) {
 	parent := configParentIdentity(filepath.Join(root, "Rush.json"))
 	require.True(t, parent.Valid)
 	targets := []configWriteTarget{
-		{path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"), selectedPath: filepath.Join(root, "Rush.json"), expected: reloadFileFingerprint{ParentIdentity: parent}},
-		{path: filepath.Join(root, "rush.json"), lockPath: filepath.Join(root, "rush.json.lock"), selectedPath: filepath.Join(root, "rush.json"), expected: reloadFileFingerprint{ParentIdentity: parent}},
+		cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json.lock"), reloadFileFingerprint{ParentIdentity: parent}, 0, false),
+		cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "rush.json"), filepath.Join(root, "rush.json"), filepath.Join(root, "rush.json.lock"), reloadFileFingerprint{ParentIdentity: parent}, 0, false),
 	}
 	calls := 0
 	detector := func(string) configCaseSensitivity {
@@ -508,8 +498,8 @@ func TestMCPAdmissionPinsCaseSensitivityPerParent(t *testing.T) {
 	require.Equal(t, 1, calls)
 
 	distinctTargets := []configWriteTarget{
-		{path: filepath.Join(root, "one", "Rush.json"), lockPath: filepath.Join(root, "one", "Rush.json.lock"), selectedPath: filepath.Join(root, "one", "Rush.json"), expected: reloadFileFingerprint{ParentIdentity: configFileIdentity{Device: 9, Inode: 1, Valid: true}}},
-		{path: filepath.Join(root, "two", "rush.json"), lockPath: filepath.Join(root, "two", "rush.json.lock"), selectedPath: filepath.Join(root, "two", "rush.json"), expected: reloadFileFingerprint{ParentIdentity: configFileIdentity{Device: 9, Inode: 2, Valid: true}}},
+		cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "one", "Rush.json"), filepath.Join(root, "one", "Rush.json"), filepath.Join(root, "one", "Rush.json.lock"), reloadFileFingerprint{ParentIdentity: configFileIdentity{Device: 9, Inode: 1, Valid: true}}, 0, false),
+		cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "two", "rush.json"), filepath.Join(root, "two", "rush.json"), filepath.Join(root, "two", "rush.json.lock"), reloadFileFingerprint{ParentIdentity: configFileIdentity{Device: 9, Inode: 2, Valid: true}}, 0, false),
 	}
 	calls = 0
 	groups, _, _ = configMCPAdmissionLockGroups(distinctTargets, detector)
@@ -517,8 +507,8 @@ func TestMCPAdmissionPinsCaseSensitivityPerParent(t *testing.T) {
 	require.Equal(t, 2, calls)
 
 	invalidTargets := []configWriteTarget{
-		{path: filepath.Join(root, "Rush.json"), lockPath: filepath.Join(root, "Rush.json.lock"), selectedPath: filepath.Join(root, "Rush.json")},
-		{path: filepath.Join(root, "rush.json"), lockPath: filepath.Join(root, "rush.json.lock"), selectedPath: filepath.Join(root, "rush.json")},
+		cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json"), filepath.Join(root, "Rush.json.lock"), reloadFileFingerprint{}, 0, false),
+		cfgstore.NewConfigWriteTargetForTest(filepath.Join(root, "rush.json"), filepath.Join(root, "rush.json"), filepath.Join(root, "rush.json.lock"), reloadFileFingerprint{}, 0, false),
 	}
 	calls = 0
 	groups, _, _ = configMCPAdmissionLockGroups(invalidTargets, detector)

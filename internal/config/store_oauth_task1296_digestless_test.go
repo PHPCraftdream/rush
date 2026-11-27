@@ -27,7 +27,7 @@ func task1296Fixture(t *testing.T, delta int64) (codexRefreshFixture, *oauth.Tok
 	c.AccessToken = "fixture-C-access"
 	c.ExpiresAt += delta
 	record := &oauthJournalRecord{Token: f.next}
-	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true, record))
+	require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true, record))
 	pc := f.used
 	pc.OAuthToken, pc.APIKey = &c, ""
 	f.store.SetProviderRuntimeConfig(pc.ID, pc)
@@ -71,7 +71,7 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 				require.NoError(t, writeOAuthJournalOnce(journal, record))
 				var entry *oauthOutboxEntry
 				if route == "recovery_outbox" || route == "settle" {
-					entry = f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+					entry = f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
 				}
 				if route == "settle" {
 					task1292WriteDisk(t, f.path, f.used.ID, f.next, "")
@@ -86,7 +86,7 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 				case "recovery_journal", "recovery_outbox":
 					adopted, remaining, err := task1292Recover(t, f)
 					if delta >= 0 {
-						assert.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
+						assert.ErrorIs(t, err, f.store.OAuthCredStore().ErrCredentialCAS())
 						assert.Nil(t, adopted)
 					} else {
 						assert.NoError(t, err)
@@ -94,21 +94,21 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 					}
 					assert.Equal(t, record, remaining)
 				case "settle":
-					settled, err := f.store.settleOAuthOutbox(context.Background(), f.path, f.used.ID, entry)
+					settled, err := f.store.SettleOAuthOutbox(context.Background(), f.path, f.used.ID, entry)
 					assert.NoError(t, err)
 					assert.True(t, settled)
-					assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
-					f.store.publishMu.Lock()
-					_, pending := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-					f.store.publishMu.Unlock()
+					assert.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
+					f.store.PublishMuForTest().Lock()
+					_, pending := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+					f.store.PublishMuForTest().Unlock()
 					assert.False(t, pending)
 				case "worker_journal":
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					done, err := f.store.oauthJournalWorkerAttempt(ctx, ScopeGlobal, f.used.ID, 0)
+					done, err := f.store.OAuthJournalWorkerAttempt(ctx, ScopeGlobal, f.used.ID, 0)
 					assert.False(t, done)
 					if delta >= 0 {
-						assert.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
+						assert.ErrorIs(t, err, f.store.OAuthCredStore().ErrCredentialCAS())
 					} else {
 						assert.NoError(t, err)
 						disk, readErr := readOAuthJournalDiskToken(f.path, f.used.ID)
@@ -123,7 +123,7 @@ func TestTask1296DigestlessRoutes(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, record, persisted, "journal B must remain")
 				if route == "recovery_outbox" {
-					assert.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+					assert.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 				}
 			})
 		}
@@ -147,7 +147,7 @@ func TestTask1296DigestlessCallers(t *testing.T) {
 			if caller == "A" {
 				assert.NoError(t, err)
 			} else {
-				assert.ErrorIs(t, err, f.store.oauthCredStore().ErrCredentialCAS())
+				assert.ErrorIs(t, err, f.store.OAuthCredStore().ErrCredentialCAS())
 			}
 			task1296State(t, f, c, before)
 			persisted, err := readOAuthJournal(oauthJournalPath(f.path, f.used.ID))
@@ -168,20 +168,20 @@ func TestTask1296ErrorBranchEqualLiveHasNoPredecessor(t *testing.T) {
 			pc := f.used
 			pc.OAuthToken, pc.APIKey = f.next, ""
 			f.store.SetProviderRuntimeConfig(pc.ID, pc)
-			f.store.publishMu.Lock()
-			if entry, ok := f.store.oauthCredStore().PendingRotationForTest(t, pc.ID); ok {
-				f.store.oauthCredStore().DeletePendingOAuthIfTokenLocked(pc.ID, &entry.Token)
+			f.store.PublishMuForTest().Lock()
+			if entry, ok := f.store.OAuthCredStore().PendingRotationForTest(t, pc.ID); ok {
+				f.store.OAuthCredStore().DeletePendingOAuthIfTokenLocked(pc.ID, &entry.Token)
 			}
-			f.store.publishMu.Unlock()
+			f.store.PublishMuForTest().Unlock()
 			require.NoError(t, os.WriteFile(f.path, []byte("{"), 0o600))
 			require.NoError(t, writeOAuthJournalOnce(oauthJournalPath(f.path, pc.ID), record))
 			adopted, remaining, err := task1292Recover(t, f)
 			assert.ErrorIs(t, err, errOAuthJournalDisk)
 			assert.Equal(t, f.next, adopted)
 			assert.Equal(t, record, remaining)
-			f.store.publishMu.Lock()
-			_, pending := f.store.oauthCredStore().PendingRotationForTest(t, pc.ID)
-			f.store.publishMu.Unlock()
+			f.store.PublishMuForTest().Lock()
+			_, pending := f.store.OAuthCredStore().PendingRotationForTest(t, pc.ID)
+			f.store.PublishMuForTest().Unlock()
 			assert.False(t, pending, "equal live B must not become its own predecessor")
 		})
 	}

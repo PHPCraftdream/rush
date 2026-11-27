@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
 	"github.com/stretchr/testify/require"
 )
@@ -70,9 +71,9 @@ func TestConfigStalenessUnselectedJSONSiblingStaysClean(t *testing.T) {
 	require.False(t, s.ConfigStaleness().Dirty,
 		"the rebuilt snapshot must record Exists:true for the unselected sibling")
 
-	var st configDiskSyncState
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
 	for i := 0; i < 3; i++ {
-		result, err := s.syncConfigFromDisk(context.Background(), &st)
+		result, err := s.SyncConfigFromDisk(context.Background(), &st)
 		require.NoError(t, err)
 		require.False(t, result.Reloaded,
 			"tick %d: an unchanged disk must not reload", i)
@@ -100,8 +101,8 @@ func TestConfigStalenessIgnoredJSONEditDirtyOnceThenSettles(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { s.StopConfigDiskSync() })
 
-	var st configDiskSyncState
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "initial disk state must be settled")
 
@@ -111,21 +112,21 @@ func TestConfigStalenessIgnoredJSONEditDirtyOnceThenSettles(t *testing.T) {
 	require.True(t, s.ConfigStaleness().Dirty,
 		"the ignored sibling's digest changed; staleness must notice")
 
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded, "a natural tick must reload exactly once")
 	require.Equal(t, "gpt-ktav", s.Config().Models[SelectedModelTypeSmart].Model,
 		"the ignored JSON edit must never change the active config")
-	require.Equal(t, uint64(1), st.reloadAttempts)
+	require.Equal(t, uint64(1), *cfgstore.ConfigDiskSyncStateReloadAttempts(&st))
 
 	require.False(t, s.ConfigStaleness().Dirty, "the store must settle after the reload")
 	for i := 0; i < 3; i++ {
-		result, err := s.syncConfigFromDisk(context.Background(), &st)
+		result, err := s.SyncConfigFromDisk(context.Background(), &st)
 		require.NoError(t, err)
 		require.False(t, result.Reloaded,
 			"tick %d: no endless reload after settling", i)
 	}
-	require.Equal(t, uint64(1), st.reloadAttempts, "reload attempts must stay bounded")
+	require.Equal(t, uint64(1), *cfgstore.ConfigDiskSyncStateReloadAttempts(&st), "reload attempts must stay bounded")
 }
 
 // TestConfigStalenessKtavEditReloadsAndChangesActiveConfig: modifying the
@@ -140,8 +141,8 @@ func TestConfigStalenessKtavEditReloadsAndChangesActiveConfig(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { s.StopConfigDiskSync() })
 
-	var st configDiskSyncState
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded)
 
@@ -149,7 +150,7 @@ func TestConfigStalenessKtavEditReloadsAndChangesActiveConfig(t *testing.T) {
 		`{"smart":{"provider":"openai","model":"gpt-ktav-2"}}`)
 	require.True(t, s.ConfigStaleness().Dirty)
 
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded)
 	require.Equal(t, "gpt-ktav-2", s.Config().Models[SelectedModelTypeSmart].Model,
@@ -172,7 +173,7 @@ func TestConfigStalenessHiddenKtavSiblingNaturalTickReload(t *testing.T) {
 	s, err := Load(dir, "", false)
 	require.NoError(t, err)
 	t.Cleanup(func() { s.StopConfigDiskSync() })
-	require.Contains(t, s.loadSnapshot().trackedConfigPaths,
+	require.Contains(t, (*s.LoadSnapshot().SnapTrackedConfigPaths()),
 		canonicalConfigPath(filepath.Join(dir, ".rush.json")),
 		"the absent hidden slot must be tracked")
 
@@ -182,8 +183,8 @@ func TestConfigStalenessHiddenKtavSiblingNaturalTickReload(t *testing.T) {
 	writeHiddenKtavFixture(t, hiddenKtav,
 		`{"fast":{"provider":"openai","model":"gpt-hidden"}}`)
 
-	var st configDiskSyncState
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded,
 		"a natural tick must reload when the hidden Ktav spelling appears")
@@ -191,7 +192,7 @@ func TestConfigStalenessHiddenKtavSiblingNaturalTickReload(t *testing.T) {
 		"the hidden slot's content must reach the store")
 	require.False(t, s.ConfigStaleness().Dirty)
 
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "drift must be exactly-once per event")
 }
@@ -222,15 +223,15 @@ func TestConfigStalenessHiddenPairUnselectedEditDirtyOnce(t *testing.T) {
 		`{"fast":{"provider":"openai","model":"gpt-hidden-json-2"}}`)
 	require.True(t, s.ConfigStaleness().Dirty)
 
-	var st configDiskSyncState
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
+	st := cfgstore.NewConfigDiskSyncStateForTest(false)
+	result, err := s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.True(t, result.Reloaded)
 	require.Equal(t, "gpt-hidden-ktav", s.Config().Models[SelectedModelTypeSmart].Model,
 		"the unselected hidden JSON edit must never change the active config")
 	require.False(t, s.ConfigStaleness().Dirty)
 
-	result, err = s.syncConfigFromDisk(context.Background(), &st)
+	result, err = s.SyncConfigFromDisk(context.Background(), &st)
 	require.NoError(t, err)
 	require.False(t, result.Reloaded, "the store must settle")
 }

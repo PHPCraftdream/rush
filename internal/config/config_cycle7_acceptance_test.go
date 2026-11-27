@@ -73,7 +73,7 @@ func TestCycle7DisableNonWritableOriginsFailsClosed(t *testing.T) {
 			globalDataPath: globalPath,
 			workspacePath:  workspacePath,
 		})
-		store.workingDir = root
+		(*store.WorkingDirForTest()) = root
 
 		_, err := store.PersistMCPDisabledOverrideResult(ScopeGlobal, "server", true)
 		require.ErrorIs(t, err, ErrMCPUnwritableOrigin)
@@ -95,8 +95,8 @@ func TestCycle7DisableNonWritableOriginsFailsClosed(t *testing.T) {
 			globalDataPath: globalPath,
 			workspacePath:  workspacePath,
 		})
-		store.workingDir = root
-		store.systemConfigPathOverride = systemPath
+		(*store.WorkingDirForTest()) = root
+		*store.SystemConfigPathOverrideForTest() = systemPath
 
 		_, err := store.PersistMCPDisabledOverrideResult(ScopeWorkspace, "server", true)
 		if systemOwner == systemConfigOwner() {

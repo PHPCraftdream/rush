@@ -352,14 +352,14 @@ func TestKtavArtifactSharedStartupDeadline(t *testing.T) {
 	elapsed := time.Since(started)
 	require.NoError(t, err)
 	require.NotNil(t, store)
-	t.Cleanup(func() { store.stopOAuthJournalWorkers() })
+	t.Cleanup(func() { store.StopOAuthJournalWorkers() })
 
 	deadlinesMu.Lock()
 	captured := append([]time.Time(nil), deadlines...)
 	deadlinesMu.Unlock()
 	require.GreaterOrEqual(t, len(captured), 2, "journal and cache conversion should both be attempted")
-	// recoverOAuthJournalsAtLoad legitimately re-locks the journal path after
-	// loadOnce succeeds (load.go) with its own codexRefreshLockWait budget;
+	// RecoverOAuthJournalsAtLoad legitimately re-locks the journal path after
+	// loadOnce succeeds (load.go) with its own *codexRefreshLockWait budget;
 	// it is recovery, not an artifact conversion. Only acquisitions performed
 	// INSIDE Load's shared startup window must share Load's single deadline:
 	// a conversion that adds a fresh per-file timeout lands outside the
@@ -616,7 +616,7 @@ func TestKtavLoadConvertsCachesRegardlessOfWorkspaceFormat(t *testing.T) {
 			store, err := Load(dir, dir, false)
 			require.NoError(t, err)
 			require.NotNil(t, store)
-			t.Cleanup(func() { store.stopOAuthJournalWorkers() })
+			t.Cleanup(func() { store.StopOAuthJournalWorkers() })
 
 			require.FileExists(t, ktavSiblingOf(providers), "the providers cache must be converted after Load")
 			require.FileExists(t, providers, "the JSON cache is kept for older binaries")

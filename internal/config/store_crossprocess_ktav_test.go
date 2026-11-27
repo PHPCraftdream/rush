@@ -282,7 +282,7 @@ func TestRemoveConfigFieldBestEffortKtavBoundedByInternalTimeout(t *testing.T) {
 		configTestHooks.Unlock()
 	})
 
-	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, key)
 	require.Equal(t, internalConfigWriteLockTimeout, observedTimeout,
 		"best-effort removal must inject the internal lock timeout")
 	require.Equal(t, 1, acquireCalls, "best-effort removal must make one controlled acquisition")
@@ -324,7 +324,7 @@ func TestRemoveConfigFieldBestEffortKtavPreservesContentWhenExternalLockHeld(t *
 	})
 
 	store := newTestConfigStore(testStoreOpts{globalDataPath: configPath})
-	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, key)
 
 	doc := string(mustDecodeTestKtav(t, fileBytes(t, configPath)))
 	require.True(t, gjson.Get(doc, key).Exists(),
@@ -374,7 +374,7 @@ func TestRemoveConfigFieldBestEffortKtavSucceedsQuicklyWhenLockFree(t *testing.T
 		configTestHooks.Unlock()
 	})
 
-	store.removeConfigFieldBestEffort(ScopeGlobal, key)
+	store.RemoveConfigFieldBestEffort(ScopeGlobal, key)
 	require.Equal(t, 1, attempts, "lock-free removal must make one acquisition call")
 	lockPath := normalizeReloadPath(configWriteLockAnchor(configPath)) + ".lock"
 	require.Equal(t, lockPath, <-entered)

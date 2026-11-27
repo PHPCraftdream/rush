@@ -42,9 +42,9 @@ func TestTask1292Legacy_SlotWaitCancellationAndBudget(t *testing.T) {
 				leader := task1292Start(t, f.store, f.used)
 				awaitCodexSignal(t, entered)
 				if bounded {
-					old := codexRefreshLockWait
-					codexRefreshLockWait = 50 * time.Millisecond
-					t.Cleanup(func() { codexRefreshLockWait = old })
+					old := *codexRefreshLockWait
+					*codexRefreshLockWait = 50 * time.Millisecond
+					t.Cleanup(func() { *codexRefreshLockWait = old })
 					joinOAuthJournalTestStoresBeforeRestore(t)
 				}
 				ctx, cancel := context.WithCancel(context.Background())
@@ -63,7 +63,7 @@ func TestTask1292Legacy_SlotWaitCancellationAndBudget(t *testing.T) {
 					want = context.Canceled
 				}
 				require.ErrorIs(t, awaitCodexResult(t, result), want)
-				busy := f.store.oauthCredStore().CodexRefreshActiveForTest(id)
+				busy := f.store.OAuthCredStore().CodexRefreshActiveForTest(id)
 				require.True(t, busy, "canceled waiter must not release leader's slot")
 				close(release)
 				require.NoError(t, awaitCodexResult(t, leader))

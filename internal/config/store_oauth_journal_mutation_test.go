@@ -24,5 +24,5 @@ func TestOAuthJournal_ReturnRetainsPendingBeforeWorker(t *testing.T) {
 	assertCodexPending(t, f, true)
 	require.NoError(t, f.store.ReloadFromDisk(context.Background()))
 	assertCodexRefreshTokens(t, f, f.next, f.used.OAuthToken)
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 }

@@ -184,7 +184,7 @@ func TestOAuthKtavStaleCredentialCASRefusalOnKtavConfig(t *testing.T) {
 		ExpiresAt:    time.Now().Add(2 * time.Hour).Unix(),
 		AccountID:    "stale-account",
 	}
-	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	committed, err := store.SetOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.False(t, committed)
 	require.NoError(t, err, "a lost CAS race is a clean refusal, not an error")
 	raw, err := os.ReadFile(configPath)
@@ -193,7 +193,7 @@ func TestOAuthKtavStaleCredentialCASRefusalOnKtavConfig(t *testing.T) {
 
 	// Positive control: with the CURRENT token every guard passes, so the
 	// refusal above can only have come from expected-vs-disk comparison.
-	committed2, err2 := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", &tokenB, tokenC)
+	committed2, err2 := store.SetOAuthTokenIfCurrent(ScopeGlobal, "p1", &tokenB, tokenC)
 	require.NoError(t, err2)
 	require.True(t, committed2)
 	jsonBytes := decodeKtavFixtureJSON(t, configPath)
@@ -274,9 +274,9 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 	}}
 
 	// Real exchange decoding; global seams require serial tests.
-	originalRefresh := codexRefreshTokenFn
-	codexRefreshTokenFn = codex.Refresh
-	t.Cleanup(func() { codexRefreshTokenFn = originalRefresh })
+	originalRefresh := *codexRefreshTokenFn
+	*codexRefreshTokenFn = codex.Refresh
+	t.Cleanup(func() { *codexRefreshTokenFn = originalRefresh })
 	serialized := make(chan struct{}, 2)
 	restoreWaiter := oauthcred.SetCodexRefreshWaiterHookForTest(func() {
 		select {
@@ -350,7 +350,7 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 	waitOAuthJournalIdle(t, idle)
 	require.Equal(t, int32(1), exchanges.Load(), "a single-use token must be exchanged exactly once")
 	for _, store := range stores {
-		current, ok := store.loadSnapshot().config.Providers.Get("openai-codex")
+		current, ok := (*store.LoadSnapshot().SnapConfig()).Providers.Get("openai-codex")
 		require.True(t, ok)
 		require.NotNil(t, current.OAuthToken)
 		require.Equal(t, "single-use-new-access", current.OAuthToken.AccessToken)
@@ -359,7 +359,7 @@ func TestOAuthKtavTwoStoreRefreshRotationOnSingleKtavFile(t *testing.T) {
 		require.False(t, current.OAuthToken.IsExpired())
 		require.Empty(t, current.APIKey)
 	}
-	diskToken, err := stores[0].oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "openai-codex")
+	diskToken, err := stores[0].OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "openai-codex")
 	require.NoError(t, err)
 	require.NotNil(t, diskToken)
 	require.Equal(t, "single-use-new-access", diskToken.AccessToken)
@@ -501,7 +501,7 @@ func TestOAuthKtavCASResolvesActiveSlotFromLegacyPath(t *testing.T) {
 		ExpiresAt:    time.Now().Add(2 * time.Hour).Unix(),
 		AccountID:    "slot-account",
 	}
-	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	committed, err := store.SetOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.NoError(t, err)
 	require.True(t, committed)
 	jsonBytes := decodeKtavFixtureJSON(t, ktavPath)
@@ -532,7 +532,7 @@ func TestOAuthKtavCASBackupOnlySlotFailsClosed(t *testing.T) {
 	trackOAuthJournalTestStore(t, store)
 	tokenC := &oauth.Token{AccessToken: "backup-only-new-access", ExpiresAt: time.Now().Add(2 * time.Hour).Unix()}
 
-	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	committed, err := store.SetOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.ErrorIs(t, err, errKtavBackupOnly)
 	require.False(t, committed)
 	_, statErr := os.Stat(legacyPath)
@@ -566,15 +566,15 @@ func TestOAuthKtavCorruptConfigAbortsCASAndDiskReads(t *testing.T) {
 	trackOAuthJournalTestStore(t, store)
 	tokenC := &oauth.Token{AccessToken: "corrupt-new-access", ExpiresAt: time.Now().Add(2 * time.Hour).Unix()}
 
-	committed, err := store.setOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
+	committed, err := store.SetOAuthTokenIfCurrent(ScopeGlobal, "p1", tokenA, tokenC)
 	require.Error(t, err, "an undecodable document must abort the write")
 	require.False(t, committed)
-	require.False(t, errors.Is(err, store.oauthCredStore().ErrCredentialCAS()), "a decode failure is not a CAS refusal")
+	require.False(t, errors.Is(err, store.OAuthCredStore().ErrCredentialCAS()), "a decode failure is not a CAS refusal")
 	rawAfter, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	require.Equal(t, corrupt, rawAfter)
 
-	_, err = store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "p1")
+	_, err = store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, "p1")
 	require.Error(t, err, "a corrupt document must never read as an empty config")
 	_, err = readOAuthJournalDiskToken(configPath, "p1")
 	require.ErrorIs(t, err, errOAuthJournalDisk)

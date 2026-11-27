@@ -55,7 +55,7 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 			t.Cleanup(func() {
 				failing.Store(false)
 				<-done
-				f.store.stopOAuthJournalWorkers()
+				f.store.StopOAuthJournalWorkers()
 				oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalRetryWait, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldWait, oldBudget
 			})
 			go func() {
@@ -101,15 +101,15 @@ func TestOAuthJournalOutbox_PermanentWriteFailureReturns(t *testing.T) {
 			assert.Equal(t, f.next, pc.OAuthToken)
 			_, err := os.Stat(journalPath)
 			assert.True(t, os.IsNotExist(err))
-			entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+			entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 			require.NotNil(t, entry)
 			assert.Equal(t, f.next, entry.Record.Token)
 			cancel()
-			assert.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+			assert.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 			lock, lockErr := filelock.TryAcquireFileLock(oauthRefreshLockPath(f.path, f.used.ID))
 			require.NoError(t, lockErr)
 			require.NoError(t, releaseConfigFileLock(oauthRefreshLockPath(f.path, f.used.ID), lock))
-			active := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
+			active := f.store.OAuthCredStore().CodexRefreshActiveForTest(f.used.ID)
 			assert.False(t, active)
 			require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 			require.NoError(t, f.store.ReloadFromDisk(context.Background()))
@@ -156,33 +156,33 @@ func TestOAuthJournalOutbox_WorkerRepairAndSameUsedRotation(t *testing.T) {
 	usedB.OAuthToken = f.next
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, usedB, nil))
 	assert.Equal(t, 2, calls)
-	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+	entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 	require.NotNil(t, entry)
 	assert.Equal(t, &c, entry.Record.Token)
 	require.NoError(t, f.store.ReloadFromDisk(context.Background()))
 	pc, ok := f.store.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
 	assert.Equal(t, &c, pc.OAuthToken)
-	oldPersist := codexRefreshBeforePersist
-	codexRefreshBeforePersist = func(context.Context, int) error {
+	oldPersist := *codexRefreshBeforePersist
+	*codexRefreshBeforePersist = func(context.Context, int) error {
 		record, err := readOAuthJournal(oauthJournalPath(f.path, f.used.ID))
 		assert.NoError(t, err)
 		require.NotNil(t, record)
 		assert.Equal(t, &c, record.Token)
 		return nil
 	}
-	t.Cleanup(func() { codexRefreshBeforePersist = oldPersist })
+	t.Cleanup(func() { *codexRefreshBeforePersist = oldPersist })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	failing.Store(false)
 	// The existing fixture worker stays blocked; direct attempts use real files.
 	for attempt := range 3 {
-		done, err := f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, attempt)
+		done, err := f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, attempt)
 		require.NoError(t, err)
 		if done {
 			break
 		}
 	}
-	assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+	assert.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 	assertCodexRefreshTokens(t, f, &c, &c)
 	_, err := os.Stat(oauthJournalPath(f.path, f.used.ID))
 	assert.True(t, os.IsNotExist(err))
@@ -218,8 +218,8 @@ func TestOAuthJournalOutbox_ActualWorkerRepair(t *testing.T) {
 		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget, oauthjournal.OAuthJournalWorkerWait = oldWrite, oldBudget, oldWait
 	})
 	joinOAuthJournalTestStoresBeforeRestore(t)
-	oldPersist := codexRefreshBeforePersist
-	codexRefreshBeforePersist = func(context.Context, int) error {
+	oldPersist := *codexRefreshBeforePersist
+	*codexRefreshBeforePersist = func(context.Context, int) error {
 		record, err := readOAuthJournal(oauthJournalPath(f.path, f.used.ID))
 		assert.NoError(t, err)
 		if assert.NotNil(t, record) {
@@ -227,19 +227,19 @@ func TestOAuthJournalOutbox_ActualWorkerRepair(t *testing.T) {
 		}
 		return nil
 	}
-	t.Cleanup(func() { codexRefreshBeforePersist = oldPersist })
+	t.Cleanup(func() { *codexRefreshBeforePersist = oldPersist })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 	idle := hookOAuthJournalIdle(t, f.store)
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(ctx, ScopeGlobal, f.used, nil))
 	cancel()
 	awaitCodexSignal(t, waiting)
-	require.NotNil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+	require.NotNil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 	failing.Store(false)
 	close(resume)
 	waitOAuthJournalIdle(t, idle)
-	f.store.stopOAuthJournalWorkers()
-	assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+	f.store.StopOAuthJournalWorkers()
+	assert.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 	assertCodexRefreshTokens(t, f, f.next, f.next)
 }
 
@@ -264,7 +264,7 @@ func TestOAuthJournalOutbox_ExternalConfigArbitration(t *testing.T) {
 			joinOAuthJournalTestStoresBeforeRestore(t)
 			stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { return f.next, nil })
 			require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
-			entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+			entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 			require.NotNil(t, entry)
 			external := *f.next
 			external.AccessToken, external.RefreshToken = "fixture-external-access", "fixture-external-refresh"
@@ -295,23 +295,23 @@ func TestOAuthJournalOutbox_ExternalConfigArbitration(t *testing.T) {
 				configTestHooks.Unlock()
 				t.Cleanup(func() { configTestHooks.Lock(); configTestHooks.syncParent = oldSync; configTestHooks.Unlock() })
 				joinOAuthJournalTestStoresBeforeRestore(t)
-				done, err := f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
+				done, err := f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
 				assert.False(t, done)
 				assert.Error(t, err)
-				assert.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+				assert.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 				configTestHooks.Lock()
 				configTestHooks.syncParent = oldSync
 				configTestHooks.Unlock()
 			}
 			failing.Store(false)
 			for attempt := range 3 {
-				done, err := f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, attempt)
+				done, err := f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, attempt)
 				require.NoError(t, err)
 				if done {
 					break
 				}
 			}
-			assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+			assert.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 			want := disk
 			if name == "earlier" {
 				want = f.next
@@ -335,8 +335,8 @@ func TestOAuthJournalOutbox_ExternalJournalArbitration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newOAuthJournalRefreshRecoveryFixture(t)
 			record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(f.used.OAuthToken), Token: f.next}
-			entry := f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
+			entry := f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+			require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, f.next, f.used.OAuthToken, true))
 			external := *f.next
 			external.AccessToken, external.RefreshToken = "fixture-external-access", "fixture-external-refresh"
 			if name == "later" {
@@ -350,21 +350,21 @@ func TestOAuthJournalOutbox_ExternalJournalArbitration(t *testing.T) {
 			configTestHooks.Unlock()
 			t.Cleanup(func() { configTestHooks.Lock(); configTestHooks.syncParent = oldSync; configTestHooks.Unlock() })
 			joinOAuthJournalTestStoresBeforeRestore(t)
-			done, err := f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
+			done, err := f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, 0)
 			assert.False(t, done)
 			assert.Error(t, err)
-			assert.Same(t, entry, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+			assert.Same(t, entry, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 			configTestHooks.Lock()
 			configTestHooks.syncParent = oldSync
 			configTestHooks.Unlock()
 			for attempt := range 3 {
-				done, err = f.store.oauthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, attempt)
+				done, err = f.store.OAuthJournalWorkerAttempt(context.Background(), ScopeGlobal, f.used.ID, attempt)
 				require.NoError(t, err)
 				if done {
 					break
 				}
 			}
-			assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
+			assert.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
 			assertCodexRefreshTokens(t, f, &external, &external)
 		})
 	}

@@ -1,17 +1,17 @@
 // REVERT-CHECKS (orchestrator runs the mutants); one line per test.
 // TestModelsIntegrity_SignsModelsWrite -> deleting the touchesModelsKey(keys) block in SetConfigFields (store_write.go:376).
 // TestModelsIntegrity_NonModelsWritesLeaveSignature -> making applyModelsIntegrity unconditional in SetConfigFields (store_write.go:376): the signature is recomputed over the TAMPERED models during the housekeeping writes, so the cache_rev byte-identity assertions fail.
-// TestModelsIntegrity_DirectEditMismatch -> weakening the comparison in verifyModelsIntegrityAtLoad (settings_models_integrity.go).
-// TestModelsIntegrity_BogusSignatureMismatch -> replacing the mismatch comparison at the top of verifyModelsIntegrityAtLoad with unconditional acceptance (settings_models_integrity.go).
-// TestModelsIntegrity_PresentInvalidSignatureMismatch -> reverting the gjson Result check back to the `.String() == ""` collapse in verifyModelsIntegrityAtLoad (settings_models_integrity.go:143-152).
+// TestModelsIntegrity_DirectEditMismatch -> weakening the comparison in VerifyModelsIntegrityAtLoad (settings_models_integrity.go).
+// TestModelsIntegrity_BogusSignatureMismatch -> replacing the mismatch comparison at the top of VerifyModelsIntegrityAtLoad with unconditional acceptance (settings_models_integrity.go).
+// TestModelsIntegrity_PresentInvalidSignatureMismatch -> reverting the gjson Result check back to the `.String() == ""` collapse in VerifyModelsIntegrityAtLoad (settings_models_integrity.go:143-152).
 // TestModelsIntegrity_WhitespaceReformatStillOK -> canonicalizing with raw bytes instead of UseNumber decode+marshal (settings_models_integrity.go:58).
 // TestModelsIntegrity_MissingKeyAcceptedWithoutLock -> dropping the `!rev.Exists()` acceptance branch (settings_models_integrity.go:145).
 // TestModelsIntegrity_MissingKeyWithLockMismatch -> removing the anySettingsLockExists call (settings_models_integrity.go:148) or its fail-closed read-error handling.
 // TestModelsIntegrity_LockSettingsSigns -> removing applyModelsIntegrity from LockSettings (settings_lock.go:306).
 // TestModelsIntegrity_RemoveModelsRemovesKey -> removing the models branch in removeConfigFieldAt (store_write.go:537).
-// TestModelsIntegrity_ReloadDoesNotReVerify -> calling verifyModelsIntegrityAtLoad from reloadFromDiskLocked (store_reload.go).
+// TestModelsIntegrity_ReloadDoesNotReVerify -> calling VerifyModelsIntegrityAtLoad from reloadFromDiskLocked (store_reload.go).
 // TestModelsIntegrity_ErrorTextAndOutputsRedacted -> rewording ErrModelsEditedDirectly or un-redacting the Warn (settings_models_integrity.go:23/166).
-// TestModelsIntegrity_WorkspaceVerifiedSeparately -> dropping workspacePath from the file loop in verifyModelsIntegrityAtLoad (settings_models_integrity.go:123).
+// TestModelsIntegrity_WorkspaceVerifiedSeparately -> dropping workspacePath from the file loop in VerifyModelsIntegrityAtLoad (settings_models_integrity.go:123).
 // TestModelsIntegrity_MismatchNeverBlocksLoadOrWrites -> returning ErrModelsEditedDirectly from Load (load.go:278/294).
 // TestModelsIntegrity_CanonicalForms -> breaking canonicalModelsJSON (absent/empty detection, UseNumber).
 package config
@@ -112,7 +112,7 @@ func TestModelsIntegrity_SignsModelsWrite(t *testing.T) {
 	dir := integrityIsolate(t)
 	p := filepath.Join(dir, "global.json")
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: p})
-	s.workingDir = dir
+	(*s.WorkingDirForTest()) = dir
 	require.NoError(t, s.SetConfigField(ScopeGlobal, "models.smart", SelectedModel{Provider: "p", Model: "m"}))
 	data := fileBytes(t, p)
 	require.Equal(t, expectedRevFor(t, data), gjson.GetBytes(data, "cache_rev").String())
@@ -152,11 +152,11 @@ func TestModelsIntegrity_NonModelsWritesLeaveSignature(t *testing.T) {
 	stale := gjson.GetBytes(fileBytes(t, globalPath), "cache_rev").String()
 	require.NotEmpty(t, stale)
 
-	orig := hyperExchangeTokenFn
-	hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
+	orig := *hyperExchangeTokenFn
+	*hyperExchangeTokenFn = func(context.Context, *http.Client, string) (*oauth.Token, error) {
 		return &oauth.Token{AccessToken: "fresh", RefreshToken: "fresh-r", ExpiresIn: 7200, ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
 	}
-	t.Cleanup(func() { hyperExchangeTokenFn = orig })
+	t.Cleanup(func() { *hyperExchangeTokenFn = orig })
 
 	for name, write := range map[string]func() error{
 		"recent_models": func() error {
@@ -302,8 +302,8 @@ func TestModelsIntegrity_MissingKeyWithLockMismatch(t *testing.T) {
 		// anySettingsLockExists must treat a read error as "lock exists".
 		require.NoError(t, os.MkdirAll(GlobalConfigData(), 0o755))
 		s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: filepath.Join(t.TempDir(), "global.json")})
-		s.workingDir = t.TempDir()
-		require.True(t, s.anySettingsLockExists())
+		(*s.WorkingDirForTest()) = t.TempDir()
+		require.True(t, s.AnySettingsLockExists())
 	})
 }
 
@@ -391,7 +391,7 @@ func TestModelsIntegrity_RemoveModelsRemovesKey(t *testing.T) {
 	dir := integrityIsolate(t)
 	p := filepath.Join(dir, "global.json")
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: p})
-	s.workingDir = dir
+	(*s.WorkingDirForTest()) = dir
 	require.NoError(t, s.SetConfigField(ScopeGlobal, "models.smart", SelectedModel{Provider: "p", Model: "m"}))
 	require.True(t, gjson.GetBytes(fileBytes(t, p), "cache_rev").Exists())
 
@@ -458,7 +458,7 @@ func TestModelsIntegrity_ErrorTextAndOutputsRedacted(t *testing.T) {
 	dir := integrityIsolate(t)
 	p := filepath.Join(dir, "global.json")
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: p})
-	s.workingDir = dir
+	(*s.WorkingDirForTest()) = dir
 	var captured SettingsEvent
 	SetSettingsAuditSink(func(event SettingsEvent) { captured = event })
 	t.Cleanup(func() { SetSettingsAuditSink(nil) })
@@ -611,18 +611,18 @@ func ktavIntegrityWrite(t *testing.T, path, jsonDoc string) []byte {
 }
 
 // ktavIntegrityStore returns a store whose global file is the .ktav document
-// at path, ready for verifyModelsIntegrityAtLoad.
+// at path, ready for VerifyModelsIntegrityAtLoad.
 func ktavIntegrityStore(t *testing.T, path string) *ConfigStore {
 	t.Helper()
 	s := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: path})
-	s.workingDir = t.TempDir()
+	(*s.WorkingDirForTest()) = t.TempDir()
 	return s
 }
 
 // TestModelsIntegrityKtav_ValidSignaturePasses pins that a valid signature
 // computed over the canonical models verifies against a .ktav document,
 // through both modelsIntegrityOf (on the decoded bytes) and the real
-// verifyModelsIntegrityAtLoad path.
+// VerifyModelsIntegrityAtLoad path.
 func TestModelsIntegrityKtav_ValidSignaturePasses(t *testing.T) {
 	integrityIsolate(t)
 	ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
@@ -635,7 +635,7 @@ func TestModelsIntegrityKtav_ValidSignaturePasses(t *testing.T) {
 	require.NoError(t, modelsIntegrityOf(decoded, true), "a valid signature passes locked or not")
 
 	s := ktavIntegrityStore(t, ktavPath)
-	s.verifyModelsIntegrityAtLoad()
+	s.VerifyModelsIntegrityAtLoad()
 	require.NoError(t, s.ModelsIntegrity())
 }
 
@@ -651,7 +651,7 @@ func TestModelsIntegrityKtav_MissingSignatureFollowsJSONRule(t *testing.T) {
 		decoded := ktavIntegrityWrite(t, ktavPath, integrityModelsFixture(t, ktavPath, models))
 		require.NoError(t, modelsIntegrityOf(decoded, false))
 		s := ktavIntegrityStore(t, ktavPath)
-		s.verifyModelsIntegrityAtLoad()
+		s.VerifyModelsIntegrityAtLoad()
 		require.NoError(t, s.ModelsIntegrity())
 	})
 
@@ -663,7 +663,7 @@ func TestModelsIntegrityKtav_MissingSignatureFollowsJSONRule(t *testing.T) {
 		decoded := ktavIntegrityWrite(t, ktavPath, locked)
 		require.ErrorIs(t, modelsIntegrityOf(decoded, true), ErrModelsEditedDirectly)
 		s := ktavIntegrityStore(t, ktavPath)
-		s.verifyModelsIntegrityAtLoad()
+		s.VerifyModelsIntegrityAtLoad()
 		require.ErrorIs(t, s.ModelsIntegrity(), ErrModelsEditedDirectly)
 	})
 }
@@ -682,7 +682,7 @@ func TestModelsIntegrityKtav_InvalidSignatureFails(t *testing.T) {
 		decoded := ktavIntegrityWrite(t, ktavPath, bogus)
 		require.ErrorIs(t, modelsIntegrityOf(decoded, false), ErrModelsEditedDirectly)
 		s := ktavIntegrityStore(t, ktavPath)
-		s.verifyModelsIntegrityAtLoad()
+		s.VerifyModelsIntegrityAtLoad()
 		require.ErrorIs(t, s.ModelsIntegrity(), ErrModelsEditedDirectly)
 	})
 
@@ -699,7 +699,7 @@ func TestModelsIntegrityKtav_InvalidSignatureFails(t *testing.T) {
 		ktavPath := filepath.Join(t.TempDir(), "rush.ktav")
 		require.NoError(t, os.WriteFile(ktavPath, []byte("k: not a ktav document\nk: not a ktav document\n"), 0o600))
 		s := ktavIntegrityStore(t, ktavPath)
-		s.verifyModelsIntegrityAtLoad()
+		s.VerifyModelsIntegrityAtLoad()
 		require.ErrorIs(t, s.ModelsIntegrity(), ErrModelsEditedDirectly)
 	})
 }

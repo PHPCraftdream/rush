@@ -67,13 +67,13 @@ func TestPersistentMCPMutationPropagatesResolverDynamicMarker(t *testing.T) {
 		Type: MCPHttp,
 		URL:  "http://static.example",
 	}))
-	require.False(t, store.loadSnapshot().resolverDynamic)
+	require.False(t, (*store.LoadSnapshot().SnapResolverDynamic()))
 	require.NoError(t, store.PersistMCPFieldsExact(ScopeGlobal, name, map[string]any{
 		"headers": map[string]string{"X-Token": "$(printf token)"},
 	}))
-	require.True(t, store.loadSnapshot().resolverDynamic)
+	require.True(t, (*store.LoadSnapshot().SnapResolverDynamic()))
 	require.NoError(t, store.PersistRemoveMCPConfigExact(ScopeGlobal, name))
-	require.False(t, store.loadSnapshot().resolverDynamic)
+	require.False(t, (*store.LoadSnapshot().SnapResolverDynamic()))
 }
 
 func TestConfigStoreMCPMutatorsPublishDetachedSnapshots(t *testing.T) {
@@ -146,7 +146,7 @@ func TestMCPRevisionsTrackGenericCOWPerName(t *testing.T) {
 	initialChanged := store.SnapshotMCPAdmission(changed).MCPRevision
 	initialUnrelated := store.SnapshotMCPAdmission(unrelated).MCPRevision
 
-	store.updateConfig(func(cfg *Config) {
+	store.UpdateConfig(func(cfg *Config) {
 		cfg.MCP = maps.Clone(cfg.MCP)
 		cfg.MCP[changed] = MCPConfig{Type: MCPStdio, Command: "new"}
 	})

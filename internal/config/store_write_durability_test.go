@@ -36,8 +36,8 @@ func TestSetConfigFieldsParentSyncFailureReconcilesAndReturnsUncertainty(t *test
 		config:         &Config{Options: &Options{}},
 		globalDataPath: path,
 	})
-	store.workingDir = root
-	store.captureStalenessSnapshot([]string{path})
+	(*store.WorkingDirForTest()) = root
+	store.CaptureStalenessSnapshot([]string{path})
 	parentSyncErr := errors.New("injected parent fsync failure")
 	configTestHooks.Lock()
 	previous := configTestHooks.syncParent
@@ -55,7 +55,7 @@ func TestSetConfigFieldsParentSyncFailureReconcilesAndReturnsUncertainty(t *test
 	require.False(t, store.ConfigStaleness().Dirty)
 	_, fingerprint, readErr := readStableConfigFile(path)
 	require.NoError(t, readErr)
-	require.Equal(t, fingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(path)].Fingerprint())
+	require.Equal(t, fingerprint, (*store.LoadSnapshot().SnapSnapshots())[normalizeDiscoveryPath(path)].Fingerprint())
 }
 
 func TestRemoveConfigFieldParentSyncFailureReconcilesAndReturnsUncertainty(t *testing.T) {
@@ -66,8 +66,8 @@ func TestRemoveConfigFieldParentSyncFailureReconcilesAndReturnsUncertainty(t *te
 		config:         &Config{Options: &Options{}},
 		globalDataPath: path,
 	})
-	store.workingDir = root
-	store.captureStalenessSnapshot([]string{path})
+	(*store.WorkingDirForTest()) = root
+	store.CaptureStalenessSnapshot([]string{path})
 	parentSyncErr := errors.New("injected parent fsync failure")
 	configTestHooks.Lock()
 	previous := configTestHooks.syncParent
@@ -85,5 +85,5 @@ func TestRemoveConfigFieldParentSyncFailureReconcilesAndReturnsUncertainty(t *te
 	require.False(t, store.ConfigStaleness().Dirty)
 	_, fingerprint, readErr := readStableConfigFile(path)
 	require.NoError(t, readErr)
-	require.Equal(t, fingerprint, store.loadSnapshot().snapshots[normalizeDiscoveryPath(path)].Fingerprint())
+	require.Equal(t, fingerprint, (*store.LoadSnapshot().SnapSnapshots())[normalizeDiscoveryPath(path)].Fingerprint())
 }

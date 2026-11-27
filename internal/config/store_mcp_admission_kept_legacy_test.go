@@ -33,10 +33,10 @@ func keptLegacySiblingStore(t *testing.T) (*ConfigStore, string) {
 	require.FileExists(t, ktavPath, "precondition: migration publishes the Ktav generation")
 	require.FileExists(t, legacyPath, "precondition: migration keeps the legacy JSON beside it")
 	tracked := normalizeDiscoveryPath(legacyPath)
-	snap := store.loadSnapshot()
-	require.Contains(t, snap.trackedConfigPaths, tracked,
+	snap := store.LoadSnapshot()
+	require.Contains(t, *snap.SnapTrackedConfigPaths(), tracked,
 		"precondition: the kept legacy sibling must be a tracked path")
-	require.True(t, snap.snapshots[tracked].Exists,
+	require.True(t, (*snap.SnapSnapshots())[tracked].Exists,
 		"precondition: the kept legacy sibling must be recorded as existing")
 	return store, legacyPath
 }

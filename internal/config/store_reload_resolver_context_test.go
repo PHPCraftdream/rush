@@ -25,7 +25,7 @@ func TestReloadFromDisk_PublishedResolverOutlivesReloadContext(t *testing.T) {
 
 	store, err := Load(root, root, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,7 +52,7 @@ func TestReloadFromDisk_CancelAbortsCandidateSubstitution(t *testing.T) {
 
 	store, err := Load(root, root, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 	before := store.Config()
 
@@ -72,7 +72,7 @@ func TestReloadFromDisk_CancelAbortsCandidateSubstitution(t *testing.T) {
 	t.Cleanup(cancel)
 	entered := make(chan struct{})
 	var enteredOnce sync.Once
-	store.reloadResolverExpander = func(expandCtx context.Context, value string, _ []string) (string, error) {
+	*store.ReloadResolverExpanderForTest() = func(expandCtx context.Context, value string, _ []string) (string, error) {
 		if value != "$(candidate-value)" {
 			return value, nil
 		}

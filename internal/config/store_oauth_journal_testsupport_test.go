@@ -26,7 +26,7 @@ func trackOAuthJournalTestStore(t *testing.T, store *ConfigStore) {
 		if value, ok := oauthJournalTestStores.Load(t); ok {
 			for _, current := range value.([]*ConfigStore) {
 				if current == store {
-					store.stopOAuthJournalWorkers()
+					store.StopOAuthJournalWorkers()
 					return
 				}
 			}
@@ -53,7 +53,7 @@ func joinOAuthJournalTestStoresBeforeRestore(t *testing.T) {
 	t.Cleanup(func() {
 		if value, ok := oauthJournalTestStores.Load(t); ok {
 			for _, store := range value.([]*ConfigStore) {
-				store.stopOAuthJournalWorkers()
+				store.StopOAuthJournalWorkers()
 			}
 		}
 	})
@@ -62,8 +62,8 @@ func joinOAuthJournalTestStoresBeforeRestore(t *testing.T) {
 func hookOAuthJournalIdle(t *testing.T, store *ConfigStore) <-chan struct{} {
 	t.Helper()
 	done := make(chan struct{}, 32)
-	old := oauthJournalWorkerIdle
-	oauthJournalWorkerIdle = func(current *ConfigStore, _ string) {
+	old := *oauthJournalWorkerIdle
+	*oauthJournalWorkerIdle = func(current *ConfigStore, _ string) {
 		if current == store {
 			select {
 			case done <- struct{}{}:
@@ -71,7 +71,7 @@ func hookOAuthJournalIdle(t *testing.T, store *ConfigStore) <-chan struct{} {
 			}
 		}
 	}
-	t.Cleanup(func() { oauthJournalWorkerIdle = old })
+	t.Cleanup(func() { *oauthJournalWorkerIdle = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	return done
 }

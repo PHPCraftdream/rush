@@ -26,7 +26,7 @@ func recoverOAuthJournalFixture(t *testing.T, f codexRefreshFixture) (*oauth.Tok
 	lock, err := acquireConfigFileLock(context.Background(), path)
 	require.NoError(t, err)
 	defer releaseConfigFileLock(path, lock)
-	return f.store.recoverCodexOAuthJournal(context.Background(), ScopeGlobal, f.used.ID)
+	return f.store.RecoverCodexOAuthJournal(context.Background(), ScopeGlobal, f.used.ID)
 }
 
 // Revert-check: restart arbitration must respect predecessor, expiry ties, and logout.
@@ -77,7 +77,7 @@ func TestOAuthJournal_RecoveryRules(t *testing.T) {
 			require.NotNil(t, record)
 			assertCodexRefreshTokens(t, f, f.next, disk)
 			idle := hookOAuthJournalIdle(t, f.store)
-			f.store.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
+			f.store.StartOAuthJournalWorker(ScopeGlobal, f.used.ID)
 			waitOAuthJournalIdle(t, idle)
 			assertCodexRefreshTokens(t, f, f.next, f.next)
 		})
@@ -98,11 +98,11 @@ func TestOAuthJournal_CorruptConfigRestartThenRepair(t *testing.T) {
 	t.Cleanup(func() { oauthjournal.OAuthJournalBeforeWorker = oldBefore })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	requireOAuthJournalToken(t, f)
 
 	second := newTestConfigStore(testStoreOpts{config: f.store.Config(), globalDataPath: f.path})
-	second.workingDir = f.store.workingDir
+	(*second.WorkingDirForTest()) = (*f.store.WorkingDirForTest())
 	second.SetProviderRuntimeConfig(f.used.ID, f.used)
 	trackOAuthJournalTestStore(t, second)
 	g := f
@@ -115,11 +115,11 @@ func TestOAuthJournal_CorruptConfigRestartThenRepair(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, f.next, pc.OAuthToken)
 	requireOAuthJournalToken(t, g)
-	second.stopOAuthJournalWorkers()
+	second.StopOAuthJournalWorkers()
 	require.NoError(t, os.WriteFile(f.path, original, 0o600))
 
 	third := newTestConfigStore(testStoreOpts{config: second.Config(), globalDataPath: f.path})
-	third.workingDir = second.workingDir
+	(*third.WorkingDirForTest()) = (*second.WorkingDirForTest())
 	trackOAuthJournalTestStore(t, third)
 	g.store = third
 	oauthjournal.OAuthJournalBeforeWorker = nil
@@ -127,7 +127,7 @@ func TestOAuthJournal_CorruptConfigRestartThenRepair(t *testing.T) {
 	_, record, err := recoverOAuthJournalFixture(t, g)
 	require.NoError(t, err)
 	require.NotNil(t, record)
-	third.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
+	third.StartOAuthJournalWorker(ScopeGlobal, f.used.ID)
 	waitOAuthJournalIdle(t, idle)
 	assertCodexRefreshTokens(t, g, f.next, f.next)
 }
@@ -138,10 +138,10 @@ func TestOAuthJournal_LoadRecoversAfterRepair(t *testing.T) {
 	writeOAuthJournalFixture(t, f)
 	calls := 0
 	stubCodexRefresh(t, func(context.Context, *http.Client, string) (*oauth.Token, error) { calls++; return nil, nil })
-	loaded, err := Load(f.store.workingDir, "", false)
+	loaded, err := Load((*f.store.WorkingDirForTest()), "", false)
 	require.NoError(t, err)
 	trackOAuthJournalTestStore(t, loaded)
-	loaded.stopOAuthJournalWorkers()
+	loaded.StopOAuthJournalWorkers()
 	pc, ok := loaded.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
 	require.Equal(t, f.next, pc.OAuthToken)

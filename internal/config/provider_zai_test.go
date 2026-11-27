@@ -39,7 +39,7 @@ func TestConfigureProviders_ZAIAPIKeyPriority(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(envMap)
 
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.True(t, ok, "zai provider should be configured when ZAI_API_KEY is set")
@@ -64,7 +64,7 @@ func TestConfigureProviders_ZAIAPIKeyFallback(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(envMap)
 
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.True(t, ok, "zai provider should be configured via ZHIPU_API_KEY fallback")
@@ -82,7 +82,7 @@ func TestConfigureProviders_ZAIAPIKeyMissing(t *testing.T) {
 	envMap := env.NewFromMap(map[string]string{})
 	resolver := NewShellVariableResolver(envMap)
 
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	_, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.False(t, ok, "zai provider should be skipped when no API key is available")
@@ -105,7 +105,7 @@ func TestConfigureProviders_ZAIConfigAPIKeyWins(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(envMap)
 
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{zaiKnownProvider()}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.True(t, ok, "zai provider should be configured with an explicit api_key override")
@@ -136,7 +136,7 @@ func TestConfigureProviders_ZAIResolveErrorSkipsNoFallback(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(envMap)
 
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{prov}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{prov}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	_, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.False(t, ok, "zai provider must be skipped when its api_key errors, not silently fall back to ZHIPU_API_KEY")
@@ -156,7 +156,7 @@ func TestConfigureProviders_ZAISynthesizesGLM53WhenCatwalkLacksIt(t *testing.T) 
 	resolver := NewShellVariableResolver(envMap)
 
 	prov := zaiKnownProvider() // Models: [{ID: "glm-5", ...}] — no glm-5.3
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{prov}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{prov}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.True(t, ok)
@@ -216,7 +216,7 @@ func TestConfigureProviders_ZAIDoesNotDuplicateGLM53IfCatwalkAddsIt(t *testing.T
 		DefaultMaxTokens: 5000,
 	})
 
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{prov}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, []catwalk.Provider{prov}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	pc, ok := cfg.Providers.Get(string(catwalk.InferenceProviderZAI))
 	require.True(t, ok)

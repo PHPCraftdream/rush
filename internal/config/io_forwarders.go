@@ -4,6 +4,7 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/cfgcommit"
 	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 )
 
 // This file holds only rule-18 identity state, root-target converters, and
@@ -11,6 +12,10 @@ import (
 
 // io layer: cfgcommit.
 type CommitOutcome = cfgcommit.CommitOutcome
+
+// configWriteTarget is now owned by the cfgstore leaf; the root keeps the
+// historical spelling as an alias so hooks and forwarders keep compiling.
+type configWriteTarget = cfgstore.ConfigWriteTarget
 
 // io layer: cfgcommit (vars preserve single sentinel error identity).
 var (
@@ -26,14 +31,16 @@ var errConfigCommitVerification = fileid.ErrConfigCommitVerification()
 // configWriteTargetDedupKey converts the root configWriteTarget into the
 // cfgcommit target and delegates. io layer: cfgcommit.
 func configWriteTargetDedupKey(target configWriteTarget) string {
-	ct := cfgcommit.NewConfigWriteTarget(target.path, target.selectedPath, target.lockPath, target.expected, target.owner, target.enforce)
+	path, selectedPath, lockPath, expected, owner, enforce := target.ConfigWriteTargetFields()
+	ct := cfgcommit.NewConfigWriteTarget(path, selectedPath, lockPath, expected, owner, enforce)
 	return cfgcommit.ConfigWriteTargetDedupKey(ct)
 }
 
 // configWriteTargetDedupKeyWithCaseSensitivity converts the root
 // configWriteTarget and delegates. io layer: cfgcommit.
 func configWriteTargetDedupKeyWithCaseSensitivity(target configWriteTarget, sensitivity configCaseSensitivity) string {
-	ct := cfgcommit.NewConfigWriteTarget(target.path, target.selectedPath, target.lockPath, target.expected, target.owner, target.enforce)
+	path, selectedPath, lockPath, expected, owner, enforce := target.ConfigWriteTargetFields()
+	ct := cfgcommit.NewConfigWriteTarget(path, selectedPath, lockPath, expected, owner, enforce)
 	return cfgcommit.ConfigWriteTargetDedupKeyWithCaseSensitivity(ct, sensitivity)
 }
 

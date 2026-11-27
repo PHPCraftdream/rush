@@ -1,8 +1,8 @@
-// Model-slot preferences and related copy-on-write mutators: per-scope
-// reads of the models.* slots, persisted and runtime-only preferred-model
-// writes, the agent allowed-tools runtime override, and recent-model
-// bookkeeping.
-package config
+// Package cfgstore: the config store engine (snapshots, reload, disk sync,
+// MCP/OAuth write paths, settings staleness). Formed by a pure byte-preserving
+// merge of the original 16 leaf files; see docs/plans/2026-11-26-cfgstore-ledger.tsv.
+
+package cfgstore
 
 import (
 	"encoding/json"
@@ -11,7 +11,9 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	"github.com/PHPCraftdream/rush/internal/config/io/slots"
 )
 
@@ -255,4 +257,108 @@ func (s *ConfigStore) RemoveRecentModel(scope Scope, modelType SelectedModelType
 		return fmt.Errorf("failed to persist recent models: %w", err)
 	}
 	return nil
+}
+
+// anySettingsLockExists reports whether any settings lock file is present.
+// A read error counts as "lock exists" and fails closed. The check itself
+// lives in the settings component (settings.Store.AnyLockExists).
+// Moved verbatim from the root package's models_integrity.go.
+func (s *ConfigStore) anySettingsLockExists() bool {
+	return s.settings.AnyLockExists()
+}
+
+// verifyModelsIntegrityAtLoad performs the one-time startup check. It never
+// fails Load and never writes anything; it only records the result.
+// Moved verbatim from the root package's models_integrity.go.
+func (s *ConfigStore) verifyModelsIntegrityAtLoad() {
+	s.settings.VerifyModelsIntegrityAtLoad()
+}
+
+// ModelsIntegrity returns the one-time startup check result. It is computed
+// only during Load and never recomputed by reload.
+// Moved verbatim from the root package's models_integrity.go.
+func (s *ConfigStore) ModelsIntegrity() error {
+	return s.settings.ModelsIntegrity()
+}
+
+// configFieldRemoval is internal to typed atomic set-and-remove operations.
+type configFieldRemoval struct{}
+
+// CustomRoleUpdate changes a model without implicitly resetting its tool ceiling.
+type CustomRoleUpdate struct {
+	Model        SelectedModel
+	Tools        *[]string
+	InheritTools bool
+}
+
+func customRoleConfigKey(name string) string {
+	// The colon forces an object key even for a numeric role name.
+	return "roles.:" + strings.ReplaceAll(name, ".", `\.`)
+}
+
+func (s *ConfigStore) SetCustomRole(scope Scope, name string, update CustomRoleUpdate) error {
+	return s.SetCustomRoleWithAuthority(scope, name, update, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) SetCustomRoleWithAuthority(scope Scope, name string, update CustomRoleUpdate, authority SettingsWriteAuthority) error {
+	if err := ValidateCustomRoleName(name); err != nil {
+		return err
+	}
+	if update.Tools != nil && update.InheritTools {
+		return fmt.Errorf("tools and inherit-tools are mutually exclusive")
+	}
+	if err := (CustomRole{SelectedModel: update.Model, Tools: update.Tools}).Validate(); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(update.Model)
+	if err != nil {
+		return err
+	}
+	var profile map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &profile); err != nil {
+		return err
+	}
+	prefix := customRoleConfigKey(name)
+	fields := make(map[string]any)
+	for field, value := range profile {
+		fields[prefix+"."+field] = value
+	}
+	fields[prefix+".reasoning_effort"] = update.Model.ReasoningEffort
+	fields[prefix+".service_tier"] = update.Model.ServiceTier
+	fields[prefix+".think"] = update.Model.Think
+	if update.Tools != nil {
+		patterns := append([]string{}, (*update.Tools)...)
+		fields[prefix+".tools"] = patterns
+	} else if update.InheritTools {
+		fields[prefix+".tools"] = configFieldRemoval{}
+	}
+	return s.SetConfigFieldsWithAuthority(scope, fields, authority)
+}
+
+func (s *ConfigStore) RemoveCustomRole(scope Scope, name string) error {
+	return s.RemoveCustomRoleWithAuthority(scope, name, SettingsAuthorityGuarded)
+}
+
+func (s *ConfigStore) RemoveCustomRoleWithAuthority(scope Scope, name string, authority SettingsWriteAuthority) error {
+	if err := ValidateCustomRoleName(name); err != nil {
+		return err
+	}
+	return s.RemoveConfigFieldWithAuthority(scope, customRoleConfigKey(name), authority)
+}
+
+// CustomRolesForScope reads only the selected document, not the effective merge.
+func (s *ConfigStore) CustomRolesForScope(scope Scope) (map[string]CustomRole, error) {
+	path, err := s.configPath(scope)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := docread.ReadSettingsDocument(path)
+	if os.IsNotExist(err) {
+		return map[string]CustomRole{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_, roles, err := stripCustomRoleOverlays([][]byte{doc.JSONBytes})
+	return roles, err
 }

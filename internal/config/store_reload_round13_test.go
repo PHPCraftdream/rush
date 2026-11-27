@@ -41,7 +41,7 @@ func TestReloadFromDisk_FinalFingerprintReadDoesNotBlockRuntimePublication(t *te
 		configTestHooks.beforeOpen = previous
 		configTestHooks.Unlock()
 	})
-	store.reloadBeforeFinalInputCheck = func() {
+	*store.ReloadBeforeFinalInputCheckForTest() = func() {
 		finalCheckOnce.Do(func() { blockNextRead.Store(true) })
 	}
 
@@ -82,14 +82,14 @@ func TestReloadFromDisk_DiskWriteAfterVerificationFencesCandidate(t *testing.T) 
 	require.NoError(t, err)
 
 	writeDone := make(chan struct{})
-	store.reloadBeforePublish = func() {
-		store.reloadBeforePublish = nil
-		err := store.withConfigWriteLock(configPath, func(target configWriteTarget) error {
-			_, fingerprint, readErr := readStableConfigFileOwned(target.selectedPath, target.owner, target.enforce)
+	*store.ReloadBeforePublishForTest() = func() {
+		*store.ReloadBeforePublishForTest() = nil
+		err := store.WithConfigWriteLock(configPath, func(target configWriteTarget) error {
+			_, fingerprint, readErr := readStableConfigFileOwned(target.WTSelectedPath(), target.WTOwner(), target.WTEnforce())
 			if readErr != nil {
 				return readErr
 			}
-			_, commitErr := commitConfigFile(target.selectedPath, target.path, []byte(`{"options":{"debug":true}}`), 0o600, fingerprint, target.owner, target.enforce)
+			_, commitErr := commitConfigFile(target.WTSelectedPath(), target.WTPath(), []byte(`{"options":{"debug":true}}`), 0o600, fingerprint, target.WTOwner(), target.WTEnforce())
 			return commitErr
 		})
 		require.NoError(t, err)

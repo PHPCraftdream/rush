@@ -124,7 +124,7 @@ func TestModelMetadataGolden(t *testing.T) {
 			knownProviders[i].Models = []catwalk.Model{{ID: "glm-5", Name: "GLM-5", DefaultMaxTokens: 1000}}
 		}
 	}
-	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, knownProviders, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, envMap, resolver, knownProviders, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	got := renderModelMetadataGolden(cfg)
 	path := filepath.Join("testdata", "model_metadata_golden.txt")

@@ -30,7 +30,7 @@ func TestSupplementalCatalogModelLoadsForConfiguredAnthropic(t *testing.T) {
 		Models: []catwalk.Model{{ID: "claude-sonnet-4-6"}, predecessor},
 	}
 	e := env.NewFromMap(map[string]string{"ANTHROPIC_API_KEY": "test-key"})
-	require.NoError(t, configureProviders(context.Background(), cfg, e, NewShellVariableResolver(e), []catwalk.Provider{provider}, testStore(cfg).removeConfigFieldBestEffort, nil))
+	require.NoError(t, configureProviders(context.Background(), cfg, e, NewShellVariableResolver(e), []catwalk.Provider{provider}, testStore(cfg).RemoveConfigFieldBestEffort, nil))
 
 	loaded, ok := cfg.Providers.Get("anthropic")
 	require.True(t, ok)

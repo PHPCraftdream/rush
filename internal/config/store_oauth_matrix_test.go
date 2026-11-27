@@ -288,11 +288,11 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 		require.NoError(t, os.WriteFile(journal, []byte("{invalid-wal"), 0o600))
 	}
 	if c.owned {
-		f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+		f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
 		// Install-before-publication is reachable with live A.
-		f.store.publishMu.Lock()
-		f.store.oauthCredStore().RecordPendingOAuthLockedForTest(f.used.ID, tok.a, tok.b)
-		f.store.publishMu.Unlock()
+		f.store.PublishMuForTest().Lock()
+		f.store.OAuthCredStore().RecordPendingOAuthLockedForTest(f.used.ID, tok.a, tok.b)
+		f.store.PublishMuForTest().Unlock()
 	}
 	beforeConfig, err := os.ReadFile(f.path)
 	require.NoError(t, err)
@@ -369,7 +369,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 		gate(ctx)
 		return ctx.Err()
 	}
-	oauthJournalWorkerIdle = func(store *ConfigStore, _ string) {
+	*oauthJournalWorkerIdle = func(store *ConfigStore, _ string) {
 		if store == f.store {
 			select {
 			case idle <- struct{}{}:
@@ -383,7 +383,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	}
 	calls := make(chan exchangeCall, 4)
 	client := &http.Client{}
-	codexRefreshTokenFn = func(ctx context.Context, actual *http.Client, refresh string) (*oauth.Token, error) {
+	*codexRefreshTokenFn = func(ctx context.Context, actual *http.Client, refresh string) (*oauth.Token, error) {
 		select {
 		case calls <- exchangeCall{refresh, actual}:
 			return tok.d, nil
@@ -391,11 +391,11 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 			return nil, ctx.Err()
 		}
 	}
-	workerWatchdog := max(configWriteLockTimeout, codexRefreshLockWait) + 5*time.Second
+	workerWatchdog := max(configWriteLockTimeout, *codexRefreshLockWait) + 5*time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	result, callerDone := make(chan error, 1), make(chan struct{})
 	t.Cleanup(func() {
-		oauthMatrixCleanup(t, f.store, callerDone, f.store.stopOAuthJournalWorkers, workerWatchdog, cancel, restoreSeams, t.Fatalf)
+		oauthMatrixCleanup(t, f.store, callerDone, f.store.StopOAuthJournalWorkers, workerWatchdog, cancel, restoreSeams, t.Fatalf)
 	})
 	used := f.used
 	if c.used == "B" {
@@ -434,7 +434,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	if want.blockedIO {
 		assert.Error(t, refreshErr, "I2: journal I/O must be reported")
 	} else if want.staleCaller {
-		assert.ErrorIs(t, refreshErr, f.store.oauthCredStore().ErrCredentialCAS(), "I2: stale client must be rejected")
+		assert.ErrorIs(t, refreshErr, f.store.OAuthCredStore().ErrCredentialCAS(), "I2: stale client must be rejected")
 	} else if want.final != nil {
 		assert.NoError(t, refreshErr, "I2: intact owned lineage must not reject refresh or hide unexpected credential CAS")
 	}
@@ -452,7 +452,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	if c.config == "corrupt" {
 		writeOAuthMatrixDisk(t, f.path, tok.a)
 	}
-	f.store.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
+	f.store.StartOAuthJournalWorker(ScopeGlobal, f.used.ID)
 	settled := false
 	for range 6 {
 		select {
@@ -483,7 +483,7 @@ func runOAuthMatrixCase(t *testing.T, c oauthMatrixCase) {
 	} else {
 		assert.Equal(t, want.finalMemory, pc.OAuthToken, "I5: no owner cannot manufacture memory persistence")
 	}
-	assert.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID), "I5: outbox drained")
+	assert.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID), "I5: outbox drained")
 	_, err = os.Stat(journal)
 	assert.True(t, os.IsNotExist(err), "I5: active WAL removed")
 	assertOAuthMatrixData(t, f.path)
@@ -548,7 +548,7 @@ func assertOAuthMatrixPreserved(t *testing.T, c oauthMatrixCase, f codexRefreshF
 	if diskErr == nil && reflect.DeepEqual(disk, preserve) {
 		return
 	}
-	entry := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+	entry := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 	if entry != nil && reflect.DeepEqual(entry.Record.Token, preserve) {
 		return
 	}

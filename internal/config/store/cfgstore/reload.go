@@ -1,7 +1,8 @@
-// Disk reload: rebuilding the full config snapshot from the config files
-// (workspace merge, provider resolution, selected models), publishing it as
-// a new generation, and the autoReload dedup wrapper used after writes.
-package config
+// Package cfgstore: the config store engine (snapshots, reload, disk sync,
+// MCP/OAuth write paths, settings staleness). Formed by a pure byte-preserving
+// merge of the original 16 leaf files; see docs/plans/2026-11-26-cfgstore-ledger.tsv.
+
+package cfgstore
 
 import (
 	"context"
@@ -13,12 +14,22 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"charm.land/catwalk/pkg/catwalk"
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	"github.com/PHPCraftdream/rush/internal/config/io/fsx/fileid"
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	envresolve "github.com/PHPCraftdream/rush/internal/config/model/envresolve"
+	cfgmerge "github.com/PHPCraftdream/rush/internal/config/model/merge"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
 	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
+	"github.com/PHPCraftdream/rush/internal/config/store/settings"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -514,3 +525,291 @@ func (s *ConfigStore) autoReloadAfterWrite(ctx context.Context) error {
 		}
 	}
 }
+
+// StalenessResult contains the result of a staleness check.
+type StalenessResult struct {
+	Dirty   bool
+	Changed []string
+	Missing []string
+	Errors  map[string]error
+}
+
+// ConfigStaleness checks whether any tracked config files have changed on disk
+// since the last snapshot.
+func (s *ConfigStore) ConfigStaleness() StalenessResult {
+	var result StalenessResult
+	result.Errors = make(map[string]error)
+
+	sn := s.loadSnapshot()
+
+	for _, path := range sn.trackedConfigPaths {
+		snapshot, hadSnapshot := sn.snapshots[path]
+
+		// Same accessor the snapshot builder uses: when the captured set
+		// has no entry for this tracked path (unselected slot sibling),
+		// both take a real on-disk fingerprint, so builder and check agree.
+		fingerprint, err := docread.TrackedSlotFingerprint(path, nil)
+		if err != nil {
+			result.Errors[path] = err
+			result.Dirty = true
+		}
+		exists := fingerprint.Exists
+
+		if !exists {
+			if hadSnapshot && snapshot.Exists {
+				result.Missing = append(result.Missing, path)
+				result.Dirty = true
+			} else if hadSnapshot && snapshot.Fingerprint() != (docread.Fingerprint{}) && snapshot.Fingerprint() != fingerprint {
+				result.Changed = append(result.Changed, path)
+				result.Dirty = true
+			}
+			continue
+		}
+
+		if !hadSnapshot || !snapshot.Exists {
+			result.Changed = append(result.Changed, path)
+			result.Dirty = true
+			continue
+		}
+
+		if snapshot.Fingerprint() != (docread.Fingerprint{}) && snapshot.Fingerprint() != fingerprint {
+			result.Changed = append(result.Changed, path)
+			result.Dirty = true
+			continue
+		}
+		// Keep compatibility with snapshots created by older callers that only
+		// populated the public metadata fields.
+		if snapshot.Size != fingerprint.Size || snapshot.ModTime != fingerprint.ModTime ||
+			snapshot.ContentHash != ([32]byte{}) && snapshot.ContentHash != fingerprint.Digest {
+			result.Changed = append(result.Changed, path)
+			result.Dirty = true
+		}
+	}
+
+	slices.Sort(result.Changed)
+	slices.Sort(result.Missing)
+
+	return result
+}
+
+// RefreshStalenessSnapshot captures fresh snapshots of all tracked config
+// files and publishes them as part of a new store generation. It only
+// touches the snapshots/trackedConfigPaths pair — config, resolver,
+// knownProviders etc. are carried over unchanged from whatever generation
+// is current at the time of the swap.
+func (s *ConfigStore) RefreshStalenessSnapshot() error {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.refreshStalenessSnapshotLocked()
+	return nil
+}
+
+// refreshStalenessSnapshotLocked is the lock-free body of
+// RefreshStalenessSnapshot. The caller MUST hold publishMu.
+func (s *ConfigStore) refreshStalenessSnapshotLocked() {
+	cur := s.loadSnapshot()
+	next := cur.clone()
+	if next.snapshots == nil {
+		next.snapshots = make(map[string]docread.FileSnapshot)
+	} else {
+		next.snapshots = maps.Clone(next.snapshots)
+	}
+
+	for _, path := range next.trackedConfigPaths {
+		fingerprint, _ := docread.ReadReloadFingerprint(path)
+		snapshot := docread.NewFileSnapshot(path, fingerprint)
+
+		next.snapshots[path] = snapshot
+	}
+
+	s.publishLocked(next)
+}
+
+// CaptureStalenessSnapshot recomputes the set of tracked config paths (the
+// paths passed in, plus the store's own workspace/global paths) and
+// refreshes their on-disk snapshots, publishing both as part of a single
+// new generation.
+func (s *ConfigStore) CaptureStalenessSnapshot(paths []string) {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.captureStalenessSnapshotLocked(paths)
+}
+
+// captureStalenessSnapshotLocked does the work of CaptureStalenessSnapshot
+// without taking publishMu. The caller MUST hold publishMu.
+func (s *ConfigStore) captureStalenessSnapshotLocked(paths []string) {
+	seen := make(map[string]struct{})
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		abs := docread.NormalizeDiscoveryPath(p)
+		seen[abs] = struct{}{}
+	}
+
+	cur := s.loadSnapshot()
+	workspacePath := cur.workspacePath
+	if workspacePath != "" {
+		seen[docread.NormalizeDiscoveryPath(workspacePath)] = struct{}{}
+	}
+	if s.globalDataPath != "" {
+		seen[docread.NormalizeDiscoveryPath(s.globalDataPath)] = struct{}{}
+	}
+
+	tracked := make([]string, 0, len(seen))
+	for p := range seen {
+		tracked = append(tracked, p)
+	}
+	tracked = docread.ExpandConfigSlotSiblings(tracked)
+	slices.Sort(tracked)
+
+	next := cur.clone()
+	next.trackedConfigPaths = tracked
+	s.publishLocked(next)
+
+	s.refreshStalenessSnapshotLocked()
+}
+
+// captureStalenessSnapshot is the lock-acquiring entry point for callers
+// that do NOT already hold publishMu (primarily white-box tests). Production
+// code paths that already hold publishMu (Load, reloadFromDiskLocked) call
+// captureStalenessSnapshotLocked directly to avoid a re-entrant deadlock.
+func (s *ConfigStore) captureStalenessSnapshot(paths []string) {
+	s.publishMu.Lock()
+	defer s.publishMu.Unlock()
+	s.captureStalenessSnapshotLocked(paths)
+}
+
+// errReloadProviderEndpointDropped is wrapped (fmt.Errorf %w) by the
+// error ReloadFromDisk returns when a candidate would drop a live custom
+// provider for endpoint reasons; callers surface it unchanged.
+var errReloadProviderEndpointDropped = errors.New("live custom provider would be dropped because base_url is missing or empty")
+
+// liveCustomProviderIDs returns the enabled custom (non-known) provider
+// ids present in cfg, using the same predicate as configureProviders'
+// knownProviderNames set. These are the providers a live snapshot relies
+// on; dropping one in a candidate must not pass silently.
+func liveCustomProviderIDs(cfg *Config, knownProviders []catwalk.Provider) map[string]struct{} {
+	live := make(map[string]struct{})
+	if cfg == nil || cfg.Providers == nil {
+		return live
+	}
+	known := make(map[string]bool, len(knownProviders))
+	for _, p := range knownProviders {
+		known[string(p.ID)] = true
+	}
+	for id, pc := range cfg.Providers.Seq2() {
+		if known[id] || pc.Disable {
+			continue
+		}
+		live[id] = struct{}{}
+	}
+	return live
+}
+
+// rejectLiveProviderEndpointDrops returns an error when any provider
+// dropped for endpoint reasons during the candidate's configureProviders
+// run was a live custom provider in prev (the snapshot being replaced).
+// A provider that was never live — absent from prev, or present but
+// disabled — is not a regression and still reloads with a warning.
+func rejectLiveProviderEndpointDrops(prev *Config, candidate *Config, knownProviders []catwalk.Provider) error {
+	if candidate == nil || len(candidate.EndpointDroppedProviders()) == 0 {
+		return nil
+	}
+	live := liveCustomProviderIDs(prev, knownProviders)
+	var dropped []string
+	for id := range candidate.EndpointDroppedProviders() {
+		if _, ok := live[id]; ok {
+			dropped = append(dropped, id)
+		}
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	slices.Sort(dropped)
+	return fmt.Errorf("%w: %s", errReloadProviderEndpointDropped, strings.Join(dropped, ", "))
+}
+
+// Types re-exported from cfgmodel / envresolve / datadir / settings / docread.
+type (
+	Config                 = cfgmodel.Config
+	CustomRole             = cfgmodel.CustomRole
+	DataDirSource          = datadir.DataDirSource
+	Expander               = envresolve.Expander
+	MCPConfig              = cfgmodel.MCPConfig
+	MCPOrigin              = cfgmodel.MCPOrigin
+	MCPs                   = cfgmodel.MCPs
+	Options                = cfgmodel.Options
+	ProviderConfig         = cfgmodel.ProviderConfig
+	Scope                  = cfgmodel.Scope
+	SettingsWriteAuthority = cfgmodel.SettingsWriteAuthority
+	SelectedModel          = cfgmodel.SelectedModel
+	SelectedModelType      = cfgmodel.SelectedModelType
+	ShellResolverOption    = envresolve.ShellResolverOption
+	TUIOptions             = cfgmodel.TUIOptions
+	VariableResolver       = envresolve.VariableResolver
+
+	LockState     = settings.LockState
+	SettingsEvent = settings.SettingsEvent
+
+	reloadFileFingerprint = docread.Fingerprint
+	fileSnapshot          = docread.FileSnapshot
+	stableConfigDocument  = docread.StableConfigDocument
+	stableConfigAlias     = docread.StableConfigAlias
+)
+
+// Constants re-exported.
+const (
+	ScopeWorkspace             = cfgmodel.ScopeWorkspace
+	SelectedModelTypeSmart     = cfgmodel.SelectedModelTypeSmart
+	SelectedModelTypeFast      = cfgmodel.SelectedModelTypeFast
+	SelectedModelTypeWorker    = cfgmodel.SelectedModelTypeWorker
+	SelectedModelTypeReviewer  = cfgmodel.SelectedModelTypeReviewer
+	SettingsAuthorityGuarded   = cfgmodel.SettingsAuthorityGuarded
+	SettingsAuthorityTrustedUI = cfgmodel.SettingsAuthorityTrustedUI
+
+	DataDirSourceDefault = datadir.DataDirSourceDefault
+	DataDirSourceShared  = datadir.DataDirSourceShared
+
+	MCPOriginExternal  = cfgmodel.MCPOriginExternal
+	MCPOriginGlobal    = cfgmodel.MCPOriginGlobal
+	MCPOriginProject   = cfgmodel.MCPOriginProject
+	MCPOriginSystem    = cfgmodel.MCPOriginSystem
+	MCPOriginWorkspace = cfgmodel.MCPOriginWorkspace
+)
+
+// Sentinel errors (vars preserve single error identity).
+var (
+	ErrNoWorkspaceConfig    = cfgmodel.ErrNoWorkspaceConfig
+	ErrSettingsLocked       = settings.ErrSettingsLocked
+	ErrWrongPassword        = settings.ErrWrongPassword
+	ErrConfigReloadUnstable = docread.ErrConfigReloadUnstable
+	errStableReadUnstable   = fileid.ErrStableReadUnstable()
+	// root io_forwarders.go:24 pattern.
+	errConfigCommitVerification = fileid.ErrConfigCommitVerification()
+)
+
+// Function values forwarded to the owning packages.
+var (
+	isDevBuild               = datadir.IsDevBuild
+	SystemConfig             = datadir.SystemConfig
+	homeConfigOwner          = fileid.HomeConfigOwner
+	IdentityResolver         = envresolve.IdentityResolver
+	NewShellVariableResolver = envresolve.NewShellVariableResolver
+	WithContext              = envresolve.WithContext
+	WithExpander             = envresolve.WithExpander
+	ConfigureSelectedModels  = provresolve.ConfigureSelectedModels
+	Providers                = catalogsrc.Providers
+
+	applyModelsIntegrity            = cfgmodel.ApplyModelsIntegrity
+	touchesModelsKey                = cfgmodel.TouchesModelsKey
+	modelsIntegrityOf               = cfgmodel.ModelsIntegrityOf
+	ValidateCustomRoleName          = cfgmodel.ValidateCustomRoleName
+	configHasDynamicMCPResolution   = cfgmodel.ConfigHasDynamicMCPResolution
+	validateResponsesTransportWrite = cfgmodel.ValidateResponsesTransportWrite
+
+	stripCustomRoleOverlays     = cfgmerge.StripCustomRoleOverlays
+	validateCustomRoleWrite     = cfgmerge.ValidateCustomRoleWrite
+	validateMCPDisabledOverlays = cfgmerge.ValidateMCPDisabledOverlays
+	loadFromBytes               = cfgmerge.LoadFromBytes
+)

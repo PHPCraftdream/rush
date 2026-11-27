@@ -66,8 +66,8 @@ func TestMCPAdmissionTokenCleanupOnPanic(t *testing.T) {
 		globalDataPath: path,
 	})
 	snapshot := store.SnapshotMCPAdmission("server")
-	require.NoError(t, store.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
-		evaluation, err := store.evaluateMCPFiles(files)
+	require.NoError(t, store.WithMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+		evaluation, err := store.EvaluateMCPFiles(files)
 		if err != nil {
 			return err
 		}
@@ -104,11 +104,11 @@ func TestMCPAdmissionRejectsAppearanceOfAbsentHigherPrioritySource(t *testing.T)
 		config:         &Config{MCP: MCPs{"server": {Type: MCPHttp, URL: "http://lower.example"}}},
 		globalDataPath: globalPath,
 	})
-	store.workingDir = root
-	store.systemConfigPathOverride = filepath.Join(root, "missing-system", "rush.json")
+	(*store.WorkingDirForTest()) = root
+	*store.SystemConfigPathOverrideForTest() = filepath.Join(root, "missing-system", "rush.json")
 	var snapshot MCPAdmissionSnapshot
-	require.NoError(t, store.withMCPAdmissionLocks(func(files *mcpLockedFiles) error {
-		evaluation, err := store.evaluateMCPFiles(files)
+	require.NoError(t, store.WithMCPAdmissionLocks(func(files *mcpLockedFiles) error {
+		evaluation, err := store.EvaluateMCPFiles(files)
 		if err != nil {
 			return err
 		}
@@ -188,7 +188,7 @@ func TestMCPAdmissionLegacyTimeoutAndExplicitContext(t *testing.T) {
 	require.ErrorIs(t, store.WithCurrentMCPAdmission(snapshot, "server", func(MCPAdmissionGuard) error {
 		return nil
 	}), context.Canceled)
-	require.ErrorIs(t, store.withMCPAdmissionLocks(func(*mcpLockedFiles) error { return nil }), context.Canceled)
+	require.ErrorIs(t, store.WithMCPAdmissionLocks(func(*mcpLockedFiles) error { return nil }), context.Canceled)
 	require.Equal(t, []time.Duration{configWriteLockTimeout, configWriteLockTimeout}, observed)
 
 	ctx, cancel := context.WithCancel(context.Background())

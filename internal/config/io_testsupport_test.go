@@ -178,7 +178,7 @@ func configCaseSensitivityFromMetadata(filesystemInsensitive, filesystemSensitiv
 
 // io layer: cfgcommit.
 func configWriteTargetDedupKeyWithCaseFold(target configWriteTarget, caseFold func(string, string) (string, bool)) string {
-	ct := cfgcommit.NewConfigWriteTarget(target.path, target.selectedPath, target.lockPath, target.expected, target.owner, target.enforce)
+	ct := cfgcommit.NewConfigWriteTarget(target.WTPath(), target.WTSelectedPath(), target.WTLockPath(), target.WTExpected(), target.WTOwner(), target.WTEnforce())
 	return cfgcommit.ConfigWriteTargetDedupKeyWithCaseFold(ct, caseFold)
 }
 

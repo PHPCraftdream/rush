@@ -99,7 +99,7 @@ func Load(workingDir, dataDir string, debug bool, opts ...LoadOption) (*ConfigSt
 		store, err := loadOnce(ktavCtx, workingDir, dataDir, debug, options.cliModels, options.discoveryProviders)
 		if !errors.Is(err, errReloadDiskChanged) && !errors.Is(err, errStableReadUnstable) {
 			if err == nil {
-				store.recoverOAuthJournalsAtLoad()
+				store.RecoverOAuthJournalsAtLoad()
 			}
 			return store, err
 		}
@@ -310,7 +310,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			}
 		}
 
-		if err := provresolve.ConfigureProvidersWithScope(context.Background(), cfg, env, valueResolver, knownProviders, store.removeConfigFieldBestEffort, cliModels, discoveryProviders); err != nil {
+		if err := provresolve.ConfigureProvidersWithScope(context.Background(), cfg, env, valueResolver, knownProviders, store.RemoveConfigFieldBestEffort, cliModels, discoveryProviders); err != nil {
 			return fmt.Errorf("failed to configure providers: %w", err)
 		}
 
@@ -320,7 +320,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 			if err := publish(publishSnapshot()); err != nil {
 				return err
 			}
-			store.settings.VerifyModelsIntegrityAtLoad()
+			store.VerifyModelsIntegrityAtLoad()
 			return nil
 		}
 
@@ -336,7 +336,7 @@ func loadOnce(ktavCtx context.Context, workingDir, dataDir string, debug bool, c
 		if err := publish(publishSnapshot()); err != nil {
 			return err
 		}
-		store.settings.VerifyModelsIntegrityAtLoad()
+		store.VerifyModelsIntegrityAtLoad()
 		return nil
 	}); err != nil {
 		return nil, err

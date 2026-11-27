@@ -1,24 +1,36 @@
-// Config disk sync: one store-lifetime, read-only poller that re-reads the
-// tracked config files when their content changes on disk and triggers a
-// full reload, so `rush models use` in another process reaches a running
-// instance within one interval. Mirrors store_oauth_disk_sync.go.
-package config
+// Package cfgstore: the config store engine (snapshots, reload, disk sync,
+// MCP/OAuth write paths, settings staleness). Formed by a pure byte-preserving
+// merge of the original 16 leaf files; see docs/plans/2026-11-26-cfgstore-ledger.tsv.
+
+package cfgstore
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
+	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/home"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 )
 
 var (
@@ -468,4 +480,370 @@ func (s *ConfigStore) configSyncOnModelsChangedFunc() func(ModelsChange) {
 	s.configSyncMu.Lock()
 	defer s.configSyncMu.Unlock()
 	return s.configSyncOpts.OnModelsChanged
+}
+
+var errReloadDiskChanged = errors.New("config files changed while reloading")
+
+func candidateInputsChanged(workingDir string, configPaths, externalPaths []string, fingerprints map[string]reloadFileFingerprint) bool {
+	return !docread.SameReloadPathSet(configPaths, docread.LookupConfigCandidates(workingDir)) ||
+		!docread.SameReloadPathSet(externalPaths, docread.McpJSONCandidatePaths(workingDir)) ||
+		docread.ReloadFingerprintsChangedWithOwner(fingerprints, func(path string) (int, bool, error) {
+			globalExternal := filepath.Join(home.Dir(), ".claude", ".mcp.json")
+			if docread.NormalizeReloadPath(path) == docread.NormalizeReloadPath(globalExternal) {
+				return homeConfigOwner(), true, nil
+			}
+			return docread.ConfigOwnerPolicyForPath(path, workingDir)
+		})
+}
+
+func initialMCPRevisions(cfg *cfgmodel.Config) map[string]uint64 {
+	result := make(map[string]uint64)
+	if cfg != nil {
+		for name := range cfg.MCP {
+			result[name] = 1
+		}
+	}
+	return result
+}
+
+// mcpInputFingerprints fingerprints only the MCP entries in each source
+// document. Changes to unrelated config fields therefore preserve an entry's
+// revision across reloads.
+func mcpInputFingerprints(rush, external []stableConfigDocument) map[string][sha256.Size]byte {
+	type document struct {
+		path      string
+		entries   map[string]json.RawMessage
+		rawDigest []byte
+	}
+	documentsByPath := make(map[string]document, len(rush)+len(external))
+	names := make(map[string]struct{})
+	addDocument := func(sourceDocument stableConfigDocument, entries map[string]json.RawMessage, rawDigest []byte) {
+		path := docread.NormalizeReloadPath(sourceDocument.Path)
+		if path == "" {
+			path = docread.NormalizeDiscoveryPath(sourceDocument.Path)
+		}
+		if existing, ok := documentsByPath[path]; ok {
+			if len(existing.entries) == 0 && len(entries) != 0 {
+				documentsByPath[path] = document{path: path, entries: entries, rawDigest: rawDigest}
+			}
+			return
+		}
+		documentsByPath[path] = document{path: path, entries: entries, rawDigest: rawDigest}
+	}
+	for _, sourceDocument := range rush {
+		var rawDigest []byte
+		if docread.IsKtavConfigPath(sourceDocument.Path) && sourceDocument.Fingerprint.Exists {
+			rawDigest = append([]byte(nil), sourceDocument.Fingerprint.Digest[:]...)
+		}
+		var root struct {
+			MCP map[string]json.RawMessage `json:"mcp"`
+		}
+		if json.Unmarshal(sourceDocument.Data, &root) == nil {
+			addDocument(sourceDocument, root.MCP, rawDigest)
+			for name := range root.MCP {
+				names[name] = struct{}{}
+			}
+		}
+	}
+	for _, sourceDocument := range external {
+		var root struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if json.Unmarshal(sourceDocument.Data, &root) == nil {
+			addDocument(sourceDocument, root.MCPServers, nil)
+			for name := range root.MCPServers {
+				names[name] = struct{}{}
+			}
+		}
+	}
+	documents := make([]document, 0, len(documentsByPath))
+	for _, document := range documentsByPath {
+		documents = append(documents, document)
+	}
+	sort.Slice(documents, func(i, j int) bool { return documents[i].path < documents[j].path })
+	result := make(map[string][sha256.Size]byte, len(names))
+	for name := range names {
+		hash := sha256.New()
+		for _, document := range documents {
+			path := docread.NormalizeReloadPath(document.path)
+			if path == "" {
+				path = docread.NormalizeDiscoveryPath(document.path)
+			}
+			hash.Write([]byte(path))
+			if raw, ok := document.entries[name]; ok {
+				if len(document.rawDigest) > 0 {
+					hash.Write(document.rawDigest)
+				}
+				hash.Write([]byte{1})
+				hash.Write(raw)
+			} else {
+				hash.Write([]byte{0})
+			}
+		}
+		var digest [sha256.Size]byte
+		copy(digest[:], hash.Sum(nil))
+		result[name] = digest
+	}
+	return result
+}
+
+// mcpRevisionDiff advances only names whose effective definition or exact
+// source input changed. A missing revision is deliberately treated as zero so
+// an in-memory staged entry receives a real admission token.
+func mcpRevisionDiff(current map[string]uint64, previous, next *cfgmodel.Config, previousInputs, nextInputs map[string][sha256.Size]byte, force ...string) map[string]uint64 {
+	result := maps.Clone(current)
+	if result == nil {
+		result = make(map[string]uint64)
+	}
+	names := make(map[string]struct{})
+	for name := range mcpNames(previous) {
+		names[name] = struct{}{}
+	}
+	for name := range mcpNames(next) {
+		names[name] = struct{}{}
+	}
+	for name := range previousInputs {
+		names[name] = struct{}{}
+	}
+	for name := range nextInputs {
+		names[name] = struct{}{}
+	}
+	for _, name := range force {
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	forced := make(map[string]struct{}, len(force))
+	for _, name := range force {
+		forced[name] = struct{}{}
+	}
+	for name := range names {
+		previousConfig, previousExists := mcpConfig(previous, name)
+		nextConfig, nextExists := mcpConfig(next, name)
+		previousInput, previousHasInput := previousInputs[name]
+		nextInput, nextHasInput := nextInputs[name]
+		if _, ok := forced[name]; ok || previousExists != nextExists ||
+			previousExists && !reflect.DeepEqual(previousConfig, nextConfig) ||
+			previousHasInput != nextHasInput ||
+			previousHasInput && nextHasInput && previousInput != nextInput {
+			result[name]++
+		}
+	}
+	return result
+}
+
+func mcpNames(cfg *cfgmodel.Config) map[string]cfgmodel.MCPConfig {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.MCP
+}
+
+func loadConfigCandidateStableForWorkingDir(configPaths []string, workingDir string) (*cfgmodel.Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
+	documents, err := docread.ReadStableConfigDocumentsWithOwner(configPaths, func(path string) (int, bool, error) {
+		return docread.ConfigOwnerPolicyForPath(path, workingDir)
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, document := range documents {
+		if document.Present && len(document.Data) > 0 && !json.Valid(document.Data) {
+			return nil, nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", document.Path)
+		}
+		if document.Present {
+			if err := validateMCPDisabledOverlays(document.Data); err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid MCP configuration in config file %s: %w", document.Path, err)
+			}
+		}
+	}
+	configs, loaded, fingerprints := docread.ConfigDocumentBytes(documents)
+	docread.AddDocumentAliasFingerprints(fingerprints, documents)
+
+	cfg, err := loadFromBytes(configs)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return cfg, loaded, fingerprints, documents, nil
+}
+
+// setDefaults fills in every option, path, and model-map field that the
+// merged config files left unset (root load_defaults.go).
+func setDefaults(c *cfgmodel.Config, workingDir, dataDir string) {
+	if c.Options == nil {
+		c.Options = &cfgmodel.Options{}
+	}
+	if c.Options.TUI == nil {
+		c.Options.TUI = &cfgmodel.TUIOptions{}
+	}
+	if len(c.Options.GlobalContextPaths) == 0 {
+		rushConfigDir := filepath.Dir(datadir.GlobalConfig())
+		c.Options.GlobalContextPaths = []string{
+			filepath.Join(rushConfigDir, "RUSH.md"),
+			filepath.Join(filepath.Dir(rushConfigDir), "AGENTS.md"),
+		}
+	}
+	slices.Sort(c.Options.GlobalContextPaths)
+	c.Options.GlobalContextPaths = slices.Compact(c.Options.GlobalContextPaths)
+
+	if dataDir != "" {
+		c.Options.DataDirectory = dataDir
+	} else if c.Options.DataDirectory == "" {
+		if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
+			c.Options.DataDirectory = path
+		} else {
+			c.Options.DataDirectory = filepath.Join(workingDir, defaultDataDirectory)
+		}
+	}
+	c.Options.DataDirectory = filepath.Clean(filepathext.SmartJoin(workingDir, c.Options.DataDirectory))
+	if c.Providers == nil {
+		c.Providers = csync.NewMap[string, cfgmodel.ProviderConfig]()
+	}
+	if c.Models == nil {
+		c.Models = make(map[cfgmodel.SelectedModelType]cfgmodel.SelectedModel)
+	}
+	if c.RecentModels == nil {
+		c.RecentModels = make(map[cfgmodel.SelectedModelType][]cfgmodel.SelectedModel)
+	}
+	if c.MCP == nil {
+		c.MCP = make(map[string]cfgmodel.MCPConfig)
+	}
+
+	// Add the default context paths if they are not already present
+	c.Options.ContextPaths = append(slices.Clone(defaultContextPaths), c.Options.ContextPaths...)
+	slices.Sort(c.Options.ContextPaths)
+	c.Options.ContextPaths = slices.Compact(c.Options.ContextPaths)
+
+	// Add the prompt-advertised default skills directories if not already
+	// present.
+	for _, dir := range datadir.GlobalPromptSkillsDirs() {
+		if !slices.Contains(c.Options.SkillsPaths, dir) {
+			c.Options.SkillsPaths = append(c.Options.SkillsPaths, dir)
+		}
+	}
+
+	// Project specific skills dirs, prompt-advertised subset.
+	c.Options.SkillsPaths = append(c.Options.SkillsPaths, datadir.ProjectPromptSkillsDirs(workingDir)...)
+
+	if str, ok := os.LookupEnv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE"); ok {
+		c.Options.DisableProviderAutoUpdate, _ = strconv.ParseBool(str)
+	}
+
+	if str, ok := os.LookupEnv("RUSH_DISABLE_DEFAULT_PROVIDERS"); ok {
+		c.Options.DisableDefaultProviders, _ = strconv.ParseBool(str)
+	}
+
+	if c.Options.Attribution == nil {
+		c.Options.Attribution = &cfgmodel.Attribution{
+			TrailerStyle:  cfgmodel.TrailerStyleAssistedBy,
+			GeneratedWith: true,
+		}
+	} else if c.Options.Attribution.TrailerStyle == "" {
+		// Migrate deprecated co_authored_by or apply default
+		if c.Options.Attribution.CoAuthoredBy != nil {
+			if *c.Options.Attribution.CoAuthoredBy {
+				c.Options.Attribution.TrailerStyle = cfgmodel.TrailerStyleCoAuthoredBy
+			} else {
+				c.Options.Attribution.TrailerStyle = cfgmodel.TrailerStyleNone
+			}
+		} else {
+			c.Options.Attribution.TrailerStyle = cfgmodel.TrailerStyleAssistedBy
+		}
+	}
+	c.Options.InitializeAs = cmp.Or(c.Options.InitializeAs, defaultInitializeAs)
+}
+
+func projectBoundary(dir string) string { return datadir.ProjectBoundary(dir) }
+
+// mustMarshalConfig marshals the config to JSON bytes, returning empty JSON on
+// error (root load.go:392).
+func mustMarshalConfig(cfg *cfgmodel.Config) []byte {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
+}
+
+// resolverInputFingerprint records the semantic input to the shell resolver
+// (root cfgmodel_locals.go:128).
+func resolverInputFingerprint(values []string) [32]byte {
+	copyValues := slices.Clone(values)
+	slices.Sort(copyValues)
+	hash := sha256.New()
+	for _, value := range copyValues {
+		hash.Write([]byte(value))
+		hash.Write([]byte{0})
+	}
+	return sha256.Sum256(hash.Sum(nil))
+}
+
+// appName and defaultDataDirectory are byte-identical local copies of the
+// cfgmodel declarations (root cfgmodel_locals.go precedent).
+const (
+	appName              = cfgmodel.AppName
+	defaultDataDirectory = ".rush"
+	defaultInitializeAs  = "AGENTS.md"
+)
+
+var defaultContextPaths = []string{
+	".github/copilot-instructions.md",
+	".cursorrules",
+	".cursor/rules/",
+	"CLAUDE.md",
+	"CLAUDE.local.md",
+	"GEMINI.md",
+	"gemini.md",
+	"rush.md",
+	"rush.local.md",
+	"Rush.md",
+	"Rush.local.md",
+	"RUSH.md",
+	"RUSH.local.md",
+	"AGENTS.md",
+	"agents.md",
+	"Agents.md",
+}
+
+const maxRecentModelsPerType = 5
+
+// Test-hook seam replication of root config_test_hooks.go: the leaf keeps its
+// own nil-default hook slots and guarded runner functions with the exact
+// root nil-guard semantics.
+
+var (
+	// afterMCPResolveTarget is the test-only seam between target resolution
+	// and sidecar acquisition (root-only seam, replicated for the leaf).
+	afterMCPResolveTarget func(*configWriteTarget)
+	// beforeMCPTargetBindingVerification is the test-only seam before MCP
+	// target binding verification (root-only seam, replicated for the leaf).
+	beforeMCPTargetBindingVerification func(*configWriteTarget)
+)
+
+// runConfigAfterMCPResolveTargetHook is the leaf seam: the production MCP
+// admission path calls it with the leaf configWriteTarget.
+func runConfigAfterMCPResolveTargetHook(target *configWriteTarget) {
+	if afterMCPResolveTarget != nil {
+		afterMCPResolveTarget(target)
+	}
+}
+
+// runConfigBeforeMCPTargetBindingVerificationHook is the leaf seam: the
+// production write path calls it with the leaf configWriteTarget.
+func runConfigBeforeMCPTargetBindingVerificationHook(target *configWriteTarget) {
+	if beforeMCPTargetBindingVerification != nil {
+		beforeMCPTargetBindingVerification(target)
+	}
+}
+
+// ConfigWriteTarget is the exported alias of the leaf write-target struct
+// (root store_write.go configWriteTarget). The root package aliases it back
+// as config.WriteTarget plumbing and registers its test hooks through
+// SetMCPTargetHooks, so the root's configWriteTarget spelling keeps working.
+type ConfigWriteTarget = configWriteTarget
+
+// SetMCPTargetHooks installs the root package's test-only MCP seams into the
+// leaf's nil-default hook slots (leaf replica of root config_test_hooks.go).
+func SetMCPTargetHooks(after func(*ConfigWriteTarget), before func(*ConfigWriteTarget)) {
+	afterMCPResolveTarget = after
+	beforeMCPTargetBindingVerification = before
 }

@@ -56,7 +56,7 @@ func newCodexRefreshReloadFixture(t *testing.T) codexRefreshFixture {
 	path := filepath.Join(dataDir, "rush.json")
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	store := newTestConfigStore(testStoreOpts{config: cfg, globalDataPath: path})
-	store.workingDir = root
+	(*store.WorkingDirForTest()) = root
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 	used, ok := store.Config().Providers.Get(pc.ID)
 	require.True(t, ok)
@@ -97,7 +97,7 @@ func TestOAuthRefresh_ReloadAfterMemoryPublishRetainsPendingToken(t *testing.T) 
 	pc, ok := f.store.Config().Providers.Get(f.used.ID)
 	require.True(t, ok)
 	assert.Equal(t, f.next, pc.OAuthToken, "reload from predecessor A must retain pending rotation B")
-	disk, err := f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
+	disk, err := f.store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 	require.NoError(t, err)
 	require.Equal(t, f.used.OAuthToken, disk)
 
@@ -105,7 +105,7 @@ func TestOAuthRefresh_ReloadAfterMemoryPublishRetainsPendingToken(t *testing.T) 
 	require.NoError(t, awaitCodexResult(t, result))
 	waitOAuthJournalIdle(t, idle)
 	assertCodexPending(t, f, false)
-	disk, err = f.store.oauthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
+	disk, err = f.store.OAuthCredStore().LoadTokenFromDiskForTest(ScopeGlobal, f.used.ID)
 	require.NoError(t, err)
 	assert.Equal(t, f.next, disk, "pending rotation must reach disk after persistence resumes")
 	require.NoError(t, f.store.ReloadFromDisk(ctx))
@@ -117,17 +117,17 @@ func TestOAuthRefresh_ReloadAfterMemoryPublishRetainsPendingToken(t *testing.T) 
 
 func hookCodexPendingPersist(t *testing.T, fn func(context.Context, int) error) {
 	t.Helper()
-	old := codexRefreshBeforePersist
-	codexRefreshBeforePersist = fn
-	t.Cleanup(func() { codexRefreshBeforePersist = old })
+	old := *codexRefreshBeforePersist
+	*codexRefreshBeforePersist = fn
+	t.Cleanup(func() { *codexRefreshBeforePersist = old })
 	joinOAuthJournalTestStoresBeforeRestore(t)
 }
 
 func assertCodexPending(t *testing.T, f codexRefreshFixture, exists bool) {
 	t.Helper()
-	f.store.publishMu.Lock()
-	entry, ok := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-	f.store.publishMu.Unlock()
+	f.store.PublishMuForTest().Lock()
+	entry, ok := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+	f.store.PublishMuForTest().Unlock()
 	require.Equal(t, exists, ok)
 	if exists {
 		require.Equal(t, *f.used.OAuthToken, entry.Predecessor)
@@ -273,7 +273,7 @@ func TestOAuthRefresh_PrePublishReloadRebuildsPendingToken(t *testing.T) {
 	var releaseOnce sync.Once
 	releaseReload := func() { releaseOnce.Do(func() { close(resume) }) }
 	builds := 0
-	f.store.reloadBeforePublish = func() {
+	*f.store.ReloadBeforePublishForTest() = func() {
 		builds++
 		if builds == 1 {
 			close(candidate)
@@ -371,7 +371,7 @@ func TestOAuthRefresh_PendingFailureCleanup(t *testing.T) {
 			return f.next, nil
 		})
 		require.Error(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
-		f.store.stopOAuthJournalWorkers()
+		f.store.StopOAuthJournalWorkers()
 		requireOAuthJournalToken(t, f)
 		assertCodexPending(t, f, false)
 	})
@@ -382,7 +382,7 @@ func TestOAuthRefresh_PendingFailureCleanup(t *testing.T) {
 		t.Cleanup(release)
 		require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
 		awaitCodexSignal(t, entered)
-		f.store.stopOAuthJournalWorkers()
+		f.store.StopOAuthJournalWorkers()
 		requireOAuthJournalToken(t, f)
 		assertCodexPending(t, f, true)
 		require.NoError(t, f.store.ReloadFromDisk(context.Background()))

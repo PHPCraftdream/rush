@@ -1,4 +1,8 @@
-package config
+// Package cfgstore: the config store engine (snapshots, reload, disk sync,
+// MCP/OAuth write paths, settings staleness). Formed by a pure byte-preserving
+// merge of the original 16 leaf files; see docs/plans/2026-11-26-cfgstore-ledger.tsv.
+
+package cfgstore
 
 import (
 	"context"

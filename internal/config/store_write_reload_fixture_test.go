@@ -17,22 +17,22 @@ func newWriteReloadFixture(t *testing.T, initial string) (*ConfigStore, string) 
 	require.NoError(t, os.WriteFile(path, []byte(initial), 0o600))
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = path
+	*store.GlobalDataPathForTest() = path
 	store.CaptureStalenessSnapshot([]string{path})
 	t.Cleanup(func() {
 		if !t.Failed() {
 			return
 		}
 		result := store.ConfigStaleness()
-		snapshot := store.loadSnapshot()
-		t.Logf("auto-reload staleness: generation=%d dirty=%v changed=%v missing=%v errors=%v", snapshot.generation, result.Dirty, result.Changed, result.Missing, result.Errors)
-		for i, path := range snapshot.trackedConfigPaths {
+		snapshot := store.LoadSnapshot()
+		t.Logf("auto-reload staleness: generation=%d dirty=%v changed=%v missing=%v errors=%v", *snapshot.SnapGeneration(), result.Dirty, result.Changed, result.Missing, result.Errors)
+		for i, path := range *snapshot.SnapTrackedConfigPaths() {
 			if i == 16 {
 				t.Log("remaining tracked paths omitted")
 				break
 			}
 			actual, err := trackedSlotFingerprint(path, nil)
-			expected := snapshot.snapshots[path]
+			expected := (*snapshot.SnapSnapshots())[path]
 			t.Logf("path=%s expected_exists=%v actual_exists=%v size=%d/%d mtime=%d/%d fingerprint_equal=%v error=%v", path, expected.Exists, actual.Exists, expected.Size, actual.Size, expected.ModTime, actual.ModTime, expected.Fingerprint() == actual, err)
 		}
 	})

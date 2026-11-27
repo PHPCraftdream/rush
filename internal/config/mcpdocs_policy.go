@@ -9,6 +9,7 @@ import (
 
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
 	cfgmodel "github.com/PHPCraftdream/rush/internal/config/model"
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 )
 
 // mergeExternalMCPServers injects .mcp.json servers into the config's MCP map.
@@ -30,7 +31,7 @@ func mergeExternalMCPServers(cfg *Config, store *ConfigStore, external map[strin
 }
 
 func readMCPDisabledOverride(store *ConfigStore, scope Scope, name string) (bool, bool) {
-	path, err := store.configPath(scope)
+	path, err := store.ConfigPath(scope)
 	if err != nil {
 		return false, false
 	}
@@ -87,8 +88,8 @@ func mcpRevisionDiff(current map[string]uint64, previous, next *Config, previous
 		forced[name] = struct{}{}
 	}
 	for name := range names {
-		previousConfig, previousExists := mcpConfig(previous, name)
-		nextConfig, nextExists := mcpConfig(next, name)
+		previousConfig, previousExists := cfgstore.MCPConfigFor(previous, name)
+		nextConfig, nextExists := cfgstore.MCPConfigFor(next, name)
 		previousInput, previousHasInput := previousInputs[name]
 		nextInput, nextHasInput := nextInputs[name]
 		if _, ok := forced[name]; ok || previousExists != nextExists ||

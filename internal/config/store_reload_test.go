@@ -74,7 +74,7 @@ func TestReloadFromDisk_UsesNewConfigValues(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set globalDataPath for the test (Load doesn't set this directly)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Verify initial model
@@ -137,11 +137,11 @@ func TestAutoReloadDisabledDuringReload(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the store loaded successfully and publishMu was released.
-	require.True(t, store.publishMu.TryLock(), "publishMu should be free after Load")
-	store.publishMu.Unlock()
+	require.True(t, store.PublishMuForTest().TryLock(), "publishMu should be free after Load")
+	store.PublishMuForTest().Unlock()
 
 	// Capture snapshot and verify reload also works without recursion
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	// Modify file and reload - this should work without re-entrancy issues
@@ -152,8 +152,8 @@ func TestAutoReloadDisabledDuringReload(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify reload completed successfully and publishMu was released.
-	require.True(t, store.publishMu.TryLock(), "publishMu should be free after ReloadFromDisk")
-	store.publishMu.Unlock()
+	require.True(t, store.PublishMuForTest().TryLock(), "publishMu should be free after ReloadFromDisk")
+	store.PublishMuForTest().Unlock()
 }
 
 func TestReloadFromDisk_ContextDeadlineBeforeAdmission(t *testing.T) {
@@ -164,7 +164,7 @@ func TestReloadFromDisk_ContextDeadlineBeforeAdmission(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	store.reloadAfterDiskRead = func() {
+	*store.ReloadAfterDiskReadForTest() = func() {
 		once.Do(func() {
 			close(entered)
 			<-release
@@ -181,15 +181,15 @@ func TestReloadFromDisk_ContextDeadlineBeforeAdmission(t *testing.T) {
 	require.ErrorIs(t, store.ReloadFromDisk(deadlineCtx), context.DeadlineExceeded)
 	cancel()
 
-	store.reloadPendingMu.Lock()
-	require.False(t, store.reloadPending)
-	require.False(t, store.reloadPendingWaiter)
-	store.reloadPendingMu.Unlock()
+	store.ReloadPendingMuForTest().Lock()
+	require.False(t, *store.ReloadPendingForTest())
+	require.False(t, *store.ReloadPendingWaiterForTest())
+	store.ReloadPendingMuForTest().Unlock()
 
 	close(release)
 	require.NoError(t, <-firstDone)
-	require.True(t, store.reloadMu.TryLock())
-	store.reloadMu.Unlock()
+	require.True(t, store.ReloadMuForTest().TryLock())
+	store.ReloadMuForTest().Unlock()
 
 	writeReloadAttemptConfig(t, configPath, 1)
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
@@ -222,7 +222,7 @@ func TestProviderUpdates_ConcurrentReloadNoRace(t *testing.T) {
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
-	store.globalDataPath = configPath
+	*store.GlobalDataPathForTest() = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
 	ctx := context.Background()

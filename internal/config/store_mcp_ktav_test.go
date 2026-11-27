@@ -193,7 +193,7 @@ func TestMCPKtavMixedScopesKeepOrderingAndExternalBytes(t *testing.T) {
 
 	store, err := Init(root, root, false)
 	require.NoError(t, err)
-	require.Equal(t, normalizeReloadPath(workspacePath), normalizeReloadPath(store.configPathOrEmpty(ScopeWorkspace)))
+	require.Equal(t, normalizeReloadPath(workspacePath), normalizeReloadPath(store.ConfigPathOrEmpty(ScopeWorkspace)))
 
 	// Workspace Rush definition wins over the global Ktav one; external
 	// servers are visible beneath the Rush names.
@@ -412,19 +412,19 @@ func TestMCPKtavLockAnchorMatchesLegacySidecar(t *testing.T) {
 	require.Equal(t, legacyPath, configWriteLockAnchor(ktavPath))
 
 	store := newTestConfigStore(testStoreOpts{config: &Config{}, globalDataPath: ktavPath})
-	target, err := store.resolveConfigWriteTarget(ktavPath)
+	target, err := store.ResolveConfigWriteTarget(ktavPath)
 	require.NoError(t, err)
-	require.Equal(t, normalizeReloadPath(legacyPath)+".lock", target.lockPath,
+	require.Equal(t, normalizeReloadPath(legacyPath)+".lock", target.WTLockPath(),
 		"the .ktav record must anchor on the legacy-JSON sidecar")
 
 	// The anchor must be the pathname the locking machinery actually takes:
 	// acquiring it must create rush.json.lock (and only that sidecar).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	lock, lockErr := acquireConfigFileLock(ctx, target.lockPath)
+	lock, lockErr := acquireConfigFileLock(ctx, target.WTLockPath())
 	require.NoError(t, lockErr)
-	require.FileExists(t, target.lockPath)
-	require.Equal(t, normalizeReloadPath(legacyPath), normalizeReloadPath(strings.TrimSuffix(target.lockPath, ".lock")))
+	require.FileExists(t, target.WTLockPath())
+	require.Equal(t, normalizeReloadPath(legacyPath), normalizeReloadPath(strings.TrimSuffix(target.WTLockPath(), ".lock")))
 	require.NoFileExists(t, ktavPath+".lock")
 	require.NoError(t, lock.Release(), "the sidecar handle must be released before TempDir cleanup")
 }

@@ -34,8 +34,8 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	f.store.SetProviderRuntimeConfig(f.used.ID, f.used)
 	writeCodexPendingDisk(t, f, &a)
 	record := &oauthJournalRecord{PredecessorRefreshTokenSHA256: oauthRefreshTokenSHA256(&a), Token: &b}
-	f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-	require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true))
+	f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+	require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, &a, &b, &a, true))
 	before, err := os.ReadFile(f.path)
 	require.NoError(t, err)
 	d := b
@@ -54,7 +54,7 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 		return oldWrite(path, data, mode)
 	}
 	t.Cleanup(func() {
-		f.store.stopOAuthJournalWorkers()
+		f.store.StopOAuthJournalWorkers()
 		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 	})
 	calls := 0
@@ -73,13 +73,13 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	err = f.store.RefreshOAuthTokenWithClient(ctx, ScopeGlobal, used, client)
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	requireOAuthRound7Released(t, f)
-	target, targetErr := f.store.resolveConfigWriteTarget(f.path)
+	target, targetErr := f.store.ResolveConfigWriteTarget(f.path)
 	require.NoError(t, targetErr)
-	lock, lockErr := filelock.TryAcquireFileLock(target.lockPath)
+	lock, lockErr := filelock.TryAcquireFileLock(target.WTLockPath())
 	require.NoError(t, lockErr)
-	require.NoError(t, releaseConfigFileLock(target.lockPath, lock))
+	require.NoError(t, releaseConfigFileLock(target.WTLockPath(), lock))
 	assert.NoError(t, err)
 	assert.Equal(t, 1, calls, "owned B must exchange exactly once to D")
 	assert.Positive(t, writes, "D must attempt journal handoff")
@@ -87,21 +87,21 @@ func runOAuthRound9BurnedPredecessor(t *testing.T, expiryDelta int64) {
 	assert.True(t, ok)
 	assert.Equal(t, &d, live.OAuthToken)
 	assert.Empty(t, live.APIKey)
-	owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+	owned := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 	if assert.NotNil(t, owned, "failed journal writes must retain D ownership") {
 		assert.Equal(t, &d, owned.Record.Token)
 		assert.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
 	}
-	f.store.publishMu.Lock()
-	pending, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-	f.store.publishMu.Unlock()
+	f.store.PublishMuForTest().Lock()
+	pending, pendingOK := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+	f.store.PublishMuForTest().Unlock()
 	assert.True(t, pendingOK)
 	assert.Equal(t, d, pending.Token)
 	assert.Equal(t, b, pending.Predecessor)
 	after, readErr := os.ReadFile(f.path)
 	require.NoError(t, readErr)
 	assert.Equal(t, before, after, "blocked worker must leave config A untouched")
-	if assert.True(t, f.store.diskWriteMu.TryLock(), "config mutex must be released") {
-		f.store.diskWriteMu.Unlock()
+	if assert.True(t, f.store.DiskWriteMuForTest().TryLock(), "config mutex must be released") {
+		f.store.DiskWriteMuForTest().Unlock()
 	}
 }

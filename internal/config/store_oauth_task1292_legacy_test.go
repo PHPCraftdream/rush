@@ -30,20 +30,20 @@ func (ctx *task1292WaitContext) Done() <-chan struct{} {
 func task1292LegacySeam(t *testing.T, id string, fn func(context.Context, *http.Client, string) (*oauth.Token, error)) {
 	t.Helper()
 	if id == catalog.HyperName {
-		old := hyperExchangeTokenFn
-		hyperExchangeTokenFn = fn
-		t.Cleanup(func() { hyperExchangeTokenFn = old })
+		old := *hyperExchangeTokenFn
+		*hyperExchangeTokenFn = fn
+		t.Cleanup(func() { *hyperExchangeTokenFn = old })
 	} else {
-		old := copilotRefreshTokenFn
-		copilotRefreshTokenFn = fn
-		t.Cleanup(func() { copilotRefreshTokenFn = old })
+		old := *copilotRefreshTokenFn
+		*copilotRefreshTokenFn = fn
+		t.Cleanup(func() { *copilotRefreshTokenFn = old })
 	}
 	joinOAuthJournalTestStoresBeforeRestore(t)
 }
 
 func task1292LegacyReleased(t *testing.T, f codexRefreshFixture) {
 	t.Helper()
-	busy := f.store.oauthCredStore().CodexRefreshActiveForTest(f.used.ID)
+	busy := f.store.OAuthCredStore().CodexRefreshActiveForTest(f.used.ID)
 	require.False(t, busy, "legacy slot must be released")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -211,9 +211,9 @@ func TestTask1292Legacy_HeldSidecarBoundedWait(t *testing.T) {
 					_ = lock.Release()
 				}
 			})
-			old := codexRefreshLockWait
-			codexRefreshLockWait = 50 * time.Millisecond
-			t.Cleanup(func() { codexRefreshLockWait = old })
+			old := *codexRefreshLockWait
+			*codexRefreshLockWait = 50 * time.Millisecond
+			t.Cleanup(func() { *codexRefreshLockWait = old })
 			joinOAuthJournalTestStoresBeforeRestore(t)
 			var calls atomic.Int32
 			task1292LegacySeam(t, id, func(context.Context, *http.Client, string) (*oauth.Token, error) {

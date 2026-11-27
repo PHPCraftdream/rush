@@ -135,7 +135,7 @@ func TestOAuthJournal_RecoveryHoldsRefreshLock(t *testing.T) {
 		return nil, nil
 	})
 	require.NoError(t, f.store.RefreshOAuthTokenWithClient(context.Background(), ScopeGlobal, f.used, nil))
-	f.store.stopOAuthJournalWorkers()
+	f.store.StopOAuthJournalWorkers()
 	require.Equal(t, int32(1), checked.Load())
 }
 

@@ -11,26 +11,22 @@
 // TestConfigDiskSyncOnModelsChangedEffortOnlyFires -> dropping ReasoningEffort, Think, MaxTokens, Temperature, or ProviderOptions from configDiskModelProfile (store_config_disk_sync.go); each has its own single-field step that then does not fire.
 // TestConfigDiskSyncStopBeforeStartIsTerminal -> dropping the configSyncStopped terminal-stop state (store_config_disk_sync.go, store.go).
 // TestReloadRejectsUnsignedModelsEdit -> removing the reloadModelsIntegrityMismatch block in buildAndPublishReload (store_reload.go).
-package config
+package cfgstore
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config/domains/datadir"
 	"github.com/PHPCraftdream/rush/internal/config/io/docread"
-	"github.com/PHPCraftdream/rush/internal/kit/text/ktavcodec"
+	"github.com/PHPCraftdream/rush/internal/config/providers/catalogsrc"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/sjson"
-	"go.uber.org/goleak"
 )
 
 // configSyncIsolate redirects every global config path to fresh temp dirs
@@ -39,14 +35,27 @@ import (
 func configSyncIsolate(t *testing.T) (dir, configPath, globalPath string) {
 	t.Helper()
 	dir = t.TempDir()
-	isolateAllGlobalConfigPaths(t)
+	// Leaf-local copy of the root isolateAllGlobalConfigPaths fixture: the
+	// root helper lives in the root package's test files and cannot be
+	// reached from here (import cycle).
+	configDir := filepath.Join(dir, "global-config")
+	dataDir := filepath.Join(dir, "global-data")
+	t.Setenv("RUSH_GLOBAL_CONFIG", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("RUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 	configPath = filepath.Join(dir, "rush.json")
-	globalPath = GlobalConfigData()
+	globalPath = datadir.GlobalConfigData()
 	require.NoError(t, os.MkdirAll(filepath.Dir(globalPath), 0o755))
 	return dir, configPath, globalPath
 }
+
+// resetProviderState is the leaf-local copy of the root helper.
+func resetProviderState() { catalogsrc.ResetProviderCacheForTests() }
 
 // writeSignedModelsFixture writes an offline, deterministic rush.json with
 // a validly signed models block.
@@ -80,7 +89,7 @@ func configSyncRefreshPublishedSnapshot(s *ConfigStore) {
 		next.snapshots = make(map[string]fileSnapshot, len(next.snapshots))
 	}
 	for _, path := range next.trackedConfigPaths {
-		fingerprint, err := readReloadFingerprint(path)
+		fingerprint, err := docread.ReadReloadFingerprint(path)
 		if err != nil {
 			continue
 		}
@@ -97,7 +106,7 @@ func configSyncRefreshPublishedSnapshot(s *ConfigStore) {
 func configSyncWhiteBoxStoreFingerprints(t *testing.T, dir string, cfg *Config, paths []string, fingerprints map[string]reloadFileFingerprint) (*ConfigStore, *atomic.Int32) {
 	t.Helper()
 	s := &ConfigStore{workingDir: dir, globalDataPath: paths[len(paths)-1]}
-	tracked, snapshots := reloadStalenessState(paths, fingerprints)
+	tracked, snapshots := docread.ReloadStalenessState(paths, fingerprints)
 	s.snap.Store(&storeSnapshot{
 		config:             cfg,
 		trackedConfigPaths: tracked,
@@ -125,10 +134,10 @@ func configSyncWhiteBoxStore(t *testing.T, dir string, cfg *Config, paths []stri
 	t.Helper()
 	fingerprints := make(map[string]reloadFileFingerprint, len(paths))
 	for _, path := range paths {
-		fingerprint, err := readReloadFingerprint(path)
+		fingerprint, err := docread.ReadReloadFingerprint(path)
 		require.NoError(t, err)
 		// Key the same way reloadStalenessState keys its snapshots.
-		fingerprints[normalizeDiscoveryPath(path)] = fingerprint
+		fingerprints[docread.NormalizeDiscoveryPath(path)] = fingerprint
 	}
 	return configSyncWhiteBoxStoreFingerprints(t, dir, cfg, paths, fingerprints)
 }
@@ -252,83 +261,6 @@ func TestConfigDiskSyncNoReloadWhenSettled(t *testing.T) {
 // handling: an invalid-JSON workspace file keeps the old snapshot, makes
 // exactly one reload attempt and logs one warning per distinct digest set
 // across retries, and recovers once the file is fixed.
-func TestConfigDiskSyncInvalidJSONKeepsSnapshotAndWarnsOnce(t *testing.T) {
-	dir, configPath, _ := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	s, err := Load(dir, "", false)
-	require.NoError(t, err)
-	t.Cleanup(func() { s.StopConfigDiskSync() })
-
-	var buf syncBuffer
-	origLogger := slog.Default()
-	oldLevel := slog.SetLogLoggerLevel(slog.LevelDebug)
-	defer slog.SetLogLoggerLevel(oldLevel)
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(origLogger) })
-
-	s.configSyncMu.Lock()
-	s.configSyncOpts = ConfigDiskSyncOptions{Reload: s.ReloadFromDisk}
-	s.configSyncMu.Unlock()
-
-	gen := s.Generation()
-	// Corrupt the workspace file (.rush/rush.json).
-	workspace := s.loadSnapshot().workspacePath
-	require.NotEmpty(t, workspace)
-	require.NoError(t, os.MkdirAll(filepath.Dir(workspace), 0o755))
-	require.NoError(t, os.WriteFile(workspace, []byte("{not json"), 0o600))
-
-	var st configDiskSyncState
-	for i := range 3 {
-		result, tickErr := s.syncConfigFromDisk(context.Background(), &st)
-		require.NoError(t, tickErr)
-		if i == 0 {
-			require.Error(t, result.ReloadErr, "the first tick attempts the reload and reports its error")
-		} else {
-			require.NoError(t, result.ReloadErr, "identical digests are not retried")
-			require.EqualValues(t, 1, st.reloadAttempts, "no retry until the digest set changes")
-		}
-		require.False(t, result.Reloaded)
-		require.Equal(t, gen, s.Generation(), "a failed reload must keep the published snapshot")
-	}
-	require.EqualValues(t, 1, st.attempts(), "exactly one reload attempt per distinct digest set")
-	warns := strings.Count(buf.String(), "Config disk sync reload failed")
-	require.Equal(t, 1, warns, "one warning per distinct failed digest set")
-
-	// Fix the file; the digest set changed, so exactly one more reload
-	// succeeds and recovery is logged once.
-	writeSignedModelsFixture(t, workspace, `{}`)
-	result, err := s.syncConfigFromDisk(context.Background(), &st)
-	require.NoError(t, err)
-	require.True(t, result.Reloaded)
-	require.EqualValues(t, 2, st.attempts())
-	require.Equal(t, 1, strings.Count(buf.String(), "Config disk sync recovered"))
-}
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// attempts counts the reload attempts recorded on the state.
-func (st *configDiskSyncState) attempts() uint64 { return st.reloadAttempts }
-
-// TestConfigDiskSyncIneligibleTrackedFileReloadsOnce pins the
-// outcome-independent attempt memo: a tracked file the loader ignores (a
-// directory at the path) keeps its zero fingerprint in the published
-// snapshot while the digests never match, so without the memo every tick
-// would run a full reload forever.
 func TestConfigDiskSyncIneligibleTrackedFileReloadsOnce(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
@@ -337,13 +269,13 @@ func TestConfigDiskSyncIneligibleTrackedFileReloadsOnce(t *testing.T) {
 	// the zero fingerprint while the poller still reads it on every tick.
 	require.NoError(t, os.Mkdir(globalPath, 0o755))
 	cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
-	configFingerprint, err := readReloadFingerprint(configPath)
+	configFingerprint, err := docread.ReadReloadFingerprint(configPath)
 	require.NoError(t, err)
 	s, calls := configSyncWhiteBoxStoreFingerprints(t, dir, cfg,
 		[]string{configPath, globalPath},
 		map[string]reloadFileFingerprint{
-			normalizeDiscoveryPath(configPath): configFingerprint,
-			normalizeDiscoveryPath(globalPath): {},
+			docread.NormalizeDiscoveryPath(configPath): configFingerprint,
+			docread.NormalizeDiscoveryPath(globalPath): {},
 		})
 
 	// Tick 1 attempts the reload once.
@@ -389,13 +321,13 @@ func TestConfigDiskSyncMemoClearedWhenForeignPathAdoptsDisk(t *testing.T) {
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
 	require.NoError(t, os.Mkdir(globalPath, 0o755))
 	cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
-	configFingerprint, err := readReloadFingerprint(configPath)
+	configFingerprint, err := docread.ReadReloadFingerprint(configPath)
 	require.NoError(t, err)
 	s, calls := configSyncWhiteBoxStoreFingerprints(t, dir, cfg,
 		[]string{configPath, globalPath},
 		map[string]reloadFileFingerprint{
-			normalizeDiscoveryPath(configPath): configFingerprint,
-			normalizeDiscoveryPath(globalPath): {},
+			docread.NormalizeDiscoveryPath(configPath): configFingerprint,
+			docread.NormalizeDiscoveryPath(globalPath): {},
 		})
 
 	// A: the ineligible directory is attempted once and memoized.
@@ -436,242 +368,6 @@ func TestConfigDiskSyncMemoClearedWhenForeignPathAdoptsDisk(t *testing.T) {
 // reload join. Catches: StopConfigDiskSync deadlocking on configSyncMu
 // held across WG.Wait while a successful in-flight reload takes the same
 // lock in configSyncOnModelsChangedFunc.
-func TestConfigDiskSyncStopJoinsDuringInFlightReload(t *testing.T) {
-	pinKtavAutoMigrateOffForLegacyTest(t)
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	dir, configPath, _ := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	s, err := Load(dir, "", false)
-	require.NoError(t, err)
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseReload := func() { releaseOnce.Do(func() { close(release) }) }
-	// Fast deterministic ticks: the real first delay is random in
-	// [0, interval), which a unit test must not wait on.
-	oldWait := configDiskSyncWait
-	configDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
-		select {
-		case <-time.After(5 * time.Millisecond):
-			return ctx.Err()
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	stopDone := make(chan struct{})
-	var stopLaunched atomic.Bool
-	// Cleanup registered BEFORE anything blocks: it releases the parked
-	// reload, restores the wait stub, and joins Stop with a bound, so ANY
-	// failure path (assertion or deadline) drains the reload goroutine and
-	// lets Stop's join finish — no goroutine leak, no goleak noise.
-	t.Cleanup(func() {
-		releaseReload()
-		if stopLaunched.Load() {
-			select {
-			case <-stopDone:
-			case <-time.After(2 * time.Second):
-				// Only reachable under an already-failing deadlocked
-				// mutant; the goroutine leak is that mutant's doing.
-			}
-		}
-		configDiskSyncWait = oldWait
-	})
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{
-		Reload: func(context.Context) error {
-			select {
-			case <-started:
-			default:
-				close(started)
-			}
-			// Deliberately ignoring ctx here: Stop's cancel must not
-			// short-circuit the reload, or the success path (and the
-			// configSyncMu take) is never reached.
-			<-release
-			// Change the published models so the models diff succeeds and
-			// the tick really calls configSyncOnModelsChangedFunc (the
-			// configSyncMu take that deadlocked against Stop's Wait).
-			s.updateConfig(func(cfgCopy *Config) {
-				cfgCopy.Models = map[SelectedModelType]SelectedModel{
-					SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-5"},
-				}
-			})
-			return nil // Success: the tick proceeds to the models diff.
-		},
-		// Non-nil so the successful-reload path takes configSyncMu in
-		// configSyncOnModelsChangedFunc while Stop waits on the WG.
-		OnModelsChanged: func(ModelsChange) {},
-	})
-	// Capture the poller's context UNDER the lock, BEFORE launching Stop:
-	// Stop is what cancels it (store_config_disk_sync.go:121-123), so on
-	// the normal path observing cancellation before Stop is launched can
-	// never work. The observer below polls ctx.Err() — channel-free and,
-	// crucially, lock-free: a mutant Stop that holds configSyncMu across
-	// its WG join must not be able to starve the observation itself.
-	s.configSyncMu.Lock()
-	pollerCtx := s.configSyncCtx
-	s.configSyncMu.Unlock()
-	require.NotNil(t, pollerCtx, "StartConfigDiskSync must install a poller context")
-	// A content change makes the next tick call the blocking Reload.
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-9"}}`)
-	<-started
-
-	// Stop FIRST, then observe its cancellation through the captured
-	// context without touching configSyncMu.
-	stopLaunched.Store(true)
-	go func() {
-		s.StopConfigDiskSync()
-		close(stopDone)
-	}()
-	require.Eventually(t, func() bool {
-		return pollerCtx.Err() != nil
-	}, 2*time.Second, 5*time.Millisecond, "StopConfigDiskSync must cancel the poller context")
-
-	// While the reload stays parked on release, Stop must NOT have returned.
-	returnedEarly := false
-	select {
-	case <-stopDone:
-		returnedEarly = true
-	case <-time.After(100 * time.Millisecond):
-	}
-	require.False(t, returnedEarly, "Stop must not return while the in-flight reload is still parked")
-	releaseReload()
-	select {
-	case <-stopDone:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("StopConfigDiskSync did not return; deadlock on configSyncMu across WG.Wait")
-	}
-
-	// Start after Stop is refused: the cancelled context guarantees no new
-	// poller goroutine.
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{
-		Reload: func(context.Context) error { return nil },
-	})
-	require.Error(t, s.configSyncCtx.Err(), "Start after Stop is refused")
-}
-
-func TestConfigDiskSyncStopJoinsCancelledPoller(t *testing.T) {
-	// Revert-check: a StopConfigDiskSync that cancels without joining
-	// returns while the poller goroutine is still blocked after cancellation.
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	dir, configPath, _ := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	s, err := Load(dir, "", false)
-	require.NoError(t, err)
-	t.Cleanup(func() { s.StopConfigDiskSync() })
-	entered, cancelled := make(chan struct{}, 2), make(chan struct{}, 2)
-	var releaseOnce sync.Once
-	release := make(chan struct{})
-	releasePoller := func() { releaseOnce.Do(func() { close(release) }) }
-	oldWait := configDiskSyncWait
-	configDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
-		<-ctx.Done()
-		select {
-		case cancelled <- struct{}{}:
-		default:
-		}
-		<-release
-		return ctx.Err()
-	}
-	// Registered after the stub assignment and restoring it last, after the
-	// release, so a failing body can never leave the stub blocked.
-	t.Cleanup(func() {
-		releasePoller()
-		configDiskSyncWait = oldWait
-	})
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{Reload: func(context.Context) error { return nil }})
-	awaitCodexSignal(t, entered)
-	stopped := make(chan struct{})
-	go func() { defer close(stopped); s.StopConfigDiskSync() }()
-	awaitCodexSignal(t, cancelled)
-	returnedEarly := false
-	select {
-	case <-stopped:
-		returnedEarly = true
-	case <-time.After(100 * time.Millisecond):
-	}
-	require.False(t, returnedEarly, "StopConfigDiskSync returned before the cancelled poller goroutine was released")
-	releasePoller()
-	awaitCodexSignal(t, stopped)
-	require.False(t, s.ConfigDiskSyncRunning())
-}
-
-func TestConfigDiskSyncLifecycle(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	dir, configPath, _ := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	s, err := Load(dir, dir, false)
-	require.NoError(t, err)
-
-	var reloads atomic.Int32
-	var ticks atomic.Int32
-	release := make(chan struct{})
-	oldWait := configDiskSyncWait
-	configDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
-		ticks.Add(1)
-		select {
-		case <-release:
-			return ctx.Err()
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	oldAfter := configDiskSyncAfterTick
-	configDiskSyncAfterTick = func(_ *ConfigStore, result ConfigDiskSyncResult) {
-		if result.Reloaded {
-			reloads.Add(1)
-		}
-	}
-	t.Cleanup(func() {
-		configDiskSyncWait, configDiskSyncAfterTick = oldWait, oldAfter
-		close(release)
-	})
-
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{Reload: func(context.Context) error { return nil }})
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{Reload: func(context.Context) error { return nil }})
-	require.Eventually(t, func() bool { return ticks.Load() >= 1 }, 2*time.Second, 5*time.Millisecond)
-	first := ticks.Load()
-	time.Sleep(20 * time.Millisecond)
-	require.Equal(t, first, ticks.Load(), "StartConfigDiskSync twice must spawn one goroutine")
-
-	s.StopConfigDiskSync()
-	joined := ticks.Load()
-	time.Sleep(20 * time.Millisecond)
-	require.Equal(t, joined, ticks.Load(), "StopConfigDiskSync must join the poller")
-
-	// The background poller is dead: no more ticks even though the file
-	// changed. PollConfigDiskOnce is an explicit refresh API and still
-	// works on demand.
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-5"}}`)
-	time.Sleep(20 * time.Millisecond)
-	require.Equal(t, joined, ticks.Load(), "no background tick fires after Stop")
-	result, err := s.PollConfigDiskOnce(context.Background())
-	require.NoError(t, err)
-	require.True(t, result.Reloaded, "explicit polls keep working after Stop")
-
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{Reload: func(context.Context) error { return nil }})
-	time.Sleep(20 * time.Millisecond)
-	require.Equal(t, joined, ticks.Load(), "Start after Stop is refused")
-	require.Zero(t, reloads.Load())
-
-	// A store without a working directory never starts anything.
-	library := NewLibraryStore(&Config{}, "")
-	library.StartConfigDiskSync(ConfigDiskSyncOptions{})
-	require.False(t, library.configSyncStarted)
-	// A non-empty working directory with nothing tracked (SDK library mode's
-	// virtual root) starts nothing either: P3-6.
-	virtual := NewLibraryStore(&Config{}, t.TempDir())
-	virtual.StartConfigDiskSync(ConfigDiskSyncOptions{})
-	require.False(t, virtual.configSyncStarted)
-}
-
-// TestConfigDiskSyncOnModelsChangedOnlyOnModelDiff pins that
-// OnModelsChanged fires only when the effective role models differ after a
-// reload, not for unrelated content changes such as recent_models.
 func TestConfigDiskSyncOnModelsChangedOnlyOnModelDiff(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
@@ -734,141 +430,6 @@ func TestConfigDiskSyncOnModelsChangedOnlyOnModelDiff(t *testing.T) {
 // TestReloadRejectsUnsignedModelsEdit pins the settings-lock bypass fix: a
 // hand-edited models block with a stale cache_rev keeps the PREVIOUS role
 // models on reload while the rest of the candidate (options) is adopted.
-func TestReloadRejectsUnsignedModelsEdit(t *testing.T) {
-	dir, configPath, globalPath := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	require.NoError(t, os.WriteFile(globalPath, []byte("{}"), 0o600))
-	s, err := Load(dir, dir, false)
-	require.NoError(t, err)
-	t.Cleanup(func() { s.StopConfigDiskSync() })
-	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model)
-
-	// Hand edit: change the model id AND adopt an unrelated options field,
-	// leaving the original cache_rev untouched (stale signature).
-	// The edit targets the ACTIVE generation: with the gate on Load has
-	// already migrated rush.json to rush.ktav, and an edit of the retained
-	// rush.json would be ignored.
-	active := selectConfigSlot(configPath)
-	rawJSON, err := decodeConfigDocument(active, fileBytes(t, active))
-	require.NoError(t, err)
-	edited, err := sjson.Set(string(rawJSON), "models.smart.model", "hacked")
-	require.NoError(t, err)
-	edited, err = sjson.Set(edited, "options.debug", true)
-	require.NoError(t, err)
-	out := []byte(edited)
-	if isKtavConfigPath(active) {
-		out, err = ktavcodec.ConvertJSONToKtav(out)
-		require.NoError(t, err)
-	}
-	require.NoError(t, os.WriteFile(active, out, 0o600))
-
-	require.NoError(t, s.ReloadFromDisk(context.Background()))
-	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model,
-		"an unsigned models edit must keep the previous role models")
-	require.True(t, s.Config().Options.Debug,
-		"the rest of the candidate must still publish")
-}
-
-// TestConfigDiskSyncStopBeforeStartIsTerminal pins the terminal stop state
-// (role-models-a#1/#2): StopConfigDiskSync called BEFORE any Start records
-// the stopped state even with nothing started, so a LATER Start is refused
-// and launches no poller goroutine. Catches: dropping the
-// `s.configSyncStopped ||` conjunct in StartConfigDiskSync lets the later
-// Start create a fresh context and launch a poller — the tick counter below
-// would move.
-func TestConfigDiskSyncStopBeforeStartIsTerminal(t *testing.T) {
-	dir, configPath, _ := configSyncIsolate(t)
-	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	s, err := Load(dir, "", false)
-	require.NoError(t, err)
-
-	// Tick counter + parking wait stub: any (mutant) poller goroutine shows
-	// up here and stays parked until cleanup releases it.
-	var ticks atomic.Int32
-	release := make(chan struct{})
-	oldWait := configDiskSyncWait
-	configDiskSyncWait = func(ctx context.Context, _ time.Duration) error {
-		ticks.Add(1)
-		select {
-		case <-release:
-			return ctx.Err()
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	t.Cleanup(func() {
-		s.StopConfigDiskSync() // idempotent; joins any (mutant) poller
-		close(release)
-		configDiskSyncWait = oldWait
-	})
-
-	s.StopConfigDiskSync() // BEFORE any Start: must be terminal.
-	require.False(t, s.ConfigDiskSyncRunning())
-
-	s.StartConfigDiskSync(ConfigDiskSyncOptions{Reload: func(context.Context) error { return nil }})
-	s.configSyncMu.Lock()
-	started := s.configSyncStarted
-	s.configSyncMu.Unlock()
-	require.False(t, started, "Start after a terminal Stop must be refused")
-	require.False(t, s.ConfigDiskSyncRunning())
-	time.Sleep(200 * time.Millisecond)
-	require.Zero(t, ticks.Load(), "no poller goroutine may run after a terminal Stop")
-}
-
-// TestConfigDiskSyncOnModelsChangedEffortOnlyFires pins the COMPLETE
-// effective-selection diff (role-models-a#4): each single-field change under
-// the SAME provider/model id must fire OnModelsChanged exactly once, and a
-// bytes change that leaves the effective selection identical must not.
-// Catches (one assertion per mutant):
-//   - dropping ReasoningEffort from configDiskModelProfile → the effort-only
-//     step's diff is empty → no fire;
-//   - dropping MaxTokens → the max_tokens-only step does not fire;
-//   - dropping Think → the think-only step does not fire;
-//   - dropping Temperature (P2-4) → the options-only step does not fire;
-//   - dropping ProviderOptions (P2-4) → the provider_options-only step does
-//     not fire;
-//   - dropping TopP → the top_p-only step does not fire;
-//   - dropping TopK → the top_k-only step does not fire;
-//   - dropping FrequencyPenalty → the frequency_penalty-only step does not
-//     fire;
-//   - dropping PresencePenalty → the presence_penalty-only step does not
-//     fire.
-func TestReloadKeepsGlobalModelIntegrityAfterMidSessionKtavMigration(t *testing.T) {
-	dir, _, globalPath := configSyncIsolate(t)
-	restoreGate := SetKtavAutoMigrateForTest(true)
-	t.Cleanup(restoreGate)
-
-	// Startup observes an absent global slot and retains its JSON spelling.
-	s, err := Load(dir, dir, false)
-	require.NoError(t, err)
-	t.Cleanup(func() { s.StopConfigDiskSync() })
-	require.Equal(t, normalizeReloadPath(filepath.Join(filepath.Dir(globalPath), "rush.json")), s.globalDataPath)
-
-	writeSignedModelsFixture(t, globalPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
-	require.NoError(t, s.ReloadFromDisk(context.Background()))
-	active := selectConfigSlot(globalPath)
-	require.True(t, isKtavConfigPath(active), "global config should migrate during reload")
-	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model)
-
-	// Change models without refreshing cache_rev.
-	raw, err := os.ReadFile(active)
-	require.NoError(t, err)
-	jsonBytes, err := decodeConfigDocument(active, raw)
-	require.NoError(t, err)
-	edited, err := sjson.Set(string(jsonBytes), "models.smart.model", "hacked")
-	require.NoError(t, err)
-	editedBytes := []byte(edited)
-	if isKtavConfigPath(active) {
-		editedBytes, err = ktavcodec.ConvertJSONToKtav(editedBytes)
-		require.NoError(t, err)
-	}
-	require.NoError(t, os.WriteFile(active, editedBytes, 0o600))
-
-	require.NoError(t, s.ReloadFromDisk(context.Background()))
-	require.Equal(t, "gpt-4", s.Config().Models[SelectedModelTypeSmart].Model,
-		"a stale global cache_rev must preserve the previous model after migration")
-}
-
 func TestConfigDiskSyncOnModelsChangedEffortOnlyFires(t *testing.T) {
 	dir, configPath, globalPath := configSyncIsolate(t)
 	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
@@ -984,4 +545,145 @@ func TestConfigDiskSyncOnModelsChangedEffortOnlyFires(t *testing.T) {
 	require.True(t, result.Reloaded, "different bytes must reload")
 	require.False(t, result.ModelsChanged)
 	require.EqualValues(t, 9, fired.Load(), "no effective change must not fire")
+}
+
+// ---------------------------------------------------------------------------
+// Moved from internal/config/store_config_disk_sync_boundary_test.go (P2-b):
+// these tests exercise only leaf-owned logic (leaf seam vars and helpers).
+// Assertions unchanged; leaf-internal seam spellings are direct vars.
+
+// TestConfigDiskSyncJitterBounds pins the delay contract: the first delay
+// is uniform in [0, interval) and every later delay is in
+// [0.8, 1.2] * interval. (Moved here from store_config_disk_sync_test.go in
+// round 6 for the file-length limit; no assertion changed except the
+// P2-8 default-formula loop added below.)
+func TestConfigDiskSyncJitterBounds(t *testing.T) {
+	require.Equal(t, 5*time.Second, configDiskSyncInterval)
+	for range 1000 {
+		delay := configDiskSyncDelay()
+		require.GreaterOrEqual(t, delay, 4*time.Second)
+		require.LessOrEqual(t, delay, 6*time.Second)
+	}
+	// P2-8: the DEFAULT first-delay formula's own bounds. A per-draw
+	// exact-boundary assertion is impossible on a random draw, so the
+	// coverage is per-draw bounds here, exact boundary-draw responses of the
+	// default formula in TestConfigDiskSyncFirstDelayFormulaBoundaries, and
+	// the injectable seam's passthrough boundary draws in
+	// TestConfigDiskSyncFirstDelayBoundaryDraws.
+	for range 1000 {
+		delay := defaultConfigDiskSyncFirstDelay()
+		require.GreaterOrEqual(t, delay, time.Duration(0),
+			"the default first-delay draw must never be negative")
+		require.Less(t, delay, configDiskSyncInterval,
+			"the default first-delay draw must be uniform in [0, interval)")
+	}
+
+	dir, configPath, globalPath := configSyncIsolate(t)
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
+	cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
+	s, _ := configSyncWhiteBoxStore(t, dir, cfg, []string{configPath, globalPath})
+	t.Cleanup(s.StopConfigDiskSync)
+
+	first := make(chan time.Duration, 1)
+	oldWait := configDiskSyncWait
+	configDiskSyncWait = func(ctx context.Context, delay time.Duration) error {
+		select {
+		case first <- delay:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { configDiskSyncWait = oldWait })
+	s.StartConfigDiskSync(ConfigDiskSyncOptions{})
+	select {
+	case delay := <-first:
+		require.GreaterOrEqual(t, delay, time.Duration(0))
+		require.Less(t, delay, configDiskSyncInterval, "first delay must be uniform in [0, interval)")
+	case <-time.After(2 * time.Second):
+		t.Fatal("poller never ticked")
+	}
+}
+
+// TestConfigDiskSyncFirstDelayFormulaBoundaries pins the REAL default
+// first-delay formula's exact response to boundary draws, via the draw-source
+// seam BELOW the formula (configDiskSyncRandInt63): unlike
+// TestConfigDiskSyncFirstDelayBoundaryDraws (which replaces the whole seam
+// function ABOVE the formula and only proves passthrough) this exercises the
+// formula body itself. rand.Int64N's contract: returns values in [0, n), so
+// the extreme draws are 0 and interval-1ns (as a Duration), never interval.
+// Catches: replacing defaultConfigDiskSyncFirstDelay's body with the
+// steady-state configDiskSyncDelay (interval-spread + draw over
+// 2*spread+1, spread = interval/5 = 1s): a draw of 0 there yields 4s, not 0
+// — the exact-zero assertion below fails. A comment-level argument suffices
+// for the 4s branch, but the exact equality below already excludes it:
+// 0 != 4s.
+func TestConfigDiskSyncFirstDelayFormulaBoundaries(t *testing.T) {
+	orig := configDiskSyncRandInt63
+	t.Cleanup(func() { configDiskSyncRandInt63 = orig })
+
+	for _, tc := range []struct {
+		name string
+		draw int64
+		want time.Duration
+	}{
+		// Lowest value Int64N can return: the first delay is 0.
+		{"lowest", 0, 0},
+		// Highest value Int64N can return (n-1): interval - 1ns, never the
+		// interval itself — the delay must stay strictly below it.
+		{"highest", int64(configDiskSyncInterval) - 1, configDiskSyncInterval - time.Nanosecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configDiskSyncRandInt63 = func(int64) int64 { return tc.draw }
+			require.Equal(t, tc.want, defaultConfigDiskSyncFirstDelay(),
+				"the default first-delay formula must map the boundary draw exactly; a steady-state configDiskSyncDelay body would map draw 0 to 4s, not 0")
+		})
+	}
+}
+
+// TestConfigDiskSyncFirstDelayBoundaryDraws pins the injectable first-delay
+// seam: whatever configDiskSyncFirstDelay draws is passed to the wait
+// UNCHANGED by runConfigDiskSync — including the boundary draws 0 and
+// just-under-interval. Table-driven, no real sleeps (the wait stub parks on
+// ctx.Done and the store is stopped in cleanup). With the round-6 refactor
+// the default is defaultConfigDiskSyncFirstDelay; this test now pins that
+// the seam is a pure passthrough of whatever is installed.
+func TestConfigDiskSyncFirstDelayBoundaryDraws(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		draw time.Duration
+	}{
+		{"zero", 0},
+		{"just-under-interval", configDiskSyncInterval - time.Nanosecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, configPath, globalPath := configSyncIsolate(t)
+			writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
+			cfg := &Config{Models: map[SelectedModelType]SelectedModel{SelectedModelTypeSmart: {Provider: "openai", Model: "gpt-4"}}}
+			s, _ := configSyncWhiteBoxStore(t, dir, cfg, []string{configPath, globalPath})
+			t.Cleanup(s.StopConfigDiskSync)
+
+			oldDraw := configDiskSyncFirstDelay
+			configDiskSyncFirstDelay = func() time.Duration { return tc.draw }
+			t.Cleanup(func() { configDiskSyncFirstDelay = oldDraw })
+			first := make(chan time.Duration, 1)
+			oldWait := configDiskSyncWait
+			configDiskSyncWait = func(ctx context.Context, delay time.Duration) error {
+				select {
+				case first <- delay:
+				default:
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			t.Cleanup(func() { configDiskSyncWait = oldWait })
+			s.StartConfigDiskSync(ConfigDiskSyncOptions{})
+			select {
+			case delay := <-first:
+				require.Equal(t, tc.draw, delay, "runConfigDiskSync must pass the first-delay draw through unchanged")
+			case <-time.After(2 * time.Second):
+				t.Fatal("poller never ticked")
+			}
+		})
+	}
 }

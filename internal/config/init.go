@@ -7,12 +7,17 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/config/store/cfgstore"
 	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
 )
 
 const (
 	InitFlagFilename = "init"
 )
+
+// reloadMaxAttempts aliases the cfgstore reload retry budget (moved with the
+// store engine; root load.go keeps the historical spelling).
+const reloadMaxAttempts = cfgstore.ReloadMaxAttempts
 
 type ProjectInitFlag struct {
 	Initialized bool `json:"initialized"`

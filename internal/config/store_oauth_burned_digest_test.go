@@ -43,8 +43,8 @@ func TestOAuthRound9_BurnedDigestNonfirstAuthority(t *testing.T) {
 				BurnedRefreshTokenSHA256: []string{oauthRefreshTokenSHA256(&x), oauthRefreshTokenSHA256(&a)},
 			}
 			require.Equal(t, oauthJournalPredecessor, arbitrateOAuthJournal(record, &c, &a, nil), "nonfirst burned digest must beat expiry")
-			f.store.installOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
-			require.NoError(t, f.store.applyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, &b, &c, true, record))
+			f.store.InstallOAuthOutbox(f.path, ScopeGlobal, f.used.ID, record)
+			require.NoError(t, f.store.ApplyOAuthTokenWithPendingPredecessor(f.used.ID, f.used.OAuthToken, &b, &c, true, record))
 			writeCodexRefreshDisk(t, f.path, &a)
 			d := b
 			d.AccessToken, d.RefreshToken = "fixture-D-access", "fixture-D-refresh"
@@ -59,7 +59,7 @@ func TestOAuthRound9_BurnedDigestNonfirstAuthority(t *testing.T) {
 				return oldWrite(path, data, mode)
 			}
 			t.Cleanup(func() {
-				f.store.stopOAuthJournalWorkers()
+				f.store.StopOAuthJournalWorkers()
 				oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 			})
 			calls := 0
@@ -137,7 +137,7 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 		return oldWrite(path, data, mode)
 	}
 	t.Cleanup(func() {
-		f.store.stopOAuthJournalWorkers()
+		f.store.StopOAuthJournalWorkers()
 		oauthjournal.OAuthJournalBeforeWorker, oauthjournal.OAuthJournalWorkerWait = oldBefore, oldWait
 		oauthjournal.OAuthJournalAtomicWrite, oauthjournal.OAuthJournalWriteBudget = oldWrite, oldBudget
 	})
@@ -147,15 +147,15 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	lockPath := oauthRefreshLockPath(f.path, f.used.ID)
 	lock, err := acquireConfigFileLock(ctx, lockPath)
 	require.NoError(t, err)
-	adopted, pendingRecord, recoveryErr := f.store.recoverCodexOAuthJournal(ctx, ScopeGlobal, f.used.ID)
+	adopted, pendingRecord, recoveryErr := f.store.RecoverCodexOAuthJournal(ctx, ScopeGlobal, f.used.ID)
 	require.NoError(t, releaseConfigFileLock(lockPath, lock))
 	require.NoError(t, recoveryErr)
 	require.Equal(t, &b, adopted)
 	require.Equal(t, record, pendingRecord)
 	assertCodexRefreshTokens(t, f, &b, &c)
-	f.store.publishMu.Lock()
-	pending, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-	f.store.publishMu.Unlock()
+	f.store.PublishMuForTest().Lock()
+	pending, pendingOK := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+	f.store.PublishMuForTest().Unlock()
 	require.True(t, pendingOK)
 	require.Equal(t, c, pending.Predecessor)
 	require.Equal(t, b, pending.Token)
@@ -164,7 +164,7 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	retained, err := os.ReadFile(journal)
 	require.NoError(t, err)
 	require.Equal(t, walBytes, retained)
-	f.store.startOAuthJournalWorker(ScopeGlobal, f.used.ID)
+	f.store.StartOAuthJournalWorker(ScopeGlobal, f.used.ID)
 
 	writeCodexRefreshDisk(t, f.path, &a)
 	d := b
@@ -200,7 +200,7 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	}
 	if usedB {
 		require.Positive(t, writes.Load())
-		owned := f.store.oauthOutboxCurrent(f.path, f.used.ID)
+		owned := f.store.OAuthOutboxCurrent(f.path, f.used.ID)
 		require.NotNil(t, owned)
 		require.Equal(t, &d, owned.Record.Token)
 		require.Equal(t, oauthRefreshTokenSHA256(&b), owned.Record.PredecessorRefreshTokenSHA256)
@@ -213,12 +213,12 @@ func runOAuthRound9RecoveredPredecessor(t *testing.T, delta int64, usedB bool) {
 	for range 6 {
 		select {
 		case <-idle:
-			f.store.stopOAuthJournalWorkers()
+			f.store.StopOAuthJournalWorkers()
 			assertCodexRefreshTokens(t, f, want, want)
-			require.Nil(t, f.store.oauthOutboxCurrent(f.path, f.used.ID))
-			f.store.publishMu.Lock()
-			_, pendingOK := f.store.oauthCredStore().PendingRotationForTest(t, f.used.ID)
-			f.store.publishMu.Unlock()
+			require.Nil(t, f.store.OAuthOutboxCurrent(f.path, f.used.ID))
+			f.store.PublishMuForTest().Lock()
+			_, pendingOK := f.store.OAuthCredStore().PendingRotationForTest(t, f.used.ID)
+			f.store.PublishMuForTest().Unlock()
 			require.False(t, pendingOK, "convergence must clear pending ownership")
 			_, err := os.Stat(journal)
 			require.True(t, os.IsNotExist(err))
