@@ -1,0 +1,30 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+facade.go	731	facade.go	798	Public compatibility facade declarations	Package documentation retained above sole package clause
+io_forwarders.go	73	facade.go	798	I/O forwarding declarations	Merged after facade.go
+load.go	432	load.go	594	Config loading pipeline	Merged in sorted source order
+load_defaults.go	101	load.go	594	Config defaults application	Pre-package comment retained immediately before first declaration
+load_files.go	49	load.go	594	Config file discovery and parsing	Pre-package comment retained immediately before first declaration
+stabledocs_policy.go	35	load.go	594	Stable-document policy	Merged after load_files.go
+cfgmodel_locals.go	276	init.go	502	Config model boundary closures	Pre-package comments moved to declaration area
+config_test_hooks.go	79	init.go	502	Test hook initialization	init declaration order preserved by chunk placement
+hooks_provider.go	37	init.go	502	Provider hook initialization	init declaration order preserved by chunk placement
+init.go	132	init.go	502	Config initialization entry points	Merged last per specified order
+custom_roles_integrity.go	48	fingerprints_policy.go	290	Integrity and fingerprint policy	Merged in sorted source order
+fingerprints_policy.go	135	fingerprints_policy.go	290	Fingerprint generation and policy	Retained target in prescribed sequence
+mcpdocs_policy.go	110	fingerprints_policy.go	290	MCP document policy helpers	Pre-package comment retained immediately before first declaration
+models_integrity.go	17	fingerprints_policy.go	290	Model integrity declarations	Merged last per specified order
+CHECK	ORACLE_A	IDENTICAL			Sorted multiset of nonblank content lines identical; excludes package/import
+CHECK	ORACLE_B	IDENTICAL			Sorted top-level declaration lines identical
+CHECK	ORACLE_C	ONLY EXPECTED PATHS			git status contains four modified targets and ten deleted sources, plus ledger expected; captured before ledger creation
+CHECK	MUTATION	ORACLE_A DIFFERENCE			Changed return token in moved function body; missing and extra changed line reported; scratch deleted
+CHECK	init_order	N/A			facade.go:515 apiremote writer factory closure moves before config_test_hooks.go:74 cfgstore.SetMCPTargetHooks and hooks_provider.go:9 cfghooks.SetProvider. Independent: closures only, registered globals in different leaf packages; configTestHooks package var initializes before all init funcs; config_test_hooks init remains before hooks_provider init by declaration order in init.go
+CHECK	build_constraints	N/A			No //go:build, GOOS/GOARCH filename suffixes, embed, generate, linkname, or cgo directives found in any source
+CHECK	import_aliases	N/A			Aliases cfgmodel, envresolve, cfgmerge retained consistently; no dot or blank imports
+CHECK	line_counts	798,594,502,290			facade.go, load.go, init.go, fingerprints_policy.go respectively; all <=880
+CHECK	go_test_compile	0			go test -c -o NUL ./internal/config (not tests executed)
+CHECK	go_vet_linux	0			go vet ./internal/config under GOOS=linux
+CHECK	go_vet_darwin	0			go vet ./internal/config under GOOS=darwin
+CHECK	go_vet_windows	0			go vet ./internal/config under GOOS=windows
+CHECK	format_clean	CLEAN			goimports -w and gofumpt -w applied; both -l commands printed nothing
+CHECK	production_files_before	14			Production files in scope before consolidation
+CHECK	production_files_after	4			Production files in scope after consolidation

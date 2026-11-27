@@ -80,7 +80,7 @@ internal/app 23
 # D2-3 provresolve: load_providers.go, load_providers_merge.go, load_providers_apply.go and
 # env_overlay.go leave the root for internal/config/providers/provresolve (36 -> 32 elements;
 # the root keeps its 5 code subdirectories and test files do not count here).
-internal/config 19
+internal/config 9
 # 62 -> 52: X2 mcpstore extraction (S6.2) moved 6 MCP store files into the new store/mcpstore package and merged the forwarders into store_api.go (net -6 files; recount 52).
 # internal/config/discover 13 -> 5: the D2-3 tail merged probe/enricher files in-package (the planned discover+local subpackage split is blocked: the local probe files call the parent package's unexported doRequest/Config plumbing, which a sub-package may not import); row retired.
 internal/session 8

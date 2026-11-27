@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"sync"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -16,6 +19,9 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config/io/slotmigrate"
 	"github.com/PHPCraftdream/rush/internal/config/providers/catalog"
 	"github.com/PHPCraftdream/rush/internal/config/providers/provresolve"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/fsext"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/env"
 )
 
@@ -429,4 +435,160 @@ func logStartupNotice(debug bool, msg string, args ...any) {
 
 func configureProviders(ctx context.Context, cfg *Config, baseEnv env.Env, resolver VariableResolver, knownProviders []catwalk.Provider, dropField func(Scope, string), cliModels func() []catalog.LocalCLIModel) error {
 	return provresolve.ConfigureProvidersWithScope(ctx, cfg, baseEnv, resolver, knownProviders, dropField, cliModels, nil)
+}
+
+// Default-value application: setDefaults fills in every option, path, and
+// model-map field that the merged config files left unset.
+func setDefaults(c *Config, workingDir, dataDir string) {
+	if c.Options == nil {
+		c.Options = &Options{}
+	}
+	if c.Options.TUI == nil {
+		c.Options.TUI = &TUIOptions{}
+	}
+	if len(c.Options.GlobalContextPaths) == 0 {
+		rushConfigDir := filepath.Dir(GlobalConfig())
+		c.Options.GlobalContextPaths = []string{
+			filepath.Join(rushConfigDir, "RUSH.md"),
+			filepath.Join(filepath.Dir(rushConfigDir), "AGENTS.md"),
+		}
+	}
+	slices.Sort(c.Options.GlobalContextPaths)
+	c.Options.GlobalContextPaths = slices.Compact(c.Options.GlobalContextPaths)
+
+	if dataDir != "" {
+		c.Options.DataDirectory = dataDir
+	} else if c.Options.DataDirectory == "" {
+		if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
+			c.Options.DataDirectory = path
+		} else {
+			c.Options.DataDirectory = filepath.Join(workingDir, defaultDataDirectory)
+		}
+	}
+	c.Options.DataDirectory = filepath.Clean(filepathext.SmartJoin(workingDir, c.Options.DataDirectory))
+	if c.Providers == nil {
+		c.Providers = csync.NewMap[string, ProviderConfig]()
+	}
+	if c.Models == nil {
+		c.Models = make(map[SelectedModelType]SelectedModel)
+	}
+	if c.RecentModels == nil {
+		c.RecentModels = make(map[SelectedModelType][]SelectedModel)
+	}
+	if c.MCP == nil {
+		c.MCP = make(map[string]MCPConfig)
+	}
+
+	// Add the default context paths if they are not already present
+	c.Options.ContextPaths = append(slices.Clone(defaultContextPaths), c.Options.ContextPaths...)
+	slices.Sort(c.Options.ContextPaths)
+	c.Options.ContextPaths = slices.Compact(c.Options.ContextPaths)
+
+	// Add the prompt-advertised default skills directories if not already
+	// present. These are the prompt-facing lists: other tools' directories
+	// (~/.claude/skills, .claude/skills, .cursor/skills) are excluded, while
+	// command loading still discovers the full set (see load_skills.go).
+	for _, dir := range GlobalPromptSkillsDirs() {
+		if !slices.Contains(c.Options.SkillsPaths, dir) {
+			c.Options.SkillsPaths = append(c.Options.SkillsPaths, dir)
+		}
+	}
+
+	// Project specific skills dirs, prompt-advertised subset.
+	c.Options.SkillsPaths = append(c.Options.SkillsPaths, ProjectPromptSkillsDirs(workingDir)...)
+
+	if str, ok := os.LookupEnv("RUSH_DISABLE_PROVIDER_AUTO_UPDATE"); ok {
+		c.Options.DisableProviderAutoUpdate, _ = strconv.ParseBool(str)
+	}
+
+	if str, ok := os.LookupEnv("RUSH_DISABLE_DEFAULT_PROVIDERS"); ok {
+		c.Options.DisableDefaultProviders, _ = strconv.ParseBool(str)
+	}
+
+	if c.Options.Attribution == nil {
+		c.Options.Attribution = &Attribution{
+			TrailerStyle:  TrailerStyleAssistedBy,
+			GeneratedWith: true,
+		}
+	} else if c.Options.Attribution.TrailerStyle == "" {
+		// Migrate deprecated co_authored_by or apply default
+		if c.Options.Attribution.CoAuthoredBy != nil {
+			if *c.Options.Attribution.CoAuthoredBy {
+				c.Options.Attribution.TrailerStyle = TrailerStyleCoAuthoredBy
+			} else {
+				c.Options.Attribution.TrailerStyle = TrailerStyleNone
+			}
+		} else {
+			c.Options.Attribution.TrailerStyle = TrailerStyleAssistedBy
+		}
+	}
+	c.Options.InitializeAs = cmp.Or(c.Options.InitializeAs, defaultInitializeAs)
+}
+
+// Config-file discovery and merging: the bounded upward search for
+// rush.json files, duplicate-workspace-config detection, and the JSON
+// merge that folds every loaded document into one Config.
+// lookupConfigs searches config files starting at cwd and walking up
+// through the current project. The upward walk stops at the git
+// working tree root when one can be detected, otherwise at cwd itself,
+// so an unrelated rush.json placed above the project is never picked
+// up. Global user-level config locations are always included
+// regardless of the boundary.
+func lookupConfigs(cwd string) []string {
+	candidates := docread.LookupConfigCandidateGroups(cwd)
+	// Keep global provenance separate from project provenance. The old
+	// first-three rule silently classified a project file as global whenever a
+	// global candidate was rejected by the owner policy.
+	result := slices.Clone(candidates.Global)
+	for _, path := range candidates.Project {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			result = append(result, path)
+		}
+	}
+	return result
+}
+
+func loadFromConfigPaths(configPaths []string) (*Config, []string, error) {
+	cfg, loaded, _, err := loadFromConfigPathsStable(configPaths)
+	return cfg, loaded, err
+}
+
+// loadFromConfigPathsStable loads each path from a bounded stable byte read.
+// The returned fingerprints describe the exact bytes supplied to the JSON
+// merge, rather than a separate stat taken before the read. That distinction
+// is what rejects an ABA edit (A -> B -> A) when B was the candidate parsed.
+func loadFromConfigPathsStable(configPaths []string) (*Config, []string, map[string]reloadFileFingerprint, error) {
+	cfg, loaded, fingerprints, _, err := loadConfigCandidateStableForWorkingDir(configPaths, "")
+	return cfg, loaded, fingerprints, err
+}
+
+func loadConfigCandidateStable(configPaths []string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
+	return loadConfigCandidateStableForWorkingDir(configPaths, "")
+}
+
+func loadConfigCandidateStableForWorkingDir(configPaths []string, workingDir string) (*Config, []string, map[string]reloadFileFingerprint, []stableConfigDocument, error) {
+	documents, err := docread.ReadStableConfigDocumentsWithOwner(configPaths, func(path string) (int, bool, error) {
+		return docread.ConfigOwnerPolicyForPath(path, workingDir)
+	})
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	for _, document := range documents {
+		if document.Present && len(document.Data) > 0 && !json.Valid(document.Data) {
+			return nil, nil, nil, nil, fmt.Errorf("invalid JSON in config file %s", document.Path)
+		}
+		if document.Present {
+			if err := validateMCPDisabledOverlays(document.Data); err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("invalid MCP configuration in config file %s: %w", document.Path, err)
+			}
+		}
+	}
+	configs, loaded, fingerprints := docread.ConfigDocumentBytes(documents)
+	docread.AddDocumentAliasFingerprints(fingerprints, documents)
+
+	cfg, err := loadFromBytes(configs)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return cfg, loaded, fingerprints, documents, nil
 }
