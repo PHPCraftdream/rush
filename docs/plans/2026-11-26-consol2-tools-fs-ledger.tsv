@@ -1,0 +1,33 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+internal/agent/tools/edit.go	542	internal/agent/tools/edit.go	831	same-package pure move; sorted source order	edit.go; edit_effect.go; fs_replace.go
+internal/agent/tools/edit_effect.go	39	internal/agent/tools/edit.go	831	same-package pure move; sorted source order	edit.go; edit_effect.go; fs_replace.go
+internal/agent/tools/fs_replace.go	275	internal/agent/tools/edit.go	831	same-package pure move; sorted source order	edit.go; edit_effect.go; fs_replace.go
+internal/agent/tools/multiedit.go	389	internal/agent/tools/write.go	607	same-package pure move; sorted source order	multiedit.go; write.go; write_shrink_guard.go
+internal/agent/tools/write.go	211	internal/agent/tools/write.go	607	same-package pure move; sorted source order	multiedit.go; write.go; write_shrink_guard.go
+internal/agent/tools/write_shrink_guard.go	29	internal/agent/tools/write.go	607	same-package pure move; sorted source order	multiedit.go; write.go; write_shrink_guard.go
+internal/agent/tools/fs_write.go	330	internal/agent/tools/fs_write.go	700	same-package pure move; sorted source order	fs_write.go; fs_write_lines.go
+internal/agent/tools/fs_write_lines.go	387	internal/agent/tools/fs_write.go	700	same-package pure move; sorted source order	fs_write.go; fs_write_lines.go
+internal/agent/tools/fs_find.go	172	internal/agent/tools/fs_grep.go	863	same-package pure move; sorted source order	fs_find.go; fs_grep.go
+internal/agent/tools/fs_grep.go	702	internal/agent/tools/fs_grep.go	863	same-package pure move; sorted source order	fs_find.go; fs_grep.go
+internal/agent/tools/fs_batch.go	497	internal/agent/tools/fs_batch.go	721	same-package pure move; sorted source order	fs_batch.go; fs_scope.go; fs_scope_tools.go
+internal/agent/tools/fs_scope.go	202	internal/agent/tools/fs_batch.go	721	same-package pure move; sorted source order	fs_batch.go; fs_scope.go; fs_scope_tools.go
+internal/agent/tools/fs_scope_tools.go	38	internal/agent/tools/fs_batch.go	721	same-package pure move; sorted source order	fs_batch.go; fs_scope.go; fs_scope_tools.go
+internal/agent/tools/fs_library_virtual_root.go	82	internal/agent/tools/fs_provider.go	445	same-package pure move; sorted source order	fs_library_virtual_root.go; fs_provider.go; fs_provider_os.go
+internal/agent/tools/fs_provider.go	214	internal/agent/tools/fs_provider.go	445	same-package pure move; sorted source order	fs_library_virtual_root.go; fs_provider.go; fs_provider_os.go
+internal/agent/tools/fs_provider_os.go	160	internal/agent/tools/fs_provider.go	445	same-package pure move; sorted source order	fs_library_virtual_root.go; fs_provider.go; fs_provider_os.go
+internal/agent/tools/fs_list.go	198	internal/agent/tools/glob.go	790	same-package pure move; sorted source order	fs_list.go; glob.go; ls.go
+internal/agent/tools/glob.go	352	internal/agent/tools/glob.go	790	same-package pure move; sorted source order	fs_list.go; glob.go; ls.go
+internal/agent/tools/ls.go	273	internal/agent/tools/glob.go	790	same-package pure move; sorted source order	fs_list.go; glob.go; ls.go
+internal/agent/tools/fs_delete.go	168	internal/agent/tools/fs_read.go	468	same-package pure move; sorted source order	fs_delete.go; fs_read.go; list_mcp_resources.go
+internal/agent/tools/fs_read.go	223	internal/agent/tools/fs_read.go	468	same-package pure move; sorted source order	fs_delete.go; fs_read.go; list_mcp_resources.go
+internal/agent/tools/list_mcp_resources.go	100	internal/agent/tools/fs_read.go	468	same-package pure move; sorted source order	fs_delete.go; fs_read.go; list_mcp_resources.go
+internal/agent/tools/fs_library_virtual_root_path_unix.go	14	internal/agent/tools/fs_library_virtual_root_path_unix.go	14	build-constrained file unchanged	kept alone
+internal/agent/tools/fs_library_virtual_root_path_windows.go	23	internal/agent/tools/fs_library_virtual_root_path_windows.go	23	build-constrained file unchanged	kept alone
+ORACLE_A				PASS; nonblank semantic-line sorted multiset: 4776 before/after	bytewise UTF-8 extraction; imports/package excluded
+ORACLE_B				PASS; top-level declaration lines: 270 before/after	sorted declaration list
+ORACLE_C				PASS; git status shows changes only in the requested set and this ledger; no _test.go changed	porcelain status verified
+ORACLE_D				PASS; mutation check reports MISMATCH DETECTED	character changed in moved function name in scratch copy, restored
+CHECK				init order	No func init() in the 24-file set. Package vars with initialization/cross-file use are retained in alphabetically ordered source sequence inside each grouped target; no dependency-sensitive reordering.
+CHECK				build constraints	Only fs_library_virtual_root_path_unix.go (//go:build !windows) and fs_library_virtual_root_path_windows.go (//go:build windows); kept alone.
+CHECK				directives	//go:embed descriptions remain immediately adjacent to their variables in moved bodies; no //go:generate or //go:linkname found.
+CHECK				imports	"_ ""embed"" occurs in multiple source files; deduplicated per merged target. No dot imports or differing explicit aliases found. goimports normalized."

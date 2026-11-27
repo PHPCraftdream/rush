@@ -1,5 +1,40 @@
 package agent
 
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"charm.land/fantasy"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt"
+	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
+	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
+	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
+	"github.com/PHPCraftdream/rush/internal/session"
+	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	"github.com/PHPCraftdream/rush/internal/store/filetracker"
+	"github.com/PHPCraftdream/rush/internal/store/history"
+	"github.com/PHPCraftdream/rush/internal/store/message"
+)
+
 // Fork patch: this Coordinator drives N concurrent web sessions, not a single
 // TUI run. The fork-specific additions visible in the diff against upstream
 // include:
@@ -18,37 +53,6 @@ package agent
 //
 // See CHANGELOG.fork.md sections 4.D (agent extensions) and 4.E (CLI
 // providers) before resolving a merge conflict.
-
-import (
-	"context"
-	"errors"
-	"fmt"
-	"sync"
-	"sync/atomic"
-	"time"
-
-	"charm.land/fantasy"
-	"github.com/PHPCraftdream/rush/internal/agent/prompt"
-	"github.com/PHPCraftdream/rush/internal/agent/prompt/skills"
-	"github.com/PHPCraftdream/rush/internal/agent/provider/nettransport"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchflow"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/usage"
-	"github.com/PHPCraftdream/rush/internal/agent/safety/notify"
-	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
-	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
-	"github.com/PHPCraftdream/rush/internal/config"
-	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
-	"github.com/PHPCraftdream/rush/internal/session"
-	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	"github.com/PHPCraftdream/rush/internal/store/filetracker"
-	"github.com/PHPCraftdream/rush/internal/store/history"
-	"github.com/PHPCraftdream/rush/internal/store/message"
-)
 
 // Coordinator errors.
 var (
@@ -571,4 +575,220 @@ func (c *coordinator) claimAutoResumeSlot(sessionID string, rowID int64, eligibl
 // Fork patch: batch 8.
 func (c *coordinator) SetAgentTimeoutOptions(extendsOnProgress bool, hardCap time.Duration) {
 	c.currentAgent.SetTimeoutOptions(extendsOnProgress, hardCap)
+}
+
+// Compile-time wiring guards for the OPTIONAL interfaces *coordinator exposes.
+// Their consumers type-assert on the Coordinator value (internal/app, cmd and
+// server: `AgentCoordinator.(agent.ReactionDebtSource)`, `.(agent.AutoTurnHolder)`,
+// `.(agent.ParkedSubAgentWorkReporter)`) so a signature drift still compiles
+// and silently turns the feature off -- two earlier merges did exactly that.
+// The assertions live in the package that owns the concrete type, where a
+// drift fails the build.
+var (
+	_ AutoTurnHolder             = (*coordinator)(nil)
+	_ ReactionDebtSource         = (*coordinator)(nil)
+	_ ParkedSubAgentWorkReporter = (*coordinator)(nil)
+)
+
+// Coordinator-side helpers for the work ledger: the delegation completion
+// refresh, the child-run-ended re-check trigger, and the parked-delegation
+// status reporter. Moved out of subagent_outcome.go (deleted by phase 1,
+// docs/plans/2026-09-27-async-phase1-spec.md) unchanged in behavior -- these
+// stay coordinator methods (refreshSubAgentCompletion needs c.messages)
+// rather than moving onto workLedger itself.
+//
+// Phase 3 (docs/plans/2026-09-28-async-phase3-spec.md §3) deleted
+// DescendantWorkPending/anyPendingWorkInMemory/sessionOwnsPendingWork. Phase 4
+// replaced their successor workLedger.next() with the DB scope predicate
+// (coordinator.CLIScope) -- see app_run_async.go's
+// runNonInteractiveWithAsyncResults and docs/async-invariants.md's ASYNC-02
+// row.
+
+// refreshSubAgentCompletion re-reads childSessionID's newest finished
+// assistant message and folds its state into the completion about to be
+// handed to the parent. Content and IsError are both taken from that message
+// when one exists, so:
+//
+//   - a child whose last turn ended cleanly delivers "finished";
+//   - a child whose last turn ended on a question it asked (ask_question)
+//     delivers that question, with any text it wrote first, as a paused
+//     sub-agent -- checked before every other reading of the message;
+//   - a child whose last turn errored (FinishReasonError -- e.g. its own
+//     background job's failure surfacing through the auto-resume turn)
+//     delivers "failed";
+//   - a child that never produced a finished assistant message keeps the
+//     completion captured at arm time (an error return from the child's run,
+//     or a panic in the tool).
+//
+// A DB failure keeps the captured completion rather than dropping the
+// notice: losing the notice is the worse outcome, and the captured value is
+// still the child's own last turn.
+//
+// Doc sec.3.4: a child session whose reaction debt was closed by failure
+// (settle-by-failure, coordinator_drain_policy.go) gets no further turn, so
+// its last finished assistant message would be stale or nonexistent. Such a
+// child finishes its delegation as FAILED, with the text of its
+// settle-closed (reacted_failed=1) notices instead of that stale message --
+// checked FIRST, before the normal last-message read.
+func (c *coordinator) refreshSubAgentCompletion(childSessionID string, completion batchdispatch.AsyncCompletion) batchdispatch.AsyncCompletion {
+	// Reaction-failure markers come from batch node reads.
+	{
+		facts := coordinatorBatchCutoverFacts(c)
+		failCtx, failCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		failedTexts, err := facts.ReactedFailedTexts(failCtx, childSessionID)
+		failCancel()
+		if err != nil {
+			slog.Debug("sub-agent outcome refresh: reacted-failed check failed, continuing with normal read",
+				"child_session", childSessionID, "err", err)
+		} else if len(failedTexts) > 0 {
+			lines := make([]string, 0, len(failedTexts))
+			for _, ft := range failedTexts {
+				lines = append(lines, ft.Text)
+			}
+			completion.Content = tools.TruncateOutput(strings.Join(lines, "\n\n"))
+			completion.IsError = true
+			return completion
+		}
+	}
+	if c.messages == nil || childSessionID == "" {
+		return completion
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msgs, err := c.messages.List(ctx, childSessionID)
+	if err != nil {
+		slog.Debug("sub-agent outcome refresh failed, using captured completion",
+			"child_session", childSessionID, "err", err)
+		return completion
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg.Role != message.Assistant || !msg.IsFinished() {
+			continue
+		}
+		text := strings.TrimSpace(msg.FullText())
+		if question, ok := subAgentQuestionFromFinish(childSessionID, msg.FinishPart()); ok {
+			// The child asked a question (in its first turn or a Drain turn):
+			// the parent gets the question as a paused sub-agent it can
+			// resume, never as a failure -- whether or not the turn also
+			// wrote text first (that text is kept as the question's
+			// preamble). Checked BEFORE the text branch: the stop is
+			// recorded as an error finish, and letting the text win would
+			// deliver "failed" without the question.
+			completion.Content = subAgentQuestionWithPreamble(text, question)
+			completion.IsError = false
+			return completion
+		}
+		if text != "" {
+			completion.Content = tools.TruncateOutput(text)
+		} else {
+			// Doc sec.3.8 ("Итог делегации"): the child's last finished
+			// message has no text at all (only reasoning and/or tool
+			// calls) -- the parent must NOT see the stale text captured
+			// when the delegation was parked (arm time); it gets this
+			// fixed notice instead.
+			completion.Content = subAgentNoFinalTextText
+		}
+		completion.IsError = msg.FinishReason() == message.FinishReasonError
+		return completion
+	}
+	return completion
+}
+
+// childQuestionPreamble is the text the child wrote in the turn that ended on
+// its question (runSubAgent's first-turn path; the delegation's refresh reads
+// the same message itself). Empty when that turn wrote none, when the child's
+// last turn did not end on a question, or on a read failure: the question
+// itself never depends on it.
+func (c *coordinator) childQuestionPreamble(childSessionID string) string {
+	if c.messages == nil || childSessionID == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msgs, err := c.messages.List(ctx, childSessionID)
+	if err != nil {
+		return ""
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg.Role != message.Assistant || !msg.IsFinished() {
+			continue
+		}
+		if _, ok := subAgentQuestionFromFinish(childSessionID, msg.FinishPart()); !ok {
+			return ""
+		}
+		return strings.TrimSpace(msg.FullText())
+	}
+	return ""
+}
+
+// subAgentNoFinalTextText is doc sec.3.8's fixed wording for a delegation
+// whose child's last finished turn produced no text content (only
+// reasoning/tool calls) -- see refreshSubAgentCompletion's doc.
+const subAgentNoFinalTextText = "завершено без итогового ответа"
+
+// noteSubAgentChildRunEnded is re-check trigger (iv): a run on sessionID has
+// just returned. The parked-delegation release it used to drive directly is
+// batch delivery now (the executor delivers the delegation outcome); the
+// retained halves are the release-shaped retry (the session joins the
+// recheck set, so the next 60s pass re-derives its wake/scope from the DB)
+// and the driver-record release (afterReleaseContext's
+// releaseChildDriverIfScopeClosed tail: a delivered delegation is
+// unregistered by design, see parkedParentSessions below).
+func (c *coordinator) noteSubAgentChildRunEnded(sessionID string) {
+	if c == nil || sessionID == "" {
+		return
+	}
+	c.addToRecheckSet(sessionID)
+}
+
+// parkedParentSessions returns the distinct parent session ids that still
+// have at least one delegation armed in THIS process (a delegated child's
+// live driver registration; a delivered delegation is unregistered by
+// design). See ParkedSubAgentWorkReporter.
+func (c *coordinator) parkedParentSessions() []string {
+	if c == nil || c.subAgentDrivers == nil {
+		return nil
+	}
+	parents := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	for _, child := range c.subAgentDrivers.ChildSessions() {
+		parent := ""
+		if c.sessions != nil {
+			if sess, err := c.sessions.Get(context.Background(), child); err == nil {
+				parent = sess.ParentSessionID
+			}
+		}
+		if parent == "" {
+			continue
+		}
+		if _, dup := seen[parent]; dup {
+			continue
+		}
+		seen[parent] = struct{}{}
+		parents = append(parents, parent)
+	}
+	return parents
+}
+
+// ParkedSubAgentWorkReporter is the OPTIONAL interface *coordinator exposes
+// so a status classifier can tell "session at rest, nothing outstanding"
+// apart from "session at rest, but a delegated sub-agent outcome is still
+// parked".
+//
+// It is deliberately NOT on the Coordinator interface: every mock
+// implementing that interface in internal/server and elsewhere would have to
+// grow a method. Callers type-assert instead, and a value that does not
+// implement it simply means "no parked-delegation signal available".
+type ParkedSubAgentWorkReporter interface {
+	// ParkedSubAgentParents returns the parent session ids that currently
+	// have at least one delegated sub-agent outcome parked. Empty (or a
+	// value not implementing this interface) means nothing is parked.
+	ParkedSubAgentParents() []string
+}
+
+// ParkedSubAgentParents implements ParkedSubAgentWorkReporter.
+func (c *coordinator) ParkedSubAgentParents() []string {
+	return c.parkedParentSessions()
 }

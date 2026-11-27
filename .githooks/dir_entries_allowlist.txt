@@ -29,10 +29,10 @@
 # batch_timeout_parse.go; the count is 194 production files + 6 code subdirectories
 # (after merging the L4 move).
 # See docs/plans/2026-11-22-dm0b-l3-ledger.tsv. Only down from here.
-internal/agent 167
+internal/agent 60
 # internal/agent/tools 80 -> 81: +1 for internal/agent/tools/hooks moved in (stage C).
 # The count falls with the package split (stage D2).
-internal/agent/tools 81
+internal/agent/tools 35
 # 19 -> 18: lane D2-tools+mcp M1 moved the stateless transport out to
 # internal/agent/tools/mcp/mcpdial (transport.go, process_unix.go,
 # process_other.go: -3 files, +1 code directory) and M2 split mutation.go
@@ -61,7 +61,7 @@ internal/agent/tools/mcp 18
 # 30 -> 26: stage C merges app_run_async_stop.go, app_run_async_nudge.go, app_run_wake_hold.go, and app_run_wait_interrupt.go into app_run_async_wait.go.
 # 26 -> 25: Task #14 third pass merges app_run_reviewer_drain_identity.go into app_run_reviewer_outcome.go.
 # 25 -> 23: Task #14 third pass removes sub_agents.go and app_run_quota.go; together with app_run_reviewer_drain_identity.go, three root production files are removed.
-internal/app 23
+internal/app 20
 # internal/config 120 -> 123: +1 internal/config/catalog (provider reference data, sprint 0 wave 1);
 # +2 internal/config/discover and internal/config/oauth moved in (stage C).
 # The count falls with the package split (stage D2).

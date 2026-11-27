@@ -5,11 +5,19 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/delegation"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/diskport"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
-
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
+	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/config"
+	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
 
@@ -324,4 +332,239 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 		prompts = append(prompts, call.Prompt)
 	}
 	return prompts
+}
+
+// The Drain call kind (phase-4 step 3, docs/plans/2026-09-28-async-phase4-
+// durable-core.md sec.3.4): a SessionAgentCall whose only job is the
+// driver's notice pull (agent_notice_pull.go) at turn start, followed by an
+// empty-prompt reaction turn if (and only if) debt that pull made visible is
+// still owed and the ONE launch predicate (drainPermitted, see
+// decideDrainTurn in agent_drain_decision.go) allows a turn. Submitted
+// through the ordinary Run/submit path: idle -> becomes the owner like any
+// call; busy -> queued, merging with whatever is already there
+// (mailbox_ownership.go's submit).
+// drainCallFor builds sessionID's Drain call. Slot-derived child drivers
+// resolve their live role slot per new automatic turn; explicit/non-slot
+// drivers keep the frozen model. Root sessions resolve their own pins as usual.
+// R12-H2b §2.3: both branches resolve the session's execution fence
+// FIRST — the returned preparedContinuation holds the Continuation owner
+// across the dispatch window (the caller releases it after Run returns),
+// and its requirement is stamped onto the drain call (and, on the root
+// branch, onto the ctx so the pinned toolset is provider-backed). The root
+// branch cleans up after itself on every failure: a defer releases the
+// Continuation owner and closes the build scope unless the ownership was
+// transferred to the successful return. A lost binding fails closed typed
+// before anything runs.
+func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
+	var rootLogicalID string
+	var rootRoleContract *session.RoleContract
+	if _, ok := c.subAgentDrivers.Get(sessionID); !ok {
+		rootCall := SessionAgentCall{SessionID: sessionID}
+		if store, supported := c.sessions.(session.SessionRootRoleContractStore); supported {
+			logicalID, contract, found, err := store.GetRootRoleContract(ctx, sessionID)
+			if err != nil {
+				return SessionAgentCall{}, nil, err
+			}
+			if found && logicalID != "" {
+				rootLogicalID = logicalID
+				rootRoleContract = contract.Clone()
+				rootCall.LogicalCallID = logicalID
+				if contract != nil {
+					rootCall.CallOptions = &CallOptions{RoleContract: contract}
+				}
+			}
+		}
+		var restoreErr error
+		rootCall, restoreErr = delegation.RestoreRootRoleContract(ctx, c.sessions, rootCall)
+		if restoreErr != nil {
+			return SessionAgentCall{}, nil, restoreErr
+		}
+		if rootCall.CallOptions != nil && rootCall.CallOptions.RoleContract != nil {
+			ctx = WithCallOptions(ctx, rootCall.CallOptions)
+		}
+	}
+	if _, ok := c.subAgentDrivers.Get(sessionID); !ok && c.drainCredentialBoundary(ctx, sessionID) {
+		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", diskport.ErrCredentialBindingUnavailable, sessionID)
+	}
+	if driver, ok := c.subAgentDrivers.Get(sessionID); ok {
+		// §6.2 (preserved from the old wakeNoticeCall driver branch): every
+		// wake re-inherits the driver's parentSessionID's allowlist baseline
+		// onto the child BEFORE waking it -- the child's own turn no longer
+		// clears its allowlist entry on return, so re-arming here keeps a
+		// woken turn judged by the delegation's policy instead of falling
+		// back to the process-wide gate.
+		if mgr, ok := c.permissions.(permission.SessionRunAllowlistManager); ok && driver.ParentSessionID != "" {
+			mgr.InheritSessionRunAllowlistForGeneration(driver.ParentSessionID, sessionID, driver.Generation)
+		}
+		call := drainctl.NewDrainCall(driver.CallFor(""))
+		if driver.Call.RoleContract != nil && (call.CallOptions == nil || call.CallOptions.RoleContract == nil) {
+			call.CallOptions = WithRoleContractCopy(call.CallOptions, driver.Call.RoleContract)
+		}
+		if call.RequestedModelRole != "" {
+			var roleErr error
+			call, roleErr = c.refreshRequestedDelegationCall(ctx, driver.ParentSessionID, call)
+			if roleErr != nil {
+				return SessionAgentCall{}, nil, roleErr
+			}
+		} else if driver.SlotRole != "" && call.Credentials == nil {
+			if refreshed, providerCfg, ok := c.refreshDrainModel(ctx, driver.SlotRole); ok {
+				call = drainctl.ApplyDrainModelOptions(call, refreshed)
+				call.ProviderOptions = modelkit.GetProviderOptions(sessionID, refreshed, providerCfg)
+			}
+		}
+		c.freshenDrainClient(ctx, &call)
+		prep, prepErr := c.PrepareContinuation(ctx, sessionID, requirementFromCall(call))
+		if prepErr != nil {
+			return SessionAgentCall{}, nil, prepErr
+		}
+		prep.applyTo(&call)
+		return call, prep, nil
+	}
+	// Root branch: resolve the fence BEFORE model resolution so the pinned
+	// toolset is built with the provider already on the ctx (R12-H2b §2.3).
+	// Failure cleanup (gh#10b): every error return below that does not hand
+	// the Continuation owner to a caller must release it (and close the
+	// build scope it registered pins on) — the deferred abandon below runs
+	// unless the ownership is transferred at the final return.
+	prep, prepErr := c.PrepareContinuation(ctx, sessionID, nil)
+	if prepErr != nil {
+		return SessionAgentCall{}, nil, prepErr
+	}
+	var capOpts *CallOptions
+	transferred := false
+	defer func() {
+		if !transferred && prep != nil {
+			if capOpts != nil {
+				capOpts.BuildScope.Close()
+			}
+			prep.release()
+		}
+	}()
+	if err := c.refuseLostRequestedRoleDriver(ctx, sessionID); err != nil {
+		return SessionAgentCall{}, nil, err
+	}
+	if prep != nil {
+		capOpts = &CallOptions{}
+		prep.applyToOptions(capOpts)
+		runSpec, policyErr := prep.restorePolicyBaseline(ctx, sessionID, capOpts)
+		if policyErr != nil {
+			return SessionAgentCall{}, nil, policyErr
+		}
+		ctx = WithCallOptions(ctx, capOpts)
+		if rootRoleContract != nil {
+			capOpts.RoleContract = rootRoleContract.Clone()
+		}
+		// CallOptions remain the source of call policy; the marker now reflects
+		// the latest persisted user-message origin rather than inherited setup.
+		origin, hasUserMessage := drainctl.LastUserMessageOrigin(ctx, c.messages, sessionID)
+		capOpts.WebTurnOptIn = hasUserMessage && origin == message.OriginWeb && capOpts.ModelRole != config.SelectedModelTypeReviewer
+		ctx = WithCallOptions(ctx, capOpts)
+		// Carry the fence's folder-scope spec on the ctx too, mirroring
+		// ExecuteRun's per-call arming: its presence is what lets the
+		// durable queue re-serialize the scope.
+		if prep.requirement.FolderScopeSpec != nil {
+			ctx = WithFolderScopeSpec(ctx, fromSessionFolderScopeSpec(prep.requirement.FolderScopeSpec))
+		}
+		// Arm the fence's restricted-run policy in both forms: compiled for
+		// this turn's enforcement, spec for the durable re-serialization.
+		// Degrade-on-pattern-error, like the rebuild (T12): invalid patterns
+		// are dropped with a warning and the compiled allowlist stays
+		// restricted — the spec itself is still armed verbatim.
+		if runSpec != nil {
+			compiled, compileErr := permission.BuildRunAllowlist(*runSpec)
+			if compileErr != nil {
+				slog.Warn("drainCallFor: dropped invalid restricted-run patterns from the fence policy spec", "session_id", sessionID, "err", compileErr)
+			}
+			ctx = WithRunAllowlist(ctx, &compiled)
+			ctx = WithRunAllowlistSpec(ctx, runSpec)
+		}
+	}
+	if prep == nil {
+		// With no execution fence, use CallOptions to carry the web-turn policy
+		// into model resolution without replacing unrelated context options.
+		origin, hasUserMessage := drainctl.LastUserMessageOrigin(ctx, c.messages, sessionID)
+		if existing := callOptionsFrom(ctx); existing != nil || hasUserMessage && origin == message.OriginWeb {
+			var opts CallOptions
+			if existing != nil {
+				opts = *existing
+			}
+			opts.WebTurnOptIn = hasUserMessage && origin == message.OriginWeb && opts.ModelRole != config.SelectedModelTypeReviewer
+			ctx = WithCallOptions(ctx, &opts)
+		}
+	}
+	if rootRoleContract != nil {
+		ctx = WithCallRoleContract(ctx, rootRoleContract)
+	}
+	pinned, err := c.resolveSessionModels(ctx, sessionID)
+	if err != nil {
+		return SessionAgentCall{}, nil, err
+	}
+	// A reaction after a long job may find the OAuth token expired: refresh it
+	// BEFORE the call is built (the web and child Drains bypass runInternal,
+	// where the CLI refreshes), and resolve the models again so the call
+	// carries the new client. A failed refresh proceeds with the token we have.
+	if refreshed, refreshErr := c.refreshExpiredToken(ctx, pinned.providerCfg); refreshErr != nil {
+		slog.Warn("Drain: OAuth token refresh failed; proceeding with the existing token", "session_id", sessionID, "error", refreshErr)
+	} else if refreshed {
+		if pinned, err = c.resolveSessionModels(ctx, sessionID); err != nil {
+			return SessionAgentCall{}, nil, err
+		}
+	}
+	call, err := c.buildCall(ctx, sessionID, "", pinned, nil)
+	if err != nil {
+		return SessionAgentCall{}, nil, err
+	}
+	call = drainctl.NewDrainCall(call)
+	if rootLogicalID != "" {
+		call.LogicalCallID = rootLogicalID
+	}
+
+	call.RoleContract = agentcall.CloneRoleContractForCall(rootRoleContract)
+	call.CallOptions = func() *CallOptions {
+		if opts := callOptionsFrom(ctx); opts != nil {
+			copy := *opts
+			copy.RoleContract = agentcall.CloneRoleContractForCall(rootRoleContract)
+			return &copy
+		}
+		return &CallOptions{RoleContract: agentcall.CloneRoleContractForCall(rootRoleContract)}
+	}()
+	// Idempotent stamping: keeps DiskRequirement on the struct itself even
+	// though the ctx-carried options already carry it (R12-H2b §2.3).
+	prep.applyTo(&call)
+	// The Continuation owner now belongs to the caller, which releases it
+	// after Run returns; the deferred abandon must not fire.
+	transferred = true
+	return call, prep, nil
+}
+
+// freshenDrainClient brings a delegated child's Drain call onto the current
+// refreshable credentials (an OAuth token or an API-key template). The child's
+// driver template froze its model client when the delegation started, so after
+// a long job (or a refresh by any other caller: the 401 accounting refreshes an
+// API-key template and publishes the new key) it carries an old token or key:
+// refresh an expired OAuth token, then rebuild the pinned model's client from
+// the current config (same model, new client). Best effort: a failure leaves the
+// template's client, and a 401 then takes the counted, paced path of the
+// accounting. A provider with no refreshable credential keeps its client, and
+// per-call credentials (tenant keys) are never replaced with the shared
+// config's.
+func (c *coordinator) freshenDrainClient(ctx context.Context, call *SessionAgentCall) {
+	if c.cfg == nil || call.SmartModel == nil || call.Credentials != nil {
+		return
+	}
+	providerID := call.SmartModel.ModelCfg.Provider
+	_, providerCfg, err := c.rebuildInputs(providerID)
+	if err != nil || !hasRefreshableCredential(providerCfg) {
+		return
+	}
+	if _, err := c.refreshExpiredToken(ctx, providerCfg); err != nil {
+		slog.Warn("Drain: OAuth token refresh failed; proceeding with the existing token", "session_id", call.SessionID, "provider", providerID, "error", err)
+		return
+	}
+	fresh, err := c.rebuildOnCurrentCredentials(ctx, *call.SmartModel, true)
+	if err != nil {
+		slog.Warn("Drain: could not rebuild the child's model client", "session_id", call.SessionID, "provider", providerID, "error", err)
+		return
+	}
+	call.SmartModel = &fresh
 }

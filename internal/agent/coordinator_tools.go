@@ -1,11 +1,8 @@
-// SessionAgent and tool-slice construction, including worker sub-agent
-// toolset layering. Extracted from coordinator.go — pure code move,
-// bodies unchanged.
-
 package agent
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"charm.land/fantasy"
@@ -13,8 +10,25 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/hooks"
 	"github.com/PHPCraftdream/rush/internal/config"
 )
+
+// finishToolAssembly is the final construction boundary. Flag OFF (no batch
+// binding): the historical branch, byte-for-byte — async wrappers, then
+// hooks/restrictions, then the stall-detach wrapper. Flag ON: hooks and
+// restrictions run once here, then every batch-admissible work tool is
+// re-armed through the ONE authority (batchRuntime.Invoke) and the old
+// async/stall wrappers are NOT installed. allowed is the build's control
+// grant list: batchinst.ControlAvailability over the final filtered tools and
+// AllowedTools, computed once in buildPolicyTools.
+func (c *coordinator) finishToolAssembly(ctx context.Context, filteredTools []fantasy.AgentTool, hookRunner *hooks.Runner, isSubAgent bool, allowed []string, configs ...*config.Config) (toolwrap.PolicyToolBuild, error) {
+	return newToolsComponent(c).finishToolAssembly(ctx, filteredTools, hookRunner, isSubAgent, allowed, configs...)
+}
+
+// SessionAgent and tool-slice construction, including worker sub-agent
+// toolset layering. Extracted from coordinator.go — pure code move,
+// bodies unchanged.
 
 func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
 	return newToolsComponent(c).buildAgent(ctx, prompt, agent, isSubAgent)
@@ -286,4 +300,78 @@ func (c *coordinator) buildPolicyTools(ctx context.Context, cfg *config.Config, 
 // tool assemblies without trusted call state (the shared session toolset).
 func (c *coordinator) sharedBuildScopeFor() *buildResourceScope {
 	return newToolsComponent(c).sharedBuildScopeFor()
+}
+
+// Reviewer-role tool gating: the read-only filter for a call whose
+// CallOptions.ModelRole is the reviewer slot. Extracted next to
+// coordinator_tools.go's other per-call filters (DisableSubAgents, folder
+// scope) so the ordering between them is visible at the buildTools call site.
+
+// reviewerReadOnlyToolNames: the only tools a reviewer-role top-level call may hold.
+var reviewerReadOnlyToolNames = []string{
+	tools.ViewToolName, tools.GrepToolName, tools.GlobToolName, tools.LSToolName,
+	tools.GitReadToolName, tools.ReadDelegationTranscriptToolName,
+	tools.FSReadToolName, tools.FSListToolName, tools.FSFindToolName, tools.FSGrepToolName,
+}
+
+// ReviewerReadOnlyToolNames returns a copy of the read-only tool names a
+// reviewer-role call may hold; external intake uses it as the read-only class.
+func ReviewerReadOnlyToolNames() []string { return slices.Clone(reviewerReadOnlyToolNames) }
+
+// applyCallReviewerReadOnly narrows a reviewer-role top-level call to the
+// read-only tool names in reviewerReadOnlyToolNames. The gate is the per-call
+// CallOptions role, exactly like applyCallDisableSubAgents: a context without
+// CallOptions, a non-reviewer role, or a sub-agent changes nothing.
+//
+// It MUST run after applyCallFolderScope: a scoped call's grants re-add fs_*
+// tools to the list, and the read-only filter has to see that final list to
+// drop fs_write again. MCP is dropped wholesale -- an external filesystem MCP
+// server would read whatever the scope denied.
+func applyCallReviewerReadOnly(ctx context.Context, agent config.Agent, isSubAgent bool) config.Agent {
+	opts := callOptionsFrom(ctx)
+	if opts == nil || opts.ModelRole != config.SelectedModelTypeReviewer || isSubAgent {
+		return agent
+	}
+	allowed := make([]string, 0, len(reviewerReadOnlyToolNames))
+	for _, name := range agent.AllowedTools {
+		if slices.Contains(reviewerReadOnlyToolNames, name) {
+			allowed = append(allowed, name)
+		}
+	}
+	agent.AllowedTools = allowed
+	agent.AllowedMCP = map[string][]string{}
+	return agent
+}
+
+// Coordinator-side implementation of tools.WakeControl — the
+// wakein/wakeon/loop/wake_list/wake_cancel tool family (stage 4c of
+// docs/plans/2026-09-24-agent-wakes-and-async-job-control.md; contract:
+// docs/plans/2026-09-27-wake-tools-contract.md §1/§5/§6). Validation follows
+// §1's exact error texts; persistence goes through the stage-4a
+// WakeScheduleStore (SCHED-01..05) and every successful mutation recomputes
+// the stage-4b worker's timer via Notify (SCHED-06). A coordinator without a
+// running worker (SDK/test coordinators) answers with an honest "scheduler
+// unavailable" error instead of silently accepting a schedule nobody will
+// ever fire.
+
+var _ tools.WakeControl = (*coordinator)(nil)
+
+func (c *coordinator) ScheduleWakeOnceDelay(ctx context.Context, sessionID string, delaySeconds int64, message string) (tools.WakeScheduleView, error) {
+	return c.wakeWorker().ScheduleWakeOnceDelay(ctx, sessionID, delaySeconds, message)
+}
+
+func (c *coordinator) ScheduleWakeOnceAt(ctx context.Context, sessionID, at, message string) (tools.WakeScheduleView, error) {
+	return c.wakeWorker().ScheduleWakeOnceAt(ctx, sessionID, at, message)
+}
+
+func (c *coordinator) ScheduleWakeLoop(ctx context.Context, sessionID string, everySeconds int64, message string, maxRuns *int64, until *string) (tools.WakeScheduleView, error) {
+	return c.wakeWorker().ScheduleWakeLoop(ctx, sessionID, everySeconds, message, maxRuns, until)
+}
+
+func (c *coordinator) ListWakeSchedules(ctx context.Context, sessionID string) ([]tools.WakeScheduleView, error) {
+	return c.wakeWorker().ListWakeSchedules(ctx, sessionID)
+}
+
+func (c *coordinator) CancelWakeSchedule(ctx context.Context, sessionID, scheduleID string) (string, error) {
+	return c.wakeWorker().CancelWakeSchedule(ctx, sessionID, scheduleID)
 }

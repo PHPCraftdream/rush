@@ -1,14 +1,21 @@
 package tools
 
 import (
+	"cmp"
 	"context"
+	_ "embed"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
+	"github.com/PHPCraftdream/rush/internal/agent/tools/mcp"
+	"github.com/PHPCraftdream/rush/internal/config"
+	"github.com/PHPCraftdream/rush/internal/kit/fs/filepathext"
 )
 
 type readAnchor struct {
@@ -217,4 +224,99 @@ func pathWithin(root, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+type ReadMCPResourceParams struct {
+	MCPName string `json:"mcp_name" description:"The MCP server name"`
+	URI     string `json:"uri" description:"The resource URI to read"`
+}
+
+type ReadMCPResourcePermissionsParams struct {
+	MCPName string `json:"mcp_name"`
+	URI     string `json:"uri"`
+}
+
+const ReadMCPResourceToolName = "read_mcp_resource"
+
+//go:embed read_mcp_resource.md
+var readMCPResourceDescription string
+
+func NewReadMCPResourceTool(cfg *config.ConfigStore, permissions permission.Service, owner *mcp.Owner, output ...*MCPOutputAccess) fantasy.AgentTool {
+	var access *MCPOutputAccess
+	if len(output) > 0 {
+		access = output[0]
+	}
+	return fantasy.NewParallelAgentTool(
+		ReadMCPResourceToolName,
+		readMCPResourceDescription,
+		func(ctx context.Context, params ReadMCPResourceParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			params.MCPName = strings.TrimSpace(params.MCPName)
+			params.URI = strings.TrimSpace(params.URI)
+			if params.MCPName == "" {
+				return fantasy.NewTextErrorResponse("mcp_name parameter is required"), nil
+			}
+			if params.URI == "" {
+				return fantasy.NewTextErrorResponse("uri parameter is required"), nil
+			}
+
+			sessionID := GetSessionFromContext(ctx)
+			if sessionID == "" {
+				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for reading MCP resources")
+			}
+
+			relPath := filepathext.SmartJoin(cfg.WorkingDir(), cmp.Or(params.URI, "mcp-resource"))
+			p, err := permissions.Request(
+				ctx,
+				permission.CreatePermissionRequest{
+					SessionID:   sessionID,
+					Path:        relPath,
+					ToolCallID:  call.ID,
+					ToolName:    ReadMCPResourceToolName,
+					Action:      "read",
+					Description: fmt.Sprintf("Read MCP resource from %s", params.MCPName),
+					Params:      ReadMCPResourcePermissionsParams(params),
+				},
+			)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !p {
+				return NewPermissionDeniedResponse(), nil
+			}
+
+			if response, local := access.readArtifact(ctx, params.MCPName, params.URI, call.ID); local {
+				return response, nil
+			}
+
+			contents, err := owner.ReadResource(ctx, cfg, params.MCPName, params.URI)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			if len(contents) == 0 {
+				return fantasy.NewTextResponse(""), nil
+			}
+
+			var textParts []string
+			for _, content := range contents {
+				if content == nil {
+					continue
+				}
+				if content.Text != "" {
+					textParts = append(textParts, content.Text)
+					continue
+				}
+				if len(content.Blob) > 0 {
+					textParts = append(textParts, string(content.Blob))
+					continue
+				}
+				slog.Debug("MCP resource content missing text/blob", "uri", content.URI)
+			}
+
+			if len(textParts) == 0 {
+				return fantasy.NewTextResponse(""), nil
+			}
+
+			return fantasy.NewTextResponse(strings.Join(textParts, "\n")), nil
+		},
+	)
 }

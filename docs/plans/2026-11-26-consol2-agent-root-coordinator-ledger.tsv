@@ -1,0 +1,60 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+internal/agent/coordinator.go	574	internal/agent/coordinator.go	794	group 1	sorted source order; declarations retained
+internal/agent/coordinator_iface_assert.go	14	internal/agent/coordinator.go	794	group 1	sorted source order; declarations retained
+internal/agent/coordinator_work_scope.go	214	internal/agent/coordinator.go	794	group 1	sorted source order; declarations retained
+internal/agent/coordinator_run_queue_call.go	580	internal/agent/coordinator_run_queue_call.go	762	group 2	sorted source order; declarations retained
+internal/agent/coordinator_run_await.go	179	internal/agent/coordinator_run_queue_call.go	762	group 2	sorted source order; declarations retained
+internal/agent/coordinator_run_effort.go	18	internal/agent/coordinator_run_queue_call.go	762	group 2	sorted source order; declarations retained
+internal/agent/coordinator_model_cache.go	54	internal/agent/coordinator_models.go	514	group 3	sorted source order; declarations retained
+internal/agent/coordinator_models.go	184	internal/agent/coordinator_models.go	514	group 3	sorted source order; declarations retained
+internal/agent/coordinator_models_build.go	63	internal/agent/coordinator_models.go	514	group 3	sorted source order; declarations retained
+internal/agent/coordinator_models_call_tools.go	126	internal/agent/coordinator_models.go	514	group 3	sorted source order; declarations retained
+internal/agent/coordinator_models_role.go	121	internal/agent/coordinator_models.go	514	group 3	sorted source order; declarations retained
+internal/agent/coordinator_providers.go	306	internal/agent/coordinator_providers.go	541	group 4	sorted source order; declarations retained
+internal/agent/coordinator_providers_auth.go	249	internal/agent/coordinator_providers.go	541	group 4	sorted source order; declarations retained
+internal/agent/coordinator_drain_policy.go	32	internal/agent/coordinator_retry_classify.go	569	group 5	sorted source order; declarations retained
+internal/agent/coordinator_rate_limit.go	230	internal/agent/coordinator_retry_classify.go	569	group 5	sorted source order; declarations retained
+internal/agent/coordinator_retry_classify.go	303	internal/agent/coordinator_retry_classify.go	569	group 5	sorted source order; declarations retained
+internal/agent/coordinator_retry_testsupport.go	26	internal/agent/coordinator_retry_classify.go	569	group 5	sorted source order; declarations retained
+internal/agent/coordinator_attempt_evidence.go	66	internal/agent/coordinator_summarize.go	522	group 6	sorted source order; declarations retained
+internal/agent/coordinator_recheck.go	191	internal/agent/coordinator_summarize.go	522	group 6	sorted source order; declarations retained
+internal/agent/coordinator_summarize.go	181	internal/agent/coordinator_summarize.go	522	group 6	sorted source order; declarations retained
+internal/agent/coordinator_summarize_role.go	101	internal/agent/coordinator_summarize.go	522	group 6	sorted source order; declarations retained
+internal/agent/coordinator_agent_control.go	410	internal/agent/coordinator_agent_control.go	753	group 7	sorted source order; declarations retained
+internal/agent/coordinator_agent_inject_batch.go	351	internal/agent/coordinator_agent_control.go	753	group 7	sorted source order; declarations retained
+internal/agent/coordinator_await_tasks.go	223	internal/agent/coordinator_await_tasks.go	485	group 8	sorted source order; declarations retained
+internal/agent/coordinator_background.go	48	internal/agent/coordinator_await_tasks.go	485	group 8	sorted source order; declarations retained
+internal/agent/coordinator_batch_stop.go	50	internal/agent/coordinator_await_tasks.go	485	group 8	sorted source order; declarations retained
+internal/agent/coordinator_call_result.go	158	internal/agent/coordinator_await_tasks.go	485	group 8	sorted source order; declarations retained
+internal/agent/coordinator_external_interrupt.go	24	internal/agent/coordinator_await_tasks.go	485	group 8	sorted source order; declarations retained
+internal/agent/coordinator_tool_assembly.go	22	internal/agent/coordinator_tools.go	377	group 9	sorted source order; declarations retained
+internal/agent/coordinator_tools.go	289	internal/agent/coordinator_tools.go	377	group 9	sorted source order; declarations retained
+internal/agent/coordinator_tools_reviewer.go	50	internal/agent/coordinator_tools.go	377	group 9	sorted source order; declarations retained
+internal/agent/coordinator_wake_tools.go	39	internal/agent/coordinator_tools.go	377	group 9	sorted source order; declarations retained
+internal/agent/coordinator_reaction_chain.go	20	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_reaction_source.go	37	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_responses_ws.go	65	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_session_prompt.go	62	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_session_state_sweep.go	130	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_subagents.go	132	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_turn_hold.go	29	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_wake.go	25	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_wake_cli.go	39	internal/agent/coordinator_wake.go	501	group 10	sorted source order; declarations retained
+internal/agent/coordinator_run.go	883	internal/agent/coordinator_run.go	883	untouched	retained alone
+internal/agent/coordinator_interrupt.go	958	internal/agent/coordinator_interrupt.go	958	untouched	retained alone
+CHECK:oracle a	-	-	-	result	identical=True; before=6832; after=6832
+CHECK:oracle b	-	-	-	result	identical=True; before=374; after=374
+CHECK:oracle c	-	-	-	result	pass: only set files and ledger changed; no _test.go; run/interrupt unchanged
+CHECK:oracle d	-	-	-	result	flagged=True
+CHECK:init order	-	-	-	result	none by verified precondition; ordered sources preserved
+CHECK:build constraints	-	-	-	result	none by verified precondition
+CHECK:directives	-	-	-	result	none by verified precondition
+CHECK:aliases	-	-	-	result	aliases retained in merged imports; goimports -l printed nothing
+CHECK:<=880 per target	-	-	-	result	True {'coordinator.go': 795, 'coordinator_run_queue_call.go': 764, 'coordinator_models.go': 519, 'coordinator_providers.go': 543, 'coordinator_retry_classify.go': 572, 'coordinator_summarize.go': 525, 'coordinator_agent_control.go': 753, 'coordinator_await_tasks.go': 488, 'coordinator_tools.go': 380, 'coordinator_wake.go': 503}
+CHECK:gofumpt	-	-	-	result	available; ran -w on all 10 merged targets
+CHECK:goimports	-	-	-	result	available; -l printed nothing
+CHECK:build	-	-	-	result	exit=0
+CHECK:vet native	-	-	-	result	exit=0
+CHECK:vet linux	-	-	-	result	exit=0
+CHECK:vet darwin	-	-	-	result	exit=0
+CHECK:vet windows	-	-	-	result	exit=0
