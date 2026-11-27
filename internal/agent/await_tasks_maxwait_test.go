@@ -99,3 +99,24 @@ func TestAwaitTasksMaxWaitSweepSelective(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, now.Add(time.Minute).Unix(), row.UpdatedAt, "no double touch")
 }
+
+// The port's ClearSleepAll must cancel the pending max_wait schedule, not only
+// disarm the sleep flag (the pre-port call was coordinator.clearSleepAll).
+func TestCoordinatorPortClearSleepAllCancelsMaxWaitSchedule(t *testing.T) {
+	fx := newSchedFx(t)
+	c := &coordinator{wakeScheduler: fx.scheduler()}
+	row, err := fx.store.CreateSchedule(fx.ctx, sessionwake.CreateWakeScheduleParams{
+		Owner: "owner", Kind: sessionwake.WakeKindOnce, Message: sessionwake.AwaitTasksMaxWaitPrefix,
+		RunAt: fx.now().Add(time.Hour),
+	}, fx.now())
+	require.NoError(t, err)
+	c.arb.setSleepAll("owner")
+	c.arb.setMaxWaitWake("owner", row.ID)
+
+	coordinatorPortFrom(c).ClearSleepAll("owner")
+
+	require.False(t, c.arb.snapshot("owner").SleepAll, "the sleep flag is disarmed")
+	got, err := fx.q.GetWakeSchedule(fx.ctx, row.ID)
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", got.State, "the max_wait schedule is cancelled by the port clear")
+}
