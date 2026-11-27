@@ -4,6 +4,7 @@
 // only the subAgentHost port); coordinator_subagents.go keeps the thin
 // coordinator delegates and the concrete host adapter. Driver-registry types live in
 // subagent_drivers_component.go.
+
 package agent
 
 import (
@@ -13,14 +14,13 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
-
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/provider/hyper"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchcore/finalize"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/childagent/state"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/contract/agentcall"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/modelkit"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/callbeat"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
@@ -30,6 +30,40 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	core "github.com/PHPCraftdream/rush/internal/session/service"
 )
+
+// Sub-agent driver lookup and release methods for the subagents component.
+// agentFor resolves the SessionAgent that actually owns sessionID's mailbox:
+// the registered delegation driver, if any (a delegated child session runs
+// on its own task SessionAgent, never on the coordinator's current agent), else
+// the current agent for every non-delegated session.
+func (c *subagentsComponent) agentFor(sessionID string) SessionAgent {
+	if driver, ok := c.host.subAgentDrivers().Get(sessionID); ok {
+		return driver.Agent
+	}
+	return c.host.currentAgent()
+}
+
+// releaseDriverIfScopeClosed removes a child's driver and generation-bound
+// allowlist entry once the child's scope is confirmed closed.
+func (c *subagentsComponent) releaseDriverIfScopeClosed(childSessionID string) {
+	driver, ok := c.host.subAgentDrivers().Get(childSessionID)
+	if !ok {
+		return
+	}
+	c.releaseDriverGeneration(childSessionID, driver.Generation)
+}
+
+// releaseDriverGeneration removes the record only while its registration
+// generation remains current; stale closure observations cannot remove a
+// concurrent resume's replacement driver.
+func (c *subagentsComponent) releaseDriverGeneration(childSessionID string, generation uint64) {
+	if !c.host.subAgentDrivers().ReleaseIfCurrent(childSessionID, generation) {
+		return // a concurrent resume_session_id already re-registered -- not ours to release
+	}
+	if mgr, ok := c.host.permissions().(permission.SessionRunAllowlistManager); ok {
+		mgr.ClearSessionRunAllowlistForGeneration(childSessionID, generation)
+	}
+}
 
 // subAgentHost is the narrow coordinator surface the moved sub-agent and
 // driver-registry bodies need (the wakeComponent pattern).

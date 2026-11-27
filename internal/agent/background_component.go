@@ -4,6 +4,7 @@
 // (the drainComponent/wakeComponent host pattern: the component never holds
 // the raw *coordinator, only the backgroundHost port); those files keep the
 // thin coordinator delegates.
+
 package agent
 
 import (
@@ -11,22 +12,30 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
-
+	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchadapter/subagents"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchexec/batchdispatch"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchinst/installwire"
 	"github.com/PHPCraftdream/rush/internal/agent/runtime/batch/batchmeta"
-	"github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/drainctl"
+	mailboxpkg "github.com/PHPCraftdream/rush/internal/agent/runtime/exec/mailbox"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/sessionprompt"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/turnstep"
+	"github.com/PHPCraftdream/rush/internal/agent/runtime/exec/watchdog"
+	toolwrap "github.com/PHPCraftdream/rush/internal/agent/runtime/policy/toolwrap"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell"
 	"github.com/PHPCraftdream/rush/internal/kit/sys/shell/shellbg"
 	"github.com/PHPCraftdream/rush/internal/session"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
+	"github.com/google/uuid"
 )
 
 // backgroundHost is the narrow coordinator surface the moved background /
@@ -408,4 +417,381 @@ func (c *backgroundComponent) notifyOnBackgroundJobDone() bool {
 	}
 	opts := c.host.cfg().Config().Options
 	return opts == nil || opts.NotifyOnBackgroundJobDone == nil || *opts.NotifyOnBackgroundJobDone
+}
+
+// Package agent inline-window constant and test seam: the A14 inline-window
+// constant, kept here because the batch runtime and the app test harness
+// consume it. The seam is REAL: a coordinator carries a disable flag the
+// batch tool arming (batch_install_tools.go) resolves through its binding.
+// SetInlineWindowForTest zeroes (on=false) or restores (on=true) the
+// coordinator's inline window -- the A14 test seam: 0 = the pre-A14
+// "started" flow, byte for byte. package app's e2e harnesses disable it
+// for scenarios whose scripts match the literal "Async ... started" text or
+// count pulled notices; the window-on e2e re-enables it explicitly.
+// Returns false for a coordinator with no window to set (test fakes).
+func SetInlineWindowForTest(c Coordinator, on bool) bool {
+	var set func(bool)
+	if s, ok := c.(inlineWindowSetter); ok {
+		set = s.setInlineWindowForTest
+	}
+	return installwire.SetInlineWindowForTest(set, on)
+}
+
+type inlineWindowSetter interface {
+	setInlineWindowForTest(on bool)
+}
+
+// setInlineWindowForTest zeroes (on=false) or restores (on=true) THIS
+// coordinator's inline window: the flag is consulted by the batch bash
+// arming (inlineWindowDisabledFor), which arms bash detached -- the pre-A14
+// "started" flow -- instead of with an escape window.
+func (c *coordinator) setInlineWindowForTest(on bool) {
+	c.inlineWindowDisabled.Store(!on)
+}
+
+// inlineWindowDisabledFor reports whether the coordinator bound to bind has
+// its inline window disabled (the SetInlineWindowForTest seam). A build with
+// no coordinator in scope (bind nil or unbound fixture) keeps the window.
+func inlineWindowDisabledFor(bind *batchCoordinatorBinding) bool {
+	return bind != nil && bind.coord != nil && bind.coord.inlineWindowDisabled.Load()
+}
+
+// Queued-call build-ownership retention (Package L, round 2).
+//
+// An ordinary ExecuteRun call that loses the mailbox race is ACKNOWLEDGED as
+// queued, but its pinned toolset keeps only BORROWED construction ownership:
+// the tools were built into the sender's build scope (resolveSessionModels →
+// pinCallTools → newBatchWorkToolBuild), and the sender's deferred
+// callOpts.BuildScope.Close() (coordinator_run.go) releases that construction
+// as soon as the sender returns — long before the owner dispatcher promotes
+// the queued call and executes call.Tools directly (runTurn, agent_turn.go).
+// The promotion does not rebuild tools, so the queued turn's first batch
+// invocation acquires its root against a pruned construction record and
+// fails closed with the ErrDiskProviderUnavailable sentinel family.
+//
+// Round 2 closes that lifetime gap WITHOUT the round-1 hook: armQueuedBuildRetention
+// is invoked ONLY from mailbox.submit's enqueue branch — the moment the
+// mailbox accepts the call into submitted — never before the reservation
+// decision. A call that wins the reservation, is refused the inter-process
+// lock, or fails admission setup never acquires anything, so the round-1
+// leak (retained owners taken before the reservation, never released on
+// early refusal) is structurally impossible. The armed scope carries NO
+// OnQueueResolved hook (round-1 flaw B: the hook is a live-waiter marker and
+// must never be set on queued calls) — every queue-exit path instead calls
+// releaseQueuedBuildOwnership, which closes the marked scope exactly once.
+// The arm guard (armQueuedBuildRetention, queued_call_scope.go:86) READS
+// call.OnQueueResolved solely to SKIP calls whose scope is hook-managed
+// (the InterruptAndSend / runAwaitingAdmission family); the hook is never
+// written or invoked anywhere in this file.
+//
+// Round 4 states the lifetime invariant explicitly:
+//
+//	I1: a marked call that ENTERS Run is released on EVERY return of that
+//	    Run invocation (success, error, panic, refusal, shutdown) — the
+//	    entry defer deferReleaseRetainedRunScope, armed at the top of Run.
+//	I2: a marked call that leaves the queue WITHOUT running is released by
+//	    the queue-exit paths (clearAll, supersede safety net, orphan handoff
+//	    in restartOrphanedWithRetry, hardStop→drainOrReleaseFinal→orphan).
+//
+// pinnedBatchRegistryIDs returns the distinct pinned batch registry
+// identities carried by one call's tool slice: the inv.RegistryID of every
+// *batchIngressTool built by the PINNED path (newBatchWorkToolBuild's
+// non-deferred branch, bind == nil). Deferred (shared-default-toolset)
+// wrappers carry an empty inv.RegistryID and own their construction
+// per-dispatch, repairing a prune through holdPinned — they never depended
+// on the sender's build scope, so they are skipped.
+func pinnedBatchRegistryIDs(list []fantasy.AgentTool) []string {
+	ids := make([]string, 0, len(list))
+	seen := make(map[string]struct{}, len(list))
+	for _, tool := range list {
+		ingress, ok := tool.(*toolwrap.BatchIngressTool)
+		if !ok || ingress.Bind != nil || ingress.Inv.RegistryID() == "" {
+			continue
+		}
+		if _, dup := seen[ingress.Inv.RegistryID()]; dup {
+			continue
+		}
+		seen[ingress.Inv.RegistryID()] = struct{}{}
+		ids = append(ids, ingress.Inv.RegistryID())
+	}
+	return ids
+}
+
+// armQueuedBuildRetention gives one call that is being ACCEPTED INTO THE
+// MAILBOX'S SUBMITTED QUEUE its own independently owned build scope: ONE
+// additional Construction owner per pinned batch registry in call.Tools,
+// released when the scope closes. It is invoked ONLY from mailbox.submit's
+// enqueue branch, so a call that wins the reservation, is refused the
+// inter-process lock, or fails admission setup NEVER acquires anything --
+// the round-1 leak (retained owners taken before the reservation decision,
+// never released on early refusal) is structurally impossible here.
+//
+// No-ops (each deliberate):
+//   - Drains: the queue merge rule may drop an incoming Drain without any
+//     exit hook; arming one would leak.
+//   - FromDurableQueue calls: submit never enqueues them (their durable row
+//     is the retry path), so there is nothing to retain for.
+//   - FailIfSessionBusy calls: submit refuses them before the enqueue
+//     branch; the release helper would never run.
+//   - Calls already carrying OnQueueResolved (the InterruptAndSend /
+//     runAwaitingAdmission family): they already own a scope through
+//     ownDeferredCallScope with a hook-managed lifetime; NOT reusing
+//     OnQueueResolved for cleanup is the round-2 rule (flaw B), and these
+//     calls do not need a second retained scope.
+//   - No bound capability manager, or no pinned batchIngressTool registry
+//     in call.Tools: nothing to retain (OFF mode is byte-identical).
+//   - An already-marked copy (buildScopeRetained): re-queueing an armed
+//     copy must not double-acquire.
+//
+// Acquisition failure keeps today's fail-closed behavior: the call runs
+// and its first batch tool hits the same ErrDiskProviderUnavailable
+// sentinel -- never a silent fallback to shared tools or the OS disk.
+func (a *sessionAgent) armQueuedBuildRetention(call *SessionAgentCall) {
+	newQueuedCallScopeComponent(a).armQueuedBuildRetention(call)
+}
+
+type queuedBuildRetentionHost interface {
+	diskCapsRef() *DiskProviderRegistry
+}
+
+type queuedCallScopeComponent struct {
+	host queuedBuildRetentionHost
+}
+
+func newQueuedCallScopeComponent(a *sessionAgent) *queuedCallScopeComponent {
+	return &queuedCallScopeComponent{host: a}
+}
+
+func (q *queuedCallScopeComponent) armQueuedBuildRetention(call *SessionAgentCall) {
+	if call == nil || call.IsDrain || call.FromDurableQueue || call.FailIfSessionBusy || call.OnQueueResolved != nil || call.CallOptions == nil {
+		return
+	}
+	if call.CallOptions.BuildScopeRetained {
+		return
+	}
+	caps := q.host.diskCapsRef()
+	if caps == nil {
+		return
+	}
+	ids := pinnedBatchRegistryIDs(call.Tools)
+	if len(ids) == 0 {
+		return
+	}
+	scope := newBuildResourceScope()
+	for _, id := range ids {
+		key := diskOwnerKey{kind: diskOwnerConstruction, instance: uuid.NewString(), registryID: id}
+		if err := caps.acquire(key); err != nil {
+			scope.Close()
+			return
+		}
+		scope.Register(func() { caps.release(key) })
+	}
+	owned := *call.CallOptions
+	owned.BuildScope = scope
+	owned.BuildScopeRetained = true
+	call.CallOptions = &owned
+}
+
+// deferReleaseRetainedRunScope and turnEndRelease are the two names
+// agent_run.go calls; their bodies live in runtime/exec/mailbox. They stay
+// in the root as one-line delegates because internal/agent/agent_run.go is
+// ratcheted at 919 lines in .githooks/file_size_900_allowlist.txt and may
+// not grow, so it cannot take the mailbox import these two names need.
+func deferReleaseRetainedRunScope(call *SessionAgentCall) func() {
+	return mailboxpkg.DeferReleaseRetainedRunScope(call)
+}
+
+var turnEndRelease = mailboxpkg.TurnEndRelease
+
+type activeStallClock = drainctl.StallClock
+
+func stallSetPhase(sessionID, kind, name string) { drainctl.StallSetPhase(sessionID, kind, name) }
+
+// stallAbortClosure builds the abort closure armed onto the turn's stall
+// clock: it marks the watchdog stalled (so handleStreamFailure takes the
+// watchdog-stall branch), stores watchdog.CauseStall through the existing fire path
+// (finish part written there), and cancels genCtx to unblock the turn.
+func (a *sessionAgent) stallAbortClosure(
+	sessionID string,
+	watchdogCauseVal *atomic.Int32,
+	toolMaxDuration, idleTimeout time.Duration,
+	smartModel Model,
+	cancel context.CancelFunc,
+	forceStall func(),
+) func(elapsed time.Duration) {
+	return func(elapsed time.Duration) {
+		if forceStall != nil {
+			forceStall()
+		}
+		a.handleWatchdogFire(watchdog.CauseStall, elapsed, sessionID, watchdogCauseVal, toolMaxDuration, idleTimeout, smartModel)
+		cancel()
+	}
+}
+
+// stepCallClass and its constants alias the leaf classifier's verdict type
+// (runtime/exec/turnstep) for the root guard, reaction chain and their tests.
+type stepCallClass = turnstep.StepCallClass
+
+const (
+	stepCallAct     = turnstep.StepCallAct
+	stepCallRead    = turnstep.StepCallRead
+	stepCallReread  = turnstep.StepCallReread
+	stepCallWait    = turnstep.StepCallWait
+	stepCallRefused = turnstep.StepCallRefused
+	stepCallNeutral = turnstep.StepCallNeutral
+	stepCallNoWrite = turnstep.StepCallNoWrite
+)
+
+// readSpan is a half-open line window [start, end); end == math.MaxInt means
+// "to the end of the file". Bounds come from the call's own request, so the
+// tail past EOF is an acceptable over-estimate.
+type readSpan struct{ start, end int }
+
+func toLeafSpan(sp readSpan) turnstep.ReadSpan {
+	return turnstep.ReadSpan{Start: sp.start, End: sp.end}
+}
+
+func fromLeafSpan(sp turnstep.ReadSpan) readSpan { return readSpan{start: sp.Start, end: sp.End} }
+
+// readCoverage maps a cleaned file path to the line windows already read in
+// this turn. A nil map means "coverage is not tracked at all", which makes
+// every windowed read a fresh read.
+type readCoverage map[string][]readSpan
+
+// covered reports whether sp lies entirely inside the union of the windows
+// recorded for path.
+func (c readCoverage) covered(path string, sp readSpan) bool {
+	if sp.end <= sp.start {
+		return true // an empty window reads nothing
+	}
+	reach := sp.start
+	for _, s := range mergeSpans(c[filepath.Clean(path)]) {
+		if s.end <= reach {
+			continue
+		}
+		if s.start > reach {
+			return false // a gap opens before sp.end
+		}
+		reach = s.end
+		if reach >= sp.end {
+			return true
+		}
+	}
+	return false
+}
+
+// add records sp for path, keeping that path's windows sorted and merged.
+func (c readCoverage) add(path string, sp readSpan) {
+	if c == nil || sp.end <= sp.start {
+		return
+	}
+	key := filepath.Clean(path)
+	c[key] = mergeSpans(append(c[key], sp))
+}
+
+// clear drops every recorded window (an act, a message insert or a trim all
+// mean "the file may have changed").
+func (c readCoverage) clear() {
+	for key := range c {
+		delete(c, key)
+	}
+}
+
+// snapshot deep-copies the coverage for a concurrent reader (a tool wrapper).
+func (c readCoverage) snapshot() readCoverage {
+	out := make(readCoverage, len(c))
+	for key, spans := range c {
+		out[key] = append(make([]readSpan, 0, len(spans)), spans...)
+	}
+	return out
+}
+
+// mergeSpans sorts windows by start and merges overlapping or touching ones in
+// a single pass. Files are small, so a copy plus sort beats an interval tree.
+func mergeSpans(spans []readSpan) []readSpan {
+	if len(spans) < 2 {
+		return spans
+	}
+	out := append(make([]readSpan, 0, len(spans)), spans...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].start != out[j].start {
+			return out[i].start < out[j].start
+		}
+		return out[i].end < out[j].end
+	})
+	merged := out[:1]
+	for _, s := range out[1:] {
+		last := &merged[len(merged)-1]
+		if s.start <= last.end {
+			if s.end > last.end {
+				last.end = s.end
+			}
+			continue
+		}
+		merged = append(merged, s)
+	}
+	return merged
+}
+
+func isWaitOnlyCall(call fantasy.ToolCallContent) bool {
+	return turnstep.IsWaitOnlyCall(call)
+}
+
+// namedSpan is one read window of one file, taken from a call's own input.
+type namedSpan struct {
+	path string
+	span readSpan
+}
+
+// readSpans extracts the line windows a view/fs_read call asked for, one per
+// item for fs_read's batch form. Any other tool, an unparsable input, or a
+// fs_read item the real tool itself would reject yields no window for it --
+// the guard does not punish input it cannot read. The parse itself lives in
+// the leaf package (turnstep.ReadSpans).
+func readSpans(call fantasy.ToolCallContent) []namedSpan {
+	leaf := turnstep.ReadSpans(call)
+	out := make([]namedSpan, 0, len(leaf))
+	for _, named := range leaf {
+		out = append(out, namedSpan{path: named.Path, span: fromLeafSpan(named.Span)})
+	}
+	return out
+}
+
+func asyncCapRefused(result fantasy.ToolResultContent) bool {
+	return turnstep.AsyncCapRefused(result)
+}
+
+// stepClassifyCtx carries the turn-scoped state a classification may consult.
+// A zero ctx (nil seen) is the #1113 configuration: reread detection is off
+// and every windowed read counts as a fresh read.
+type stepClassifyCtx struct {
+	seen readCoverage // nil: reread detection impossible; view/fs_read classify as read
+}
+
+// seam hands the coverage and the restricted-action table to the leaf
+// classifier through its use-point seams; the coverage callback runs at the
+// classifier's original readSpans parse site and reads an untracked map
+// (nil seen) as fresh windows.
+func (cx stepClassifyCtx) seam() turnstep.StepClassifyCtx {
+	return turnstep.StepClassifyCtx{
+		RestrictedAction: func(toolName string) string { action, _ := toolwrap.RestrictedToolAction(toolName); return action },
+		CoveredWindows: func(call fantasy.ToolCallContent) (int, bool) {
+			spans := turnstep.ReadSpans(call)
+			if len(spans) == 0 {
+				return 0, false
+			}
+			for _, named := range spans {
+				if cx.seen == nil || !cx.seen.covered(named.Path, fromLeafSpan(named.Span)) {
+					return len(spans), false
+				}
+			}
+			return len(spans), true
+		},
+	}
+}
+
+// classifyStepCall delegates the verdict to the leaf classifier
+// (runtime/exec/turnstep.ClassifyStepCall) against this root ctx's seams.
+func classifyStepCall(call fantasy.ToolCallContent, result fantasy.ToolResultContent, cx stepClassifyCtx) stepCallClass {
+	return turnstep.ClassifyStepCall(call, result, cx.seam())
 }
