@@ -1,0 +1,60 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+batch_install_adapters.go	550	batch_install_adapters.go	665	pure move source	section order preserved
+batch_install_policy.go	77	batch_install_adapters.go	665	pure move source	section order preserved
+batch_install_question.go	55	batch_install_adapters.go	665	pure move source	section order preserved
+batch_install_ingress.go	300	batch_install_ingress.go	450	pure move source	section order preserved
+batch_install_agent_driver.go	164	batch_install_ingress.go	450	pure move source	section order preserved
+batch_install_bridge.go	45	batch_install_bridge.go	262	pure move source	section order preserved
+batch_install_tools.go	227	batch_install_bridge.go	262	pure move source	section order preserved
+batch_cutover_facts.go	151	batch_cutover_facts_node.go	734	pure move source	section order preserved
+batch_cutover_facts_node.go	522	batch_cutover_facts_node.go	734	pure move source	section order preserved
+batch_cutover_rerun.go	82	batch_cutover_facts_node.go	734	pure move source	section order preserved
+batch_exec_agent.go	380	batch_exec_agent.go	527	pure move source	section order preserved
+batch_exec_agent_doc.go	54	batch_exec_agent.go	527	pure move source	section order preserved
+batch_exec_generic.go	108	batch_exec_agent.go	527	pure move source	section order preserved
+batch_exec.go	252	batch_exec.go	356	pure move source	section order preserved
+batch_exec_argv.go	71	batch_exec.go	356	pure move source	section order preserved
+batch_exec_shell.go	64	batch_exec.go	356	pure move source	section order preserved
+batch_admission.go	42	batch_cli_runtime.go	307	pure move source	section order preserved
+batch_cli_runtime.go	273	batch_cli_runtime.go	307	pure move source	section order preserved
+batch_cli.go	284	batch_cli.go	716	pure move source	section order preserved
+batch_external_spec.go	22	batch_cli.go	716	pure move source	section order preserved
+batch_ingress.go	144	batch_cli.go	716	pure move source	section order preserved
+batch_invocation.go	266	batch_cli.go	716	pure move source	section order preserved
+batch_role_admission.go	45	batch_cli.go	716	pure move source	section order preserved
+batch_glue.go	634	batch_glue.go	664	pure move source	section order preserved
+batch_held_question_route.go	37	batch_glue.go	664	pure move source	section order preserved
+batch_delivery.go	86	batch_delivery.go	255	pure move source	section order preserved
+batch_delivery_doc.go	72	batch_delivery.go	255	pure move source	section order preserved
+batch_terminal_output.go	62	batch_delivery.go	255	pure move source	section order preserved
+batch_worker_hints.go	49	batch_delivery.go	255	pure move source	section order preserved
+batch_credentials_escrow.go	72	batch_runtime.go	675	pure move source	section order preserved
+batch_credentials_marker.go	33	batch_runtime.go	675	pure move source	section order preserved
+batch_model_control.go	134	batch_runtime.go	675	pure move source	section order preserved
+batch_rehome_coord_runtime.go	72	batch_runtime.go	675	pure move source	section order preserved
+batch_rehome_runtime.go	96	batch_runtime.go	675	pure move source	section order preserved
+batch_root_lease.go	73	batch_runtime.go	675	pure move source	section order preserved
+batch_runtime.go	112	batch_runtime.go	675	pure move source	section order preserved
+batch_scope.go	38	batch_runtime.go	675	pure move source	section order preserved
+batch_scope_recovery.go	102	batch_runtime.go	675	pure move source	section order preserved
+batch_model_tools.go	227	batch_model_tools.go	407	pure move source	section order preserved
+batch_profile.go	188	batch_model_tools.go	407	pure move source	section order preserved
+header:batch_cutover_facts.go	7	batch_cutover_facts_node.go		restored header block	7 lines
+header:batch_cutover_facts_node.go	4	batch_cutover_facts_node.go		restored header block	4 lines
+header:batch_cutover_rerun.go	19	batch_cutover_facts_node.go		restored header block	19 lines
+header:batch_exec_agent_doc.go	1	batch_exec_agent.go		restored header block	1 lines
+header:batch_glue.go	4	batch_glue.go		restored header block	4 lines
+header:batch_delivery_doc.go	1	batch_delivery.go		restored header block	1 lines
+header:batch_rehome_coord_runtime.go	9	batch_runtime.go		restored header block	9 lines
+header:batch_rehome_runtime.go	4	batch_runtime.go		restored header block	4 lines
+oracle-a	PASS 5313 == 5313 zero diffs			check	verified
+oracle-b	PASS 449 == 449 declarations			check	verified
+status	PASS 2 modified targets + ledger, no other tracked-path changes observed			check	verified
+sizes	PASS all targets <=880			check	verified
+goimports	PASS clean			check	verified
+gofmt	PASS clean			check	verified
+mutation	PASS detected			check	verified
+compile	PASS exit 0			check	verified
+vet-linux	PASS exit 0			check	verified
+vet-darwin	PASS exit 0			check	verified
+vet-windows	PASS exit 0			check	verified
