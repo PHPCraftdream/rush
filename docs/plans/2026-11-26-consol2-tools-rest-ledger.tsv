@@ -1,0 +1,44 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+await_tasks.go	137	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+wake_cancel.go	45	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+wake_control.go	71	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+wake_list.go	44	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+wake_loop.go	39	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+wakein.go	38	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+wakeon.go	39	wake_control.go	365	Wake scheduling and coordination API	Sorted source order retained within target; no func init; embed directive remains immediately with its variable
+agent_control.go	77	agent_control.go	367	Sub-agent/operator control tools and timeout parsing	Sorted source order retained within target; no func init; embedded descriptions remain attached
+ask_question.go	128	agent_control.go	367	Sub-agent/operator control tools and timeout parsing	Sorted source order retained within target; no func init; embedded descriptions remain attached
+inject_agent.go	46	agent_control.go	367	Sub-agent/operator control tools and timeout parsing	Sorted source order retained within target; no func init; embedded descriptions remain attached
+inspect_agent.go	73	agent_control.go	367	Sub-agent/operator control tools and timeout parsing	Sorted source order retained within target; no func init; embedded descriptions remain attached
+stop_agent.go	41	agent_control.go	367	Sub-agent/operator control tools and timeout parsing	Sorted source order retained within target; no func init; embedded descriptions remain attached
+timeout_params.go	40	agent_control.go	367	Sub-agent/operator control tools and timeout parsing	Sorted source order retained within target; no func init
+mcp-tools.go	229	mcp-tools.go	426	MCP tool execution and output retention	Sorted source order retained within target; no func init
+mcp_output.go	208	mcp-tools.go	426	MCP tool execution and output retention	Sorted source order retained within target; no func init
+rush_info.go	414	rush_info.go	640	Rush info and todo tools	Sorted source order retained within target; no func init
+todos.go	235	rush_info.go	640	Rush info and todo tools	Sorted source order retained within target; no func init; embedded todos description retained
+rush_logs.go	514	rush_logs.go	514	Log inspection tool; remains separate	Sorted source order retained within target; no func init
+forbidden_writes.go	116	tools.go	343	Shared tool utilities, forbidden-write policy, view suggestions	Sorted source order retained within target; no func init
+tools.go	177	tools.go	343	Shared tool utilities, forbidden-write policy, view suggestions	Sorted source order retained within target; no func init
+view_suggest.go	59	tools.go	343	Shared tool utilities, forbidden-write policy, view suggestions	Sorted source order retained within target; no func init
+regular_open_other.go	72	regular_open_other.go	72	Retained independently	Retained build constraint: //go:build plan9 || js || wasip1
+regular_open_special_test_unix.go	25	regular_open_special_test_unix.go	25	Retained independently	Retained build constraint: //go:build linux || darwin || freebsd || netbsd || openbsd || dragonfly || solaris
+regular_open_special_test_windows.go	23	regular_open_special_test_windows.go	23	Retained independently	Retained build constraint: //go:build windows
+regular_open_unix.go	73	regular_open_unix.go	73	Retained independently	Retained build constraint: //go:build !windows && !plan9 && !js && !wasip1
+regular_open_windows.go	72	regular_open_windows.go	72	Retained independently	Retained build constraint: //go:build windows
+view.go	957	view.go	957	Retained independently	Retained unmerged; 957 lines, >880
+CHECK:oracle a	PASS: sorted nonblank lines excluding package/import blocks identical; 3347 lines before and after				The earlier false failure omitted retained files; corrected scope includes all 27 set files.
+CHECK:oracle b	PASS: sorted top-level declaration lines identical; 226 each				All source and retained files included.
+CHECK:oracle c	PASS: no _test.go or outside-set status paths; ledger exception allowed				Verified status before ledger creation.
+CHECK:oracle d	PASS: mutation of moved function text in scratch changed oracle multiset (2 line-count deltas)				Scratch remained outside tracked tree.
+CHECK:init/order audit	No func init() in set. Package initializers include template.Must in rush_logs.go and view.go, func literal ghAvailable in tools.go; embed-backed string/byte variables in tool files are independent. Dependency ordering remains compiler-driven; no observed cross-file initializer dependency.				Source declarations retained; no init functions.
+CHECK:build constraints	regular_open_other.go: plan9 || js || wasip1; regular_open_unix.go: !windows && !plan9 && !js && !wasip1; regular_open_windows.go: windows; special tests Unix OS list and windows respectively. No merge across constraints.				No constraints in merged sources.
+CHECK:directives	go:embed directives remain immediately before their original variables; no go:generate, cgo preamble, go:linkname observed.				Target retain attached embed vars.
+CHECK:imports	Blank embed imports exist in embedded-description sources and remain in target import unions; todos.go has session alias; no dot imports or conflicting aliases observed.				goimports -l was run previously and printed nothing.
+CHECK:size audit	PASS: six targets sizes 365,367,426,640,514,343; all <=880.				Actual working-tree line counts.
+CHECK:gofumpt	PASS: gofumpt -w on six targets printed nothing.				Previous worker run.
+CHECK:goimports	PASS: goimports -l on six targets printed nothing.				Previous worker run.
+CHECK:go test compile	EXIT 127				Required wrapper could not find D:/dev/crush/.rush/tmp/golock.sh.
+CHECK:go vet linux	EXIT 127				Required wrapper could not find D:/dev/crush/.rush/tmp/golock.sh.
+CHECK:go vet darwin	EXIT 127				Required wrapper could not find D:/dev/crush/.rush/tmp/golock.sh.
+CHECK:go vet windows	EXIT 127				Required wrapper could not find D:/dev/crush/.rush/tmp/golock.sh.
+CHECK:production file count	27 before; 12 after				The 12 comprise six targets and six retained files.
