@@ -55,7 +55,7 @@ internal/app 242
 # D2-3 provresolve: 4 production files leave the root for internal/config/providers/provresolve
 # (no test files move), so internal/config goes 203 -> 197; 203 was 2 too high -- the true
 # pre-move value was 201 (31 production + 170 test files), and 197 is that exactly.
-internal/config 186
+internal/config 176
 # internal/config/discover 27 -> 19: same D2-3 tail merge (5 production + 14 test files); row retired.
 # internal/serve/server/server is born over the 21-file limit: the composer holds 5 production files plus
 # the cross-cutting tests that lanes L5/L6 have not re-homed yet.
