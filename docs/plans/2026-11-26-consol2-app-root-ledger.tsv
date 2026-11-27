@@ -1,0 +1,43 @@
+source_file	source_lines	target_file	target_lines	group_reason	order_or_constraint_notes
+app.go	779	app.go	779	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_accessors.go	481	app_accessors.go	766	pure-move merged target	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_agent_setup.go	236	app_lifecycle.go	679	merged in extra packing round; sorted source order agent_setup then lifecycle	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_bridge.go	634	app_bridge.go	634	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_finalization_wiring.go	191	app_finalization_wiring.go	191	unmerged: T2 collision with app_lifecycle.go and pair fallback	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_lifecycle.go	452	app_lifecycle.go	452	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run.go	900	app_run.go	900	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_async.go	888	app_run_async.go	888	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_async_fsm.go	785	app_run_async_fsm.go	785	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_async_wait.go	792	app_run_async_wait.go	792	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_gates.go	491	app_run_gates.go	491	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_request.go	292	app_run_request.go	549	pure-move merged target	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_reviewer.go	978	app_run_reviewer.go	978	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_reviewer_evidence.go	890	app_run_reviewer_evidence.go	890	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_reviewer_outcome.go	899	app_run_reviewer_outcome.go	899	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_setup.go	651	app_run_setup.go	651	unchanged planned standalone/oversized	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_run_terminal.go	266	app_run_request.go	549	source moved into target	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+app_session_activity.go	297	app_accessors.go	766	source moved into target	file-name order where merged; no build constraint/directive; package-level vars are zero-value sync.Map/atomic.Int64 or nil func seam; no side-effect initializer or cross-file ordering dependency observed
+oracle_a				PASS	staged and real sorted nonblank-line multisets match HEAD
+oracle_b				PASS	staged and real top-level declaration lines match HEAD
+oracle_c				PASS	status has 2 modified, 2 deleted, plus this ledger file
+oracle_d				PASS	mutated function body comparator fails; scratch deleted
+item3				PASS	no init; build tags in two tests only; T2 import-name collision recorded below
+compile				exit 0	capm 2g bash golock.sh env GOMEMLIMIT=700MiB go test -c -o NUL ./internal/app
+vet-default				EXIT_CODE:0	capm wrapper go vet ./internal/app
+vet-linux				EXIT_CODE:0	capm wrapper GOOS=linux go vet ./internal/app
+vet-darwin				EXIT_CODE:0	capm wrapper GOOS=darwin go vet ./internal/app
+vet-windows				EXIT_CODE:0	capm wrapper GOOS=windows go vet ./internal/app
+collision				T2 not merged	name session: internal/session vs internal/session/service; pair fallback also collides
+collision_import_a				app_lifecycle.go unmerged	bare github.com/PHPCraftdream/rush/internal/session has local name session
+collision_import_b				app_lifecycle.go unmerged	 session alias github.com/PHPCraftdream/rush/internal/session/service has local name session
+init_order				PASS	appFinalizationGates sync.Map and ConfigNotificationsPublished atomic.Int64 are zero-value initialization; modelsSyncBeforeJoinSeam is nil func; no side effect/cross-file dependency
+formatter				PASS	goimports -l internal/app printed nothing; gofumpt -l on merged targets printed nothing
+packing_candidate_1		app_lifecycle.go	679	PASS	app_agent_setup.go + app_lifecycle.go; collision test none; compile exit 0; oracles A/B pass
+packing_candidate_4		app_bridge.go	634	NOT MERGED	name collision session: internal/session vs internal/session/service
+packing_candidate_5		app_run_gates.go	491	NOT MERGED	path alias conflict github.com/PHPCraftdream/rush/internal/session/service: core vs session
+final_compile				COMPILE_EXIT:0	capm go test -c wrapper
+final_vet_default				EXIT_CODE:0	capm wrapper
+final_vet_linux				EXIT_CODE:0	capm wrapper
+final_vet_darwin				EXIT_CODE:0	capm wrapper
+final_vet_windows				EXIT_CODE:0	capm wrapper
+final_oracles				PASS	A and B pass; status 3 M, 3 D and ledger; goimports clean
