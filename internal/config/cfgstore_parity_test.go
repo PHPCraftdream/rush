@@ -71,45 +71,37 @@ func TestParitySetDefaults(t *testing.T) {
 func boolPtr(b bool) *bool { return &b }
 
 // TestParityCandidateInputsChanged pins the root fingerprint copy against the
-// leaf copy. The path sets handed in are exactly the discovered candidates, so
-// the path-set short circuit is NOT taken and every row reaches the
-// fingerprint comparison; the expected outcomes make the test fail when the
-// fingerprint branch is dropped from either copy.
+// leaf copy. The candidate path sets are the discovered ones, so the path-set
+// short circuit is NOT taken, and the recorded fingerprints come from the
+// production recorder (loadConfigCandidateStableForWorkingDir), so they are
+// spelled exactly as the comparison re-reads them (Windows runners return 8.3
+// short temp paths). Rows: nothing recorded and nothing changed (false), then
+// the file rewritten after recording (true); dropping the fingerprint
+// comparison from either copy fails the second row.
 func TestParityCandidateInputsChanged(t *testing.T) {
-	dir := t.TempDir()
+	dir, configPath, _ := configSyncIsolate(t)
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4"}}`)
 	configPaths := docread.LookupConfigCandidates(dir)
 	externalPaths := docread.McpJSONCandidatePaths(dir)
 	require.NotEmpty(t, configPaths)
-	fpsFor := func(fp docread.Fingerprint) map[string]reloadFileFingerprint {
-		m := make(map[string]reloadFileFingerprint, len(configPaths))
-		for _, p := range configPaths {
-			m[docread.NormalizeReloadPath(p)] = fp
-		}
-		return m
+
+	_, _, recorded, _, err := loadConfigCandidateStableForWorkingDir(configPaths, dir)
+	require.NoError(t, err)
+	require.NotEmpty(t, recorded)
+
+	check := func(name string, fps map[string]reloadFileFingerprint, want bool) {
+		t.Helper()
+		root := candidateInputsChanged(dir, configPaths, externalPaths, fps)
+		leaf := cfgstore.CandidateInputsChangedForTest(dir, configPaths, externalPaths, fps)
+		require.Equal(t, want, root, "root candidateInputsChanged on %q", name)
+		require.Equal(t, want, leaf, "leaf candidateInputsChanged on %q", name)
 	}
-	// The candidates do not exist in the temp directory. The fingerprint a
-	// not-exist read reports (its discovery hash) is the exact "unchanged"
-	// value; one recorded as present has changed.
-	current := make(map[string]reloadFileFingerprint, len(configPaths))
-	for _, p := range configPaths {
-		_, fp, _ := docread.ReadStableConfigFileOwned(p, 0, false)
-		current[docread.NormalizeReloadPath(p)] = fp
-	}
-	recordedPresent := docread.Fingerprint{Exists: true, Digest: [32]byte{1}, Size: 7}
-	for _, row := range []struct {
-		name string
-		fps  map[string]reloadFileFingerprint
-		want bool
-	}{
-		{"no fingerprints recorded", nil, false},
-		{"recorded as currently observed", current, false},
-		{"recorded present, missing now", fpsFor(recordedPresent), true},
-	} {
-		root := candidateInputsChanged(dir, configPaths, externalPaths, row.fps)
-		leaf := cfgstore.CandidateInputsChangedForTest(dir, configPaths, externalPaths, row.fps)
-		require.Equal(t, row.want, root, "root candidateInputsChanged on %q", row.name)
-		require.Equal(t, row.want, leaf, "leaf candidateInputsChanged on %q", row.name)
-	}
+	check("nothing recorded", nil, false)
+	check("recorded, nothing changed", recorded, false)
+
+	writeSignedModelsFixture(t, configPath, `{"smart":{"provider":"openai","model":"gpt-4-changed"}}`)
+	check("recorded, file rewritten", recorded, true)
+
 	// A candidate set that differs from the discovered one is itself a change
 	// in both copies.
 	require.True(t, candidateInputsChanged(dir, []string{dir + "/other.json"}, externalPaths, nil))
