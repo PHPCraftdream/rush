@@ -24,7 +24,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/session/heartbeat"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
-	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -40,10 +39,10 @@ type contextBudgetHost interface {
 	Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
 	abandonOwnershipWithHandoff(sessionID string, epoch uint64)
 	effectiveStreamWatchdogTick() time.Duration
-	preparePrompt(msgs []message.Message, todos []coresession.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart)
-	getSessionMessages(ctx context.Context, session coresession.Session) ([]message.Message, error)
+	preparePrompt(msgs []message.Message, todos []session.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart)
+	getSessionMessages(ctx context.Context, session session.Session) ([]message.Message, error)
 	openrouterCost(metadata fantasy.ProviderMetadata) *float64
-	updateSessionUsage(model Model, sess *coresession.Session, usage fantasy.Usage, overrideCost *float64) float64
+	updateSessionUsage(model Model, sess *session.Session, usage fantasy.Usage, overrideCost *float64) float64
 	recordMessageUsage(ctx context.Context, messageID string, model Model, usage fantasy.Usage, costDelta float64, estimated bool)
 	streamIdleTimeoutCfg() time.Duration
 	timeoutHardCapCfg() time.Duration
@@ -80,7 +79,7 @@ func (a *sessionAgent) openrouterCost(m fantasy.ProviderMetadata) *float64 {
 	return usagepolicy.OpenrouterCost(m)
 }
 
-func (a *sessionAgent) updateSessionUsage(model Model, sess *coresession.Session, u fantasy.Usage, overrideCost *float64) float64 {
+func (a *sessionAgent) updateSessionUsage(model Model, sess *session.Session, u fantasy.Usage, overrideCost *float64) float64 {
 	return usagepolicy.UpdateSessionUsage(model, sess, u, overrideCost)
 }
 
@@ -94,7 +93,7 @@ func (a *sessionAgent) recordMessageUsage(ctx context.Context, messageID string,
 
 func (a *sessionAgent) RecordMessageUsageStore() usagepolicy.MessageUsageStore { return a.messages }
 
-func (a *sessionAgent) CacheKeepAliveSessions() coresession.Service { return a.sessions }
+func (a *sessionAgent) CacheKeepAliveSessions() session.Service { return a.sessions }
 func (a *sessionAgent) CacheKeepAlivePeakHours() callbeat.CacheKeepAlivePeakHoursChecker {
 	if a.coord == nil {
 		return nil

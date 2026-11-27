@@ -18,7 +18,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 	runq "github.com/PHPCraftdream/rush/internal/session/run/sessionrun"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
-	session "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 	"github.com/google/uuid"
 )
@@ -750,7 +749,7 @@ func (c *coordinator) buildCall(ctx context.Context, sessionID, prompt string, p
 // the session's durable effort, but only when the slot names the session's
 // own model: the effort was recorded for that model, and applyModelOverrides
 // deliberately clears the effort whenever the model differs.
-func inheritSessionEffort(smart, fast *ModelOverride, sess session.Session) {
+func inheritSessionEffort(smart, fast *ModelOverride, sess coresession.Session) {
 	if smart != nil && smart.ReasoningEffort == "" && sess.SmartModelReasoningEffort != "" &&
 		smart.Model == sess.SmartModelID && smart.Provider == sess.SmartModelProvider {
 		smart.ReasoningEffort = sess.SmartModelReasoningEffort

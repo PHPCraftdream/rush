@@ -26,7 +26,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/kit/sync/csync"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
 	sessionlock "github.com/PHPCraftdream/rush/internal/session/proc/sessionlock"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/message"
 )
@@ -570,11 +569,11 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	return (sessionprompt.PromptComponent{Messages: a.messages}).CreateUserMessage(ctx, call)
 }
 
-func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []core.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
+func (a *sessionAgent) preparePrompt(msgs []message.Message, todos []coresession.Todo, targetFamily string, attachments ...message.Attachment) ([]fantasy.Message, []fantasy.FilePart) {
 	return (sessionprompt.PromptComponent{IsSubAgent: a.isSubAgent}).PreparePrompt(msgs, todos, targetFamily, attachments...)
 }
 
-func (a *sessionAgent) getSessionMessages(ctx context.Context, session core.Session) ([]message.Message, error) {
+func (a *sessionAgent) getSessionMessages(ctx context.Context, session coresession.Session) ([]message.Message, error) {
 	return (sessionprompt.PromptComponent{Messages: a.messages}).GetSessionMessages(ctx, session)
 }
 

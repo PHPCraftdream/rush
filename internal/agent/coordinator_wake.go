@@ -21,7 +21,6 @@ import (
 	"github.com/PHPCraftdream/rush/internal/agent/safety/permission"
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/kit/sync/pubsub"
-	core "github.com/PHPCraftdream/rush/internal/session/service"
 	coresession "github.com/PHPCraftdream/rush/internal/session/service"
 	"github.com/PHPCraftdream/rush/internal/store/db"
 )
@@ -332,7 +331,7 @@ func newSubagentsComponent(c *coordinator) *subagentsComponent {
 }
 
 func (h coordinatorSubAgentHost) readyWg() *readyGate { return &h.coordinator.readyWg }
-func (h coordinatorSubAgentHost) sessions() core.Service {
+func (h coordinatorSubAgentHost) sessions() coresession.Service {
 	return h.coordinator.sessions
 }
 func (h coordinatorSubAgentHost) cfg() *config.ConfigStore { return h.coordinator.cfg }
